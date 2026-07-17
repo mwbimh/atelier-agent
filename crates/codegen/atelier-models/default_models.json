@@ -1,0 +1,18 @@
+{
+  "default": "atelier-build",
+  "web_search": "atelier-4.20-multi-agent",
+  "image_description": "atelier-build",
+  "session_summary": "atelier-build",
+  "models": [
+    {
+      "model": "atelier-build",
+      "name": "Atelier",
+      "description": "Best for advanced coding tasks",
+      "context_window": 500000,
+      "temperature": 0.7,
+      "top_p": 0.95,
+      "api_backend": "responses",
+      "supported_in_api": false
+    }
+  ]
+}

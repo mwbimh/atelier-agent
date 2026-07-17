@@ -1,3 +1,6 @@
 /target
 **/*.rs.bk
 .DS_Store
+
+# Local source provenance is machine-specific and must never be committed.
+local-repos.toml

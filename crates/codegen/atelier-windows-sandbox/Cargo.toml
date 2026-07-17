@@ -1,0 +1,36 @@
+[package]
+name = "atelier-windows-sandbox"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "Windows restricted-token command runner for Atelier"
+publish = false
+
+[lib]
+name = "atelier_windows_sandbox"
+path = "src/lib.rs"
+
+[[bin]]
+name = "atelier-command-runner"
+path = "src/bin/atelier-command-runner.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+dunce = { workspace = true }
+thiserror = { workspace = true }
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Console",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_Environment",
+    "Win32_System_JobObjects",
+    "Win32_System_Memory",
+    "Win32_System_Pipes",
+    "Win32_System_Threading",
+] }
+
+[dev-dependencies]
+tempfile = { workspace = true }

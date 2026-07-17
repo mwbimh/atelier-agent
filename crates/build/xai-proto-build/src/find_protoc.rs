@@ -82,7 +82,17 @@ pub fn find_protoc() -> anyhow::Result<Option<PathBuf>> {
         return Ok(Some(PathBuf::from("protoc")));
     }
 
-    // 4. Not found anywhere.
+    // 4. Use a platform-native binary bundled by Cargo when neither the
+    // repository's dotslash wrapper nor PATH provides protoc. The repository
+    // wrapper currently has no Windows provider, so this fallback is required
+    // for reproducible Windows builds and tests.
+    if let Ok(protoc) = protoc_bin_vendored::protoc_bin_path()
+        && check_protoc_good(&protoc).is_ok()
+    {
+        return Ok(Some(protoc));
+    }
+
+    // 5. Not found anywhere.
     if is_github_actions() {
         return Err(anyhow::anyhow!(
             "`protoc` not found (checked $PROTOC env, bin/protoc, and PATH)"

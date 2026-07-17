@@ -59,10 +59,26 @@ rustflags = [
 ]
 
 [target.x86_64-pc-windows-msvc]
-rustflags = ["-C", "force-unwind-tables=yes", "-C", "target-feature=+crt-static"]
+# The Agent runtime has deep async/session startup frames on Windows. Keep the
+# executable's main stack aligned with the Codex Windows runtime baseline.
+rustflags = [
+    "-C",
+    "force-unwind-tables=yes",
+    "-C",
+    "target-feature=+crt-static",
+    "-C",
+    "link-arg=/STACK:8388608",
+]
 
 [target.aarch64-pc-windows-msvc]
-rustflags = ["-C", "force-unwind-tables=yes", "-C", "target-feature=+crt-static"]
+rustflags = [
+    "-C",
+    "force-unwind-tables=yes",
+    "-C",
+    "target-feature=+crt-static",
+    "-C",
+    "link-arg=/STACK:8388608",
+]
 
 
 # jemalloc page size for Apple Silicon (macOS aarch64 uses 16KB pages = 2^14).

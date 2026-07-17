@@ -10,9 +10,9 @@ use std::sync::Arc;
 use anyhow::Context;
 
 use crate::UploadMethod;
-use xai_grok_auth::{AuthCredentialProvider, StaticAuthCredentialProvider};
+use atelier_auth::{AuthCredentialProvider, StaticAuthCredentialProvider};
 
-use crate::storage_client::{Auth401AttributionCallback, StaticGrokAuth, StorageClient};
+use crate::storage_client::{Auth401AttributionCallback, StaticAtelierAuth, StorageClient};
 
 /// Threshold for switching to multipart upload (50 MB).
 ///
@@ -22,7 +22,7 @@ pub const MULTIPART_UPLOAD_THRESHOLD: u64 = 50 * 1024 * 1024;
 
 /// Construct a `StorageClient` for proxy-mode uploads. Uses the caller-provided
 /// refresh-aware credentials when present, otherwise falls back to a
-/// `StaticGrokAuth` carrying the inline user / deployment keys from
+/// `StaticAtelierAuth` carrying the inline user / deployment keys from
 /// `UploadMethod::Proxy`. The optional `http_client` lets the caller pass a
 /// shell-tuned client (HTTP/2 keep-alive, conn pool tuning); when `None` we
 /// fall back to `reqwest::Client::new()`.
@@ -35,7 +35,7 @@ fn build_proxy_client_with_fallback(
     http_client: Option<reqwest::Client>,
 ) -> StorageClient {
     let provider = credentials.unwrap_or_else(|| {
-        let mut creds = StaticGrokAuth::new(Some(user_token.to_owned()));
+        let mut creds = StaticAtelierAuth::new(Some(user_token.to_owned()));
         creds.deployment_key = deployment_key;
         let bearer = creds.wire_bearer();
         Arc::new(StaticAuthCredentialProvider::new(Box::new(creds), bearer))

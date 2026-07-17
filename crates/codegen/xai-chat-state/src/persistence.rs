@@ -5,8 +5,8 @@
 //! The mock uses a channel to report records to the test, keeping everything
 //! in the actor / message-passing paradigm.
 
+use atelier_sampling_types::ConversationItem;
 use tokio::sync::mpsc;
-use xai_grok_sampling_types::ConversationItem;
 
 /// Abstraction over chat-specific persistence operations.
 ///

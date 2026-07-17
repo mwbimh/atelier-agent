@@ -2,11 +2,11 @@
 
 use std::collections::BTreeSet;
 
-use tokio::sync::{mpsc, oneshot};
-use xai_grok_sampling_types::{
+use atelier_sampling_types::{
     ConversationItem, ConversationRequest, DanglingToolCallReason, SamplingConfig, TokenUsage,
     ToolSpec, TraceContext,
 };
+use tokio::sync::{mpsc, oneshot};
 
 use crate::commands::{ChatStateCommand, RepairHistoryBlocked};
 use crate::types::{
@@ -186,7 +186,7 @@ impl ChatStateHandle {
         });
     }
 
-    /// Out-of-band history repair (`x.ai/session/repair`); see
+    /// Out-of-band history repair (`atelier/session/repair`); see
     /// [`ChatStateCommand::RepairHistory`]. Returns `None` if the actor is
     /// dead, `Some(Err(_))` if a turn was in flight at processing time.
     pub async fn repair_history(

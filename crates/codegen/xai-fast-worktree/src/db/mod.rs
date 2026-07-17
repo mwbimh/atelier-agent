@@ -114,9 +114,9 @@ pub struct WorktreeDb {
 }
 
 impl WorktreeDb {
-    /// Open (or create) the DB at `grok_home/worktrees.db`.
-    pub fn open(grok_home: &Path) -> Result<Self> {
-        Self::open_at(&grok_home.join("worktrees.db"))
+    /// Open (or create) the DB at `atelier_home/worktrees.db`.
+    pub fn open(atelier_home: &Path) -> Result<Self> {
+        Self::open_at(&atelier_home.join("worktrees.db"))
     }
 
     /// Open with an explicit path.
@@ -201,15 +201,15 @@ impl WorktreeDb {
         })
     }
 
-    /// Open the default DB at `~/.grok/worktrees.db`.
+    /// Open the default DB at `~/.atelier/worktrees.db`.
     ///
-    /// Discovers grok home via `$GROK_HOME`, falling back to the canonicalized
-    /// `$HOME/.grok` (matching `xai_grok_config::grok_home`).
+    /// Discovers atelier home via `$ATELIER_HOME`, falling back to the canonicalized
+    /// `$HOME/.atelier` (matching `atelier_config::atelier_home`).
     /// Path is resolved fresh each call (~1µs env var read) to support
     /// test overrides. Each call opens its own connection — callers in hot
     /// paths should cache the `WorktreeDb` instance.
     pub fn open_default() -> Result<Self> {
-        Self::open(&resolve_grok_home()?)
+        Self::open(&resolve_atelier_home()?)
     }
 
     /// Open an in-memory DB (for tests).
@@ -337,57 +337,60 @@ pub fn now_epoch_secs() -> i64 {
         .as_secs() as i64
 }
 
-pub fn resolve_grok_home() -> Result<PathBuf> {
-    if let Ok(v) = std::env::var("GROK_HOME") {
+pub fn resolve_atelier_home() -> Result<PathBuf> {
+    if let Ok(v) = std::env::var("ATELIER_HOME") {
         return Ok(PathBuf::from(v));
     }
-    let home = PathBuf::from(std::env::var("HOME").context("neither $GROK_HOME nor $HOME is set")?);
-    // Canonicalize the home dir so worktree paths share the same physical .grok
+    let home =
+        PathBuf::from(std::env::var("HOME").context("neither $ATELIER_HOME nor $HOME is set")?);
+    // Canonicalize the home dir so worktree paths share the same physical .atelier
     // tree as trust/hooks even when it is symlinked. The dunce canonicalization
-    // must stay in sync with xai_grok_config::default_grok_home();
+    // must stay in sync with atelier_config::default_atelier_home();
     // home resolution deliberately differs ($HOME here vs std::env::home_dir()).
-    Ok(dunce::canonicalize(&home).unwrap_or(home).join(".grok"))
+    Ok(dunce::canonicalize(&home).unwrap_or(home).join(".atelier"))
 }
 
-/// Serializes tests that mutate the process-global `GROK_HOME` env var so they
+/// Serializes tests that mutate the process-global `ATELIER_HOME` env var so they
 /// don't clobber each other under `cargo test`, where tests share one process
 /// (nextest isolates per-process, but the suite must also pass under `cargo test`).
 #[cfg(test)]
-static GROK_HOME_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+static ATELIER_HOME_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Test-only isolation for code that resolves the DB via `open_default()`.
 ///
-/// Holds [`GROK_HOME_ENV_LOCK`] (serializing concurrent setters), points
-/// `GROK_HOME` at a fresh private tmp dir, and restores the prior value on drop.
+/// Holds [`ATELIER_HOME_ENV_LOCK`] (serializing concurrent setters), points
+/// `ATELIER_HOME` at a fresh private tmp dir, and restores the prior value on drop.
 /// Use instead of hand-rolling the lock + restore guard + tmp dir per test.
 ///
-/// `Drop` restores `GROK_HOME` before `_lock` releases, so the env is correct
+/// `Drop` restores `ATELIER_HOME` before `_lock` releases, so the env is correct
 /// before another waiting setter proceeds.
 #[cfg(test)]
-pub(crate) struct GrokHomeFixture {
+pub(crate) struct AtelierHomeFixture {
     _lock: std::sync::MutexGuard<'static, ()>,
     prev: Option<std::ffi::OsString>,
-    /// The isolated grok home; pass to `WorktreeDb::open` to read the same DB
+    /// The isolated atelier home; pass to `WorktreeDb::open` to read the same DB
     /// `open_default()` writes to.
     pub home: PathBuf,
     _tmp: tempfile::TempDir,
 }
 
 #[cfg(test)]
-impl GrokHomeFixture {
+impl AtelierHomeFixture {
     pub(crate) fn new() -> Self {
-        let lock = GROK_HOME_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let lock = ATELIER_HOME_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::TempDir::new().unwrap();
-        let home = tmp.path().join("grok-home");
+        let home = tmp.path().join("atelier-home");
         std::fs::create_dir_all(&home).unwrap();
         // Warm up the DB (journal-mode conversion + schema) before exposing it
-        // via GROK_HOME, sparing the test hot loop set_journal_mode's retry
+        // via ATELIER_HOME, sparing the test hot loop set_journal_mode's retry
         // sleeps. This open has exclusive access (nothing reaches the path
-        // until GROK_HOME points here); set_journal_mode's retry is the actual
+        // until ATELIER_HOME points here); set_journal_mode's retry is the actual
         // race fix.
         let _ = WorktreeDb::open(&home);
-        let prev = std::env::var_os("GROK_HOME");
-        unsafe { std::env::set_var("GROK_HOME", &home) };
+        let prev = std::env::var_os("ATELIER_HOME");
+        unsafe { std::env::set_var("ATELIER_HOME", &home) };
         Self {
             _lock: lock,
             prev,
@@ -398,12 +401,12 @@ impl GrokHomeFixture {
 }
 
 #[cfg(test)]
-impl Drop for GrokHomeFixture {
+impl Drop for AtelierHomeFixture {
     fn drop(&mut self) {
         unsafe {
             match self.prev.take() {
-                Some(p) => std::env::set_var("GROK_HOME", p),
-                None => std::env::remove_var("GROK_HOME"),
+                Some(p) => std::env::set_var("ATELIER_HOME", p),
+                None => std::env::remove_var("ATELIER_HOME"),
             }
         }
     }
