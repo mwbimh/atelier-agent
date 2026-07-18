@@ -90,6 +90,9 @@ pub enum PromptOrigin {
     /// and the shell injects the follow-up turn. Synthetic so the user never
     /// typed it — kept out of prompt history — but it still runs a real turn.
     PlanResume,
+    /// Runtime retry of an existing failed/paused request. The turn reuses
+    /// the already-persisted user message and must not append a duplicate.
+    RuntimeRetry,
 }
 impl PromptOrigin {
     /// Parse a prompt_id string into a `PromptOrigin`.
@@ -112,6 +115,8 @@ impl PromptOrigin {
             Self::SchedulerFired
         } else if prompt_id.starts_with("plan-resume-") {
             Self::PlanResume
+        } else if prompt_id.starts_with("runtime-retry-") {
+            Self::RuntimeRetry
         } else {
             Self::User
         }
@@ -133,7 +138,8 @@ impl PromptOrigin {
             | Self::SubagentCompleted { .. }
             | Self::NotificationDrain
             | Self::GoalSummary
-            | Self::GoalClassifierNudge => true,
+            | Self::GoalClassifierNudge
+            | Self::RuntimeRetry => true,
         }
     }
     /// If this is an auto-wake prompt, returns the inner completion ID
@@ -147,7 +153,8 @@ impl PromptOrigin {
             | Self::GoalSummary
             | Self::GoalClassifierNudge
             | Self::SchedulerFired
-            | Self::PlanResume => None,
+            | Self::PlanResume
+            | Self::RuntimeRetry => None,
         }
     }
 }
@@ -227,6 +234,15 @@ mod tests {
         let origin = PromptOrigin::from_prompt_id("plan-resume-1730000000000");
         assert!(matches!(origin, PromptOrigin::PlanResume));
         assert!(origin.is_synthetic());
+        assert_eq!(origin.completion_id(), None);
+    }
+
+    #[test]
+    fn runtime_retry_origin_from_prompt_id() {
+        let origin = PromptOrigin::from_prompt_id("runtime-retry-019e51a3");
+        assert!(matches!(origin, PromptOrigin::RuntimeRetry));
+        assert!(origin.is_synthetic());
+        assert!(origin.hide_user_echo_from_scrollback());
         assert_eq!(origin.completion_id(), None);
     }
     #[test]

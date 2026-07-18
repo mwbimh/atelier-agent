@@ -353,10 +353,17 @@ async fn hook_receives_env_vars() {
 
     // Inline command: check env vars and write results to a file.
     let output_file = dir.path().join("env_output.txt");
-    let cmd = format!(
-        r#"echo "EVENT=$ATELIER_HOOK_EVENT" > {f}; echo "NAME=$ATELIER_HOOK_NAME" >> {f}; echo "SESSION=$ATELIER_SESSION_ID" >> {f}; echo '{{"decision":"allow"}}'"#,
-        f = output_file.display(),
-    );
+    let cmd = if cfg!(windows) {
+        format!(
+            r#"cmd /c 'echo EVENT=%ATELIER_HOOK_EVENT% > "{f}" & echo NAME=%ATELIER_HOOK_NAME% >> "{f}" & echo SESSION=%ATELIER_SESSION_ID% >> "{f}" & echo {{"decision":"allow"}}'"#,
+            f = output_file.display(),
+        )
+    } else {
+        format!(
+            r#"echo "EVENT=$ATELIER_HOOK_EVENT" > {f}; echo "NAME=$ATELIER_HOOK_NAME" >> {f}; echo "SESSION=$ATELIER_SESSION_ID" >> {f}; echo '{{"decision":"allow"}}'"#,
+            f = output_file.display(),
+        )
+    };
     let hook_json = serde_json::json!({
         "hooks": {
             "PreToolUse": [
@@ -507,7 +514,11 @@ async fn new_event_types_fire_and_receive_correct_envelope() {
         let dir = tempfile::tempdir().unwrap();
         let output_file = dir.path().join("output.json");
 
-        let cmd = format!("cat > {}", output_file.display());
+        let cmd = if cfg!(windows) {
+            format!(r#"cmd /c 'more > "{}"'"#, output_file.display())
+        } else {
+            format!("cat > {}", output_file.display())
+        };
         let hook_json = serde_json::json!({
             "hooks": {
                 (case.json_key): [
@@ -580,10 +591,17 @@ async fn runner_injected_vars_override_extra_env_at_spawn() {
     let output_file = dir.path().join("envcap.txt");
 
     // The hook writes the values it sees for each reserved key.
-    let cmd = format!(
-        r#"echo "EVENT=$ATELIER_HOOK_EVENT" > {f}; echo "NAME=$ATELIER_HOOK_NAME" >> {f}; echo "SESSION=$ATELIER_SESSION_ID" >> {f}; echo "ROOT=$ATELIER_WORKSPACE_ROOT" >> {f}; echo "PROJ=$CLAUDE_PROJECT_DIR" >> {f}; echo "USER_KEY=$USER_KEY" >> {f}; echo '{{"decision":"allow"}}'"#,
-        f = output_file.display(),
-    );
+    let cmd = if cfg!(windows) {
+        format!(
+            r#"cmd /c 'echo EVENT=%ATELIER_HOOK_EVENT% > "{f}" & echo NAME=%ATELIER_HOOK_NAME% >> "{f}" & echo SESSION=%ATELIER_SESSION_ID% >> "{f}" & echo ROOT=%ATELIER_WORKSPACE_ROOT% >> "{f}" & echo PROJ=%CLAUDE_PROJECT_DIR% >> "{f}" & echo USER_KEY=%USER_KEY% >> "{f}" & echo {{"decision":"allow"}}'"#,
+            f = output_file.display(),
+        )
+    } else {
+        format!(
+            r#"echo "EVENT=$ATELIER_HOOK_EVENT" > {f}; echo "NAME=$ATELIER_HOOK_NAME" >> {f}; echo "SESSION=$ATELIER_SESSION_ID" >> {f}; echo "ROOT=$ATELIER_WORKSPACE_ROOT" >> {f}; echo "PROJ=$CLAUDE_PROJECT_DIR" >> {f}; echo "USER_KEY=$USER_KEY" >> {f}; echo '{{"decision":"allow"}}'"#,
+            f = output_file.display(),
+        )
+    };
 
     let hook_json = serde_json::json!({
         "hooks": {

@@ -72,6 +72,11 @@ fn credential_ref_resolves_environment_without_persisting_value() {
 }
 
 #[test]
+fn credential_ref_without_secret_is_available_for_public_providers() {
+    assert!(CredentialRef::None.is_available());
+}
+
+#[test]
 fn credential_ref_resolves_explicit_command_output() {
     let reference = if cfg!(windows) {
         CredentialRef::Command {

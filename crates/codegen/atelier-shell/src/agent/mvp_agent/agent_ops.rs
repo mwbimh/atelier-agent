@@ -50,6 +50,24 @@ fn session_filesystem_mode(use_acp_fs: bool, allow_in_process: bool) -> SessionF
     }
 }
 
+fn load_configured_role(
+    path: &std::path::Path,
+    role_id: atelier_provider::RoleId,
+) -> Result<Option<atelier_provider::RoleConfig>, acp::Error> {
+    atelier_provider::ProviderRegistry::load_or_create(path)
+        .map(|registry| {
+            registry
+                .role(role_id)
+                .filter(|role| role.provider != "default" && role.model != "default")
+                .cloned()
+        })
+        .map_err(|error| {
+            acp::Error::invalid_params().data(format!(
+                "failed to load configured {role_id} role: {error}"
+            ))
+        })
+}
+
 impl MvpAgent {
     pub(super) fn resolve_image_description_model(&self) -> String {
         self.cfg
@@ -59,19 +77,56 @@ impl MvpAgent {
             .unwrap_or(crate::models::default_image_description_model())
             .to_owned()
     }
-    fn resolve_session_summary_model(&self) -> String {
-        self.cfg
-            .borrow()
-            .session_summary_model
-            .as_deref()
-            .unwrap_or(crate::models::default_session_summary_model())
-            .to_owned()
+    /// Read one of the fixed Provider roles. The bootstrap placeholder values
+    /// are intentionally treated as unset so an untouched registry preserves
+    /// the existing model selection behavior. Configuration errors are
+    /// returned to the caller so a broken role cannot silently fall back to a
+    /// different model.
+    pub(crate) fn configured_role(
+        &self,
+        role_id: atelier_provider::RoleId,
+    ) -> Result<Option<atelier_provider::RoleConfig>, acp::Error> {
+        let path = atelier_config::atelier_home().join("providers.toml");
+        load_configured_role(&path, role_id)
     }
+
+    /// Apply a captured fixed Role to the session's sampler configuration.
+    ///
+    /// The role payload is copied into the SessionActor snapshot and the
+    /// common effort setting is parsed once at spawn time. Provider/model
+    /// selection is resolved by the caller before this helper runs.
+    fn apply_role_to_sampling_config(
+        config: &mut SamplingConfig,
+        role: &atelier_provider::RoleConfig,
+    ) -> Result<(), acp::Error> {
+        config.request_payload = role.effective_payload();
+        if let Some(effort) = role.effort.as_deref() {
+            config.reasoning_effort = Some(effort.parse().map_err(|_| {
+                acp::Error::invalid_params().data(format!(
+                    "unsupported {} role effort: {effort}",
+                    atelier_provider::RoleId::Main
+                ))
+            })?);
+        }
+        Ok(())
+    }
+
     pub(super) fn build_summary_client(
         &self,
         primary: &SamplingConfig,
     ) -> Result<(OaiCompatClient, String), acp::Error> {
-        let slug = self.resolve_session_summary_model();
+        let title_role = self.configured_role(atelier_provider::RoleId::Title)?;
+        let slug = title_role
+            .as_ref()
+            .map(|role| format!("{}/{}", role.provider, role.model))
+            .unwrap_or_else(|| {
+                self.cfg
+                    .borrow()
+                    .session_summary_model
+                    .as_deref()
+                    .unwrap_or(crate::models::default_session_summary_model())
+                    .to_owned()
+            });
         let session_key = self.auth_manager.current_or_expired().map(|a| a.key.clone());
         let models = self.models_manager.models();
         let endpoints = self.models_manager.endpoints();
@@ -99,12 +154,31 @@ impl MvpAgent {
                 cfg.max_retries = primary.max_retries;
                 cfg
             }
+            None if title_role.is_some() => {
+                return Err(acp::Error::invalid_params().data(format!(
+                    "configured title role model is unavailable: {slug}"
+                )));
+            }
             None => {
                 let mut fallback = primary.clone();
                 fallback.model = slug;
                 fallback
             }
         };
+        if let Some(role) = title_role {
+            let mut config = config;
+            config.request_payload = role.effective_payload();
+            if let Some(raw_effort) = role.effort.as_deref() {
+                config.reasoning_effort = Some(raw_effort.parse().map_err(|_| {
+                    acp::Error::invalid_params().data(format!(
+                        "unsupported title role effort: {raw_effort}"
+                    ))
+                })?);
+            }
+            let model = config.model.clone();
+            let client = OaiCompatClient::new(config).map_err(map_sampling_err_to_acp)?;
+            return Ok((client, model));
+        }
         let model = config.model.clone();
         let client = OaiCompatClient::new(config).map_err(map_sampling_err_to_acp)?;
         Ok((client, model))
@@ -1566,6 +1640,9 @@ impl MvpAgent {
                 RefCell::new(std::collections::HashSet::new()),
             ),
             session_live_state: RefCell::new(HashMap::new()),
+            runtime_control: RefCell::new(crate::runtime_control::RuntimeControl::default()),
+            policy_engine: RefCell::new(atelier_hooks::PolicyEngine::default()),
+            retryable_prompts: RefCell::new(HashMap::new()),
             supervisor_started: std::cell::Cell::new(false),
             announcements_gen: std::cell::Cell::new(0),
             last_emitted_announcements: RefCell::new(Vec::new()),
@@ -2774,7 +2851,8 @@ impl MvpAgent {
             session_meta,
             managed_mcp_expires_at,
             model_agent_type,
-            session_model_id,
+            mut session_model_id,
+            main_role,
             session_yolo_mode,
             session_auto_mode,
             prompt_display_cwd,
@@ -3041,8 +3119,27 @@ impl MvpAgent {
         let support_permission = self.cfg.borrow().features.support_permission;
         let telemetry_enabled = self.product_analytics_enabled();
         let origin_client = self.origin_client_info_from_meta(init.meta.as_ref());
-        let sampling_config = self
+        let mut sampling_config = self
             .resolve_sampling_config_for_model(&session_model_id, origin_client.clone());
+        if let Some(role) = main_role {
+            let role_model = format!("{}/{}", role.provider, role.model);
+            let role_entry = self
+                .resolve_model_id(&acp::ModelId::new(role_model.clone()))
+                .map_err(|_| {
+                    acp::Error::invalid_params().data(format!(
+                        "configured main role model is unavailable: {role_model}"
+                    ))
+                })?;
+            if !role_entry.info.user_selectable {
+                return Err(acp::Error::invalid_params().data(format!(
+                    "configured main role model is not selectable: {role_model}"
+                )));
+            }
+            session_model_id = acp::ModelId::new(role_model);
+            sampling_config = self
+                .prepare_sampling_config_for_model(&role_entry, origin_client.clone());
+            Self::apply_role_to_sampling_config(&mut sampling_config, &role)?;
+        }
         if self.auth_method_id.load().is_none() {
             return Err(acp::Error::auth_required().data("no auth method id provided"));
         }
@@ -3655,5 +3752,59 @@ impl MvpAgent {
             }
         }
         events
+    }
+}
+
+#[cfg(test)]
+mod role_sampling_tests {
+    use super::{MvpAgent, load_configured_role};
+    use atelier_provider::RoleConfig;
+    use serde_json::json;
+
+    #[test]
+    fn main_role_payload_and_effort_are_kept_in_the_session_snapshot() {
+        let mut role = RoleConfig::new("proxy", "model").unwrap();
+        role.effort = Some("high".to_owned());
+        role.fast_mode = true;
+        role.payload.insert("temperature".to_owned(), json!(0.2));
+
+        let mut config = atelier_sampler::SamplerConfig::default();
+        MvpAgent::apply_role_to_sampling_config(&mut config, &role).unwrap();
+
+        assert_eq!(
+            config.reasoning_effort,
+            Some(atelier_sampling_types::ReasoningEffort::High)
+        );
+        assert_eq!(config.request_payload["temperature"], json!(0.2));
+        assert_eq!(config.request_payload["fast_mode"], json!(true));
+    }
+
+    #[test]
+    fn invalid_role_effort_fails_at_session_spawn() {
+        let mut role = RoleConfig::new("proxy", "model").unwrap();
+        role.effort = Some("unsupported".to_owned());
+
+        let error = MvpAgent::apply_role_to_sampling_config(
+            &mut atelier_sampler::SamplerConfig::default(),
+            &role,
+        )
+        .expect_err("invalid effort must fail closed");
+        assert!(error.to_string().contains("unsupported main role effort"));
+    }
+
+    #[test]
+    fn invalid_role_registry_is_reported_instead_of_falling_back() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("providers.toml");
+        std::fs::write(&path, "schema_version = 999\n").unwrap();
+
+        let error = load_configured_role(&path, atelier_provider::RoleId::Main)
+            .expect_err("invalid role registry must fail closed");
+
+        assert!(
+            error
+                .to_string()
+                .contains("failed to load configured main role")
+        );
     }
 }

@@ -471,7 +471,7 @@ impl SessionActor {
             acc
         });
         let trimmed = text.trim().to_string();
-        if !trimmed.is_empty() {
+        if !trimmed.is_empty() && !matches!(origin, super::super::PromptOrigin::RuntimeRetry) {
             self.chat_state_handle.cache_prompt_text(trimmed);
         }
         *self.tool_context.prompt_index.lock().await = current_prompt_index;
@@ -479,22 +479,25 @@ impl SessionActor {
             .begin_prompt(current_prompt_index)
             .await;
         let echo_mode = user_echo_mode(prompt_id);
-        for block in prompt_blocks.iter() {
-            let update = acp::SessionUpdate::UserMessageChunk(
-                acp::ContentChunk::new(block.clone()).meta(user_chunk_meta.clone()),
-            );
-            let notification_meta = self.build_notification_meta();
-            let notification = acp::SessionNotification::new(self.session_info.id.clone(), update)
-                .meta(notification_meta.as_object().cloned());
-            if echo_mode == UserEchoMode::PersistOnly {
-                let _ = self
-                    .notifications
-                    .persistence_tx
-                    .send(PersistenceMsg::Update(
-                        crate::session::storage::SessionUpdate::Acp(Box::new(notification)),
-                    ));
-            } else {
-                self.emit_notification_direct(notification).await;
+        if !matches!(origin, super::super::PromptOrigin::RuntimeRetry) {
+            for block in prompt_blocks.iter() {
+                let update = acp::SessionUpdate::UserMessageChunk(
+                    acp::ContentChunk::new(block.clone()).meta(user_chunk_meta.clone()),
+                );
+                let notification_meta = self.build_notification_meta();
+                let notification =
+                    acp::SessionNotification::new(self.session_info.id.clone(), update)
+                        .meta(notification_meta.as_object().cloned());
+                if echo_mode == UserEchoMode::PersistOnly {
+                    let _ = self
+                        .notifications
+                        .persistence_tx
+                        .send(PersistenceMsg::Update(
+                            crate::session::storage::SessionUpdate::Acp(Box::new(notification)),
+                        ));
+                } else {
+                    self.emit_notification_direct(notification).await;
+                }
             }
         }
         let crate::session::prompt_parser::ParsedPrompt {
@@ -594,12 +597,14 @@ impl SessionActor {
                 local_path: truncated_local_path,
             });
         }
-        let _ = self
-            .notifications
-            .persistence_tx
-            .send(PersistenceMsg::ContentChunk(PersistenceContentChunk::new(
-                prompt_blocks.to_vec(),
-            )));
+        if !matches!(origin, super::super::PromptOrigin::RuntimeRetry) {
+            let _ = self
+                .notifications
+                .persistence_tx
+                .send(PersistenceMsg::ContentChunk(PersistenceContentChunk::new(
+                    prompt_blocks.to_vec(),
+                )));
+        }
         let model_id = self
             .chat_state_handle
             .get_sampling_config()
@@ -660,30 +665,32 @@ impl SessionActor {
             if trace_gcs_config.is_some() {
                 self.chat_state_handle.begin_turn_capture();
             }
-            let origin = super::super::PromptOrigin::from_prompt_id(prompt_id);
             if matches!(origin, super::super::PromptOrigin::User) {
                 self.maybe_inject_interrupt_reminder().await;
             }
             let mut user_chat = match &origin {
+                super::super::PromptOrigin::RuntimeRetry => None,
                 super::super::PromptOrigin::TaskCompleted { .. } => {
-                    ConversationItem::task_completed(user_message)
+                    Some(ConversationItem::task_completed(user_message))
                 }
                 super::super::PromptOrigin::SubagentCompleted { .. } => {
-                    ConversationItem::subagent_completed(user_message)
+                    Some(ConversationItem::subagent_completed(user_message))
                 }
                 super::super::PromptOrigin::NotificationDrain => {
-                    ConversationItem::notification_drain(user_message)
+                    Some(ConversationItem::notification_drain(user_message))
                 }
                 super::super::PromptOrigin::GoalSummary => {
-                    ConversationItem::goal_summary(user_message)
+                    Some(ConversationItem::goal_summary(user_message))
                 }
                 super::super::PromptOrigin::GoalClassifierNudge => {
-                    ConversationItem::goal_classifier_nudge(user_message)
+                    Some(ConversationItem::goal_classifier_nudge(user_message))
                 }
                 super::super::PromptOrigin::SchedulerFired => {
-                    ConversationItem::scheduler_fired(user_message)
+                    Some(ConversationItem::scheduler_fired(user_message))
                 }
-                super::super::PromptOrigin::PlanResume => ConversationItem::user(user_message),
+                super::super::PromptOrigin::PlanResume => {
+                    Some(ConversationItem::user(user_message))
+                }
                 super::super::PromptOrigin::User => {
                     let mut item = ConversationItem::user(user_message);
                     if let Some(interrupt) = self
@@ -693,61 +700,68 @@ impl SessionActor {
                     {
                         item.set_prior_turn_interrupt(interrupt);
                     }
-                    item
+                    Some(item)
                 }
             };
-            user_chat.set_prompt_index(current_prompt_index);
-            if !self.is_cursor_harness() {
-                for image in &user_images {
-                    user_chat.add_image(pick_user_image_url(image));
-                }
-                for image in &extra_images {
-                    user_chat.add_image(format!("data:{};base64,{}", image.mime_type, image.data));
+            if let Some(user_chat) = user_chat.as_mut() {
+                user_chat.set_prompt_index(current_prompt_index);
+                if !self.is_cursor_harness() {
+                    for image in &user_images {
+                        user_chat.add_image(pick_user_image_url(image));
+                    }
+                    for image in &extra_images {
+                        user_chat
+                            .add_image(format!("data:{};base64,{}", image.mime_type, image.data));
+                    }
                 }
             }
-            if let Some(ack) = persist_ack {
-                if self
-                    .chat_state_handle
-                    .push_user_message_and_ack(user_chat)
-                    .await
-                    .is_some()
-                {
-                    let (flush_tx, flush_rx) = oneshot::channel();
+            if let Some(mut user_chat) = user_chat {
+                if let Some(ack) = persist_ack {
                     if self
-                        .notifications
-                        .persistence_tx
-                        .send(PersistenceMsg::FlushAndAck {
-                            respond_to: flush_tx,
-                        })
-                        .is_ok()
-                        && flush_rx.await.is_ok()
+                        .chat_state_handle
+                        .push_user_message_and_ack(user_chat)
+                        .await
+                        .is_some()
                     {
-                        let _ = ack.send(());
+                        let (flush_tx, flush_rx) = oneshot::channel();
+                        if self
+                            .notifications
+                            .persistence_tx
+                            .send(PersistenceMsg::FlushAndAck {
+                                respond_to: flush_tx,
+                            })
+                            .is_ok()
+                            && flush_rx.await.is_ok()
+                        {
+                            let _ = ack.send(());
+                        } else {
+                            tracing::error!(
+                                session_id = % self.session_info.id.0, prompt_id = %
+                                prompt_id, "persist_ack flush barrier failed"
+                            );
+                        }
                     } else {
                         tracing::error!(
-                            session_id = % self.session_info.id.0, prompt_id = %
-                            prompt_id, "persist_ack flush barrier failed"
+                            session_id = % self.session_info.id.0, prompt_id = % prompt_id,
+                            "persist_ack skipped: chat-state actor unavailable"
                         );
                     }
                 } else {
-                    tracing::error!(
-                        session_id = % self.session_info.id.0, prompt_id = % prompt_id,
-                        "persist_ack skipped: chat-state actor unavailable"
-                    );
+                    self.chat_state_handle.push_user_message(user_chat);
                 }
-            } else {
-                self.chat_state_handle.push_user_message(user_chat);
             }
         }
-        self.dispatch_hook(
-            atelier_hooks::event::HookEventName::UserPromptSubmit,
-            atelier_hooks::event::HookPayload::UserPromptSubmit {
-                prompt: Some(prompt_text_for_hook),
-            },
-            Some(prompt_id),
-            None,
-        )
-        .await;
+        if !matches!(origin, super::super::PromptOrigin::RuntimeRetry) {
+            self.dispatch_hook(
+                atelier_hooks::event::HookEventName::UserPromptSubmit,
+                atelier_hooks::event::HookPayload::UserPromptSubmit {
+                    prompt: Some(prompt_text_for_hook),
+                },
+                Some(prompt_id),
+                None,
+            )
+            .await;
+        }
         let turn_scope_guard =
             TurnSubagentScopeGuard::new(self.current_prompt_id.clone(), prompt_id.to_string());
         let turn_model_id = self.current_model_id().await;

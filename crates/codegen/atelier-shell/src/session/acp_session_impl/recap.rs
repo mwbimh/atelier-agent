@@ -4,6 +4,9 @@
 use super::*;
 
 use crate::remote::DEFAULT_CONTEXT_WINDOW;
+use crate::session::helpers::session_compact::{
+    AuxiliaryRequestLifecycle, AuxiliaryRequestState, auxiliary_provider_label,
+};
 
 impl SessionActor {
     /// Handle a /btw side question — single-turn model call using the
@@ -196,12 +199,35 @@ impl SessionActor {
         // (not on failure/empty/cancel) so auto can retry later for this turn if needed.
         let clear_in_flight = || self.recap_in_flight.set(false);
 
-        let sampling_client = match self.prepare_chat_completion(false).await {
-            Ok(c) => c,
-            Err(e) => {
-                tracing::warn!(error = %e, "recap: failed to prepare sampling client");
+        let (sampling_client, sampling_config) = match self
+            .prepare_role_chat_completion(atelier_provider::RoleId::Summary, false)
+            .await
+        {
+            Ok(Some((config, client))) => (client, config),
+            Ok(None) => {
+                let client = match self.prepare_chat_completion(false).await {
+                    Ok(client) => client,
+                    Err(error) => {
+                        tracing::warn!(
+                            error = %error,
+                            "recap: failed to prepare sampling client"
+                        );
+                        clear_in_flight();
+                        // A manual `/recap` shows a loading spinner; clear it on failure.
+                        if !auto {
+                            self.emit_recap_unavailable().await;
+                        }
+                        return;
+                    }
+                };
+                (client, self.reconstruct_full_config().await)
+            }
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    "recap: failed to prepare summary role sampling client"
+                );
                 clear_in_flight();
-                // A manual `/recap` shows a loading spinner; clear it on failure.
                 if !auto {
                     self.emit_recap_unavailable().await;
                 }
@@ -220,15 +246,15 @@ impl SessionActor {
 
         // Budget off the recap model's context window (today the session model).
         // One read serves both the window and the model.
-        let sampling_config = self.chat_state_handle.get_sampling_config().await;
-        let context_window = sampling_config
-            .as_ref()
-            .map(|c| c.context_window.get())
-            .unwrap_or(DEFAULT_CONTEXT_WINDOW);
+        let context_window = if sampling_config.context_window > 0 {
+            sampling_config.context_window
+        } else {
+            DEFAULT_CONTEXT_WINDOW
+        };
         let items =
             session_recap::budget_recap_items(conversation, tag, strip_reasoning, context_window);
 
-        let model = sampling_config.map(|c| c.model).unwrap_or_default();
+        let model = sampling_config.model.clone();
 
         // Leave BOTH temperature and max_output_tokens unset: the cli-chat-proxy
         // layer may inject a `thinking` budget for thinking-enabled models
@@ -240,6 +266,13 @@ impl SessionActor {
         let started_at = chrono::Utc::now().to_rfc3339();
         let x_atelier_conv_id = format!("recap-{}", uuid::Uuid::new_v4());
         let x_atelier_req_id = format!("xai-recap-{}", uuid::Uuid::new_v4());
+        let lifecycle = AuxiliaryRequestLifecycle::new(
+            "summary",
+            auxiliary_provider_label(&sampling_config.base_url),
+            model.clone(),
+            x_atelier_req_id.clone(),
+            AuxiliaryRequestState::GeneratingSummary,
+        );
         // Clone the exact request items for the on-disk artifact (recap never
         // mutates conversation state, so this file is the only durable record).
         let chat_history_for_artifact = items.clone();
@@ -252,12 +285,16 @@ impl SessionActor {
             x_atelier_req_id: Some(x_atelier_req_id.clone()),
             x_atelier_session_id: Some(self.session_info.id.to_string()),
             x_atelier_agent_id: Some(atelier_telemetry::id::agent_id()),
+            trace: Some(Box::new(lifecycle.trace_context())),
             ..Default::default()
         };
 
+        lifecycle.transition(AuxiliaryRequestState::WaitingForProvider);
+        lifecycle.transition(AuxiliaryRequestState::StreamingResponse);
         let response = match sampling_client.conversation_collect(request).await {
             Ok(r) => r,
             Err(e) => {
+                lifecycle.fail(e.to_string());
                 tracing::warn!(error = %e, "recap: model call failed");
                 self.persist_recap_request_artifact(
                     chat_history_for_artifact,
@@ -284,6 +321,7 @@ impl SessionActor {
         let raw_response = response.assistant_text();
         let summary = session_recap::clean_recap_text(&raw_response);
         if summary.is_empty() {
+            lifecycle.fail("empty summary after clean_recap_text");
             tracing::debug!("recap: model returned empty summary");
             self.persist_recap_request_artifact(
                 chat_history_for_artifact,
@@ -310,6 +348,7 @@ impl SessionActor {
         // Applies to manual `/recap` too: spinner-less clients (e.g. Atelier
         // Desktop) would otherwise append the late recap mid-turn.
         if self.recap_was_cancelled(recap_epoch) {
+            lifecycle.transition(AuxiliaryRequestState::Paused);
             tracing::info!(
                 auto,
                 recap_epoch,
@@ -335,6 +374,7 @@ impl SessionActor {
 
         // Auto long-tail: save artifact, do not show. Manual always shows.
         if auto && session_recap::should_suppress_auto_recap_display(&raw_response, &summary) {
+            lifecycle.complete();
             tracing::info!(
                 raw_bytes = raw_response.len(),
                 summary_bytes = summary.len(),
@@ -359,6 +399,7 @@ impl SessionActor {
         }
 
         tracing::info!(auto, chars = summary.len(), "session recap generated");
+        lifecycle.complete();
         self.persist_recap_request_artifact(
             chat_history_for_artifact,
             &model,
@@ -374,6 +415,7 @@ impl SessionActor {
         );
         // Final cancel check immediately before mark+emit (no await between).
         if !self.try_commit_recap(recap_epoch, main_turns) {
+            lifecycle.transition(AuxiliaryRequestState::Paused);
             if !auto {
                 self.emit_recap_unavailable().await;
             }

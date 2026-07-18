@@ -145,6 +145,7 @@ async fn create_test_actor_with_memory(
             std::collections::HashMap::new(),
         )),
         telemetry_enabled: false,
+        role_request_payload: serde_json::Map::new(),
         supports_backend_search: std::cell::Cell::new(false),
         compactions_remaining: std::cell::Cell::new(None),
         compaction_at_tokens: std::cell::Cell::new(None),

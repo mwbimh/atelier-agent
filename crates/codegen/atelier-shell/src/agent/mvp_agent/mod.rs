@@ -211,6 +211,10 @@ pub(crate) struct SessionSpawnOptions<'a> {
     pub managed_mcp_expires_at: Option<chrono::DateTime<chrono::Utc>>,
     pub model_agent_type: Option<&'a str>,
     pub session_model_id: acp::ModelId,
+    /// Fixed `main` Role snapshot selected for this session, if configured.
+    /// The snapshot is captured before spawning and is not re-read by the
+    /// running SessionActor, so Role edits cannot mutate an active turn.
+    pub main_role: Option<atelier_provider::RoleConfig>,
     pub session_yolo_mode: bool,
     pub session_auto_mode: bool,
     pub prompt_display_cwd: Option<String>,
@@ -347,6 +351,7 @@ pub(crate) fn chat_session_spawn_options<'a>(
         managed_mcp_expires_at: None,
         model_agent_type,
         session_model_id,
+        main_role: None,
         session_yolo_mode,
         session_auto_mode: false,
         prompt_display_cwd: None,
@@ -870,6 +875,19 @@ pub struct MvpAgent {
     /// gives the supervisor an observable demotion signal.
     /// LEADER-SAFE(per-session): keyed by SessionId.
     session_live_state: RefCell<HashMap<acp::SessionId, SessionLiveState>>,
+    /// Local runtime control-plane state used by Context/Request Inspector,
+    /// diagnostics, and recovery RPCs. It is intentionally agent-scoped and
+    /// in-memory; durable session replay remains owned by session storage.
+    pub(crate) runtime_control: RefCell<crate::runtime_control::RuntimeControl>,
+    /// Runtime policy evaluator shared by the Provider and operation gates.
+    /// The engine is intentionally agent-scoped so a policy update applies to
+    /// future operations without mutating an already-built session snapshot.
+    pub(crate) policy_engine: RefCell<atelier_hooks::PolicyEngine>,
+    /// In-memory copies of prompts that can be replayed by the runtime retry
+    /// RPC. Completed requests are removed; failed and paused requests remain
+    /// available until the agent process exits or the bounded cache evicts
+    /// them. The prompt body never enters the runtime trace/snapshot payload.
+    pub(crate) retryable_prompts: RefCell<HashMap<String, acp::PromptRequest>>,
     /// Idempotency guard: the join-handle supervisor task is spawned at most
     /// once (on the first `spawn_and_register_session`). See
     /// `ensure_session_supervisor`.
@@ -1260,6 +1278,7 @@ mod folder_trust_prompt;
 mod heap_profile;
 mod session_lifecycle;
 mod subagent_coordinator;
+mod runtime;
 mod agent_ops;
 mod acp_agent;
 pub(super) use super::ext_parsers;

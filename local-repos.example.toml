@@ -1,0 +1,10 @@
+# Local source provenance for the private Atelier fork.
+# Copy this file to local-repos.toml and replace the paths/commits.
+
+[grok_build]
+path = "C:/path/to/grok-build"
+commit = ""
+
+[codex]
+path = "C:/path/to/codex"
+commit = ""

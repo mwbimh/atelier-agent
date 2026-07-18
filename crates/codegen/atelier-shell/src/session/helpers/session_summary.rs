@@ -5,6 +5,9 @@ use crate::sampling::{
     ToolSpec,
 };
 use crate::session::helpers::chat::floor_char_boundary;
+use crate::session::helpers::session_compact::{
+    AuxiliaryRequestLifecycle, AuxiliaryRequestState, auxiliary_provider_label,
+};
 
 /// Upper bound on the user text that feeds title generation; titles only need
 /// the opening, and this keeps the request well under the model prompt limit.
@@ -77,6 +80,14 @@ pub async fn generate_session_summary(
     model: &str,
 ) -> String {
     let clean_message = title_source_text(&user_message);
+    let request_id = format!("xai-title-{}", uuid::Uuid::new_v4());
+    let lifecycle = AuxiliaryRequestLifecycle::new(
+        "title",
+        auxiliary_provider_label(model),
+        model,
+        request_id.clone(),
+        AuxiliaryRequestState::GeneratingTitle,
+    );
     let request = ConversationRequest::from_items(vec![
         ConversationItem::system(
             r#"You are tasked with generating the session title. The user is asking almost always software engineering related questions on their codebase.
@@ -113,22 +124,29 @@ Just generate the session_title and nothing else"#,
     }])
     .with_max_output_tokens(100)
     .with_temperature(1.0)
-    .with_tool_choice(ConversationToolChoice::Function("session_title".to_owned()));
+    .with_tool_choice(ConversationToolChoice::Function("session_title".to_owned()))
+    .with_req_id(request_id)
+    .with_trace(lifecycle.trace_context());
 
+    lifecycle.transition(AuxiliaryRequestState::WaitingForProvider);
+    lifecycle.transition(AuxiliaryRequestState::StreamingResponse);
     match client.conversation_collect(request).await {
         Ok(response) => {
             if let Some(a) = response.assistant()
                 && let Some(tool_call) = a.tool_calls.first()
                 && let Ok(result) = serde_json::from_str::<SessionTitle>(&tool_call.arguments)
             {
+                lifecycle.complete();
                 return result.session_title;
             }
+            lifecycle.fail("response did not contain a session_title tool call");
             tracing::debug!(
                 model = %model,
                 "session title generation: response did not contain a session_title tool call"
             );
         }
         Err(e) => {
+            lifecycle.fail(e.to_string());
             tracing::warn!(
                 model = %model,
                 error = %e,
@@ -136,7 +154,9 @@ Just generate the session_title and nothing else"#,
             );
         }
     }
-    title_fallback_from_user_text(&clean_message)
+    let fallback = title_fallback_from_user_text(&clean_message);
+    lifecycle.recover("fallback title generated from user text");
+    fallback
 }
 
 #[cfg(test)]

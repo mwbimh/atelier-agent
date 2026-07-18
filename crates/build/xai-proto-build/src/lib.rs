@@ -116,7 +116,12 @@ impl XaiProtoBuilder {
         for proto in protos {
             let scratch = tempfile::tempdir()?;
             let dependency_path = scratch.path().join("dependencies.d");
-            let descriptor_path = descriptor_sink_path();
+            // `--descriptor_set_out` is only needed because protoc requires a
+            // descriptor destination when emitting dependency information. A
+            // scratch file works on every platform and is removed with the
+            // temporary directory; Windows device paths such as `NUL:` are
+            // rejected by some protoc builds.
+            let descriptor_path = scratch.path().join("descriptor-set.bin");
             let mut command = Command::new(protoc.unwrap_or(Path::new("protoc")));
             command
                 .arg(format!("--dependency_out={}", dependency_path.display()))
@@ -158,9 +163,9 @@ impl XaiProtoBuilder {
 
             let mut lines = output.lines();
             let first_line = lines.next().context("protoc command output is empty")?;
-            let prefix = dependency_prefix();
-            let rem = first_line.strip_prefix(prefix).with_context(|| {
-                format!("protoc command output must start with /dev/null: {output:?}")
+            let prefix = dependency_prefix(&descriptor_path)?;
+            let rem = first_line.strip_prefix(&prefix).with_context(|| {
+                format!("protoc command output must start with {prefix:?}: {output:?}")
             })?;
             for line in iter::once(rem).chain(lines) {
                 let line = line.trim();
@@ -284,16 +289,11 @@ impl XaiProtoBuilder {
     }
 }
 
-fn descriptor_sink_path() -> PathBuf {
-    if cfg!(windows) {
-        PathBuf::from("NUL")
-    } else {
-        PathBuf::from("/dev/null")
-    }
-}
-
-fn dependency_prefix() -> &'static str {
-    if cfg!(windows) { "NUL:" } else { "/dev/null:" }
+fn dependency_prefix(path: &Path) -> anyhow::Result<String> {
+    Ok(format!(
+        "{}:",
+        path.to_str().context("descriptor path not UTF-8")?
+    ))
 }
 
 pub fn configure() -> XaiProtoBuilder {
@@ -313,16 +313,22 @@ pub fn configure() -> XaiProtoBuilder {
 
 #[cfg(test)]
 mod tests {
-    use super::{dependency_prefix, descriptor_sink_path};
+    use super::dependency_prefix;
+    use std::path::Path;
 
     #[test]
-    fn protoc_dependency_sink_matches_platform() {
-        if cfg!(windows) {
-            assert_eq!(descriptor_sink_path().to_string_lossy(), "NUL");
-            assert_eq!(dependency_prefix(), "NUL:");
-        } else {
-            assert_eq!(descriptor_sink_path().to_string_lossy(), "/dev/null");
-            assert_eq!(dependency_prefix(), "/dev/null:");
-        }
+    fn protoc_dependency_prefix_matches_descriptor_path() {
+        assert_eq!(
+            dependency_prefix(Path::new(r"C:\\temp\\descriptor-set.bin")).unwrap(),
+            r"C:\\temp\\descriptor-set.bin:"
+        );
+    }
+
+    #[test]
+    fn descriptor_output_is_scoped_to_the_protoc_scratch_directory() {
+        let scratch = tempfile::tempdir().expect("scratch directory");
+        let descriptor = scratch.path().join("descriptor-set.bin");
+        assert!(descriptor.starts_with(scratch.path()));
+        assert!(!descriptor.exists());
     }
 }

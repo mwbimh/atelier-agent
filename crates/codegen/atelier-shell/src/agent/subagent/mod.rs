@@ -852,7 +852,69 @@ async fn resolve_effective_model_config(
             "Runtime model override references unknown model, falling through"
         );
     }
+    if let Ok(Some(resolved)) = resolve_fixed_runtime_role(subagent_type, ctx) {
+        log_subagent_model_resolution(
+            subagent_type,
+            "fixed_runtime_role",
+            &resolved.0,
+            &resolved.1,
+            &ctx.sampling_config,
+        );
+        return resolved;
+    }
     resolve_subagent_sampling_config(subagent_type, definition_model, ctx).await
+}
+
+/// Map the built-in subagent kinds to Atelier's fixed model roles.
+///
+/// This is deliberately an exact-name mapping, not a classifier. Custom
+/// subagent names retain their existing resolution behavior unless they are
+/// explicitly wired to one of the built-in names below.
+fn fixed_role_for_subagent_type(subagent_type: &str) -> Option<atelier_provider::RoleId> {
+    match subagent_type {
+        "explore" | "explorer" => Some(atelier_provider::RoleId::Explore),
+        "implement" | "implementer" | "general-purpose" => {
+            Some(atelier_provider::RoleId::Implement)
+        }
+        "review" | "reviewer" | "code-reviewer" => Some(atelier_provider::RoleId::Review),
+        "test" | "tester" | "testing" => Some(atelier_provider::RoleId::Test),
+        _ => None,
+    }
+}
+
+/// Resolve a configured fixed role through the live model catalog and apply
+/// its small set of model options. An untouched default role is treated as
+/// unconfigured so existing installations keep their normal resolution path.
+fn resolve_fixed_runtime_role(
+    subagent_type: &str,
+    ctx: &SubagentSpawnContext,
+) -> Result<Option<(atelier_sampler::SamplerConfig, acp::ModelId)>, String> {
+    let Some(role_id) = fixed_role_for_subagent_type(subagent_type) else {
+        return Ok(None);
+    };
+    let registry = atelier_provider::ProviderRegistry::load_or_create(
+        atelier_config::atelier_home().join("providers.toml"),
+    )
+    .map_err(|error| format!("failed to load {role_id} role configuration: {error}"))?;
+    let Some(role) = registry.role(role_id) else {
+        return Ok(None);
+    };
+    if role.provider == "default" || role.model == "default" {
+        return Ok(None);
+    }
+    let model_key = format!("{}/{}", role.provider, role.model);
+    let Some((mut config, model_id)) = resolve_model_override_to_config(&model_key, ctx) else {
+        return Err(format!(
+            "configured {role_id} role model is unavailable: {model_key}"
+        ));
+    };
+    config.request_payload = role.effective_payload();
+    if let Some(raw_effort) = role.effort.as_deref() {
+        config.reasoning_effort = Some(raw_effort.parse().map_err(|error| {
+            format!("configured {role_id} role effort is invalid ({raw_effort}): {error}")
+        })?);
+    }
+    Ok(Some((config, model_id)))
 }
 /// Truncate an API key to a safe prefix for logging.
 fn key_prefix(key: &Option<String>) -> String {
@@ -916,6 +978,7 @@ async fn read_parent_sampling_config(
                 max_completion_tokens: cfg.max_completion_tokens,
                 temperature: cfg.temperature,
                 top_p: cfg.top_p,
+                request_payload: ctx.sampling_config.request_payload.clone(),
                 api_backend: cfg.api_backend,
                 auth_scheme,
                 extra_headers,

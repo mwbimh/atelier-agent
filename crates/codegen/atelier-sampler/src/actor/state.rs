@@ -87,6 +87,7 @@ mod tests {
             max_completion_tokens: None,
             temperature: None,
             top_p: None,
+            request_payload: Default::default(),
             api_backend: ApiBackend::ChatCompletions,
             auth_scheme: Default::default(),
             extra_headers: IndexMap::new(),

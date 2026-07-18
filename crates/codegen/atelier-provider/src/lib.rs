@@ -5,7 +5,10 @@
 //! making the runtime guess capabilities from a model name.
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+pub mod roles;
+
+pub use roles::{RoleConfig, RoleError, RoleId, RoleRegistry, merge_payloads};
+use serde_json::{Map, Value};
 use std::collections::BTreeMap;
 use std::fmt;
 use std::io::Write;
@@ -160,6 +163,8 @@ pub enum ProviderError {
     InvalidProvider(String),
     #[error("invalid model key: {0}")]
     InvalidModelKey(String),
+    #[error("invalid role: {0}")]
+    InvalidRole(#[from] RoleError),
     #[error("provider not found: {0}")]
     ProviderNotFound(String),
     #[error("model not found: {0}")]
@@ -207,6 +212,16 @@ pub enum CredentialRef {
 }
 
 impl CredentialRef {
+    /// Return whether this reference can supply credentials when a Provider
+    /// request is made. Providers that intentionally require no secret use
+    /// `CredentialRef::None` and are therefore considered available.
+    pub fn is_available(&self) -> bool {
+        match self {
+            Self::None => true,
+            _ => self.resolve().ok().flatten().is_some(),
+        }
+    }
+
     pub fn validate(&self) -> Result<(), CredentialError> {
         match self {
             Self::None => Ok(()),
@@ -378,7 +393,7 @@ pub enum ProviderDiscovery {
     },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Deserialize, PartialEq, Eq)]
 pub struct ProviderConfig {
     pub id: String,
     pub display_name: String,
@@ -394,6 +409,112 @@ pub struct ProviderConfig {
     pub enabled: bool,
 }
 
+const REDACTED: &str = "REDACTED";
+
+#[derive(Serialize)]
+struct ProviderConfigWire<'a> {
+    id: &'a str,
+    display_name: &'a str,
+    protocol: &'a ProviderProtocol,
+    base_url: &'a Url,
+    credential: &'a CredentialRef,
+    discovery: &'a ProviderDiscovery,
+    extra_headers: BTreeMap<String, String>,
+    enabled: bool,
+}
+
+impl Serialize for ProviderConfig {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let extra_headers = self
+            .extra_headers
+            .iter()
+            .map(|(name, value)| {
+                let value = if is_sensitive_header_name(name) {
+                    REDACTED.to_owned()
+                } else {
+                    value.clone()
+                };
+                (name.clone(), value)
+            })
+            .collect();
+        ProviderConfigWire {
+            id: &self.id,
+            display_name: &self.display_name,
+            protocol: &self.protocol,
+            base_url: &self.base_url,
+            credential: &self.credential,
+            discovery: &self.discovery,
+            extra_headers,
+            enabled: self.enabled,
+        }
+        .serialize(serializer)
+    }
+}
+
+struct RedactedHeaders<'a>(&'a BTreeMap<String, String>);
+
+impl fmt::Debug for RedactedHeaders<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut map = formatter.debug_map();
+        for name in self.0.keys() {
+            map.entry(name, &REDACTED);
+        }
+        map.finish()
+    }
+}
+
+impl fmt::Debug for ProviderConfig {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ProviderConfig")
+            .field("id", &self.id)
+            .field("display_name", &self.display_name)
+            .field("protocol", &self.protocol)
+            .field("base_url", &self.base_url)
+            .field("credential", &self.credential)
+            .field("discovery", &self.discovery)
+            .field("extra_headers", &RedactedHeaders(&self.extra_headers))
+            .field("enabled", &self.enabled)
+            .finish()
+    }
+}
+
+fn is_sensitive_header_name(name: &str) -> bool {
+    let normalized: String = name
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .map(|character| character.to_ascii_lowercase())
+        .collect();
+
+    matches!(
+        normalized.as_str(),
+        "authorization"
+            | "proxyauthorization"
+            | "cookie"
+            | "setcookie"
+            | "apikey"
+            | "xapikey"
+            | "accesskey"
+            | "authtoken"
+            | "accesstoken"
+            | "refreshtoken"
+            | "password"
+            | "passwd"
+    ) || normalized.contains("token")
+        || normalized.contains("secret")
+        || normalized.contains("credential")
+}
+
+fn redacted_snapshot_headers(headers: &BTreeMap<String, String>) -> BTreeMap<String, String> {
+    headers
+        .keys()
+        .map(|name| (name.clone(), REDACTED.to_owned()))
+        .collect()
+}
+
 fn default_enabled() -> bool {
     true
 }
@@ -402,6 +523,15 @@ impl ProviderConfig {
     pub fn validate(&self) -> Result<(), ProviderError> {
         validate_identifier(&self.id, "provider id")?;
         self.credential.validate()?;
+        if let Some(name) = self
+            .extra_headers
+            .keys()
+            .find(|name| is_sensitive_header_name(name))
+        {
+            return Err(ProviderError::InvalidProvider(format!(
+                "extra header '{name}' contains credential material; use the provider credential reference instead"
+            )));
+        }
         if self.display_name.trim().is_empty() {
             return Err(ProviderError::InvalidProvider(
                 "display_name must not be empty".into(),
@@ -790,6 +920,8 @@ struct RegistryFile {
     models: BTreeMap<String, StoredModel>,
     #[serde(default)]
     default_model: Option<ModelKey>,
+    #[serde(default)]
+    roles: RoleRegistry,
 }
 
 impl Default for RegistryFile {
@@ -799,15 +931,63 @@ impl Default for RegistryFile {
             providers: BTreeMap::new(),
             models: BTreeMap::new(),
             default_model: None,
+            roles: RoleRegistry::default(),
         }
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 pub struct ProviderSnapshot {
     pub providers: Vec<ProviderConfig>,
     pub models: Vec<ModelDescriptor>,
     pub default_model: Option<ModelKey>,
+}
+
+#[derive(Serialize)]
+struct ProviderSnapshotProvider<'a> {
+    id: &'a str,
+    display_name: &'a str,
+    protocol: &'a ProviderProtocol,
+    base_url: &'a Url,
+    credential: &'a CredentialRef,
+    discovery: &'a ProviderDiscovery,
+    extra_headers: BTreeMap<String, String>,
+    enabled: bool,
+}
+
+#[derive(Serialize)]
+struct ProviderSnapshotWire<'a> {
+    providers: Vec<ProviderSnapshotProvider<'a>>,
+    models: &'a [ModelDescriptor],
+    default_model: &'a Option<ModelKey>,
+}
+
+impl Serialize for ProviderSnapshot {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let providers = self
+            .providers
+            .iter()
+            .map(|provider| ProviderSnapshotProvider {
+                id: &provider.id,
+                display_name: &provider.display_name,
+                protocol: &provider.protocol,
+                base_url: &provider.base_url,
+                credential: &provider.credential,
+                discovery: &provider.discovery,
+                extra_headers: redacted_snapshot_headers(&provider.extra_headers),
+                enabled: provider.enabled,
+            })
+            .collect();
+        ProviderSnapshotWire {
+            providers,
+            models: &self.models,
+            default_model: &self.default_model,
+        }
+        .serialize(serializer)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -840,6 +1020,9 @@ impl ProviderRegistry {
                 state.schema_version
             )));
         }
+        for provider in state.providers.values() {
+            provider.validate()?;
+        }
         Ok(Self {
             path: Some(path),
             state,
@@ -861,6 +1044,38 @@ impl ProviderRegistry {
 
     pub fn providers(&self) -> impl Iterator<Item = &ProviderConfig> {
         self.state.providers.values()
+    }
+
+    pub fn roles(&self) -> &RoleRegistry {
+        &self.state.roles
+    }
+
+    pub fn role(&self, role_id: RoleId) -> Option<&RoleConfig> {
+        self.state.roles.find(role_id)
+    }
+
+    pub fn update_role(
+        &mut self,
+        role_id: RoleId,
+        config: RoleConfig,
+    ) -> Result<(), ProviderError> {
+        self.state.roles.update(role_id, config)?;
+        Ok(())
+    }
+
+    pub fn remove_role(&mut self, role_id: RoleId) -> Option<RoleConfig> {
+        self.state.roles.delete(role_id)
+    }
+
+    pub fn merged_role_payload(
+        &self,
+        role_id: RoleId,
+        provider_defaults: &Map<String, Value>,
+    ) -> Result<Map<String, Value>, ProviderError> {
+        Ok(self
+            .state
+            .roles
+            .merged_payload(role_id, provider_defaults)?)
     }
 
     /// Look up one provider without exposing the registry's storage layout.
@@ -1067,6 +1282,10 @@ impl ProviderRegistry {
     }
 
     pub fn save(&self) -> Result<(), ProviderError> {
+        for provider in self.state.providers.values() {
+            provider.validate()?;
+        }
+        self.state.roles.validate()?;
         let path = self.path.as_ref().ok_or_else(|| {
             ProviderError::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,

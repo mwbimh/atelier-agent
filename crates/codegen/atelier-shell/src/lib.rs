@@ -31,6 +31,7 @@ pub use atelier_models as models;
 pub mod plugin;
 pub mod relay;
 pub mod remote;
+pub mod runtime_control;
 pub mod sampling;
 pub mod session;
 pub mod terminal;

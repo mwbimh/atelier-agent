@@ -51,6 +51,7 @@ pub mod remember;
 pub mod rename;
 pub mod resume;
 pub mod rewind;
+pub mod roles;
 pub mod screen_mode_switch;
 pub mod scroll_debug;
 pub mod session_info;
@@ -103,6 +104,7 @@ pub fn builtin_commands() -> Vec<Arc<dyn SlashCommand>> {
         Arc::new(plugin::MarketplaceCommand),
         Arc::new(plugin::SkillsCommand),
         Arc::new(provider::ProviderCommand),
+        Arc::new(roles::RolesCommand),
         Arc::new(share::ShareCommand),
         Arc::new(session_info::SessionInfoCommand),
         Arc::new(rename::RenameCommand),
@@ -199,6 +201,7 @@ mod tests {
         assert!(reg.get("new").is_some());
         assert!(reg.get("compact").is_some());
         assert!(reg.get("model").is_some());
+        assert!(reg.get("roles").is_some());
         assert!(reg.get("home").is_some());
         assert!(reg.get("view-plan").is_some());
         reg.set_available_tools(std::collections::HashSet::from([

@@ -76,6 +76,7 @@ fn test_config(base_url: String, model: &str) -> SamplerConfig {
         max_completion_tokens: Some(1024),
         temperature: None,
         top_p: None,
+        request_payload: Default::default(),
         api_backend: ApiBackend::ChatCompletions,
         auth_scheme: Default::default(),
         extra_headers: IndexMap::new(),

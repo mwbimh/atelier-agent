@@ -36,6 +36,7 @@ pub fn test_sampler_config(
         max_completion_tokens: Some(1000),
         temperature: Some(0.7),
         top_p: None,
+        request_payload: Default::default(),
         api_backend,
         auth_scheme: Default::default(),
         extra_headers: extra_headers

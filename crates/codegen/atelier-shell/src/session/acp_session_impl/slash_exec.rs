@@ -370,6 +370,64 @@ impl SessionActor {
                 self.send_slash_command_output(&text).await;
                 ok_end_turn(0, None)
             }
+            BuiltinAction::RolesInfo => {
+                let text = match atelier_provider::ProviderRegistry::load_or_create(
+                    atelier_config::atelier_home().join("providers.toml"),
+                ) {
+                    Ok(registry) => registry
+                        .roles()
+                        .iter()
+                        .map(|(role, config)| {
+                            format!(
+                                "{role}: {}/{} effort={} fast_mode={}",
+                                config.provider,
+                                config.model,
+                                config.effort.as_deref().unwrap_or("default"),
+                                config.fast_mode,
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                    Err(error) => format!("Failed to load roles: {error}"),
+                };
+                self.send_slash_command_output(&text).await;
+                ok_end_turn(0, None)
+            }
+            BuiltinAction::RuntimeDoctor => {
+                let info = self.build_session_info().await;
+                let running = self
+                    .current_prompt_id
+                    .lock()
+                    .ok()
+                    .and_then(|prompt| prompt.clone());
+                let pending = self
+                    .pending_interactions
+                    .lock()
+                    .map(|pending| pending.len())
+                    .unwrap_or_default();
+                let state = if pending > 0 {
+                    "waiting_for_permission"
+                } else if running.is_some() {
+                    "running"
+                } else {
+                    "idle"
+                };
+                let text = format!(
+                    "Runtime state: {state}\nSession: {}\nTurn: {}\nPending interactions: {pending}\nContext: {}/{} tokens",
+                    self.session_info.id.0, info.turn_index, info.context.used, info.context.total,
+                );
+                self.send_slash_command_output(&text).await;
+                ok_end_turn(0, None)
+            }
+            BuiltinAction::RuntimeRecover => {
+                self.cancel_running_task(true, false, false, Some("runtime_recover".to_owned()))
+                    .await;
+                self.send_slash_command_output(
+                    "Recovery requested: the active turn was cancelled and queued work was preserved.",
+                )
+                .await;
+                ok_end_turn(0, None)
+            }
             BuiltinAction::PluginsAdd { path } => {
                 if path.is_empty() {
                     self.send_slash_command_output(

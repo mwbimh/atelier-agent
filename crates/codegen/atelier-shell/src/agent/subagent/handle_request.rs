@@ -420,13 +420,26 @@ pub(crate) async fn handle_subagent_request(
     if request.fork_context {
         effective_runtime.model = Some(ctx.model_id.0.to_string());
     }
-    let (mut effective_sampling_config, mut effective_model_id) = resolve_effective_model_config(
-            effective_runtime.model.as_deref(),
-            &request.subagent_type,
-            &definition.model,
-            &ctx,
-        )
-        .await;
+    let fixed_role_resolution = match resolve_fixed_runtime_role(&request.subagent_type, &ctx) {
+        Ok(resolution) => resolution,
+        Err(error) => {
+            send_failure(request, &error);
+            return;
+        }
+    };
+    let fixed_role_applied = fixed_role_resolution.is_some();
+    let (mut effective_sampling_config, mut effective_model_id) =
+        if let Some(resolved) = fixed_role_resolution {
+            resolved
+        } else {
+            resolve_effective_model_config(
+                effective_runtime.model.as_deref(),
+                &request.subagent_type,
+                &definition.model,
+                &ctx,
+            )
+            .await
+        };
     let subagent_max_turns = resolve_subagent_max_turns(
         definition.max_turns,
         ctx.parent_max_turns,
@@ -436,7 +449,7 @@ pub(crate) async fn handle_subagent_request(
         let model_unknown = !model_str.is_empty() && !ctx.available_models.is_empty()
             && !ctx.available_models.contains_key(model_str)
             && !ctx.available_models.values().any(|e| e.info().model == *model_str);
-        if model_unknown {
+        if model_unknown && !fixed_role_applied {
             let (parent_config, parent_mid) = read_parent_sampling_config(&ctx).await;
             tracing::warn!(
                 subagent_id = % request.id, resolved_model = % model_str, parent_model =
@@ -448,7 +461,8 @@ pub(crate) async fn handle_subagent_request(
             effective_model_id = parent_mid;
         }
     }
-    if let Some(ref source) = resume_source
+    if !fixed_role_applied
+        && let Some(ref source) = resume_source
         && let Some(ref source_model) = source.model_id
         && effective_model_id.0.as_ref() != source_model.as_str()
     {
@@ -469,7 +483,8 @@ pub(crate) async fn handle_subagent_request(
             return;
         }
     }
-    if let Some(raw) = effective_runtime.reasoning_effort.as_deref()
+    if !fixed_role_applied
+        && let Some(raw) = effective_runtime.reasoning_effort.as_deref()
         && ctx
             .models_manager
             .model_supports_reasoning_effort(effective_model_id.0.as_ref())

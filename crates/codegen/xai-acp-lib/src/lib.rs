@@ -4,6 +4,8 @@ mod gateway;
 mod line_reader;
 mod message;
 mod normalize;
+mod runtime_control;
+mod sdk;
 mod stdin_reader;
 
 pub use self::{
@@ -24,6 +26,14 @@ pub use self::{
 };
 
 pub use self::line_reader::LineBufferedRead;
+pub use self::runtime_control::{
+    ATELIER_PROTOCOL_CAPABILITIES, ATELIER_PROTOCOL_VERSION, ATELIER_SUPPORTED_PROTOCOL_VERSIONS,
+    ContextBlockSummary, ContextSnapshot, DEFAULT_EVENT_REPLAY_CAPACITY, EventId,
+    EventReplayBuffer, EventReplayError, EventSequencer, ProtocolInfo, REDACTED_VALUE, ReplayError,
+    RequestTraceSummary, RpcError, RpcId, RpcRequest, RpcResponse, RuntimeDiagnostic, RuntimeState,
+    SequencedEvent, VersionedProtocol, WatchdogSnapshot, redact_payload, redact_text,
+};
+pub use self::sdk::{AtelierRpcClient, RpcClientError, RpcTransport};
 pub use self::stdin_reader::spawn_stdin_line_reader;
 
 #[doc(hidden)]

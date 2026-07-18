@@ -385,7 +385,10 @@ impl acp::Agent for MvpAgent {
                             serde_json::json!(
                                 { "atelier/fs_notify" : true, "atelier/hooks" : { "blockingEvents"
                                 : [atelier_hooks::event::HookEventName::PreToolUse],
-                                "decisions" : ["deny"], }, }
+                                "decisions" : ["deny"], },
+                                "atelier/runtime" : { "version" :
+                                xai_acp_lib::ATELIER_PROTOCOL_VERSION, "capabilities" :
+                                xai_acp_lib::ATELIER_PROTOCOL_CAPABILITIES, }, }
                             )
                                 .as_object()
                                 .cloned(),
@@ -415,7 +418,9 @@ impl acp::Agent for MvpAgent {
                         .command_availability()), "cancelRewind" : self.cfg.borrow()
                         .resolve_cancel_rewind().value, "sessionRecap" : self.cfg
                         .borrow().is_session_recap_enabled(), "voiceMode" : self.cfg
-                        .borrow().is_voice_mode_enabled(), }
+                        .borrow().is_voice_mode_enabled(), "atelierRuntime" : {
+                        "version" : xai_acp_lib::ATELIER_PROTOCOL_VERSION,
+                        "capabilities" : xai_acp_lib::ATELIER_PROTOCOL_CAPABILITIES, }, }
                     )
                         .as_object()
                         .cloned()
@@ -905,6 +910,11 @@ impl acp::Agent for MvpAgent {
             id: session_id.clone(),
             cwd: cwd.as_str().to_owned(),
         };
+        let main_role = if is_chat_kind {
+            None
+        } else {
+            self.configured_role(atelier_provider::RoleId::Main)?
+        };
         let mut model_agent_type: Option<String> = None;
         let mut session_sampling_override: Option<SamplingConfig> = None;
         let mut disallowed_custom: Option<String> = None;
@@ -940,6 +950,30 @@ impl acp::Agent for MvpAgent {
                     None
                 }
             });
+        let mut resolved_role_model: Option<String> = None;
+        if !is_chat_kind && custom_model_id.is_none()
+            && let Some(role) = main_role.as_ref()
+        {
+            let role_model = format!("{}/{}", role.provider, role.model);
+            let role_entry = self
+                .resolve_model_id(&acp::ModelId::new(role_model.clone()))
+                .map_err(|_| {
+                    acp::Error::invalid_params().data(format!(
+                        "configured main role model is unavailable: {role_model}"
+                    ))
+                })?;
+            if !role_entry.info.user_selectable {
+                return Err(acp::Error::invalid_params().data(format!(
+                    "configured main role model is not selectable: {role_model}"
+                )));
+            }
+            model_agent_type = Some(role_entry.info().agent_type.clone());
+            let origin_client = self.origin_client_info_from_meta(arguments.meta.as_ref());
+            session_sampling_override = Some(
+                self.prepare_sampling_config_for_model(&role_entry, origin_client),
+            );
+            resolved_role_model = Some(role_model);
+        }
         if model_agent_type.is_none() && custom_model_id.is_none()
             && let Ok(default_model) = self
                 .resolve_model_id(&self.models_manager.current_model_id())
@@ -962,7 +996,22 @@ impl acp::Agent for MvpAgent {
                         origin_client.clone(),
                     )
             });
-        if let Some(effort) = self.models_manager.current_reasoning_effort()
+        if let Some(role) = main_role.as_ref()
+            && let Some(effort) = role.effort.as_deref()
+        {
+            session_sampling.reasoning_effort = Some(
+                effort.parse().map_err(|_| {
+                    acp::Error::invalid_params().data(format!(
+                        "unsupported main role effort: {effort}"
+                    ))
+                })?,
+            );
+        }
+        if let Some(role) = main_role.as_ref() {
+            session_sampling.request_payload = role.effective_payload();
+        }
+        if main_role.is_none()
+            && let Some(effort) = self.models_manager.current_reasoning_effort()
             && self
                 .models_manager
                 .model_supports_reasoning_effort(&session_sampling.model)
@@ -987,6 +1036,8 @@ impl acp::Agent for MvpAgent {
             Some(chat_model) => acp::ModelId::new(chat_model.clone()),
             None => {
                 resolved_custom_model
+                    .map(str::to_owned)
+                    .or(resolved_role_model)
                     .map(acp::ModelId::new)
                     .unwrap_or_else(|| self.models_manager.current_model_id())
             }
@@ -1068,6 +1119,11 @@ impl acp::Agent for MvpAgent {
                         managed_mcp_expires_at,
                         model_agent_type: model_agent_type.as_deref(),
                         session_model_id,
+                        main_role: if custom_model_id.is_none() {
+                            main_role.clone()
+                        } else {
+                            None
+                        },
                         session_yolo_mode,
                         session_auto_mode: session_auto_mode && !session_yolo_mode,
                         prompt_display_cwd: None,
@@ -1608,6 +1664,7 @@ impl acp::Agent for MvpAgent {
                         managed_mcp_expires_at,
                         model_agent_type: persisted_agent_name.as_deref(),
                         session_model_id: summary.current_model_id.clone(),
+                        main_role: self.configured_role(atelier_provider::RoleId::Main)?,
                         session_yolo_mode,
                         session_auto_mode: session_auto_mode && !session_yolo_mode,
                         prompt_display_cwd,
@@ -2111,6 +2168,7 @@ impl acp::Agent for MvpAgent {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string())
             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        self.remember_retryable_prompt(&prompt_id, arguments.clone());
         let turn_number = self.allocate_turn_number(&arguments.session_id);
         tracing::Span::current().record("turn_number", turn_number);
         tracing::info!("Setting up prompt tracing");
@@ -2292,9 +2350,102 @@ impl acp::Agent for MvpAgent {
                     .data("outputSchema must be a JSON object describing a JSON Schema"),
             );
         }
-        handle
-            .cmd_tx
-            .send(SessionCommand::Prompt {
+        let turn_id = arguments
+            .meta
+            .as_ref()
+            .and_then(|meta| meta.get("turnId"))
+            .and_then(|value| value.as_str())
+            .map(str::to_owned);
+        let provider_and_model = model.split_once('/');
+        let main_role = self.configured_role(atelier_provider::RoleId::Main)?;
+        self.runtime_begin_request(
+            &arguments.session_id,
+            &prompt_id,
+            turn_id,
+            "main",
+            provider_and_model.map(|(provider, _)| provider.to_owned()),
+            Some(model.clone()),
+        );
+        self.runtime_set_request_parameters(
+            &prompt_id,
+            main_role.as_ref().and_then(|role| role.effort.clone()),
+            main_role.as_ref().map(|role| role.fast_mode),
+        );
+        let prompt_tokens = arguments
+            .prompt
+            .iter()
+            .map(|block| match block {
+                acp::ContentBlock::Text(text) => xai_token_estimation::estimate_tokens(&text.text),
+                acp::ContentBlock::Image(_) => xai_token_estimation::estimate_image_tokens(1),
+                _ => 0,
+            })
+            .sum::<u64>();
+        let conversation_tokens = handle
+            .chat_state_handle
+            .get_estimated_total_tokens()
+            .await;
+        let output_token_budget = handle
+            .chat_state_handle
+            .get_sampling_config()
+            .await
+            .and_then(|config| config.max_completion_tokens.map(u64::from));
+        let mut runtime_payload = serde_json::json!({
+            "promptBlockCount": arguments.prompt.len(),
+            "sendNow": send_now,
+            "verbatim": verbatim,
+        });
+        if let Some(role) = &main_role {
+            runtime_payload["role"] = serde_json::json!("main");
+            runtime_payload["provider"] = serde_json::json!(role.provider);
+            runtime_payload["model"] = serde_json::json!(role.model);
+            runtime_payload["payload"] = xai_acp_lib::redact_payload(
+                &serde_json::Value::Object(role.effective_payload()),
+            );
+        }
+        self.runtime_set_request_context(
+            &prompt_id,
+            vec![
+                crate::runtime_control::ContextBlock {
+                    name: "conversation".to_owned(),
+                    source: "session".to_owned(),
+                    tokens: conversation_tokens,
+                    redacted: false,
+                },
+                crate::runtime_control::ContextBlock {
+                    name: "current_user_input".to_owned(),
+                    source: "prompt".to_owned(),
+                    tokens: prompt_tokens,
+                    redacted: false,
+                },
+            ],
+            conversation_tokens.saturating_add(prompt_tokens),
+            output_token_budget,
+            runtime_payload,
+        );
+        let resolved_provider = main_role
+            .as_ref()
+            .map(|role| role.provider.as_str())
+            .or_else(|| provider_and_model.map(|(provider, _)| provider));
+        if let Err(error) = self.enforce_provider_request(
+            arguments.session_id.0.as_ref(),
+            &prompt_id,
+            Some("main"),
+            resolved_provider,
+        ) {
+            self.runtime_finish_request(
+                &arguments.session_id,
+                xai_acp_lib::RuntimeState::Failed,
+                Some("policy".to_owned()),
+                Some(error.to_string()),
+            );
+            return Err(error);
+        }
+        self.runtime_update_status(
+            &arguments.session_id,
+            xai_acp_lib::RuntimeState::WaitingForProvider,
+            None,
+        );
+        if let Err(error) = handle.cmd_tx.send(SessionCommand::Prompt {
                 prompt_id: prompt_id.clone(),
                 prompt_blocks: arguments.prompt.clone(),
                 prompt_mode,
@@ -2310,21 +2461,54 @@ impl acp::Agent for MvpAgent {
                 respond_to: tx,
                 persist_ack: None,
                 parsed_prompt_tx,
-            })
-            .map_err(|e| {
+            }) {
+            self.runtime_finish_request(
+                &arguments.session_id,
+                xai_acp_lib::RuntimeState::Failed,
+                Some("session_dispatch".to_owned()),
+                Some(format!("failed to dispatch prompt to session: {error}")),
+            );
+            return Err(
                 acp::Error::internal_error()
-                    .data(format!("failed to dispatch prompt to session: {e}"))
-            })?;
+                    .data(format!("failed to dispatch prompt to session: {error}")),
+            );
+        }
         drop(intake_guard);
         self.push_roster_activity_delta(
             &arguments.session_id,
             crate::agent::roster::RosterActivity::Working,
         );
-        let stop_result = rx
-            .await
-            .map_err(|_| {
-                acp::Error::internal_error().data("session failed to respond")
-            })?;
+        let stop_result = match rx.await {
+            Ok(result) => result,
+            Err(_) => {
+                self.runtime_finish_request(
+                    &arguments.session_id,
+                    xai_acp_lib::RuntimeState::Failed,
+                    Some("session_response".to_owned()),
+                    Some("session failed to respond".to_owned()),
+                );
+                return Err(acp::Error::internal_error().data("session failed to respond"));
+            }
+        };
+        let runtime_state = match &stop_result {
+            Ok(result) if matches!(result.stop_reason, acp::StopReason::EndTurn) => {
+                xai_acp_lib::RuntimeState::Completed
+            }
+            Ok(_) => xai_acp_lib::RuntimeState::Paused,
+            Err(_) => xai_acp_lib::RuntimeState::Failed,
+        };
+        self.runtime_finish_request(
+            &arguments.session_id,
+            runtime_state,
+            stop_result
+                .as_ref()
+                .err()
+                .map(|_| "provider_or_tool".to_owned()),
+            stop_result.as_ref().err().map(ToString::to_string),
+        );
+        if runtime_state == xai_acp_lib::RuntimeState::Completed {
+            self.forget_retryable_prompt(&prompt_id);
+        }
         let last_turn_usage_for_meta = handle
             .chat_state_handle
             .get_last_turn_usage()
@@ -3168,6 +3352,7 @@ impl acp::Agent for MvpAgent {
                 "this vendor-hosted Atelier extension is disabled in the private build",
             ));
         }
+        self.enforce_extension_policy(&args)?;
         let result = match method.as_ref() {
             "atelier/getApiKey" | "atelier/setApiKey" => {
                 crate::extensions::auth::handle(self, &args).await
@@ -3428,6 +3613,25 @@ impl acp::Agent for MvpAgent {
             }
             "atelier/suggest" => crate::extensions::suggest::handle(self, &args).await,
             "atelier/suggestPrompt" => crate::extensions::suggest::handle(self, &args).await,
+            "_atelier/protocol/info" | "atelier/protocol/info" => {
+                crate::extensions::runtime::handle(self, &args).await
+            }
+            s if s.starts_with("_atelier/runtime/")
+                || s.starts_with("atelier/runtime/")
+                || s.starts_with("_atelier/context/")
+                || s.starts_with("atelier/context/")
+                || s.starts_with("_atelier/request/")
+                || s.starts_with("atelier/request/")
+                || s.starts_with("_atelier/trace/")
+                || s.starts_with("atelier/trace/") => {
+                crate::extensions::runtime::handle(self, &args).await
+            }
+            s if s.starts_with("_atelier/role/") || s.starts_with("atelier/role/") => {
+                crate::extensions::roles::handle(self, &args).await
+            }
+            s if s.starts_with("_atelier/policy/") || s.starts_with("atelier/policy/") => {
+                crate::extensions::policy::handle(self, &args).await
+            }
             s if s.starts_with("atelier/auth/") => {
                 crate::extensions::auth::handle(self, &args).await
             }

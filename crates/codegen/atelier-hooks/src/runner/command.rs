@@ -868,8 +868,14 @@ mod tests {
     #[tokio::test]
     async fn test_env_var_interpolation_runs_via_shell() {
         let tmp = tempfile::tempdir().unwrap();
-        let script = tmp.path().join("hook.sh");
-        std::fs::write(&script, "#!/bin/sh\nexit 0\n").unwrap();
+        let script = tmp
+            .path()
+            .join(if cfg!(windows) { "hook.cmd" } else { "hook.sh" });
+        if cfg!(windows) {
+            std::fs::write(&script, "@echo off\r\nexit /b 0\r\n").unwrap();
+        } else {
+            std::fs::write(&script, "#!/bin/sh\nexit 0\n").unwrap();
+        }
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -891,8 +897,16 @@ mod tests {
             configured_matcher: None,
             matcher: None,
             enabled: true,
-            command: Some(std::path::PathBuf::from("${GB1183_PLUGIN_ROOT}/hook.sh")),
-            command_raw: Some("${GB1183_PLUGIN_ROOT}/hook.sh".to_string()),
+            command: Some(std::path::PathBuf::from(if cfg!(windows) {
+                r#"cmd /C "%GB1183_PLUGIN_ROOT%\hook.cmd""#
+            } else {
+                "${GB1183_PLUGIN_ROOT}/hook.sh"
+            })),
+            command_raw: Some(if cfg!(windows) {
+                r#"cmd /C "%GB1183_PLUGIN_ROOT%\hook.cmd""#.to_string()
+            } else {
+                "${GB1183_PLUGIN_ROOT}/hook.sh".to_string()
+            }),
             url: None,
             url_raw: None,
             timeout_ms: 5000,
@@ -921,17 +935,29 @@ mod tests {
     #[tokio::test]
     async fn test_claude_project_dir_is_exported() {
         let tmp = tempfile::tempdir().unwrap();
-        let script = tmp.path().join("hook.sh");
-        // Exit 0 only if CLAUDE_PROJECT_DIR matches the workspace root.
         let workspace = tmp.path().to_string_lossy().into_owned();
-        std::fs::write(
-            &script,
-            format!(
-                "#!/bin/sh\ntest \"${{CLAUDE_PROJECT_DIR}}\" = \"{workspace}\"\n",
-                workspace = workspace
-            ),
-        )
-        .unwrap();
+        let script = tmp
+            .path()
+            .join(if cfg!(windows) { "hook.cmd" } else { "hook.sh" });
+        if cfg!(windows) {
+            std::fs::write(
+                &script,
+                format!(
+                    "@echo off\r\nif \"%CLAUDE_PROJECT_DIR%\"==\"{workspace}\" exit /b 0\r\nexit /b 1\r\n",
+                    workspace = workspace
+                ),
+            )
+            .unwrap();
+        } else {
+            std::fs::write(
+                &script,
+                format!(
+                    "#!/bin/sh\ntest \"${{CLAUDE_PROJECT_DIR}}\" = \"{workspace}\"\n",
+                    workspace = workspace
+                ),
+            )
+            .unwrap();
+        }
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -949,8 +975,16 @@ mod tests {
             enabled: true,
             // Use ${CLAUDE_PROJECT_DIR} in the path itself so this also exercises
             // the `$` -> sh -c routing.
-            command: Some(std::path::PathBuf::from("${CLAUDE_PROJECT_DIR}/hook.sh")),
-            command_raw: Some("${CLAUDE_PROJECT_DIR}/hook.sh".to_string()),
+            command: Some(std::path::PathBuf::from(if cfg!(windows) {
+                r#"cmd /C "%CLAUDE_PROJECT_DIR%\hook.cmd""#
+            } else {
+                "${CLAUDE_PROJECT_DIR}/hook.sh"
+            })),
+            command_raw: Some(if cfg!(windows) {
+                r#"cmd /C "%CLAUDE_PROJECT_DIR%\hook.cmd""#.to_string()
+            } else {
+                "${CLAUDE_PROJECT_DIR}/hook.sh".to_string()
+            }),
             url: None,
             url_raw: None,
             timeout_ms: 5000,

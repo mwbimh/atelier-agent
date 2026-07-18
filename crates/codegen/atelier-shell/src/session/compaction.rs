@@ -172,12 +172,29 @@ impl SessionActor {
     /// the turn loop; a long-lived borrow would race with turn/compact/cancel
     /// and panic on double-borrow.
     async fn two_pass_sample(&self, history: Vec<ConversationItem>) -> Option<CompactOutput> {
-        let sampling_config = self.reconstruct_full_config().await;
-        let client = match self.prepare_chat_completion(false).await {
-            Ok(c) => c,
-            Err(e) => {
+        let (sampling_config, client) = match self
+            .prepare_role_chat_completion(atelier_provider::RoleId::Compact, false)
+            .await
+        {
+            Ok(Some((config, client))) => (config, client),
+            Ok(None) => {
+                let config = self.reconstruct_full_config().await;
+                let client = match self.prepare_chat_completion(false).await {
+                    Ok(client) => client,
+                    Err(error) => {
+                        tracing::warn!(
+                            error = %error,
+                            "two_pass: failed to prepare sampling client"
+                        );
+                        return None;
+                    }
+                };
+                (config, client)
+            }
+            Err(error) => {
                 tracing::warn!(
-                    error = % e, "two_pass: failed to prepare sampling client"
+                    error = %error,
+                    "two_pass: failed to prepare compact role sampling client"
                 );
                 return None;
             }
@@ -928,8 +945,17 @@ impl SessionActor {
             return Err(acp::Error::internal_error()
                 .data("Compaction failed: no system message in simplified conversation"));
         }
-        let sampling_config = self.reconstruct_full_config().await;
-        let sampling_client = self.prepare_chat_completion(false).await?;
+        let (sampling_config, sampling_client) = match self
+            .prepare_role_chat_completion(atelier_provider::RoleId::Compact, false)
+            .await?
+        {
+            Some((config, client)) => (config, client),
+            None => {
+                let config = self.reconstruct_full_config().await;
+                let client = self.prepare_chat_completion(false).await?;
+                (config, client)
+            }
+        };
         let use_backend_search =
             self.agent.borrow().backend_search_enabled() && self.supports_backend_search.get();
         let effective_tool_defs: Vec<atelier_sampling_types::ToolDefinition> = self
@@ -2220,6 +2246,7 @@ mod inline_auto_compact_flow_tests {
                 std::collections::HashMap::new(),
             )),
             telemetry_enabled: false,
+            role_request_payload: serde_json::Map::new(),
             supports_backend_search: std::cell::Cell::new(false),
             compactions_remaining: std::cell::Cell::new(None),
             compaction_at_tokens: std::cell::Cell::new(None),

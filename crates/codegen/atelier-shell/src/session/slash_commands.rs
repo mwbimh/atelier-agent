@@ -224,6 +224,30 @@ pub(super) const BUILTIN_COMMANDS: &[BuiltinCommand] = &[
         resolve: |_args| BuiltinAction::SessionInfo,
     },
     BuiltinCommand {
+        name: "roles",
+        description: "Show the fixed Provider role assignments",
+        argument_hint: None,
+        aliases: &[],
+        gate: BuiltinGate::AlwaysOn,
+        resolve: |_args| BuiltinAction::RolesInfo,
+    },
+    BuiltinCommand {
+        name: "doctor",
+        description: "Show local runtime diagnostics for this session",
+        argument_hint: None,
+        aliases: &[],
+        gate: BuiltinGate::AlwaysOn,
+        resolve: |_args| BuiltinAction::RuntimeDoctor,
+    },
+    BuiltinCommand {
+        name: "recover",
+        description: "Cancel a stuck turn and request runtime recovery",
+        argument_hint: None,
+        aliases: &[],
+        gate: BuiltinGate::AlwaysOn,
+        resolve: |_args| BuiltinAction::RuntimeRecover,
+    },
+    BuiltinCommand {
         name: "feedback",
         description: "Send feedback about the current session",
         argument_hint: Some("feedback text"),
@@ -628,6 +652,9 @@ pub(super) enum BuiltinAction {
     PluginsReload,
     PluginsTrust,
     SessionInfo,
+    RolesInfo,
+    RuntimeDoctor,
+    RuntimeRecover,
     PluginsAdd {
         path: String,
     },
@@ -679,6 +706,9 @@ impl BuiltinAction {
             BuiltinAction::PluginsReload => "plugins-reload",
             BuiltinAction::PluginsTrust => "plugins-trust",
             BuiltinAction::SessionInfo => "session",
+            BuiltinAction::RolesInfo => "roles",
+            BuiltinAction::RuntimeDoctor => "doctor",
+            BuiltinAction::RuntimeRecover => "recover",
             BuiltinAction::PluginsAdd { .. } => "plugins-add",
             BuiltinAction::PluginsRemove { .. } => "plugins-remove",
             BuiltinAction::PluginsInstall { .. } => "plugins-install",
@@ -711,6 +741,9 @@ impl BuiltinAction {
             BuiltinAction::PluginsReload => false,
             BuiltinAction::PluginsTrust => false,
             BuiltinAction::SessionInfo => false,
+            BuiltinAction::RolesInfo => false,
+            BuiltinAction::RuntimeDoctor => false,
+            BuiltinAction::RuntimeRecover => false,
             BuiltinAction::PluginsAdd { .. } => true,
             BuiltinAction::PluginsRemove { .. } => true,
             BuiltinAction::PluginsInstall { .. } => true,
@@ -1226,6 +1259,28 @@ mod tests {
         assert!(matches!(
             resolve_builtin("compact", "keep auth"),
             Some(BuiltinAction::Compact { user_context: Some(ctx) }) if ctx == "keep auth"
+        ));
+    }
+
+    #[test]
+    fn second_batch_runtime_commands_are_advertised_and_resolved() {
+        for name in ["roles", "doctor", "recover"] {
+            assert!(
+                BUILTIN_COMMANDS.iter().any(|command| command.name == name),
+                "missing built-in command {name}"
+            );
+        }
+        assert!(matches!(
+            resolve_builtin("roles", ""),
+            Some(BuiltinAction::RolesInfo)
+        ));
+        assert!(matches!(
+            resolve_builtin("doctor", ""),
+            Some(BuiltinAction::RuntimeDoctor)
+        ));
+        assert!(matches!(
+            resolve_builtin("recover", ""),
+            Some(BuiltinAction::RuntimeRecover)
         ));
     }
 

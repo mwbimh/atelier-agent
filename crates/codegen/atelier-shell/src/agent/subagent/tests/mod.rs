@@ -3,6 +3,23 @@ use super::*;
 use crate::test_support::lsp_runtime::{
     DummyLspDispatch, ctx_with_toggle, make_request, test_gateway,
 };
+use atelier_provider::RoleId;
+
+#[test]
+fn fixed_runtime_roles_cover_builtin_subagent_types() {
+    assert_eq!(fixed_role_for_subagent_type("explore"), Some(RoleId::Explore));
+    assert_eq!(
+        fixed_role_for_subagent_type("general-purpose"),
+        Some(RoleId::Implement)
+    );
+    assert_eq!(
+        fixed_role_for_subagent_type("code-reviewer"),
+        Some(RoleId::Review)
+    );
+    assert_eq!(fixed_role_for_subagent_type("test"), Some(RoleId::Test));
+    assert_eq!(fixed_role_for_subagent_type("plan"), None);
+    assert_eq!(fixed_role_for_subagent_type("custom-agent"), None);
+}
 /// Invariant: resolving a subagent applies the parent session's
 /// `--tools`/`--disallowed-tools`/`--permission-mode` — driven through
 /// `resolve_agent_definition` so the spawn path can't skip them.

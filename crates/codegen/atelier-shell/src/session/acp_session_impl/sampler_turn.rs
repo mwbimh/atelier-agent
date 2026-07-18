@@ -314,6 +314,7 @@ impl SessionActor {
             max_completion_tokens: cfg.max_completion_tokens,
             temperature: cfg.temperature,
             top_p: cfg.top_p,
+            request_payload: self.role_request_payload.clone(),
             api_backend: cfg.api_backend,
             auth_scheme,
             extra_headers,
@@ -351,6 +352,87 @@ impl SessionActor {
             doom_loop_recovery: self.doom_loop_recovery,
             header_injector: Some(std::sync::Arc::new(TraceContextInjector)),
         }
+    }
+
+    /// Resolve one of Atelier's fixed runtime roles through the live local
+    /// model catalog. The role is captured per helper request, so editing the
+    /// registry affects the next compact/summary/title invocation without
+    /// mutating the active main turn.
+    pub(super) async fn reconstruct_role_config(
+        &self,
+        role_id: atelier_provider::RoleId,
+    ) -> Result<Option<SamplingConfig>, acp::Error> {
+        let registry = atelier_provider::ProviderRegistry::load_or_create(
+            atelier_config::atelier_home().join("providers.toml"),
+        )
+        .map_err(|error| {
+            acp::Error::internal_error().data(format!(
+                "failed to load {} role configuration: {error}",
+                role_id
+            ))
+        })?;
+        let Some(role) = registry
+            .role(role_id)
+            .filter(|role| role.provider != "default" && role.model != "default")
+            .cloned()
+        else {
+            return Ok(None);
+        };
+        let model_id = acp::ModelId::new(format!("{}/{}", role.provider, role.model));
+        let credentials = self.chat_state_handle.get_credentials().await;
+        let session_key = self
+            .auth_manager
+            .as_ref()
+            .and_then(|manager| manager.current_or_expired().map(|auth| auth.key));
+        let models = self.models_manager.models();
+        let Some(mut config) = crate::agent::config::resolve_model_to_sampling_config(
+            model_id.0.as_ref(),
+            &models,
+            session_key.as_deref(),
+            credentials.alpha_test_key.clone(),
+            credentials.client_version.clone(),
+            None,
+        ) else {
+            return Err(acp::Error::invalid_params().data(format!(
+                "configured {} role model is unavailable: {}",
+                role_id, model_id.0
+            )));
+        };
+
+        config.request_payload = role.effective_payload();
+        config.client_identifier = self.client_identifier.clone();
+        config.origin_client = self.origin_client.clone();
+        config.attribution_callback = self.attribution_callback.clone();
+        config.max_retries = Some(self.max_retries);
+        config.doom_loop_recovery = self.doom_loop_recovery;
+        if let Some(raw_effort) = role.effort.as_deref() {
+            config.reasoning_effort = Some(raw_effort.parse().map_err(|error| {
+                acp::Error::invalid_params().data(format!(
+                    "configured {} role effort is invalid ({}): {}",
+                    role_id, raw_effort, error
+                ))
+            })?);
+        }
+        Ok(Some(config))
+    }
+
+    /// Build a client for a fixed helper role. `None` means the role is not
+    /// configured or its model is not in the live catalog; callers then keep
+    /// the existing active-session behavior.
+    pub(super) async fn prepare_role_chat_completion(
+        &self,
+        role_id: atelier_provider::RoleId,
+        force_http1: bool,
+    ) -> Result<Option<(SamplingConfig, atelier_sampler::SamplingClient)>, acp::Error> {
+        self.refresh_token_if_expired().await;
+        let Some(mut config) = self.reconstruct_role_config(role_id).await? else {
+            return Ok(None);
+        };
+        config.force_http1 = force_http1;
+        config.idle_timeout_secs = Some(self.inference_idle_timeout.as_secs());
+        let client = atelier_sampler::SamplingClient::new(config.clone())
+            .map_err(|error| self.to_acp_error(error))?;
+        Ok(Some((config, client)))
     }
     /// Install auto-mode permission classifier with a live LLM side-query
     /// (laziness-classifier pattern: `prepare_chat_completion` +

@@ -43,8 +43,14 @@ mod env_expand;
 pub mod error;
 pub mod event;
 pub mod matcher;
+pub mod policy;
 pub mod result;
 pub mod runner;
 #[cfg(test)]
 mod test_support;
 pub mod trust;
+
+pub use policy::{
+    HardGate, HookDecision, HookEvent, PolicyContext, PolicyDecision, PolicyEngine, PolicyGate,
+    PolicyPrecedence, PolicyRequest, PolicyRule, PolicyScope, PrecedenceGate, RedactionRule,
+};

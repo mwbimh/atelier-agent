@@ -110,11 +110,8 @@ pub type AcpClientGatewaySender = AcpGatewaySender<acp::ClientSide>;
 
 fn before_request<T: AcpRequest>(args: &AcpArgs<T>, tracing: bool) -> Option<String> {
     tracing.then(|| {
-        let method = crate::common::compact_json(&args.method_name());
-        tracing::debug!(
-            "sending {method} request: {}",
-            crate::common::compact_json(&args.request)
-        );
+        let method = args.method_name().to_owned();
+        tracing::debug!(method = %method, "sending request");
         method
     })
 }
@@ -126,15 +123,11 @@ fn after_request<T: Serialize>(
 ) -> bool {
     if let Some(method) = method {
         match response {
-            Ok(ref response) => {
-                tracing::debug!(
-                    "received {method} response: {}",
-                    crate::common::compact_json(&response)
-                );
-            }
+            Ok(_) => tracing::debug!("received {method} response"),
             Err(ref err) => {
                 // Log at debug level - errors are handled visually in the TUI status bar
-                tracing::debug!("received {method} error: {err}");
+                let error = crate::runtime_control::redact_text(&err.to_string());
+                tracing::debug!("received {method} error: {error}");
             }
         }
     }
@@ -376,11 +369,8 @@ impl<S: AcpSide> AcpGatewaySender<S> {
         S::OutMessage: From<AcpArgs<T>>,
     {
         if self.tracing {
-            let method = crate::common::compact_json(&request.method_name());
-            tracing::debug!(
-                "received {method} request: {}",
-                crate::common::compact_json(&request)
-            );
+            let method = request.method_name();
+            tracing::debug!(method = %method, "received request");
         }
         acp_send(request, &self.tx).await
     }

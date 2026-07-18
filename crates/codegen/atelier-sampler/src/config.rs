@@ -11,6 +11,8 @@ use atelier_sampling_types::{
 };
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
+use std::fmt;
 
 use crate::attribution::SharedAttributionCallback;
 use crate::retry::{DEFAULT_MAX_RETRIES, RATE_LIMIT_RETRY_THRESHOLD};
@@ -45,7 +47,7 @@ pub enum AuthScheme {
 /// `SamplerConfig` is handed to the actor. Auth is selected separately
 /// via `auth_scheme`, while `api_backend` controls only the request/response
 /// protocol shape.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct SamplerConfig {
     pub api_key: Option<String>,
     pub base_url: String,
@@ -53,6 +55,13 @@ pub struct SamplerConfig {
     pub max_completion_tokens: Option<u32>,
     pub temperature: Option<f32>,
     pub top_p: Option<f32>,
+    /// Additional JSON fields merged into every inference request body.
+    ///
+    /// This is the transport form of an Atelier role's provider-specific
+    /// payload. It is intentionally opaque to the sampler's typed request
+    /// models and is applied after typed defaults have been materialized.
+    #[serde(default, skip_serializing_if = "Map::is_empty")]
+    pub request_payload: Map<String, Value>,
     pub api_backend: ApiBackend,
     #[serde(default)]
     pub auth_scheme: AuthScheme,
@@ -126,6 +135,70 @@ pub struct SamplerConfig {
     pub header_injector: Option<SharedHeaderInjector>,
 }
 
+impl fmt::Debug for SamplerConfig {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut debug = formatter.debug_struct("SamplerConfig");
+        debug
+            .field("api_key", &self.api_key.as_ref().map(|_| "REDACTED"))
+            .field("base_url", &self.base_url)
+            .field("model", &self.model)
+            .field("max_completion_tokens", &self.max_completion_tokens)
+            .field("temperature", &self.temperature)
+            .field("top_p", &self.top_p)
+            .field(
+                "request_payload",
+                &RedactedJsonMap(self.request_payload.len()),
+            )
+            .field("api_backend", &self.api_backend)
+            .field("auth_scheme", &self.auth_scheme)
+            .field("extra_headers", &RedactedHeaders(self.extra_headers.len()))
+            .field("context_window", &self.context_window)
+            .field("force_http1", &self.force_http1)
+            .field("max_retries", &self.max_retries)
+            .field("stream_tool_calls", &self.stream_tool_calls)
+            .field("idle_timeout_secs", &self.idle_timeout_secs)
+            .field("reasoning_effort", &self.reasoning_effort)
+            .field("origin_client", &self.origin_client)
+            .field("client_identifier", &self.client_identifier)
+            .field("deployment_id", &self.deployment_id)
+            .field("user_id", &self.user_id)
+            .field("client_version", &self.client_version)
+            .field(
+                "has_attribution_callback",
+                &self.attribution_callback.is_some(),
+            )
+            .field("has_bearer_resolver", &self.bearer_resolver.is_some())
+            .field("supports_backend_search", &self.supports_backend_search)
+            .field("compactions_remaining", &self.compactions_remaining)
+            .field("compaction_at_tokens", &self.compaction_at_tokens)
+            .field("doom_loop_recovery", &self.doom_loop_recovery)
+            .field("has_header_injector", &self.header_injector.is_some())
+            .finish()
+    }
+}
+
+struct RedactedJsonMap(usize);
+
+impl fmt::Debug for RedactedJsonMap {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("REDACTED")
+            .field("entries", &self.0)
+            .finish()
+    }
+}
+
+struct RedactedHeaders(usize);
+
+impl fmt::Debug for RedactedHeaders {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("REDACTED")
+            .field("entries", &self.0)
+            .finish()
+    }
+}
+
 impl Default for SamplerConfig {
     /// Empty defaults so callers can use `..Default::default()` and
     /// new fields don't ripple through every literal site.
@@ -137,6 +210,7 @@ impl Default for SamplerConfig {
             max_completion_tokens: None,
             temperature: None,
             top_p: None,
+            request_payload: Map::new(),
             api_backend: ApiBackend::default(),
             auth_scheme: AuthScheme::default(),
             extra_headers: IndexMap::new(),
@@ -242,5 +316,28 @@ mod tests {
             round_tripped.doom_loop_recovery,
             with_policy.doom_loop_recovery
         );
+    }
+
+    #[test]
+    fn debug_redacts_credentials_headers_and_payload_values() {
+        let mut config = SamplerConfig {
+            api_key: Some("api-secret".to_owned()),
+            extra_headers: IndexMap::from([(
+                "Authorization".to_owned(),
+                "Bearer header-secret".to_owned(),
+            )]),
+            ..Default::default()
+        };
+        config.request_payload.insert(
+            "provider_secret".to_owned(),
+            Value::String("payload-secret".to_owned()),
+        );
+
+        let debug = format!("{config:?}");
+
+        assert!(!debug.contains("api-secret"));
+        assert!(!debug.contains("header-secret"));
+        assert!(!debug.contains("payload-secret"));
+        assert!(debug.contains("REDACTED"));
     }
 }

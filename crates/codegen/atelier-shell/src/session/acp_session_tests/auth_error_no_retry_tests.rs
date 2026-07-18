@@ -932,6 +932,7 @@ async fn set_session_model_invalidates_byok_memo_for_same_model_id() {
                 max_completion_tokens: None,
                 temperature: None,
                 top_p: None,
+                request_payload: Default::default(),
                 api_backend: crate::sampling::ApiBackend::ChatCompletions,
                 auth_scheme: Default::default(),
                 extra_headers: Default::default(),

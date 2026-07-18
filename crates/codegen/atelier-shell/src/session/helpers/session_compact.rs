@@ -14,6 +14,194 @@ pub use xai_chat_state::compaction_utils::{
     AUTO_CONTINUE_PROMPT, extract_last_real_user_query, extract_last_user_query,
     extract_messages_since_last_user, extract_real_user_queries, is_synthetic_extracted_query,
 };
+
+/// Runtime-visible state for an internal model request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AuxiliaryRequestState {
+    PreparingContext,
+    WaitingForProvider,
+    StreamingResponse,
+    Compacting,
+    GeneratingSummary,
+    GeneratingTitle,
+    Recovering,
+    Paused,
+    Completed,
+    Failed,
+}
+
+impl AuxiliaryRequestState {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::PreparingContext => "preparing_context",
+            Self::WaitingForProvider => "waiting_for_provider",
+            Self::StreamingResponse => "streaming_response",
+            Self::Compacting => "compacting",
+            Self::GeneratingSummary => "generating_summary",
+            Self::GeneratingTitle => "generating_title",
+            Self::Recovering => "recovering",
+            Self::Paused => "paused",
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+        }
+    }
+
+    fn is_terminal(self) -> bool {
+        matches!(self, Self::Completed | Self::Failed | Self::Paused)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AuxiliaryRequestSnapshot {
+    pub(crate) request_id: String,
+    pub(crate) role: String,
+    pub(crate) provider: String,
+    pub(crate) model: String,
+    pub(crate) state: AuxiliaryRequestState,
+    pub(crate) history: Vec<String>,
+    pub(crate) error: Option<String>,
+}
+
+/// Opaque trace context attached to an auxiliary sampler request.
+#[derive(Debug, Clone)]
+pub(crate) struct AuxiliaryRequestTrace {
+    state: std::sync::Arc<std::sync::Mutex<AuxiliaryRequestSnapshot>>,
+}
+
+impl AuxiliaryRequestTrace {
+    pub(crate) fn snapshot(&self) -> AuxiliaryRequestSnapshot {
+        self.state
+            .lock()
+            .expect("auxiliary request trace mutex poisoned")
+            .clone()
+    }
+}
+
+/// Lifecycle guard shared by compact, recap, and title generation.
+pub(crate) struct AuxiliaryRequestLifecycle {
+    trace: AuxiliaryRequestTrace,
+}
+
+impl AuxiliaryRequestLifecycle {
+    pub(crate) fn new(
+        role: impl Into<String>,
+        provider: impl Into<String>,
+        model: impl Into<String>,
+        request_id: impl Into<String>,
+        state: AuxiliaryRequestState,
+    ) -> Self {
+        let snapshot = AuxiliaryRequestSnapshot {
+            request_id: request_id.into(),
+            role: role.into(),
+            provider: provider.into(),
+            model: model.into(),
+            state,
+            history: vec![state.as_str().to_owned()],
+            error: None,
+        };
+        let lifecycle = Self {
+            trace: AuxiliaryRequestTrace {
+                state: std::sync::Arc::new(std::sync::Mutex::new(snapshot)),
+            },
+        };
+        lifecycle.emit();
+        lifecycle
+    }
+
+    pub(crate) fn trace_context(&self) -> AuxiliaryRequestTrace {
+        self.trace.clone()
+    }
+
+    pub(crate) fn snapshot(&self) -> AuxiliaryRequestSnapshot {
+        self.trace.snapshot()
+    }
+
+    pub(crate) fn transition(&self, state: AuxiliaryRequestState) {
+        {
+            let mut snapshot = self
+                .trace
+                .state
+                .lock()
+                .expect("auxiliary request trace mutex poisoned");
+            snapshot.state = state;
+            snapshot.history.push(state.as_str().to_owned());
+            if snapshot.history.len() > 16 {
+                snapshot.history.remove(0);
+            }
+        }
+        self.emit();
+    }
+
+    pub(crate) fn complete(&self) {
+        self.transition(AuxiliaryRequestState::Completed);
+    }
+
+    pub(crate) fn fail(&self, error: impl Into<String>) {
+        let redacted = xai_acp_lib::redact_text(&error.into());
+        {
+            let mut snapshot = self
+                .trace
+                .state
+                .lock()
+                .expect("auxiliary request trace mutex poisoned");
+            snapshot.error = Some(redacted);
+        }
+        self.transition(AuxiliaryRequestState::Failed);
+    }
+
+    pub(crate) fn recover(&self, diagnostic: impl Into<String>) {
+        let snapshot = self.snapshot();
+        tracing::info!(
+            target: "atelier.runtime",
+            request_id = %snapshot.request_id,
+            role = %snapshot.role,
+            provider = %snapshot.provider,
+            model = %snapshot.model,
+            diagnostic = %diagnostic.into(),
+            "recovering auxiliary model request"
+        );
+        self.transition(AuxiliaryRequestState::Recovering);
+        self.complete();
+    }
+
+    fn emit(&self) {
+        let snapshot = self.snapshot();
+        tracing::debug!(
+            target: "atelier.runtime",
+            request_id = %snapshot.request_id,
+            role = %snapshot.role,
+            provider = %snapshot.provider,
+            model = %snapshot.model,
+            state = snapshot.state.as_str(),
+            error = ?snapshot.error,
+            "auxiliary model request state changed"
+        );
+    }
+}
+
+impl Drop for AuxiliaryRequestLifecycle {
+    fn drop(&mut self) {
+        if !self.snapshot().state.is_terminal() {
+            self.fail("auxiliary request exited before a terminal state");
+        }
+    }
+}
+
+pub(crate) fn auxiliary_provider_label(base_url: &str) -> String {
+    let authority = base_url
+        .trim_end_matches('/')
+        .split_once("://")
+        .map(|(_, rest)| rest)
+        .unwrap_or(base_url)
+        .split('/')
+        .next()
+        .unwrap_or(base_url)
+        .rsplit('@')
+        .next()
+        .unwrap_or(base_url);
+    authority.to_owned()
+}
+
 /// Short, self-narrating compaction prompt used by the short-prompt harness only.
 /// Frames the call as "summarize for a successor assistant who only sees
 /// the user's original query plus this summary." Wrapped in
@@ -362,6 +550,14 @@ pub(crate) async fn generate_session_compact(
         ApiBackend::ChatCompletions => {
             let chat_messages: Vec<ChatRequestMessage> =
                 conversation_to_chat_messages(chat_history);
+            let request_id = format!("xai-compact-{}", uuid::Uuid::new_v4());
+            let lifecycle = AuxiliaryRequestLifecycle::new(
+                "compact",
+                auxiliary_provider_label(&sampling_config.base_url),
+                sampling_config.model.clone(),
+                request_id.clone(),
+                AuxiliaryRequestState::Compacting,
+            );
             let mut message =
                 ChatCompletionRequest::new(sampling_config.model.to_owned(), chat_messages)
                     .with_temperature(1.0);
@@ -377,16 +573,23 @@ pub(crate) async fn generate_session_compact(
             }
             let sid = session_id.to_string();
             message.x_atelier_conv_id = Some(sid.clone());
-            message.x_atelier_req_id = Some(format!("xai-compact-{}", uuid::Uuid::new_v4()));
+            message.x_atelier_req_id = Some(request_id);
             message.x_atelier_session_id = Some(sid);
             message.x_atelier_agent_id = Some(atelier_telemetry::id::agent_id());
+            message.trace = Some(Box::new(lifecycle.trace_context()));
+            lifecycle.transition(AuxiliaryRequestState::WaitingForProvider);
             tracing::info!(
+                role = "compact",
+                provider = %auxiliary_provider_label(&sampling_config.base_url),
                 compact_model = % sampling_config.model, num_messages = num_messages,
                 "Sending compact request (streaming)"
             );
             let stream_result = client.chat_completion_stream(message).await;
             let mut stream = match stream_result {
-                Ok((s, _metadata)) => s,
+                Ok((s, _metadata)) => {
+                    lifecycle.transition(AuxiliaryRequestState::StreamingResponse);
+                    s
+                }
                 Err(e) => return Err(classify_sampling_error(e)),
             };
             let mut timing = StreamTiming::new();
@@ -454,7 +657,7 @@ pub(crate) async fn generate_session_compact(
                     Err(e) => return Err(classify_sampling_error(e)),
                 }
             }
-            CompactOutput {
+            let output = CompactOutput {
                 content,
                 stop_reason,
                 truncated,
@@ -462,9 +665,25 @@ pub(crate) async fn generate_session_compact(
                 stream_ms: timing.stream_ms(),
                 delta_count: timing.count,
                 itl_max_ms: timing.itl_max_ms(),
+            };
+            if output.content.is_empty() {
+                return Err(CompactFailure::Transient(
+                    acp::Error::internal_error()
+                        .data("compact failed: model returned empty response"),
+                ));
             }
+            lifecycle.complete();
+            output
         }
         ApiBackend::Responses => {
+            let request_id = format!("xai-compact-{}", uuid::Uuid::new_v4());
+            let lifecycle = AuxiliaryRequestLifecycle::new(
+                "compact",
+                auxiliary_provider_label(&sampling_config.base_url),
+                sampling_config.model.clone(),
+                request_id.clone(),
+                AuxiliaryRequestState::Compacting,
+            );
             let request = ConversationRequest {
                 items: chat_history,
                 tool_choice: (!tools.is_empty()).then_some(ConversationToolChoice::None),
@@ -473,14 +692,19 @@ pub(crate) async fn generate_session_compact(
                 model: Some(sampling_config.model.to_owned()),
                 temperature: Some(1.0),
                 x_atelier_conv_id: Some(session_id.to_string()),
-                x_atelier_req_id: Some(format!("xai-compact-{}", uuid::Uuid::new_v4())),
+                x_atelier_req_id: Some(request_id),
                 x_atelier_session_id: Some(session_id.to_string()),
                 x_atelier_agent_id: Some(atelier_telemetry::id::agent_id()),
+                trace: Some(Box::new(lifecycle.trace_context())),
                 ..Default::default()
             };
+            lifecycle.transition(AuxiliaryRequestState::WaitingForProvider);
             let stream_result = client.conversation_stream_responses(request).await;
             let mut stream = match stream_result {
-                Ok((s, _metadata, _doom_loop)) => s,
+                Ok((s, _metadata, _doom_loop)) => {
+                    lifecycle.transition(AuxiliaryRequestState::StreamingResponse);
+                    s
+                }
                 Err(e) => return Err(classify_sampling_error(e)),
             };
             let mut timing = StreamTiming::new();
@@ -577,7 +801,7 @@ pub(crate) async fn generate_session_compact(
                     Err(e) => return Err(classify_sampling_error(e)),
                 }
             }
-            CompactOutput {
+            let output = CompactOutput {
                 content,
                 stop_reason: stop_reason.or_else(|| Some("stop".to_string())),
                 truncated,
@@ -585,9 +809,25 @@ pub(crate) async fn generate_session_compact(
                 stream_ms: timing.stream_ms(),
                 delta_count: timing.count,
                 itl_max_ms: timing.itl_max_ms(),
+            };
+            if output.content.is_empty() {
+                return Err(CompactFailure::Transient(
+                    acp::Error::internal_error()
+                        .data("compact failed: model returned empty response"),
+                ));
             }
+            lifecycle.complete();
+            output
         }
         ApiBackend::Messages => {
+            let request_id = format!("xai-compact-{}", uuid::Uuid::new_v4());
+            let lifecycle = AuxiliaryRequestLifecycle::new(
+                "compact",
+                auxiliary_provider_label(&sampling_config.base_url),
+                sampling_config.model.clone(),
+                request_id.clone(),
+                AuxiliaryRequestState::Compacting,
+            );
             let request = ConversationRequest {
                 items: chat_history,
                 tools,
@@ -595,14 +835,19 @@ pub(crate) async fn generate_session_compact(
                 model: Some(sampling_config.model.to_owned()),
                 temperature: Some(1.0),
                 x_atelier_conv_id: Some(session_id.to_string()),
-                x_atelier_req_id: Some(format!("xai-compact-{}", uuid::Uuid::new_v4())),
+                x_atelier_req_id: Some(request_id),
                 x_atelier_session_id: Some(session_id.to_string()),
                 x_atelier_agent_id: Some(atelier_telemetry::id::agent_id()),
+                trace: Some(Box::new(lifecycle.trace_context())),
                 ..Default::default()
             };
+            lifecycle.transition(AuxiliaryRequestState::WaitingForProvider);
             let stream_result = client.conversation_stream_messages(request).await;
             let mut stream = match stream_result {
-                Ok((s, _metadata)) => s,
+                Ok((s, _metadata)) => {
+                    lifecycle.transition(AuxiliaryRequestState::StreamingResponse);
+                    s
+                }
                 Err(e) => return Err(classify_sampling_error(e)),
             };
             let mut timing = StreamTiming::new();
@@ -705,7 +950,7 @@ pub(crate) async fn generate_session_compact(
                     Err(e) => return Err(classify_sampling_error(e)),
                 }
             }
-            CompactOutput {
+            let output = CompactOutput {
                 content,
                 stop_reason,
                 truncated,
@@ -713,7 +958,15 @@ pub(crate) async fn generate_session_compact(
                 stream_ms: timing.stream_ms(),
                 delta_count: timing.count,
                 itl_max_ms: timing.itl_max_ms(),
+            };
+            if output.content.is_empty() {
+                return Err(CompactFailure::Transient(
+                    acp::Error::internal_error()
+                        .data("compact failed: model returned empty response"),
+                ));
             }
+            lifecycle.complete();
+            output
         }
     };
     if output.content.is_empty() {
@@ -733,6 +986,87 @@ pub(crate) async fn generate_session_compact(
 #[cfg(test)]
 mod classify_tests {
     use super::*;
+
+    #[test]
+    fn lifecycle_keeps_role_provider_model_and_state_history() {
+        let lifecycle = AuxiliaryRequestLifecycle::new(
+            "compact",
+            "proxy.example.test",
+            "compact-model",
+            "request-1",
+            AuxiliaryRequestState::Compacting,
+        );
+
+        lifecycle.transition(AuxiliaryRequestState::WaitingForProvider);
+        lifecycle.transition(AuxiliaryRequestState::StreamingResponse);
+        lifecycle.complete();
+
+        let snapshot = lifecycle.snapshot();
+        assert_eq!(snapshot.role, "compact");
+        assert_eq!(snapshot.provider, "proxy.example.test");
+        assert_eq!(snapshot.model, "compact-model");
+        assert_eq!(snapshot.request_id, "request-1");
+        assert_eq!(snapshot.state, AuxiliaryRequestState::Completed);
+        assert_eq!(
+            snapshot.history,
+            vec![
+                "compacting",
+                "waiting_for_provider",
+                "streaming_response",
+                "completed"
+            ]
+        );
+    }
+
+    #[test]
+    fn dropping_an_unfinished_request_marks_it_failed() {
+        let lifecycle = AuxiliaryRequestLifecycle::new(
+            "title",
+            "configured",
+            "title-model",
+            "request-2",
+            AuxiliaryRequestState::GeneratingTitle,
+        );
+        let trace = lifecycle.trace_context();
+
+        drop(lifecycle);
+
+        let snapshot = trace.snapshot();
+        assert_eq!(snapshot.state, AuxiliaryRequestState::Failed);
+        assert_eq!(snapshot.history, vec!["generating_title", "failed"]);
+    }
+
+    #[test]
+    fn recovered_failure_reaches_completed_with_diagnostic() {
+        let lifecycle = AuxiliaryRequestLifecycle::new(
+            "title",
+            "configured",
+            "title-model",
+            "request-3",
+            AuxiliaryRequestState::GeneratingTitle,
+        );
+
+        lifecycle.fail("provider unavailable");
+        lifecycle.recover("fallback title");
+
+        let snapshot = lifecycle.snapshot();
+        assert_eq!(snapshot.state, AuxiliaryRequestState::Completed);
+        assert_eq!(snapshot.error.as_deref(), Some("provider unavailable"));
+        assert_eq!(
+            snapshot.history,
+            vec!["generating_title", "failed", "recovering", "completed"]
+        );
+    }
+
+    #[test]
+    fn provider_label_preserves_the_endpoint_for_diagnostics() {
+        assert_eq!(
+            auxiliary_provider_label("https://proxy.example.test/v1"),
+            "proxy.example.test"
+        );
+        assert_eq!(auxiliary_provider_label("local-provider"), "local-provider");
+    }
+
     fn is_det(failure: &CompactFailure) -> bool {
         matches!(failure, CompactFailure::Deterministic(_))
     }
@@ -1592,6 +1926,7 @@ mod reasoning_compaction_regression_tests {
             max_completion_tokens: Some(1000),
             temperature: Some(0.7),
             top_p: None,
+            request_payload: Default::default(),
             api_backend: ApiBackend::ChatCompletions,
             auth_scheme: Default::default(),
             extra_headers: Default::default(),

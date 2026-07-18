@@ -1611,6 +1611,51 @@ fn build_minimal_agent_for_tests() -> MvpAgent {
     let cfg = AgentConfig::default();
     MvpAgent::new(gateway, &cfg, auth_manager, None).expect("valid test config")
 }
+
+#[tokio::test]
+async fn runtime_policy_denial_is_traced_and_plan_mode_cannot_be_overridden() {
+    let agent = build_minimal_agent_for_tests();
+    agent.replace_runtime_policy(atelier_hooks::PolicyEngine::new([
+        atelier_hooks::PolicyRule::ask(
+            atelier_hooks::PolicyScope::File,
+            "review before editing",
+        ),
+    ]));
+
+    let error = agent
+        .enforce_file_write(
+            Some("session-1"),
+            Some("request-1"),
+            Some("main"),
+            "src/main.rs",
+            true,
+            false,
+        )
+        .expect_err("Plan Mode must block file writes before normal policy");
+    assert!(error.to_string().contains("Plan Mode forbids file writes"));
+
+    let events = agent.runtime_events(None, 0, 8);
+    let event = events.last().expect("policy evaluation trace");
+    assert_eq!(event.kind, "policy.evaluated");
+    assert_eq!(event.request_id.as_deref(), Some("request-1"));
+    assert_eq!(event.details["decision"]["decision"], "deny");
+}
+
+#[tokio::test]
+async fn runtime_policy_denies_provider_requests_and_keeps_the_reason_in_trace() {
+    let agent = build_minimal_agent_for_tests();
+    agent.replace_runtime_policy(atelier_hooks::PolicyEngine::new([
+        atelier_hooks::PolicyRule::deny(atelier_hooks::PolicyScope::Provider, "provider blocked")
+            .with_provider("blocked"),
+    ]));
+
+    let error = agent
+        .enforce_provider_request("session-1", "request-1", Some("main"), Some("blocked"))
+        .expect_err("blocked Provider requests must not be dispatched");
+    assert!(error.to_string().contains("provider blocked"));
+    assert_eq!(agent.runtime_events(None, 0, 8).len(), 1);
+}
+
 /// Build a minimal MvpAgent with pre-loaded auth for gate tests.
 fn build_agent_with_auth(auth: crate::auth::AtelierAuth) -> MvpAgent {
     use crate::agent::config::Config as AgentConfig;

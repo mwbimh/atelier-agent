@@ -19,6 +19,7 @@ use reqwest::header::{
     ACCEPT, AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue, USER_AGENT,
 };
 use serde::Serialize;
+use serde_json::{Map, Value};
 
 use atelier_sampling_types::error::{parse_error_bytes, try_parse_stream_error};
 use atelier_sampling_types::{
@@ -306,16 +307,132 @@ impl std::fmt::Debug for SamplingClient {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Default)]
 struct ClientDefaults {
     model: String,
     max_completion_tokens: Option<u32>,
     temperature: Option<f32>,
     top_p: Option<f32>,
+    request_payload: Map<String, Value>,
     api_backend: ApiBackend,
     auth_scheme: AuthScheme,
     stream_tool_calls: bool,
     doom_loop_recovery: Option<atelier_sampling_types::DoomLoopRecoveryPolicy>,
+}
+
+impl std::fmt::Debug for ClientDefaults {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ClientDefaults")
+            .field("model", &self.model)
+            .field("max_completion_tokens", &self.max_completion_tokens)
+            .field("temperature", &self.temperature)
+            .field("top_p", &self.top_p)
+            .field(
+                "request_payload",
+                &format_args!("REDACTED ({} entries)", self.request_payload.len()),
+            )
+            .field("api_backend", &self.api_backend)
+            .field("auth_scheme", &self.auth_scheme)
+            .field("stream_tool_calls", &self.stream_tool_calls)
+            .field("doom_loop_recovery", &self.doom_loop_recovery)
+            .finish()
+    }
+}
+
+#[cfg(test)]
+mod request_payload_tests {
+    use super::apply_request_payload;
+    use serde_json::{Value, json};
+
+    #[test]
+    fn request_payload_is_merged_into_the_wire_body() {
+        let mut body = json!({
+            "model": "main-model",
+            "temperature": 0.7,
+            "messages": [{"role": "user", "content": "hello"}],
+        });
+        let payload = serde_json::from_value(json!({
+            "temperature": 0.2,
+            "fast_mode": true,
+            "provider_option": {"budget": 123},
+        }))
+        .unwrap();
+
+        apply_request_payload(&mut body, &payload);
+
+        assert_eq!(body["model"], "main-model");
+        assert_eq!(body["messages"][0]["content"], "hello");
+        assert_eq!(body["temperature"], 0.2);
+        assert_eq!(body["fast_mode"], true);
+        assert_eq!(body["provider_option"]["budget"], 123);
+    }
+
+    #[test]
+    fn request_payload_is_ignored_for_non_object_bodies() {
+        let mut body = json!(null);
+        let payload = serde_json::from_value(json!({"fast_mode": true})).unwrap();
+
+        apply_request_payload(&mut body, &payload);
+
+        assert_eq!(body, Value::Null);
+    }
+
+    #[test]
+    fn request_payload_cannot_replace_wire_structure() {
+        let mut body = json!({
+            "model": "main-model",
+            "messages": [{"role": "user", "content": "hello"}],
+            "input": "hello",
+            "tools": [{"type": "function"}],
+            "tool_choice": "none",
+            "stream": true,
+            "stream_options": {"include_usage": true},
+        });
+        let payload = serde_json::from_value(json!({
+            "model": "attacker-model",
+            "messages": [],
+            "input": "attacker-input",
+            "tools": [],
+            "tool_choice": "auto",
+            "stream": false,
+            "stream_options": {},
+            "temperature": 0.2,
+            "provider_option": {"budget": 123},
+        }))
+        .unwrap();
+
+        apply_request_payload(&mut body, &payload);
+
+        assert_eq!(body["model"], "main-model");
+        assert_eq!(body["messages"][0]["content"], "hello");
+        assert_eq!(body["input"], "hello");
+        assert_eq!(body["tools"][0]["type"], "function");
+        assert_eq!(body["tool_choice"], "none");
+        assert_eq!(body["stream"], true);
+        assert_eq!(body["stream_options"]["include_usage"], true);
+        assert_eq!(body["temperature"], 0.2);
+        assert_eq!(body["provider_option"]["budget"], 123);
+    }
+}
+
+fn apply_request_payload(body: &mut Value, payload: &Map<String, Value>) {
+    let Some(object) = body.as_object_mut() else {
+        return;
+    };
+    for (key, value) in payload {
+        if is_protected_request_key(key) {
+            continue;
+        }
+        object.insert(key.clone(), value.clone());
+    }
+}
+
+fn is_protected_request_key(key: &str) -> bool {
+    matches!(
+        key,
+        "model" | "messages" | "input" | "tools" | "tool_choice" | "stream" | "stream_options"
+    )
 }
 
 // =============================================================================
@@ -524,6 +641,7 @@ impl SamplingClient {
             max_completion_tokens: config.max_completion_tokens,
             temperature: config.temperature,
             top_p: config.top_p,
+            request_payload: config.request_payload,
             api_backend: config.api_backend,
             auth_scheme: config.auth_scheme,
             stream_tool_calls: config.stream_tool_calls,
@@ -775,6 +893,15 @@ impl SamplingClient {
         format!("{base}/{path}")
     }
 
+    fn request_body<T: Serialize>(&self, request: &T) -> Result<Value> {
+        let mut body = serde_json::to_value(request).map_err(|e| {
+            tracing::error!("Failed to serialize inference request: {}", e);
+            SamplingError::Serialization(e)
+        })?;
+        apply_request_payload(&mut body, &self.defaults.request_payload);
+        Ok(body)
+    }
+
     fn apply_defaults(&self, mut request: ChatCompletionRequest) -> Result<ChatCompletionRequest> {
         if request.model.is_none() {
             request.model = Some(self.defaults.model.clone());
@@ -861,9 +988,14 @@ impl SamplingClient {
             deployment_id: payload.x_atelier_deployment_id.as_deref(),
             user_id: payload.x_atelier_user_id.as_deref(),
         };
+        let mut request_body = serde_json::to_value(&payload).map_err(|e| {
+            tracing::error!("Failed to serialize chat completion request: {}", e);
+            SamplingError::Serialization(e)
+        })?;
+        apply_request_payload(&mut request_body, &self.defaults.request_payload);
         let http_request = atelier_headers
             .apply(self.post(self.endpoint("chat/completions")))
-            .json(&payload);
+            .json(&request_body);
 
         let response = http_request.send().await.map_err(|e| {
             // Log at debug level; errors are surfaced to the caller.
@@ -919,10 +1051,19 @@ impl SamplingClient {
             deployment_id: payload.x_atelier_deployment_id.as_deref(),
             user_id: payload.x_atelier_user_id.as_deref(),
         };
+        let mut request_body = serde_json::to_value(&streaming_request).map_err(|e| {
+            tracing::error!(
+                "Failed to serialize streaming chat completion request: {}",
+                e
+            );
+            SamplingError::Serialization(e)
+        })?;
+        apply_request_payload(&mut request_body, &self.defaults.request_payload);
+        request_body["stream"] = serde_json::json!(true);
         let http_request = atelier_headers
             .apply(self.post(self.endpoint("chat/completions")))
             .header(ACCEPT, HeaderValue::from_static("text/event-stream"))
-            .json(&streaming_request);
+            .json(&request_body);
 
         let built_request = http_request.build().map_err(|e| {
             tracing::error!("Failed to build HTTP request: {}", e);
@@ -1142,6 +1283,7 @@ impl SamplingClient {
         // it in post-serialize. This is the last surviving piece of the
         // old raw_output machinery.
         atelier_sampling_types::patch_reasoning_text_types(&mut request_body);
+        apply_request_payload(&mut request_body, &self.defaults.request_payload);
         let http_request = atelier_headers
             .apply(self.post(self.endpoint("responses")))
             .json(&request_body);
@@ -1287,6 +1429,7 @@ impl SamplingClient {
             }
         }
         atelier_sampling_types::patch_reasoning_text_types(&mut request_body);
+        apply_request_payload(&mut request_body, &self.defaults.request_payload);
         // Fresh per attempt so signals never leak across retries; `None`
         // (check disabled) sends no header and does no peek work per event.
         let doom_loop = self
@@ -1502,7 +1645,7 @@ impl SamplingClient {
         };
         let http_request = atelier_headers
             .apply(self.post(self.endpoint("messages")))
-            .json(&request.inner);
+            .json(&self.request_body(&request.inner)?);
 
         let response = http_request.send().await.map_err(|e| {
             tracing::debug!("HTTP request failed: {}", e);
@@ -1616,10 +1759,11 @@ impl SamplingClient {
             deployment_id: request.x_atelier_deployment_id.as_deref(),
             user_id: request.x_atelier_user_id.as_deref(),
         };
+        let request_body = self.request_body(&request.inner)?;
         let http_request = atelier_headers
             .apply(self.post(self.endpoint("messages")))
             .header(ACCEPT, HeaderValue::from_static("text/event-stream"))
-            .json(&request.inner);
+            .json(&request_body);
 
         let built_request = http_request.build().map_err(|e| {
             tracing::error!("Failed to build HTTP request: {}", e);
@@ -2021,6 +2165,7 @@ mod tests {
             max_completion_tokens: None,
             temperature: None,
             top_p: None,
+            request_payload: Default::default(),
             api_backend: ApiBackend::ChatCompletions,
             auth_scheme: AuthScheme::Bearer,
             extra_headers: IndexMap::new(),

@@ -632,6 +632,10 @@ pub(crate) struct SessionActor {
     /// `is_telemetry_enabled() && !is_zdr()` — ZDR teams always have this false.
     pub(crate) telemetry_enabled: bool,
     pub(crate) supports_backend_search: std::cell::Cell<bool>,
+    /// Effective payload for the session's fixed `main` role. Kept outside
+    /// ChatState because role configuration is runtime control-plane state,
+    /// not conversation history.
+    pub(crate) role_request_payload: serde_json::Map<String, serde_json::Value>,
     pub(crate) compactions_remaining:
         std::cell::Cell<Option<atelier_sampling_types::CompactionsRemaining>>,
     pub(crate) compaction_at_tokens:

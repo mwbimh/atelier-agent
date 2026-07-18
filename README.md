@@ -23,6 +23,7 @@ add a Provider through `/provider` or the Atelier ACP extensions.
 
 - [Project documents](docs/)
 - [User guide](crates/codegen/atelier-pager/docs/user-guide/)
+- [TypeScript SDK](sdk/typescript/README.md) / [C# SDK](sdk/csharp/README.md)
 - [Third-party notices](THIRD_PARTY_NOTICES.md)
 
 ## Repository layout

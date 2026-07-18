@@ -1,0 +1,665 @@
+//! Local runtime observability and recovery state.
+//!
+//! This module deliberately contains no network client and no UI concerns. It
+//! is the small, in-process control plane shared by the ACP extensions and the
+//! session actor integration. Secrets are never stored here; provider payloads
+//! are expected to be sanitized by the caller before they are recorded.
+
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::collections::{HashMap, VecDeque};
+
+pub use xai_acp_lib::RuntimeState;
+
+const DEFAULT_EVENT_LIMIT: usize = 512;
+const DEFAULT_REQUEST_LIMIT: usize = 128;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeStatus {
+    pub session_id: String,
+    pub state: RuntimeState,
+    pub started_at_ms: u64,
+    pub last_progress_at_ms: u64,
+    pub request_id: Option<String>,
+    pub turn_id: Option<String>,
+    pub role: String,
+    pub provider: Option<String>,
+    pub model: Option<String>,
+    pub timeout_ms: Option<u64>,
+    pub retry_count: u32,
+    pub cancel_supported: bool,
+    pub diagnostic_message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextBlock {
+    pub name: String,
+    pub source: String,
+    pub tokens: u64,
+    pub redacted: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RequestSnapshot {
+    pub request_id: String,
+    pub session_id: String,
+    pub turn_id: Option<String>,
+    pub role: String,
+    pub provider: Option<String>,
+    pub model: Option<String>,
+    pub effort: Option<String>,
+    pub fast_mode: Option<bool>,
+    pub payload: Value,
+    pub context_blocks: Vec<ContextBlock>,
+    pub input_tokens: u64,
+    pub output_token_budget: Option<u64>,
+    pub first_token_latency_ms: Option<u64>,
+    pub total_duration_ms: Option<u64>,
+    pub retry_count: u32,
+    pub http_status: Option<u16>,
+    pub error_stage: Option<String>,
+    pub started_at_ms: u64,
+    pub finished_at_ms: Option<u64>,
+    pub state: RuntimeState,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct TraceRecord {
+    pub event_id: u64,
+    pub timestamp_ms: u64,
+    pub session_id: Option<String>,
+    pub request_id: Option<String>,
+    pub kind: String,
+    pub details: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DoctorIssue {
+    pub session_id: String,
+    pub request_id: Option<String>,
+    pub state: RuntimeState,
+    pub stale_for_ms: u64,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DoctorReport {
+    pub checked_at_ms: u64,
+    pub stale_after_ms: u64,
+    pub issues: Vec<DoctorIssue>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RecoveryAction {
+    Noop,
+    Requested,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RecoveryResult {
+    pub session_id: String,
+    pub action: RecoveryAction,
+    pub message: String,
+}
+
+#[derive(Debug)]
+pub struct RuntimeControl {
+    statuses: HashMap<String, RuntimeStatus>,
+    requests: VecDeque<RequestSnapshot>,
+    events: VecDeque<TraceRecord>,
+    pending_retry_counts: HashMap<String, u32>,
+    next_event_id: u64,
+    request_limit: usize,
+    event_limit: usize,
+}
+
+impl Default for RuntimeControl {
+    fn default() -> Self {
+        Self::new(DEFAULT_REQUEST_LIMIT, DEFAULT_EVENT_LIMIT)
+    }
+}
+
+impl RuntimeControl {
+    pub fn new(request_limit: usize, event_limit: usize) -> Self {
+        Self {
+            statuses: HashMap::new(),
+            requests: VecDeque::new(),
+            events: VecDeque::new(),
+            pending_retry_counts: HashMap::new(),
+            next_event_id: 0,
+            request_limit: request_limit.max(1),
+            event_limit: event_limit.max(1),
+        }
+    }
+
+    pub fn begin_request(
+        &mut self,
+        session_id: impl Into<String>,
+        request_id: impl Into<String>,
+        turn_id: Option<String>,
+        role: impl Into<String>,
+        provider: Option<String>,
+        model: Option<String>,
+        now_ms: u64,
+    ) {
+        let session_id = session_id.into();
+        let request_id = request_id.into();
+        let role = role.into();
+        let retry_count = self
+            .pending_retry_counts
+            .remove(&request_id)
+            .unwrap_or_default();
+        self.statuses.insert(
+            session_id.clone(),
+            RuntimeStatus {
+                session_id: session_id.clone(),
+                state: RuntimeState::PreparingContext,
+                started_at_ms: now_ms,
+                last_progress_at_ms: now_ms,
+                request_id: Some(request_id.clone()),
+                turn_id: turn_id.clone(),
+                role: role.clone(),
+                provider: provider.clone(),
+                model: model.clone(),
+                timeout_ms: None,
+                retry_count,
+                cancel_supported: true,
+                diagnostic_message: None,
+            },
+        );
+        self.requests.push_back(RequestSnapshot {
+            request_id: request_id.clone(),
+            session_id: session_id.clone(),
+            turn_id,
+            role,
+            provider,
+            model,
+            effort: None,
+            fast_mode: None,
+            payload: Value::Object(Default::default()),
+            context_blocks: Vec::new(),
+            input_tokens: 0,
+            output_token_budget: None,
+            first_token_latency_ms: None,
+            total_duration_ms: None,
+            retry_count,
+            http_status: None,
+            error_stage: None,
+            started_at_ms: now_ms,
+            finished_at_ms: None,
+            state: RuntimeState::PreparingContext,
+        });
+        self.trim();
+        self.record_event_at(
+            now_ms,
+            Some(session_id),
+            Some(request_id),
+            "request.started",
+            Value::Null,
+        );
+    }
+
+    pub fn update_status(
+        &mut self,
+        session_id: &str,
+        state: RuntimeState,
+        now_ms: u64,
+        diagnostic_message: Option<String>,
+    ) -> bool {
+        let request_id = {
+            let Some(status) = self.statuses.get_mut(session_id) else {
+                return false;
+            };
+            status.state = state;
+            status.last_progress_at_ms = now_ms;
+            if diagnostic_message.is_some() {
+                status.diagnostic_message =
+                    diagnostic_message.as_deref().map(xai_acp_lib::redact_text);
+            }
+            status.request_id.clone()
+        };
+        if let Some(request_id) = request_id.clone()
+            && let Some(request) = self
+                .requests
+                .iter_mut()
+                .rev()
+                .find(|request| request.request_id == request_id)
+        {
+            request.state = state;
+        }
+        self.record_event_at(
+            now_ms,
+            Some(session_id.to_owned()),
+            request_id,
+            "runtime.state_changed",
+            serde_json::json!({ "state": state }),
+        );
+        true
+    }
+
+    pub fn finish_request(
+        &mut self,
+        session_id: &str,
+        state: RuntimeState,
+        now_ms: u64,
+        error_stage: Option<String>,
+        diagnostic_message: Option<String>,
+    ) -> bool {
+        let (request_id, started_at) = {
+            let Some(status) = self.statuses.get_mut(session_id) else {
+                return false;
+            };
+            status.state = state;
+            status.last_progress_at_ms = now_ms;
+            status.diagnostic_message =
+                diagnostic_message.map(|message| xai_acp_lib::redact_text(&message));
+            (status.request_id.clone(), status.started_at_ms)
+        };
+        if let Some(request_id_ref) = request_id.as_deref()
+            && let Some(request) = self
+                .requests
+                .iter_mut()
+                .rev()
+                .find(|request| request.request_id == request_id_ref)
+        {
+            request.state = state;
+            request.error_stage = error_stage.map(|stage| xai_acp_lib::redact_text(&stage));
+            request.finished_at_ms = Some(now_ms);
+            request.total_duration_ms = Some(now_ms.saturating_sub(started_at));
+        }
+        self.record_event_at(
+            now_ms,
+            Some(session_id.to_owned()),
+            request_id,
+            if state == RuntimeState::Completed {
+                "request.completed"
+            } else {
+                "request.failed"
+            },
+            Value::Null,
+        );
+        true
+    }
+
+    pub fn set_request_context(
+        &mut self,
+        request_id: &str,
+        context_blocks: Vec<ContextBlock>,
+        input_tokens: u64,
+        output_token_budget: Option<u64>,
+        payload: Value,
+    ) -> bool {
+        let Some(request) = self
+            .requests
+            .iter_mut()
+            .rev()
+            .find(|request| request.request_id == request_id)
+        else {
+            return false;
+        };
+        request.context_blocks = context_blocks;
+        request.input_tokens = input_tokens;
+        request.output_token_budget = output_token_budget;
+        request.payload = xai_acp_lib::redact_payload(&payload);
+        true
+    }
+
+    pub fn set_request_parameters(
+        &mut self,
+        request_id: &str,
+        effort: Option<String>,
+        fast_mode: Option<bool>,
+    ) -> bool {
+        let Some(request) = self
+            .requests
+            .iter_mut()
+            .rev()
+            .find(|request| request.request_id == request_id)
+        else {
+            return false;
+        };
+        request.effort = effort;
+        request.fast_mode = fast_mode;
+        true
+    }
+
+    pub fn status(&self, session_id: &str) -> Option<RuntimeStatus> {
+        self.statuses.get(session_id).cloned()
+    }
+
+    pub fn statuses(&self) -> Vec<RuntimeStatus> {
+        let mut statuses: Vec<_> = self.statuses.values().cloned().collect();
+        statuses.sort_by(|left, right| left.session_id.cmp(&right.session_id));
+        statuses
+    }
+
+    pub fn request(&self, request_id: &str) -> Option<RequestSnapshot> {
+        self.requests
+            .iter()
+            .rev()
+            .find(|request| request.request_id == request_id)
+            .cloned()
+    }
+
+    pub fn requests(&self, session_id: Option<&str>) -> Vec<RequestSnapshot> {
+        self.requests
+            .iter()
+            .filter(|request| session_id.is_none_or(|id| id == request.session_id))
+            .cloned()
+            .collect()
+    }
+
+    pub fn record_event(
+        &mut self,
+        session_id: Option<String>,
+        request_id: Option<String>,
+        kind: impl Into<String>,
+        details: Value,
+    ) -> u64 {
+        self.record_event_at(now_millis(), session_id, request_id, kind, details)
+    }
+
+    pub fn prepare_retry(
+        &mut self,
+        request_id: &str,
+        retry_request_id: &str,
+        now_ms: u64,
+    ) -> Option<u32> {
+        let (session_id, retry_count) = {
+            let request = self
+                .requests
+                .iter()
+                .rev()
+                .find(|request| request.request_id == request_id)?;
+            (
+                request.session_id.clone(),
+                request.retry_count.saturating_add(1),
+            )
+        };
+        self.pending_retry_counts
+            .insert(retry_request_id.to_owned(), retry_count);
+        self.record_event_at(
+            now_ms,
+            Some(session_id),
+            Some(request_id.to_owned()),
+            "request.retry_requested",
+            serde_json::json!({
+                "retryOf": request_id,
+                "requestId": retry_request_id,
+                "retryCount": retry_count,
+            }),
+        );
+        Some(retry_count)
+    }
+
+    pub fn discard_pending_retry(&mut self, retry_request_id: &str) {
+        self.pending_retry_counts.remove(retry_request_id);
+    }
+
+    pub fn events_after(
+        &self,
+        session_id: Option<&str>,
+        after_event_id: u64,
+        limit: usize,
+    ) -> Vec<TraceRecord> {
+        self.events
+            .iter()
+            .filter(|event| event.event_id > after_event_id)
+            .filter(|event| session_id.is_none_or(|id| event.session_id.as_deref() == Some(id)))
+            .take(limit.max(1))
+            .cloned()
+            .collect()
+    }
+
+    pub fn oldest_event_id(&self) -> Option<u64> {
+        self.events.front().map(|event| event.event_id)
+    }
+
+    pub fn latest_event_id(&self) -> Option<u64> {
+        self.events.back().map(|event| event.event_id)
+    }
+
+    pub fn doctor(&self, now_ms: u64, stale_after_ms: u64) -> DoctorReport {
+        let issues = self
+            .statuses
+            .values()
+            .filter(|status| !status.state.is_terminal())
+            .filter_map(|status| {
+                let stale_for_ms = now_ms.saturating_sub(status.last_progress_at_ms);
+                (stale_for_ms >= stale_after_ms).then(|| DoctorIssue {
+                    session_id: status.session_id.clone(),
+                    request_id: status.request_id.clone(),
+                    state: status.state,
+                    stale_for_ms,
+                    message: status
+                        .diagnostic_message
+                        .clone()
+                        .unwrap_or_else(|| "runtime has not reported progress".to_owned()),
+                })
+            })
+            .collect();
+        DoctorReport {
+            checked_at_ms: now_ms,
+            stale_after_ms,
+            issues,
+        }
+    }
+
+    pub fn recover(&mut self, session_id: &str, now_ms: u64) -> RecoveryResult {
+        let request_id = {
+            let Some(status) = self.statuses.get_mut(session_id) else {
+                return RecoveryResult {
+                    session_id: session_id.to_owned(),
+                    action: RecoveryAction::Noop,
+                    message: "session has no runtime state".to_owned(),
+                };
+            };
+            if status.state.is_terminal() {
+                return RecoveryResult {
+                    session_id: session_id.to_owned(),
+                    action: RecoveryAction::Noop,
+                    message: "session is already terminal".to_owned(),
+                };
+            }
+            status.state = RuntimeState::Recovering;
+            status.last_progress_at_ms = now_ms;
+            status.diagnostic_message = Some("recovery requested by client".to_owned());
+            status.request_id.clone()
+        };
+        self.record_event_at(
+            now_ms,
+            Some(session_id.to_owned()),
+            request_id,
+            "runtime.recovery_requested",
+            Value::Null,
+        );
+        RecoveryResult {
+            session_id: session_id.to_owned(),
+            action: RecoveryAction::Requested,
+            message: "runtime recovery requested".to_owned(),
+        }
+    }
+
+    fn record_event_at(
+        &mut self,
+        timestamp_ms: u64,
+        session_id: Option<String>,
+        request_id: Option<String>,
+        kind: impl Into<String>,
+        details: Value,
+    ) -> u64 {
+        self.next_event_id = self.next_event_id.saturating_add(1);
+        let event_id = self.next_event_id;
+        self.events.push_back(TraceRecord {
+            event_id,
+            timestamp_ms,
+            session_id,
+            request_id,
+            kind: kind.into(),
+            details: xai_acp_lib::redact_payload(&details),
+        });
+        self.trim();
+        event_id
+    }
+
+    fn trim(&mut self) {
+        while self.requests.len() > self.request_limit {
+            self.requests.pop_front();
+        }
+        while self.events.len() > self.event_limit {
+            self.events.pop_front();
+        }
+    }
+}
+
+pub fn now_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn request_lifecycle_is_recorded_and_queryable() {
+        let mut control = RuntimeControl::new(8, 8);
+        control.begin_request(
+            "session-1",
+            "request-1",
+            Some("turn-1".to_owned()),
+            "main",
+            Some("local".to_owned()),
+            Some("model-a".to_owned()),
+            100,
+        );
+        control.update_status("session-1", RuntimeState::WaitingForProvider, 120, None);
+        assert!(control.set_request_context(
+            "request-1",
+            vec![ContextBlock {
+                name: "system".to_owned(),
+                source: "project".to_owned(),
+                tokens: 12,
+                redacted: false,
+            }],
+            12,
+            Some(256),
+            serde_json::json!({
+                "effort": "high",
+                "api_key": "must-not-leak",
+            }),
+        ));
+        assert!(control.finish_request("session-1", RuntimeState::Completed, 180, None, None));
+
+        let request = control.request("request-1").expect("request snapshot");
+        assert_eq!(request.state, RuntimeState::Completed);
+        assert_eq!(request.total_duration_ms, Some(80));
+        assert_eq!(request.context_blocks[0].tokens, 12);
+        assert_eq!(request.payload["api_key"], xai_acp_lib::REDACTED_VALUE);
+        assert_eq!(
+            control.status("session-1").unwrap().state,
+            RuntimeState::Completed
+        );
+        assert_eq!(control.events_after(None, 0, 10).len(), 3);
+    }
+
+    #[test]
+    fn doctor_finds_only_stale_non_terminal_requests() {
+        let mut control = RuntimeControl::default();
+        control.begin_request("session-1", "request-1", None, "main", None, None, 100);
+        control.begin_request("session-2", "request-2", None, "explore", None, None, 190);
+        let report = control.doctor(200, 50);
+        assert_eq!(report.issues.len(), 1);
+        assert_eq!(report.issues[0].session_id, "session-1");
+        assert_eq!(report.issues[0].stale_for_ms, 100);
+    }
+
+    #[test]
+    fn recovery_is_idempotent_for_terminal_and_unknown_sessions() {
+        let mut control = RuntimeControl::default();
+        let unknown = control.recover("missing", 100);
+        assert_eq!(unknown.action, RecoveryAction::Noop);
+
+        control.begin_request("session-1", "request-1", None, "main", None, None, 0);
+        let requested = control.recover("session-1", 100);
+        assert_eq!(requested.action, RecoveryAction::Requested);
+        assert_eq!(
+            control.status("session-1").unwrap().state,
+            RuntimeState::Recovering
+        );
+
+        control.finish_request("session-1", RuntimeState::Completed, 200, None, None);
+        assert_eq!(
+            control.recover("session-1", 300).action,
+            RecoveryAction::Noop
+        );
+    }
+
+    #[test]
+    fn bounded_buffers_keep_replay_deterministic() {
+        let mut control = RuntimeControl::new(1, 2);
+        control.begin_request("session-1", "request-1", None, "main", None, None, 1);
+        control.begin_request("session-2", "request-2", None, "main", None, None, 2);
+        assert!(control.request("request-1").is_none());
+        assert_eq!(control.events_after(None, 0, 100).len(), 2);
+        assert_eq!(control.events_after(None, 1, 100)[0].event_id, 2);
+        assert_eq!(control.oldest_event_id(), Some(1));
+        assert_eq!(control.latest_event_id(), Some(2));
+    }
+
+    #[test]
+    fn trace_details_and_diagnostics_are_redacted() {
+        let mut control = RuntimeControl::default();
+        control.begin_request("session-1", "request-1", None, "main", None, None, 1);
+        control.update_status(
+            "session-1",
+            RuntimeState::Failed,
+            2,
+            Some("Authorization: Bearer should-not-leak".to_owned()),
+        );
+        control.record_event(
+            Some("session-1".to_owned()),
+            Some("request-1".to_owned()),
+            "provider.failed",
+            serde_json::json!({
+                "message": "token=should-not-leak",
+                "nested": {"api_key": "also-secret"},
+            }),
+        );
+
+        let status = control.status("session-1").unwrap();
+        assert!(
+            !status
+                .diagnostic_message
+                .unwrap()
+                .contains("should-not-leak")
+        );
+        let events = control.events_after(None, 0, 10);
+        let event = events.last().unwrap();
+        let wire = serde_json::to_string(event).unwrap();
+        assert!(!wire.contains("should-not-leak"));
+        assert!(!wire.contains("also-secret"));
+    }
+
+    #[test]
+    fn retry_count_is_carried_into_the_replayed_request() {
+        let mut control = RuntimeControl::default();
+        control.begin_request("session-1", "request-1", None, "main", None, None, 1);
+        control.finish_request("session-1", RuntimeState::Failed, 2, None, None);
+        assert_eq!(control.prepare_retry("request-1", "request-2", 3), Some(1));
+        control.begin_request("session-1", "request-2", None, "main", None, None, 4);
+
+        assert_eq!(control.status("session-1").unwrap().retry_count, 1);
+        assert_eq!(control.request("request-2").unwrap().retry_count, 1);
+    }
+}
