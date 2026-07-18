@@ -11,7 +11,9 @@ The active surface is intentionally small and real:
   starts the child with `CreateProcessAsUserW`, captures stdout/stderr, and
   restores the original ACLs.
 - `atelier-command-runner` exposes the same operation as a fail-closed helper
-  CLI.
+  CLI. Release builds normally invoke the implementation through the hidden
+  `atelier.exe --internal-command-runner ...` mode, so the standalone helper
+  executable is not required beside `atelier.exe`.
 - `ATELIER_HOME` is the only home-directory variable introduced by this
   crate. Telemetry is `None`/no-op and OTEL exporter variables are disabled in
   the child environment.
@@ -26,3 +28,20 @@ first-stage import and must not be inferred from this crate:
 Those features require the larger product dependency graph and separate
 security review. This crate fails closed when roots, cwd, or the command path
 cannot be normalized, and it never falls back to an unsandboxed child.
+
+## Internal release entry point
+
+When `atelier-windows-sandbox` resolves the current executable as the Atelier
+main binary, it starts that same executable with:
+
+```text
+atelier.exe --internal-command-runner \
+  --mode workspace-write \
+  --root <workspace-root> \
+  --cwd <cwd> \
+  -- <program> [args...]
+```
+
+The marker is handled before normal TUI startup. It is intentionally omitted
+from `atelier --help`. `ATELIER_COMMAND_RUNNER` can still point to the
+standalone `atelier-command-runner.exe` for tests or custom packaging.

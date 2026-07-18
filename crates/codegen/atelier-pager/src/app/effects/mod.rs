@@ -3136,6 +3136,45 @@ pub(crate) fn execute(
                     }
                 });
         }
+        Effect::RefreshProviderModels {
+            agent_id,
+            session_id: _session_id,
+            provider_id,
+        } => {
+            let tx = acp_tx.clone();
+            tasks.spawn(async move {
+                let request = acp::ExtRequest::new(
+                    atelier_shell::extensions::provider::PROVIDER_REFRESH_MODELS,
+                    serde_json::value::to_raw_value(&serde_json::json!({
+                        "providerId": provider_id,
+                    }))
+                    .expect("serialize provider refresh params")
+                    .into(),
+                );
+                let provider_id_for_result = provider_id.clone();
+                let result = match acp_send(request, &tx).await {
+                    Ok(resp) => {
+                        let parsed: serde_json::Value =
+                            serde_json::from_str(resp.0.get()).unwrap_or_default();
+                        let message = parsed
+                            .get("result")
+                            .and_then(|value| value.get("message"))
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or("Provider model catalog refreshed")
+                            .to_owned();
+                        Ok(message)
+                    }
+                    Err(error) => Err(sanitize_user_error(&format!(
+                        "provider model refresh failed: {error}"
+                    ))),
+                };
+                TaskResult::ProviderModelsRefreshed {
+                    agent_id,
+                    provider_id: provider_id_for_result,
+                    result,
+                }
+            });
+        }
         Effect::SendRecap { session_id, auto } => {
             let tx = acp_tx.clone();
             tasks

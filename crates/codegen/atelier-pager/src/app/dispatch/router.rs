@@ -892,6 +892,9 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
         Action::SendRememberNote(text) => dispatch_send_remember_note(app, text),
         Action::SaveRememberNoteFromModal => dispatch_save_remember_note_from_modal(app),
         Action::SendBtw(question) => dispatch_send_btw(app, question),
+        Action::RefreshProviderModels(provider_id) => {
+            dispatch_refresh_provider_models(app, provider_id)
+        }
         Action::SendRecap { auto } => dispatch_send_recap(app, auto),
         Action::ShowPrivacyInfo => dispatch_show_privacy_info(app),
         Action::SetCodingDataSharing { opted_in } => set_coding_data_sharing(app, opted_in),
@@ -949,6 +952,7 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
         Action::PreviewAutoDarkTheme(v) => preview_auto_dark_theme(app, v),
         Action::PreviewAutoLightTheme(v) => preview_auto_light_theme(app, v),
         Action::OpenSettings => dispatch_open_settings(app),
+        Action::OpenSlashArgPicker { command } => dispatch_open_slash_arg_picker(app, command),
         Action::OpenCommandPalette => dispatch_open_command_palette(app),
         Action::OpenHowtoGuides => dispatch_open_howto_guides(app),
         Action::OpenResetConfirm { key } => dispatch_open_reset_confirm(app, key),
@@ -1277,6 +1281,65 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
     app.reconcile_foreign_resume_launch();
     sync_sleep_inhibitor(app);
     effects
+}
+
+/// Open the same type-to-filter picker used by `/model`, but for any builtin
+/// slash command that explicitly opts into the interactive entry path.
+fn dispatch_open_slash_arg_picker(app: &mut AppView, command_name: String) -> Vec<Effect> {
+    let ActiveView::Agent(id) = app.active_view else {
+        return vec![];
+    };
+    let Some(agent) = app.agents.get_mut(&id) else {
+        return vec![];
+    };
+    let Some(command) = agent
+        .prompt
+        .slash_controller
+        .registry()
+        .get(&command_name)
+        .cloned()
+    else {
+        return vec![];
+    };
+    let ctx = agent.prompt.slash_controller.app_ctx(&agent.session.models);
+    let Some(items) = command.suggest_args(&ctx, "") else {
+        agent
+            .scrollback
+            .push_block(crate::scrollback::block::RenderBlock::system(format!(
+                "No interactive options available for /{command_name}."
+            )));
+        return vec![];
+    };
+    if items.is_empty() {
+        return vec![];
+    }
+    agent.active_modal = Some(crate::views::modal::ActiveModal::ArgPicker {
+        command: command_name,
+        args_query: String::new(),
+        items: items.clone(),
+        original_items: items,
+        state: crate::views::picker::PickerState::input_active(),
+        previous_palette: None,
+        window: crate::views::modal_window::ModalWindowState::new(),
+    });
+    vec![]
+}
+
+fn dispatch_refresh_provider_models(app: &mut AppView, provider_id: String) -> Vec<Effect> {
+    let ActiveView::Agent(id) = app.active_view else {
+        return vec![];
+    };
+    let Some(agent) = app.agents.get(&id) else {
+        return vec![];
+    };
+    let Some(session_id) = agent.session.session_id.clone() else {
+        return vec![];
+    };
+    vec![Effect::RefreshProviderModels {
+        agent_id: id,
+        session_id,
+        provider_id,
+    }]
 }
 pub(super) fn dispatch_action_result(
     app: &mut AppView,

@@ -6,6 +6,7 @@ use atelier_provider::{
 use std::collections::BTreeMap;
 use url::Url;
 
+use crate::app::actions::Action;
 use crate::slash::command::{AppCtx, ArgItem, CommandExecCtx, CommandResult, SlashCommand};
 
 pub struct ProviderCommand;
@@ -24,28 +25,62 @@ impl SlashCommand for ProviderCommand {
     }
 
     fn usage(&self) -> &str {
-        "/provider [list|add|edit|enable|disable|delete] [id] ..."
+        "/provider [list|add|edit|enable|disable|refresh|delete] [id] ..."
     }
 
     fn takes_args(&self) -> bool {
         true
     }
 
-    fn suggest_args(&self, _ctx: &AppCtx, _args_query: &str) -> Option<Vec<ArgItem>> {
+    fn suggest_args(&self, _ctx: &AppCtx, args_query: &str) -> Option<Vec<ArgItem>> {
+        let query = args_query.trim_end();
+        let mut parts = query.split_whitespace();
+        let command = parts.next();
+        let has_argument = parts.next().is_some();
+
+        if command.is_some() && !has_argument {
+            match command.unwrap_or_default() {
+                "edit" | "enable" | "disable" | "delete" | "refresh" => {
+                    let path = atelier_config::atelier_home().join("providers.toml");
+                    let registry = ProviderRegistry::load_or_create(path).ok()?;
+                    let prefix = command.unwrap_or_default();
+                    let items = registry
+                        .providers()
+                        .map(|provider| ArgItem {
+                            display: provider.id.clone(),
+                            match_text: provider.id.clone(),
+                            insert_text: provider_id_insert_text(&prefix, &provider.id),
+                            description: format!("{prefix} Provider"),
+                        })
+                        .collect::<Vec<_>>();
+                    return (!items.is_empty()).then_some(items);
+                }
+                "add" => return None,
+                _ => {}
+            }
+        }
+
         Some(
-            ["list", "add", "edit", "enable", "disable", "delete"]
-                .into_iter()
-                .map(|command| ArgItem {
-                    display: command.into(),
-                    match_text: command.into(),
-                    insert_text: command.into(),
-                    description: "local Provider registry".into(),
-                })
-                .collect(),
+            [
+                "list", "add ", "edit ", "enable ", "disable ", "refresh ", "delete ",
+            ]
+            .into_iter()
+            .map(|command| ArgItem {
+                display: command.trim().into(),
+                match_text: command.trim().into(),
+                insert_text: command.into(),
+                description: "local Provider registry".into(),
+            })
+            .collect(),
         )
     }
 
     fn run(&self, _ctx: &mut CommandExecCtx, args: &str) -> CommandResult {
+        if args.trim().is_empty() {
+            return CommandResult::Action(Action::OpenSlashArgPicker {
+                command: self.name().to_owned(),
+            });
+        }
         let mut parts = args.split_whitespace();
         let command = parts.next().unwrap_or("list");
         let provider_id = parts.next();
@@ -105,8 +140,29 @@ impl SlashCommand for ProviderCommand {
                 }
                 CommandResult::Message(format_snapshot(&registry))
             }
+            "refresh" => {
+                let Some(provider_id) = provider_id else {
+                    return CommandResult::Error("Usage: /provider refresh <id>".into());
+                };
+                if registry.provider(provider_id).is_none() {
+                    return CommandResult::Error(format!("Provider not found: {provider_id}"));
+                }
+                CommandResult::Action(Action::RefreshProviderModels(provider_id.to_owned()))
+            }
             _ => CommandResult::Error(format!("Usage: {}", self.usage())),
         }
+    }
+}
+
+/// Provider commands that need a free-form tail leave a trailing space after
+/// the selected id. The generic ArgPicker then returns the half-completed
+/// command to the composer instead of submitting an incomplete `/provider
+/// edit` invocation.
+fn provider_id_insert_text(command: &str, provider_id: &str) -> String {
+    if command == "edit" {
+        format!("{command} {provider_id} ")
+    } else {
+        format!("{command} {provider_id}")
     }
 }
 
@@ -189,14 +245,67 @@ fn format_snapshot(registry: &ProviderRegistry) -> String {
 #[cfg(test)]
 mod tests {
     use super::{ProviderCommand, parse_provider_spec};
+    use crate::app::actions::Action;
     use crate::slash::command::SlashCommand;
+    use crate::slash::command::{CommandExecCtx, CommandResult};
     use atelier_provider::{CredentialRef, ProviderProtocol};
+
+    fn empty_ctx() -> CommandExecCtx<'static> {
+        let models = Box::leak(Box::new(crate::acp::model_state::ModelState::default()));
+        let bundle = Box::leak(Box::new(crate::app::bundle::BundleState::default()));
+        CommandExecCtx {
+            models,
+            session_id: None,
+            bundle_state: bundle,
+            screen_mode: crate::app::ScreenMode::Inline,
+            pager_state: crate::settings::PagerLocalSnapshot::default(),
+        }
+    }
 
     #[test]
     fn command_metadata_is_provider_specific() {
         let command = ProviderCommand;
         assert_eq!(command.name(), "provider");
         assert!(command.description().contains("Provider"));
+    }
+
+    #[test]
+    fn empty_provider_command_opens_interactive_picker() {
+        let mut ctx = empty_ctx();
+        assert!(matches!(
+            ProviderCommand.run(&mut ctx, ""),
+            CommandResult::Action(Action::OpenSlashArgPicker { command }) if command == "provider"
+        ));
+    }
+
+    #[test]
+    fn provider_list_remains_a_complete_command() {
+        let mut ctx = empty_ctx();
+        assert!(matches!(
+            ProviderCommand.run(&mut ctx, "list"),
+            CommandResult::Message(message) if message.starts_with("Providers:")
+        ));
+    }
+
+    #[test]
+    fn provider_refresh_is_a_complete_command() {
+        let mut ctx = empty_ctx();
+        assert!(matches!(
+            ProviderCommand.run(&mut ctx, "refresh missing-provider"),
+            CommandResult::Error(message) if message == "Provider not found: missing-provider"
+        ));
+    }
+
+    #[test]
+    fn edit_provider_id_completion_keeps_free_form_args() {
+        assert_eq!(
+            super::provider_id_insert_text("edit", "proxy"),
+            "edit proxy "
+        );
+        assert_eq!(
+            super::provider_id_insert_text("refresh", "proxy"),
+            "refresh proxy"
+        );
     }
 
     #[test]

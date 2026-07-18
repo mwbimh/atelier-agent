@@ -19,17 +19,6 @@ use crate::theme::Theme;
 use crate::views::modal::{self, ActiveModal};
 
 impl AgentView {
-    /// `suggest_args` falls back to model rows when the query is not in effort
-    /// phase. Model-phase reasoning rows use a trailing space in `insert_text`;
-    /// effort rows do not. Require a non-empty list with no trailing-space
-    /// rows before treating the picker as effort phase.
-    fn arg_items_look_like_effort_phase(items: &[crate::slash::command::ArgItem]) -> bool {
-        !items.is_empty()
-            && items
-                .iter()
-                .all(|item| !item.insert_text.ends_with(char::is_whitespace))
-    }
-
     /// Step the model ArgPicker from effort phase back to the model list.
     /// Returns `true` if the modal was updated (caller should not fully close).
     fn try_arg_picker_step_back_from_effort(&mut self) -> bool {
@@ -584,14 +573,13 @@ impl AgentView {
                 InputOutcome::Changed
             }
             ArgPickerStep::Selected(item) => {
-                let chains_to_effort = matches!(command_clone.as_str(), "model" | "m")
-                    && item.insert_text.ends_with(char::is_whitespace);
-                if chains_to_effort {
+                let chains_to_next_picker = item.insert_text.ends_with(char::is_whitespace);
+                if chains_to_next_picker {
                     let next_query = item.insert_text.clone();
                     if let Some(cmd) = self.prompt.slash_controller.registry().get(&command_clone) {
                         let ctx = self.prompt.slash_controller.app_ctx(&self.session.models);
-                        if let Some(effort_items) = cmd.suggest_args(&ctx, &next_query)
-                            && Self::arg_items_look_like_effort_phase(&effort_items)
+                        if let Some(next_items) = cmd.suggest_args(&ctx, &next_query)
+                            && !next_items.is_empty()
                         {
                             if let Some(ActiveModal::ArgPicker {
                                 args_query,
@@ -602,14 +590,27 @@ impl AgentView {
                             }) = self.active_modal.as_mut()
                             {
                                 *args_query = next_query;
-                                *items = effort_items.clone();
-                                *original_items = effort_items;
-                                // Effort sub-step is part of the type-to-find /model picker: open input-focused (cursor + type-to-filter), matching the rest of the flow.
+                                *items = next_items.clone();
+                                *original_items = next_items;
+                                // A command-specific picker can chain more
+                                // than one level (model -> effort, provider
+                                // -> provider id, roles -> role). Keep the
+                                // next step type-to-filterable.
                                 *state = crate::views::picker::PickerState::input_active();
                             }
                             return InputOutcome::Changed;
                         }
                     }
+
+                    // No catalogue-backed next step: leave the partially
+                    // completed command in the composer so the user can type
+                    // the free-form fields. This is the interactive entry
+                    // path for `/provider add`, `/roles set`, and similar
+                    // commands; the complete textual command remains valid.
+                    let draft = format!("/{} {}", command_clone, item.insert_text);
+                    self.active_modal = None;
+                    self.prompt.set_text(&draft);
+                    return InputOutcome::Changed;
                 }
                 let full = format!("/{} {}", command_clone, item.insert_text.trim_end());
                 self.active_modal = None;

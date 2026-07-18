@@ -1,25 +1,40 @@
 # Atelier Workspace Worker
 
 `atelier-workspace-worker` is the local process boundary for workspace file
-operations. It is intentionally separate from the Agent process so a Worker
-failure cannot silently turn into host-side file access.
+operations. It is intentionally a separate child process from the Agent so a
+Worker failure cannot silently turn into host-side file access. In release
+artifacts, the Worker implementation is embedded in `atelier.exe`; the child
+still runs as a separate process, but the package no longer needs to ship a
+second `atelier-workspace-worker.exe` beside it.
 
 ## Binary and startup
 
-The binary is built from the `atelier-workspace` crate:
+The standalone binary is built from the `atelier-workspace` crate:
 
 ```text
 cargo build -p atelier-workspace --bin atelier-workspace-worker
 ```
 
-Packaged builds place the binary beside the main `atelier` executable. The
-`ATELIER_WORKSPACE_WORKER` environment variable can override that path.
+Packaged release builds normally use the main executable in hidden internal
+mode:
+
+```text
+atelier.exe --internal-workspace-worker --root <workspace-root>
+```
+
+The runtime selects this mode automatically when `current_exe()` is
+`atelier.exe`. `ATELIER_WORKSPACE_WORKER` remains an explicit override for
+development, tests, or a package that intentionally ships the standalone
+worker.
 
 The Worker accepts one required argument:
 
 ```text
 atelier-workspace-worker --root <workspace-root>
 ```
+
+The standalone binary and the hidden `atelier.exe` mode speak the same
+protocol and accept the same `--root` argument.
 
 On Windows, the client starts it through the Codex-derived command runner when
 the native sandbox is active. An explicit
@@ -87,6 +102,9 @@ Therefore the current status is `sandbox-preview`, not `full`. The full
 release gate requires routing every file, search, patch, Git, shell, and PTY
 operation through a Worker with cancellation, streaming/backpressure, and
 per-session lifecycle management.
+
+The embedded mode only changes how the Worker code is packaged. It does not
+remove the process boundary or expand the current `sandbox-preview` scope.
 
 ## Security invariants
 

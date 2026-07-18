@@ -1524,6 +1524,9 @@ fn install_heap_profile_hooks() {
     });
 }
 fn main() {
+    if let Some(code) = run_internal_submode() {
+        std::process::exit(code);
+    }
     atelier_pager_minimal::install();
     #[cfg(all(feature = "jemalloc", unix))]
     atelier_pager::memory_release::install_release_hook(purge_jemalloc_retained_pages);
@@ -1595,6 +1598,52 @@ fn main() {
         eprintln!("Error: {e:#}");
         drop(_sentry_guard);
         std::process::exit(1);
+    }
+}
+
+/// Handle process-internal worker modes before TUI, crash handling, tracing,
+/// telemetry, or configuration startup. These modes are deliberately not
+/// advertised by `--help`; they exist only so release artifacts can keep the
+/// process-isolation boundaries without shipping two extra executables.
+fn run_internal_submode() -> Option<i32> {
+    let mut args = std::env::args_os().skip(1);
+    let marker = args.next()?;
+    match marker.to_string_lossy().as_ref() {
+        #[cfg(windows)]
+        "--internal-command-runner" => match atelier_windows_sandbox::run_command_runner(args) {
+            Ok(code) => Some(code),
+            Err(error) => {
+                eprintln!("atelier internal command runner: {error:#}");
+                Some(2)
+            }
+        },
+        "--internal-workspace-worker" => {
+            let root = match atelier_workspace::parse_worker_args(args) {
+                Ok(root) => root,
+                Err(error) => {
+                    eprintln!("atelier internal workspace worker: {error}");
+                    return Some(2);
+                }
+            };
+            let runtime = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(runtime) => runtime,
+                Err(error) => {
+                    eprintln!("atelier internal workspace worker runtime: {error}");
+                    return Some(2);
+                }
+            };
+            match runtime.block_on(atelier_workspace::run_worker(root)) {
+                Ok(()) => Some(0),
+                Err(error) => {
+                    eprintln!("atelier internal workspace worker: {error}");
+                    Some(2)
+                }
+            }
+        }
+        _ => None,
     }
 }
 #[inline(never)]

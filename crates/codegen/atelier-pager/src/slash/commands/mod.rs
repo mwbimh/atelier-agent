@@ -381,7 +381,10 @@ mod tests {
         let mut ctx = make_ctx(&models);
         let cmd = model::ModelCommand;
         let result = cmd.run(&mut ctx, "");
-        assert!(matches!(result, CommandResult::Error(_)));
+        assert!(matches!(
+            result,
+            CommandResult::Action(Action::OpenSlashArgPicker { command }) if command == "model"
+        ));
     }
     #[test]
     fn model_whitespace_only_arg_returns_error() {
@@ -389,7 +392,10 @@ mod tests {
         let mut ctx = make_ctx(&models);
         let cmd = model::ModelCommand;
         let result = cmd.run(&mut ctx, "   ");
-        assert!(matches!(result, CommandResult::Error(_)));
+        assert!(matches!(
+            result,
+            CommandResult::Action(Action::OpenSlashArgPicker { command }) if command == "model"
+        ));
     }
     #[test]
     fn model_suggest_args_returns_available_models() {

@@ -83,6 +83,9 @@ tikv-jemalloc-sys = { workspace = true, optional = true }
 # Heap-profile / stats mallctl helpers (prof.active, prof.dump, epoch, stats.*).
 tikv-jemalloc-ctl = { workspace = true, optional = true, features = ["stats", "use_std"] }
 
+[target.'cfg(windows)'.dependencies]
+atelier-windows-sandbox = { path = "../atelier-windows-sandbox" }
+
 [dev-dependencies]
 serial_test = { workspace = true }
 # `PagerArgs::try_parse_from` in the CLI-parsing unit tests (needs the

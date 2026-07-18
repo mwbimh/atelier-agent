@@ -53,7 +53,10 @@ pub(crate) fn windows_sandbox_invocation(
 
     let runner = atelier_windows_sandbox::command_runner_path()
         .map_err(|error| std::io::Error::other(error.to_string()))?;
-    let runner_args = atelier_windows_sandbox::command_runner_args(
+    let current_exe = std::env::current_exe()?;
+    let runner_args = atelier_windows_sandbox::command_runner_args_for(
+        &runner,
+        &current_exe,
         mode,
         &[cwd.to_path_buf()],
         cwd,

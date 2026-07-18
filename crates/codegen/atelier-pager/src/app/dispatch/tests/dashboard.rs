@@ -1652,6 +1652,28 @@ fn dashboard_slash_model_stages_pending_model() {
     );
 }
 
+/// A bare `/model` on the session-less dashboard keeps the command in the
+/// dispatch input and opens its argument completion path instead of being
+/// silently cleared.
+#[serial_test::serial(ATELIER_AGENT_DASHBOARD)]
+#[test]
+fn dashboard_bare_model_opens_interactive_argument_entry() {
+    let mut app = test_app();
+    seed_model(&mut app, "atelier-4.5", "Atelier 4.5");
+    open_dashboard(&mut app);
+
+    let effects = dispatch_dashboard_dispatch_slash(&mut app, "/model".into());
+
+    assert!(
+        effects.is_empty(),
+        "opening the picker must not spawn a session"
+    );
+    let dashboard = app.dashboard.as_ref().unwrap();
+    assert_eq!(dashboard.dispatch.text(), "/model ");
+    assert!(dashboard.error_toast.is_none());
+    assert!(!dashboard.dispatch.slash_snapshot().matches.is_empty());
+}
+
 /// A tier-restricted command typed into the dashboard dispatch input must
 /// upsell via the feedback toast — not execute, and (crucially) not fall
 /// through the unknown-command path, which would spawn a session whose

@@ -1045,6 +1045,7 @@ dependencies = [
  "atelier-telemetry",
  "atelier-update",
  "atelier-version",
+ "atelier-windows-sandbox",
  "atelier-workspace",
  "clap",
  "cryptify",

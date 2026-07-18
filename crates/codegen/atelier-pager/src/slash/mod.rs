@@ -1406,11 +1406,12 @@ mod tests {
     }
 
     #[test]
-    fn required_arg_command_blocks_without_args() {
+    fn interactive_model_command_is_complete_without_args() {
         let reg = test_registry();
-        // /model has takes_args=true, args_required=true.
-        assert!(!is_command_complete("/model", &reg));
-        assert!(!is_command_complete("/model ", &reg));
+        // /model opens the interactive model picker when no argument is
+        // supplied, so the bare command must reach command.run().
+        assert!(is_command_complete("/model", &reg));
+        assert!(is_command_complete("/model ", &reg));
         assert!(is_command_complete("/model atelier-4", &reg));
     }
 

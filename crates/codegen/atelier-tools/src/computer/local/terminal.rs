@@ -2797,7 +2797,12 @@ fn spawn_shell_command(
                 .cloned()
                 .map(std::ffi::OsString::from)
                 .collect();
-            let runner_args = atelier_windows_sandbox::command_runner_args(
+            let runner = atelier_windows_sandbox::command_runner_path()
+                .map_err(|error| std::io::Error::other(error.to_string()))?;
+            let current_exe = std::env::current_exe()?;
+            let runner_args = atelier_windows_sandbox::command_runner_args_for(
+                &runner,
+                &current_exe,
                 mode,
                 &[cwd.to_path_buf()],
                 cwd,
@@ -2805,8 +2810,6 @@ fn spawn_shell_command(
                 &command_args,
             )
             .map_err(|error| std::io::Error::other(error.to_string()))?;
-            let runner = atelier_windows_sandbox::command_runner_path()
-                .map_err(|error| std::io::Error::other(error.to_string()))?;
             let mut cmd = tokio::process::Command::new(runner);
             cmd.args(runner_args).current_dir(cwd);
             cmd

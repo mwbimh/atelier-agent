@@ -62,8 +62,8 @@ pub use session::{file_state, git, jj};
 pub use upload::environment::{WorkspaceEnvironment, WorkspaceIdentity};
 pub use worker::{
     MAX_WORKER_FRAME_BYTES, WORKER_PROTOCOL_VERSION, WorkerProtocolError, WorkerRequest,
-    WorkerResponse, WorkspaceWorkerClient, WorkspaceWorkerFs, is_worker_method, read_frame,
-    run_worker, write_frame,
+    WorkerResponse, WorkspaceWorkerClient, WorkspaceWorkerFs, is_worker_method, parse_worker_args,
+    read_frame, run_worker, write_frame,
 };
 pub use workspace_ops::{WorkspaceOp, WorkspaceOps};
 pub use xai_hunk_tracker::HunkTrackerHandle;

@@ -19,6 +19,11 @@ cargo check -p atelier-pager-bin
 The release binary is `target/release/atelier`. No browser login is required;
 add a Provider through `/provider` or the Atelier ACP extensions.
 
+Release packaging keeps the Worker and Windows command-runner process
+boundaries, but embeds both implementations in `atelier.exe`. The runtime
+starts them through hidden internal modes, so a normal release directory does
+not need `atelier-command-runner.exe` or `atelier-workspace-worker.exe`.
+
 ## Documentation
 
 - [Project documents](docs/)

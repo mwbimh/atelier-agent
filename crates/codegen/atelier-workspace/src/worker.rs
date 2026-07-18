@@ -477,6 +477,10 @@ fn find_worker_binary(
         )));
     }
 
+    if is_atelier_main_executable(current_exe) && current_exe.is_file() {
+        return Ok(current_exe.to_path_buf());
+    }
+
     let parent = current_exe.parent().ok_or_else(|| {
         WorkspaceError::HubError("current executable has no parent directory".into())
     })?;
@@ -501,20 +505,52 @@ fn find_worker_binary(
     )))
 }
 
+fn is_atelier_main_executable(path: &Path) -> bool {
+    path.file_stem()
+        .and_then(|stem| stem.to_str())
+        .is_some_and(|stem| stem.eq_ignore_ascii_case("atelier"))
+}
+
+fn same_executable(left: &Path, right: &Path) -> bool {
+    if left == right {
+        return true;
+    }
+    match (
+        dunce::canonicalize(left).ok(),
+        dunce::canonicalize(right).ok(),
+    ) {
+        (Some(left), Some(right)) => left == right,
+        _ => false,
+    }
+}
+
+fn worker_args_for_path(
+    worker_path: &Path,
+    current_exe: &Path,
+    root: &Path,
+) -> Vec<std::ffi::OsString> {
+    let mut args = Vec::new();
+    if same_executable(worker_path, current_exe) {
+        args.push(std::ffi::OsString::from("--internal-workspace-worker"));
+    }
+    args.push(std::ffi::OsString::from("--root"));
+    args.push(root.as_os_str().to_owned());
+    args
+}
+
 fn worker_process_command(
     root: &Path,
     worker_path: &Path,
 ) -> WorkspaceResult<(PathBuf, Vec<std::ffi::OsString>)> {
+    let current_exe = std::env::current_exe().map_err(|error| {
+        WorkspaceError::HubError(format!("resolve current executable: {error}"))
+    })?;
+    let worker_args = worker_args_for_path(worker_path, &current_exe, root);
+
     #[cfg(windows)]
     {
         if atelier_sandbox::diagnostics().backend == atelier_sandbox::SandboxBackendKind::Unsafe {
-            return Ok((
-                worker_path.to_path_buf(),
-                vec![
-                    std::ffi::OsString::from("--root"),
-                    root.as_os_str().to_owned(),
-                ],
-            ));
+            return Ok((worker_path.to_path_buf(), worker_args));
         }
         let mode = match atelier_sandbox::windows_child_sandbox_mode() {
             Some("read-only") => atelier_windows_sandbox::SandboxMode::ReadOnly,
@@ -533,15 +569,14 @@ fn worker_process_command(
         };
         let runner = atelier_windows_sandbox::command_runner_path()
             .map_err(|error| WorkspaceError::HubError(error.to_string()))?;
-        let args = atelier_windows_sandbox::command_runner_args(
+        let args = atelier_windows_sandbox::command_runner_args_for(
+            &runner,
+            &current_exe,
             mode,
             &[root.to_path_buf()],
             root,
             worker_path,
-            &[
-                std::ffi::OsString::from("--root"),
-                root.as_os_str().to_owned(),
-            ],
+            &worker_args,
         )
         .map_err(|error| WorkspaceError::HubError(error.to_string()))?;
         return Ok((runner, args));
@@ -549,14 +584,39 @@ fn worker_process_command(
 
     #[cfg(not(windows))]
     {
-        Ok((
-            worker_path.to_path_buf(),
-            vec![
-                std::ffi::OsString::from("--root"),
-                root.as_os_str().to_owned(),
-            ],
-        ))
+        Ok((worker_path.to_path_buf(), worker_args))
     }
+}
+
+/// Parse the command line for the workspace-worker sub-mode.
+pub fn parse_worker_args<I, T>(args: I) -> WorkspaceResult<PathBuf>
+where
+    I: IntoIterator<Item = T>,
+    T: Into<std::ffi::OsString>,
+{
+    let mut args = args.into_iter().map(Into::into);
+    let mut root = None;
+    while let Some(arg) = args.next() {
+        match arg.to_string_lossy().as_ref() {
+            "--internal-workspace-worker" => {}
+            "--root" => {
+                root = Some(PathBuf::from(args.next().ok_or_else(|| {
+                    WorkspaceError::HubError("missing --root value".into())
+                })?));
+            }
+            "--help" | "-h" => {
+                return Err(WorkspaceError::HubError(
+                    "workspace worker requires --root PATH".into(),
+                ));
+            }
+            other => {
+                return Err(WorkspaceError::HubError(format!(
+                    "unknown workspace worker option: {other}"
+                )));
+            }
+        }
+    }
+    root.ok_or_else(|| WorkspaceError::HubError("workspace worker requires --root PATH".into()))
 }
 
 async fn worker_crashed(child: &mut Child) -> WorkspaceError {
@@ -1079,6 +1139,39 @@ mod tests {
                 .contains("workspace worker binary is unavailable")
         );
         assert!(error.to_string().contains(&missing.display().to_string()));
+    }
+
+    #[test]
+    fn embedded_worker_invocation_has_a_hidden_internal_marker() {
+        let args = worker_args_for_path(
+            Path::new(r"C:\bin\atelier.exe"),
+            Path::new(r"C:\bin\atelier.exe"),
+            Path::new(r"C:\workspace"),
+        );
+        assert_eq!(args[0], "--internal-workspace-worker");
+        assert_eq!(args[1], "--root");
+    }
+
+    #[test]
+    fn external_worker_invocation_keeps_the_public_worker_arguments() {
+        let args = worker_args_for_path(
+            Path::new(r"C:\bin\atelier-workspace-worker.exe"),
+            Path::new(r"C:\bin\atelier.exe"),
+            Path::new(r"C:\workspace"),
+        );
+        assert_eq!(args[0], "--root");
+        assert!(!args.iter().any(|arg| arg == "--internal-workspace-worker"));
+    }
+
+    #[test]
+    fn worker_parser_requires_root() {
+        assert!(parse_worker_args(std::iter::empty::<std::ffi::OsString>()).is_err());
+        let root = parse_worker_args([
+            std::ffi::OsString::from("--root"),
+            std::ffi::OsString::from(r"C:\workspace"),
+        ])
+        .expect("worker root");
+        assert_eq!(root, PathBuf::from(r"C:\workspace"));
     }
 
     #[tokio::test]

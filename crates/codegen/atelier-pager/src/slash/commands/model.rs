@@ -44,10 +44,6 @@ impl SlashCommand for ModelCommand {
         true
     }
 
-    fn args_required(&self) -> bool {
-        true
-    }
-
     fn arg_placeholder(&self) -> Option<&str> {
         Some("<model> [effort]")
     }
@@ -67,7 +63,9 @@ impl SlashCommand for ModelCommand {
     fn run(&self, ctx: &mut CommandExecCtx, args: &str) -> CommandResult {
         let trimmed = args.trim();
         if trimmed.is_empty() {
-            return CommandResult::Error("Usage: /model <name> [effort]".into());
+            return CommandResult::Action(Action::OpenSlashArgPicker {
+                command: self.name().to_owned(),
+            });
         }
 
         // Prefer an exact full-string catalog match first. Model display names

@@ -4,6 +4,7 @@ use atelier_provider::{ProviderRegistry, RoleConfig, RoleId};
 use serde_json::Value;
 use std::str::FromStr;
 
+use crate::app::actions::Action;
 use crate::slash::command::{AppCtx, ArgItem, CommandExecCtx, CommandResult, SlashCommand};
 
 pub struct RolesCommand;
@@ -29,13 +30,47 @@ impl SlashCommand for RolesCommand {
         true
     }
 
-    fn suggest_args(&self, _ctx: &AppCtx, _args_query: &str) -> Option<Vec<ArgItem>> {
+    fn suggest_args(&self, _ctx: &AppCtx, args_query: &str) -> Option<Vec<ArgItem>> {
+        let query = args_query.trim_end();
+        let mut parts = query.split_whitespace();
+        let command = parts.next();
+        let has_role = parts.next().is_some();
+        if command.is_some() && !has_role {
+            match command.unwrap_or_default() {
+                "get" | "set" | "payload" | "test" => {
+                    let prefix = command.unwrap_or_default();
+                    return Some(
+                        RoleId::ALL
+                            .into_iter()
+                            .map(|role| ArgItem {
+                                display: role.to_string(),
+                                match_text: role.to_string(),
+                                insert_text: if matches!(prefix, "set" | "payload") {
+                                    format!("{prefix} {role} ")
+                                } else {
+                                    format!("{prefix} {role}")
+                                },
+                                description: "fixed runtime Role".into(),
+                            })
+                            .collect(),
+                    );
+                }
+                _ => {}
+            }
+        }
+        if has_role && matches!(command, Some("set" | "payload")) {
+            // These commands have a free-form provider/model or JSON tail.
+            // Stop the picker after the role id and return the partial command
+            // to the composer for the remaining fields.
+            return None;
+        }
+
         Some(
-            ["list", "get", "set", "payload", "test"]
+            ["list", "get ", "set ", "payload ", "test "]
                 .into_iter()
                 .map(|command| ArgItem {
-                    display: command.into(),
-                    match_text: command.into(),
+                    display: command.trim().into(),
+                    match_text: command.trim().into(),
                     insert_text: command.into(),
                     description: "fixed runtime Role".into(),
                 })
@@ -44,6 +79,11 @@ impl SlashCommand for RolesCommand {
     }
 
     fn run(&self, _ctx: &mut CommandExecCtx, args: &str) -> CommandResult {
+        if args.trim().is_empty() {
+            return CommandResult::Action(Action::OpenSlashArgPicker {
+                command: self.name().to_owned(),
+            });
+        }
         let mut parts = args.split_whitespace();
         let command = parts.next().unwrap_or("list");
         let path = atelier_config::atelier_home().join("providers.toml");
@@ -231,8 +271,61 @@ fn test_role(registry: &ProviderRegistry, role_id: RoleId) -> String {
 #[cfg(test)]
 mod tests {
     use super::{format_role, parse_role_id, parse_role_set, set_role_payload};
+    use crate::app::actions::Action;
+    use crate::slash::command::{CommandExecCtx, CommandResult, SlashCommand};
     use atelier_provider::{RoleConfig, RoleId};
     use serde_json::json;
+
+    fn empty_ctx() -> CommandExecCtx<'static> {
+        let models = Box::leak(Box::new(crate::acp::model_state::ModelState::default()));
+        let bundle = Box::leak(Box::new(crate::app::bundle::BundleState::default()));
+        CommandExecCtx {
+            models,
+            session_id: None,
+            bundle_state: bundle,
+            screen_mode: crate::app::ScreenMode::Inline,
+            pager_state: crate::settings::PagerLocalSnapshot::default(),
+        }
+    }
+
+    #[test]
+    fn empty_roles_command_opens_interactive_picker() {
+        let mut ctx = empty_ctx();
+        assert!(matches!(
+            super::RolesCommand.run(&mut ctx, ""),
+            CommandResult::Action(Action::OpenSlashArgPicker { command }) if command == "roles"
+        ));
+    }
+
+    #[test]
+    fn roles_list_remains_a_complete_command() {
+        let mut ctx = empty_ctx();
+        assert!(matches!(
+            super::RolesCommand.run(&mut ctx, "list"),
+            CommandResult::Message(message) if message.starts_with("Roles:")
+        ));
+    }
+
+    #[test]
+    fn set_role_completion_leaves_free_form_args_in_the_composer() {
+        let models = crate::acp::model_state::ModelState::default();
+        let ctx = crate::slash::command::AppCtx {
+            models: &models,
+            cwd: std::path::Path::new("."),
+            has_session_announcements: false,
+            screen_mode: crate::app::ScreenMode::Inline,
+        };
+        assert!(
+            super::RolesCommand
+                .suggest_args(&ctx, "set main ")
+                .is_none()
+        );
+        assert!(
+            super::RolesCommand
+                .suggest_args(&ctx, "payload main ")
+                .is_none()
+        );
+    }
 
     #[test]
     fn role_parser_accepts_only_the_fixed_role_names() {

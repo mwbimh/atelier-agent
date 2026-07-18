@@ -862,6 +862,20 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             vec![]
         }
         TaskResult::BtwResponse { agent_id, result } => handle_btw_response(app, agent_id, result),
+        TaskResult::ProviderModelsRefreshed {
+            agent_id,
+            provider_id,
+            result,
+        } => {
+            if let Some(agent) = app.agents.get_mut(&agent_id) {
+                let message = match result {
+                    Ok(message) => format!("Provider {provider_id}: {message}"),
+                    Err(error) => format!("Provider {provider_id}: {error}"),
+                };
+                agent.scrollback.push_block(RenderBlock::system(message));
+            }
+            vec![]
+        }
         TaskResult::InterjectQueued { .. } => vec![],
         TaskResult::RecapRequested {
             session_id,

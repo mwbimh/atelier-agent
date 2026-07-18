@@ -1378,6 +1378,17 @@ pub(super) fn dispatch_dashboard_dispatch_slash(app: &mut AppView, text: String)
             }
             vec![]
         }
+        // The dashboard has no AgentView modal host. Keep the command in its
+        // dispatch composer with a trailing space so the normal slash
+        // argument dropdown becomes the interactive entry point.
+        CommandResult::Action(Action::OpenSlashArgPicker { command }) => {
+            if let Some(d) = app.dashboard.as_mut() {
+                d.dispatch.set_text(&format!("/{command} "));
+                d.dispatch.refresh_slash(&app.models);
+                d.error_toast = None;
+            }
+            vec![]
+        }
         CommandResult::Action(Action::ExitSession) => {
             // ExitSession from a session-less surface is meaningless
             // — collapse it to `/dashboard`'s exit semantics.

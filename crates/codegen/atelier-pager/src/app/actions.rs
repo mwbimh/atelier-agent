@@ -566,6 +566,13 @@ pub enum Action {
     /// Open the settings modal (F2, `/settings`, command palette).
     /// If already open, closes it instead of stacking.
     OpenSettings,
+    /// Open the interactive argument picker for a slash command.
+    ///
+    /// This keeps the complete textual command path intact while making a
+    /// bare `/model`, `/provider`, or `/roles` useful from the prompt.
+    OpenSlashArgPicker {
+        command: String,
+    },
     /// Open the command palette (`/help`). The keybinding path (Ctrl+P) opens it
     /// directly in `handle_agent_action`; this lets a slash command reach the
     /// same modal through dispatch.
@@ -665,6 +672,8 @@ pub enum Action {
     SaveRememberNoteFromModal,
     /// Send a /btw side question (bypasses queue, works while agent is busy).
     SendBtw(String),
+    /// Refresh a Provider's model catalog through the live ACP runtime.
+    RefreshProviderModels(String),
     /// Request a session recap ("where was I" summary). `auto` is `true` for
     /// the automatic return-from-away recap, `false` for an explicit `/recap`.
     /// Bypasses the prompt queue (works while the agent is busy).
@@ -1851,6 +1860,12 @@ pub enum Effect {
         session_id: acp::SessionId,
         question: String,
     },
+    /// Refresh a Provider's model catalog via `_atelier/provider/refresh_models`.
+    RefreshProviderModels {
+        agent_id: AgentId,
+        session_id: acp::SessionId,
+        provider_id: String,
+    },
     /// Request a session recap via the atelier/recap ext method. Fire-and-forget:
     /// the recap arrives later as a `SessionRecap` notification.
     SendRecap {
@@ -2513,6 +2528,12 @@ pub enum TaskResult {
     /// Side question (/btw) response received.
     BtwResponse {
         agent_id: AgentId,
+        result: Result<String, String>,
+    },
+    /// Provider model catalog refresh completed.
+    ProviderModelsRefreshed {
+        agent_id: AgentId,
+        provider_id: String,
         result: Result<String, String>,
     },
     /// `atelier/recap` request acknowledged (fire-and-forget). The recap itself
