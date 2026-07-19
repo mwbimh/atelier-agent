@@ -67,6 +67,16 @@ pub struct BtwEntry {
     pub answer: String,
     /// Model used.
     pub model: String,
+    /// Snapshot used for this side query, when available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot_id: Option<String>,
+    /// Provider/model wire-resolution metadata captured at request time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wire_api: Option<atelier_provider::WireApi>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wire_api_source: Option<atelier_provider::WireApiSource>,
     /// Whether the request succeeded.
     pub success: bool,
     /// Error message if failed.

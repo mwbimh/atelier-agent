@@ -1643,6 +1643,8 @@ impl MvpAgent {
             runtime_control: RefCell::new(crate::runtime_control::RuntimeControl::default()),
             policy_engine: RefCell::new(atelier_hooks::PolicyEngine::default()),
             retryable_prompts: RefCell::new(HashMap::new()),
+            detached_prompt_waiters: RefCell::new(HashMap::new()),
+            runtime_subscriptions: RefCell::new(HashSet::new()),
             supervisor_started: std::cell::Cell::new(false),
             announcements_gen: std::cell::Cell::new(0),
             last_emitted_announcements: RefCell::new(Vec::new()),

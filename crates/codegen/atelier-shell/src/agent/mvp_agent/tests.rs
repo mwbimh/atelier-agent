@@ -2160,6 +2160,7 @@ fn find_model_by_id_prefers_key_then_falls_back_to_slug() {
         api_key: None,
         env_key: None,
         api_base_url: None,
+        request_payload: serde_json::Map::new(),
     };
     let mut models = indexmap::IndexMap::new();
     models.insert("a".to_string(), entry("target"));

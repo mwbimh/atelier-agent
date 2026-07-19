@@ -50,3 +50,4 @@ Automate, script, and integrate Atelier with other systems.
 | 20 | [Background Tasks and Monitoring](20-background-tasks.md) | `background: true`, `/loop`, `monitor`, and `Ctrl+G` to demote |
 | 21 | [Terminal Support and Troubleshooting](21-terminal-support.md) | tmux, SSH, truecolor, clipboard, and OSC 52 |
 | 22 | [Permissions and Safety Controls](22-permissions-and-safety.md) | `dontAsk` mode, auto-approved tools, the safe-bash list, and restrictive PreToolUse hooks (such as git/gh-only) |
+| 23 | [Third-batch Runtime features](25-third-batch-runtime.md) | Explicit context snapshots, `/btw`, background attach, and model-level Wire API configuration |

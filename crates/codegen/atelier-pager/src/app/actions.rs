@@ -573,6 +573,11 @@ pub enum Action {
     OpenSlashArgPicker {
         command: String,
     },
+    /// Put a free-form slash command entry in the composer without executing
+    /// it. Used by entry-point commands such as bare `/btw`.
+    OpenSlashCommandInput {
+        command: String,
+    },
     /// Open the command palette (`/help`). The keybinding path (Ctrl+P) opens it
     /// directly in `handle_agent_action`; this lets a slash command reach the
     /// same modal through dispatch.
@@ -672,6 +677,11 @@ pub enum Action {
     SaveRememberNoteFromModal,
     /// Send a /btw side question (bypasses queue, works while agent is busy).
     SendBtw(String),
+    /// Invoke a versioned Atelier control-plane extension from a slash command.
+    RuntimeExtension {
+        method: String,
+        params: serde_json::Value,
+    },
     /// Refresh a Provider's model catalog through the live ACP runtime.
     RefreshProviderModels(String),
     /// Request a session recap ("where was I" summary). `auto` is `true` for
@@ -1860,6 +1870,13 @@ pub enum Effect {
         session_id: acp::SessionId,
         question: String,
     },
+    /// Invoke a control-plane extension without coupling the slash command
+    /// layer to the ACP transport details.
+    RuntimeExtension {
+        agent_id: AgentId,
+        method: String,
+        params: serde_json::Value,
+    },
     /// Refresh a Provider's model catalog via `_atelier/provider/refresh_models`.
     RefreshProviderModels {
         agent_id: AgentId,
@@ -2055,6 +2072,22 @@ pub enum SubagentKillOutcome {
     /// row alone rather than show a false terminal state.
     RpcFailed,
 }
+/// Raw result metadata for one `/btw` request.
+///
+/// The pager keeps the unformatted answer and resolution metadata separately
+/// so pressing `P` can persist exactly the answer that was displayed instead
+/// of issuing a second model request.
+#[derive(Debug, Clone)]
+pub struct BtwResponseData {
+    pub btw_id: String,
+    pub snapshot_id: Option<String>,
+    pub answer: String,
+    pub provider: Option<String>,
+    pub model: String,
+    pub wire_api: Option<String>,
+    pub wire_api_source: Option<String>,
+}
+
 /// Result from a completed async [`Effect`].
 ///
 /// Wrapped in `Action::TaskComplete` and dispatched synchronously.
@@ -2528,7 +2561,21 @@ pub enum TaskResult {
     /// Side question (/btw) response received.
     BtwResponse {
         agent_id: AgentId,
-        result: Result<String, String>,
+        result: Result<BtwResponseData, String>,
+    },
+    /// A control-plane slash command failed at the transport boundary.
+    RuntimeExtensionFailed {
+        agent_id: AgentId,
+        method: String,
+        error: String,
+    },
+    /// A control-plane slash command returned successfully. The response is
+    /// kept as text so the runtime can evolve its JSON payloads without
+    /// coupling the pager slash layer to every extension schema.
+    RuntimeExtensionComplete {
+        agent_id: AgentId,
+        method: String,
+        response: String,
     },
     /// Provider model catalog refresh completed.
     ProviderModelsRefreshed {

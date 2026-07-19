@@ -7,7 +7,8 @@
 use agent_client_protocol as acp;
 use atelier_provider::{
     CapabilityOverrides, CredentialRef, ModelDescriptor, ModelKey, ProviderConfig,
-    ProviderDiscovery, ProviderError, ProviderProtocol, ProviderRegistry, ProviderSnapshot,
+    ProviderDiscovery, ProviderError, ProviderModelOverride, ProviderProtocol, ProviderRegistry,
+    ProviderSnapshot, WireApi,
 };
 use serde::Deserialize;
 
@@ -22,7 +23,13 @@ pub const PROVIDER_TEST: &str = "_atelier/provider/test";
 pub const PROVIDER_REFRESH_MODELS: &str = "_atelier/provider/refresh_models";
 pub const PROVIDER_ENABLE: &str = "_atelier/provider/enable";
 pub const MODEL_LIST: &str = "_atelier/model/list";
+pub const MODEL_GET: &str = "_atelier/model/get";
 pub const MODEL_UPDATE: &str = "_atelier/model/update";
+pub const MODEL_UPDATE_WIRE_API: &str = "_atelier/model/update_wire_api";
+pub const MODEL_PROVIDER_OVERRIDE_LIST: &str = "_atelier/model_provider_override/list";
+pub const MODEL_PROVIDER_OVERRIDE_SET: &str = "_atelier/model_provider_override/set";
+pub const MODEL_PROVIDER_OVERRIDE_DELETE: &str = "_atelier/model_provider_override/delete";
+pub const MODEL_PROVIDER_OVERRIDE_TEST: &str = "_atelier/model_provider_override/test";
 pub const MODEL_SET_DEFAULT: &str = "_atelier/model/set_default";
 pub const MODEL_SET_CAPABILITIES: &str = "_atelier/model/set_capabilities";
 pub const CREDENTIAL_STATUS: &str = "_atelier/credential/status";
@@ -78,6 +85,37 @@ struct CapabilityParams {
     overrides: CapabilityOverrides,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WireApiParams {
+    model_key: String,
+    wire_api: Option<WireApi>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ModelOverrideParams {
+    model_key: String,
+    #[serde(default)]
+    wire_api: Option<WireApi>,
+    #[serde(default)]
+    payload: serde_json::Map<String, serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ModelOverrideDeleteParams {
+    model_key: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ModelOverrideTestParams {
+    model_key: String,
+    #[serde(default)]
+    execute: bool,
+}
+
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ProviderStatus {
@@ -110,7 +148,23 @@ pub async fn handle(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
             refresh_models(agent, args).await
         }
         PROVIDER_ENABLE | "atelier/provider/enable" => set_provider_enabled(agent, args),
+        MODEL_GET | "atelier/model/get" => get_model(args),
         MODEL_UPDATE | "atelier/model/update" => upsert_model(agent, args),
+        MODEL_UPDATE_WIRE_API | "atelier/model/update_wire_api" => {
+            update_model_wire_api(agent, args)
+        }
+        MODEL_PROVIDER_OVERRIDE_LIST | "atelier/model_provider_override/list" => {
+            list_model_provider_overrides(args)
+        }
+        MODEL_PROVIDER_OVERRIDE_SET | "atelier/model_provider_override/set" => {
+            set_model_provider_override(agent, args)
+        }
+        MODEL_PROVIDER_OVERRIDE_DELETE | "atelier/model_provider_override/delete" => {
+            delete_model_provider_override(agent, args)
+        }
+        MODEL_PROVIDER_OVERRIDE_TEST | "atelier/model_provider_override/test" => {
+            test_model_provider_override(args).await
+        }
         MODEL_SET_DEFAULT | "atelier/model/set_default" => set_default_model(agent, args),
         MODEL_SET_CAPABILITIES | "atelier/model/set_capabilities" => set_capabilities(agent, args),
         CREDENTIAL_STATUS | "atelier/credential/status" => credential_status(),
@@ -137,6 +191,149 @@ fn list(args: &acp::ExtRequest) -> ExtResult {
         }));
     }
     to_raw_response(&registry.snapshot())
+}
+
+fn get_model(args: &acp::ExtRequest) -> ExtResult {
+    let params: ModelKeyParams = parse_params(args)?;
+    let registry = registry().map_err(to_acp_error)?;
+    let key = parse_model_key(params)?.ok_or_else(|| {
+        acp::Error::invalid_params().data("modelKey or providerId + modelId is required")
+    })?;
+    let model = registry
+        .model(&key)
+        .ok_or_else(|| ProviderError::ModelNotFound(key.to_string()))
+        .map_err(to_acp_error)?;
+    let resolved = registry.resolve_wire_api(&key).map_err(to_acp_error)?;
+    to_raw_response(&serde_json::json!({
+        "model": model,
+        "wireApi": resolved.wire_api,
+        "wireApiSource": format!("{:?}", resolved.source),
+        "providerModelOverride": registry.model_provider_override(&key),
+    }))
+}
+
+fn update_model_wire_api(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
+    let params: WireApiParams = parse_params(args)?;
+    let key = ModelKey::parse(&params.model_key).map_err(to_acp_error)?;
+    let mut registry = registry().map_err(to_acp_error)?;
+    registry
+        .set_model_wire_api(&key, params.wire_api)
+        .map_err(to_acp_error)?;
+    persist(&registry).map_err(to_acp_error)?;
+    reload_live_catalog(agent)?;
+    get_model_from_registry(&registry, &key)
+}
+
+fn list_model_provider_overrides(args: &acp::ExtRequest) -> ExtResult {
+    let params: ModelKeyParams = parse_params(args)?;
+    let registry = registry().map_err(to_acp_error)?;
+    if let Some(key) = parse_model_key(params)? {
+        return to_raw_response(&serde_json::json!({
+            "modelKey": key.to_string(),
+            "override": registry.model_provider_override(&key),
+            "resolved": registry.resolve_wire_api(&key).map_err(to_acp_error)?,
+        }));
+    }
+    let overrides: Vec<_> = registry
+        .snapshot()
+        .model_provider_overrides
+        .into_iter()
+        .map(|(model_key, override_config)| {
+            serde_json::json!({
+                "modelKey": model_key,
+                "override": override_config,
+            })
+        })
+        .collect();
+    to_raw_response(&serde_json::json!({ "overrides": overrides }))
+}
+
+fn set_model_provider_override(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
+    let params: ModelOverrideParams = parse_params(args)?;
+    let key = ModelKey::parse(&params.model_key).map_err(to_acp_error)?;
+    let mut registry = registry().map_err(to_acp_error)?;
+    registry
+        .set_model_provider_override(
+            &key,
+            ProviderModelOverride {
+                wire_api: params.wire_api,
+                payload: params.payload,
+            },
+        )
+        .map_err(to_acp_error)?;
+    persist(&registry).map_err(to_acp_error)?;
+    reload_live_catalog(agent)?;
+    get_model_from_registry(&registry, &key)
+}
+
+fn delete_model_provider_override(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
+    let params: ModelOverrideDeleteParams = parse_params(args)?;
+    let key = ModelKey::parse(&params.model_key).map_err(to_acp_error)?;
+    let mut registry = registry().map_err(to_acp_error)?;
+    let removed = registry
+        .remove_model_provider_override(&key)
+        .map_err(to_acp_error)?;
+    persist(&registry).map_err(to_acp_error)?;
+    reload_live_catalog(agent)?;
+    to_raw_response(&serde_json::json!({
+        "modelKey": key.to_string(),
+        "removed": removed,
+        "resolved": registry.resolve_wire_api(&key).map_err(to_acp_error)?,
+    }))
+}
+
+async fn test_model_provider_override(args: &acp::ExtRequest) -> ExtResult {
+    let params: ModelOverrideTestParams = parse_params(args)?;
+    let key = ModelKey::parse(&params.model_key).map_err(to_acp_error)?;
+    let registry = registry().map_err(to_acp_error)?;
+    let resolved = registry.resolve_wire_api(&key).map_err(to_acp_error)?;
+    let provider = registry
+        .provider(&key.provider_id)
+        .cloned()
+        .ok_or_else(|| ProviderError::ProviderNotFound(key.provider_id.clone()))
+        .map_err(to_acp_error)?;
+    let endpoint = provider_endpoint(&provider, resolved.wire_api);
+    if !params.execute {
+        return to_raw_response(&serde_json::json!({
+            "modelKey": key.to_string(),
+            "providerId": provider.id,
+            "model": key.model_id,
+            "wireApi": resolved.wire_api,
+            "endpoint": endpoint,
+            "executed": false,
+            "message": "pair test preview; set execute=true to send a minimal request",
+        }));
+    }
+    let request = build_provider_post_request(&provider, endpoint.clone(), resolved.wire_api)
+        .map_err(to_acp_error)?
+        .json(&minimal_pair_test_payload(&key.model_id, resolved.wire_api));
+    let response = request.send().await.map_err(|error| {
+        acp::Error::internal_error().data(format!("model pair test failed: {error}"))
+    })?;
+    let status = response.status();
+    to_raw_response(&serde_json::json!({
+        "modelKey": key.to_string(),
+        "providerId": provider.id,
+        "wireApi": resolved.wire_api,
+        "endpoint": endpoint,
+        "executed": true,
+        "ok": status.is_success(),
+        "httpStatus": status.as_u16(),
+    }))
+}
+
+fn get_model_from_registry(registry: &ProviderRegistry, key: &ModelKey) -> ExtResult {
+    let model = registry
+        .model(key)
+        .ok_or_else(|| ProviderError::ModelNotFound(key.to_string()))
+        .map_err(to_acp_error)?;
+    let resolved = registry.resolve_wire_api(key).map_err(to_acp_error)?;
+    to_raw_response(&serde_json::json!({
+        "model": model,
+        "wireApi": resolved.wire_api,
+        "wireApiSource": format!("{:?}", resolved.source),
+        "providerModelOverride": registry.model_provider_override(key),
+    }))
 }
 
 fn upsert_provider(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
@@ -407,17 +604,50 @@ fn build_provider_request(
     provider: &ProviderConfig,
     url: url::Url,
 ) -> Result<reqwest::RequestBuilder, ProviderError> {
+    Ok(crate::http::shared_client()
+        .get(url)
+        .timeout(std::time::Duration::from_secs(15))
+        .headers(provider_headers(provider)?))
+}
+
+fn build_provider_post_request(
+    provider: &ProviderConfig,
+    url: url::Url,
+    wire_api: WireApi,
+) -> Result<reqwest::RequestBuilder, ProviderError> {
+    Ok(crate::http::shared_client()
+        .post(url)
+        .timeout(std::time::Duration::from_secs(15))
+        .headers(provider_headers_for_wire_api(provider, Some(wire_api))?))
+}
+
+fn provider_headers(
+    provider: &ProviderConfig,
+) -> Result<reqwest::header::HeaderMap, ProviderError> {
+    provider_headers_for_wire_api(provider, None)
+}
+
+fn provider_headers_for_wire_api(
+    provider: &ProviderConfig,
+    wire_api: Option<WireApi>,
+) -> Result<reqwest::header::HeaderMap, ProviderError> {
     use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 
-    let client = crate::http::shared_client();
     let mut headers = HeaderMap::new();
     if let Some(secret) = provider.credential.resolve()? {
-        let (name, value) = match &provider.protocol {
-            ProviderProtocol::AnthropicMessages => ("x-api-key", secret.expose_secret().to_owned()),
-            ProviderProtocol::OpenAiResponses | ProviderProtocol::OpenAiChatCompletions => (
+        let use_messages_auth = wire_api
+            .map(|wire_api| wire_api == WireApi::Messages)
+            .unwrap_or(matches!(
+                provider.protocol,
+                ProviderProtocol::AnthropicMessages
+            ));
+        let (name, value) = if use_messages_auth {
+            ("x-api-key", secret.expose_secret().to_owned())
+        } else {
+            (
                 "authorization",
                 format!("Bearer {}", secret.expose_secret()),
-            ),
+            )
         };
         headers.insert(
             HeaderName::from_static(name),
@@ -435,10 +665,37 @@ fn build_provider_request(
         })?;
         headers.insert(name, value);
     }
-    Ok(client
-        .get(url)
-        .timeout(std::time::Duration::from_secs(15))
-        .headers(headers))
+    Ok(headers)
+}
+
+fn minimal_pair_test_payload(model: &str, wire_api: WireApi) -> serde_json::Value {
+    match wire_api {
+        WireApi::ChatCompletions => serde_json::json!({
+            "model": model,
+            "messages": [{ "role": "user", "content": "ping" }],
+            "max_tokens": 1,
+            "stream": false,
+        }),
+        WireApi::Responses => serde_json::json!({
+            "model": model,
+            "input": "ping",
+            "max_output_tokens": 1,
+            "stream": false,
+        }),
+        WireApi::Messages => serde_json::json!({
+            "model": model,
+            "messages": [{ "role": "user", "content": "ping" }],
+            "max_tokens": 1,
+            "stream": false,
+        }),
+    }
+}
+
+fn provider_endpoint(provider: &ProviderConfig, wire_api: WireApi) -> url::Url {
+    let mut url = provider.base_url.clone();
+    let path = url.path().trim_end_matches('/');
+    url.set_path(&format!("{path}/{}", wire_api.endpoint_suffix()));
+    url
 }
 
 fn parse_model_key(params: ModelKeyParams) -> Result<Option<ModelKey>, acp::Error> {
@@ -473,8 +730,8 @@ fn to_acp_error(error: ProviderError) -> acp::Error {
 
 #[cfg(test)]
 mod tests {
-    use super::{apply_credential_update, parse_model_key};
-    use atelier_provider::{CredentialRef, ProviderConfig, ProviderProtocol};
+    use super::{apply_credential_update, minimal_pair_test_payload, parse_model_key};
+    use atelier_provider::{CredentialRef, ProviderConfig, ProviderProtocol, WireApi};
     use std::collections::BTreeMap;
     use url::Url;
 
@@ -529,5 +786,21 @@ mod tests {
             ))
         );
         assert!(matches!(provider.credential, CredentialRef::None));
+    }
+
+    #[test]
+    fn pair_test_payload_matches_each_wire_api() {
+        let chat = minimal_pair_test_payload("model", WireApi::ChatCompletions);
+        assert!(chat.get("messages").is_some());
+        assert!(chat.get("input").is_none());
+
+        let responses = minimal_pair_test_payload("model", WireApi::Responses);
+        assert_eq!(responses["input"], "ping");
+        assert_eq!(responses["max_output_tokens"], 1);
+        assert!(responses.get("messages").is_none());
+
+        let messages = minimal_pair_test_payload("model", WireApi::Messages);
+        assert!(messages.get("messages").is_some());
+        assert_eq!(messages["max_tokens"], 1);
     }
 }

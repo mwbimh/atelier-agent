@@ -193,6 +193,150 @@ pub enum ProviderProtocol {
     AnthropicMessages,
 }
 
+/// Wire protocol used for one model request.
+///
+/// Provider configuration predates model-level routing and still stores a
+/// `ProviderProtocol`. New model configuration uses this smaller transport
+/// enum so a single provider can serve different models through different
+/// compatible endpoints.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WireApi {
+    ChatCompletions,
+    Responses,
+    Messages,
+}
+
+impl WireApi {
+    pub fn from_provider_protocol(protocol: &ProviderProtocol) -> Self {
+        match protocol {
+            ProviderProtocol::OpenAiResponses => Self::Responses,
+            ProviderProtocol::OpenAiChatCompletions => Self::ChatCompletions,
+            ProviderProtocol::AnthropicMessages => Self::Messages,
+        }
+    }
+
+    pub const fn endpoint_suffix(self) -> &'static str {
+        match self {
+            Self::ChatCompletions => "chat/completions",
+            Self::Responses => "responses",
+            Self::Messages => "messages",
+        }
+    }
+}
+
+/// Provider/model-specific request configuration.
+///
+/// The payload is deliberately limited to non-credential JSON fields. API
+/// credentials and headers remain owned by [`ProviderConfig`].
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProviderModelOverride {
+    #[serde(default)]
+    pub wire_api: Option<WireApi>,
+    #[serde(default)]
+    pub payload: Map<String, Value>,
+}
+
+/// Provider-independent model settings.  The catalog still keeps
+/// `ModelKey` entries for selecting a concrete provider/model pair, while
+/// these settings hold the model-wide Wire API and pair-specific overrides.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ModelConfig {
+    pub id: String,
+    #[serde(default)]
+    pub display_name: String,
+    #[serde(default)]
+    pub wire_api: Option<WireApi>,
+    #[serde(default)]
+    pub provider_overrides: BTreeMap<String, ProviderModelOverride>,
+}
+
+impl ModelConfig {
+    fn new(id: impl Into<String>, display_name: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            display_name: display_name.into(),
+            wire_api: None,
+            provider_overrides: BTreeMap::new(),
+        }
+    }
+}
+
+impl ProviderModelOverride {
+    pub fn empty() -> Self {
+        Self {
+            wire_api: None,
+            payload: Map::new(),
+        }
+    }
+
+    pub fn validate(&self) -> Result<(), ProviderError> {
+        if let Some(key) = find_sensitive_payload_key(&self.payload) {
+            return Err(ProviderError::InvalidProvider(format!(
+                "model override payload contains credential-like key: {key}"
+            )));
+        }
+        Ok(())
+    }
+}
+
+impl fmt::Debug for ProviderModelOverride {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ProviderModelOverride")
+            .field("wire_api", &self.wire_api)
+            .field("payload", &RedactedPayload(self.payload.len()))
+            .finish()
+    }
+}
+
+struct RedactedPayload(usize);
+
+impl fmt::Debug for RedactedPayload {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.debug_tuple("REDACTED").field(&self.0).finish()
+    }
+}
+
+fn find_sensitive_payload_key(payload: &Map<String, Value>) -> Option<String> {
+    payload.iter().find_map(|(key, value)| {
+        let normalized: String = key
+            .chars()
+            .filter(|character| character.is_ascii_alphanumeric())
+            .map(|character| character.to_ascii_lowercase())
+            .collect();
+        let sensitive = matches!(
+            normalized.as_str(),
+            "apikey"
+                | "authorization"
+                | "authtoken"
+                | "bearertoken"
+                | "cookie"
+                | "credential"
+                | "password"
+                | "passwd"
+                | "privatekey"
+                | "refreshtoken"
+                | "secret"
+                | "sessiontoken"
+                | "token"
+        ) || normalized.ends_with("apikey")
+            || normalized.contains("credential")
+            || normalized.contains("secret");
+        if sensitive {
+            return Some(key.clone());
+        }
+        match value {
+            Value::Object(object) => find_sensitive_payload_key(object),
+            Value::Array(values) => values.iter().find_map(|value| match value {
+                Value::Object(object) => find_sensitive_payload_key(object),
+                _ => None,
+            }),
+            _ => None,
+        }
+    })
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case", tag = "type")]
 pub enum CredentialRef {
@@ -705,6 +849,9 @@ pub struct ModelDescriptor {
     pub display_name: String,
     #[serde(default)]
     pub description: Option<String>,
+    /// Model-wide wire API. A provider/model override takes precedence.
+    #[serde(default)]
+    pub wire_api: Option<WireApi>,
     #[serde(default)]
     pub context_window: Option<u64>,
     #[serde(default)]
@@ -765,6 +912,7 @@ fn parse_openai_model_value(
         key,
         display_name,
         description: json_string(object, &["description"]),
+        wire_api: None,
         context_window: json_u64(
             object,
             &[
@@ -922,6 +1070,10 @@ struct RegistryFile {
     default_model: Option<ModelKey>,
     #[serde(default)]
     roles: RoleRegistry,
+    #[serde(default)]
+    model_provider_overrides: BTreeMap<String, ProviderModelOverride>,
+    #[serde(default)]
+    model_configs: BTreeMap<String, ModelConfig>,
 }
 
 impl Default for RegistryFile {
@@ -932,6 +1084,8 @@ impl Default for RegistryFile {
             models: BTreeMap::new(),
             default_model: None,
             roles: RoleRegistry::default(),
+            model_provider_overrides: BTreeMap::new(),
+            model_configs: BTreeMap::new(),
         }
     }
 }
@@ -941,6 +1095,24 @@ pub struct ProviderSnapshot {
     pub providers: Vec<ProviderConfig>,
     pub models: Vec<ModelDescriptor>,
     pub default_model: Option<ModelKey>,
+    #[serde(default)]
+    pub model_provider_overrides: BTreeMap<String, ProviderModelOverride>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WireApiSource {
+    ProviderModelOverride,
+    ModelSetting,
+    DefaultChatCompletions,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ResolvedWireApi {
+    pub provider: String,
+    pub model: String,
+    pub wire_api: WireApi,
+    pub source: WireApiSource,
 }
 
 #[derive(Serialize)]
@@ -960,6 +1132,7 @@ struct ProviderSnapshotWire<'a> {
     providers: Vec<ProviderSnapshotProvider<'a>>,
     models: &'a [ModelDescriptor],
     default_model: &'a Option<ModelKey>,
+    model_provider_overrides: &'a BTreeMap<String, ProviderModelOverride>,
 }
 
 impl Serialize for ProviderSnapshot {
@@ -985,6 +1158,7 @@ impl Serialize for ProviderSnapshot {
             providers,
             models: &self.models,
             default_model: &self.default_model,
+            model_provider_overrides: &self.model_provider_overrides,
         }
         .serialize(serializer)
     }
@@ -1030,16 +1204,39 @@ impl ProviderRegistry {
     }
 
     pub fn snapshot(&self) -> ProviderSnapshot {
+        let mut model_provider_overrides = self.state.model_provider_overrides.clone();
+        for (model_id, config) in &self.state.model_configs {
+            for (provider_id, override_config) in &config.provider_overrides {
+                model_provider_overrides
+                    .insert(format!("{provider_id}/{model_id}"), override_config.clone());
+            }
+        }
         ProviderSnapshot {
             providers: self.state.providers.values().cloned().collect(),
             models: self
                 .state
                 .models
                 .values()
-                .map(|stored| stored.descriptor.clone())
+                .map(|stored| {
+                    let mut descriptor = stored.descriptor.clone();
+                    if let Some(wire_api) = self
+                        .state
+                        .model_configs
+                        .get(&descriptor.key.model_id)
+                        .and_then(|config| config.wire_api)
+                    {
+                        descriptor.wire_api = Some(wire_api);
+                    }
+                    descriptor
+                })
                 .collect(),
             default_model: self.state.default_model.clone(),
+            model_provider_overrides,
         }
+    }
+
+    pub fn model_config(&self, model_id: &str) -> Option<ModelConfig> {
+        self.state.model_configs.get(model_id).cloned()
     }
 
     pub fn providers(&self) -> impl Iterator<Item = &ProviderConfig> {
@@ -1126,6 +1323,145 @@ impl ProviderRegistry {
             .map(|stored| stored.descriptor.clone())
     }
 
+    pub fn model_provider_override(&self, key: &ModelKey) -> Option<ProviderModelOverride> {
+        self.state
+            .model_configs
+            .get(&key.model_id)
+            .and_then(|config| config.provider_overrides.get(&key.provider_id))
+            .cloned()
+            .or_else(|| {
+                self.state
+                    .model_provider_overrides
+                    .get(&key.to_string())
+                    .cloned()
+            })
+    }
+
+    pub fn set_model_wire_api(
+        &mut self,
+        key: &ModelKey,
+        wire_api: Option<WireApi>,
+    ) -> Result<(), ProviderError> {
+        let stored = self
+            .state
+            .models
+            .get_mut(&key.to_string())
+            .ok_or_else(|| ProviderError::ModelNotFound(key.to_string()))?;
+        stored.descriptor.wire_api = wire_api;
+        let display_name = stored.descriptor.display_name.clone();
+        let config = self
+            .state
+            .model_configs
+            .entry(key.model_id.clone())
+            .or_insert_with(|| ModelConfig::new(key.model_id.clone(), display_name));
+        config.wire_api = wire_api;
+        Ok(())
+    }
+
+    pub fn set_model_provider_override(
+        &mut self,
+        key: &ModelKey,
+        override_config: ProviderModelOverride,
+    ) -> Result<(), ProviderError> {
+        override_config.validate()?;
+        if !self.state.models.contains_key(&key.to_string()) {
+            return Err(ProviderError::ModelNotFound(key.to_string()));
+        }
+        if override_config.wire_api.is_none() && override_config.payload.is_empty() {
+            self.state.model_provider_overrides.remove(&key.to_string());
+            if let Some(config) = self.state.model_configs.get_mut(&key.model_id) {
+                config.provider_overrides.remove(&key.provider_id);
+                if config.wire_api.is_none() && config.provider_overrides.is_empty() {
+                    self.state.model_configs.remove(&key.model_id);
+                }
+            }
+        } else {
+            let display_name = self
+                .state
+                .models
+                .get(&key.to_string())
+                .map(|stored| stored.descriptor.display_name.clone())
+                .unwrap_or_else(|| key.model_id.clone());
+            self.state
+                .model_configs
+                .entry(key.model_id.clone())
+                .or_insert_with(|| ModelConfig::new(key.model_id.clone(), display_name))
+                .provider_overrides
+                .insert(key.provider_id.clone(), override_config.clone());
+            self.state
+                .model_provider_overrides
+                .insert(key.to_string(), override_config);
+        }
+        Ok(())
+    }
+
+    pub fn remove_model_provider_override(
+        &mut self,
+        key: &ModelKey,
+    ) -> Result<bool, ProviderError> {
+        if !self.state.models.contains_key(&key.to_string()) {
+            return Err(ProviderError::ModelNotFound(key.to_string()));
+        }
+        let legacy_removed = self
+            .state
+            .model_provider_overrides
+            .remove(&key.to_string())
+            .is_some();
+        let nested_removed = self
+            .state
+            .model_configs
+            .get_mut(&key.model_id)
+            .map(|config| config.provider_overrides.remove(&key.provider_id).is_some())
+            .unwrap_or(false);
+        Ok(legacy_removed || nested_removed)
+    }
+
+    pub fn resolve_wire_api(&self, key: &ModelKey) -> Result<ResolvedWireApi, ProviderError> {
+        let model = self
+            .state
+            .models
+            .get(&key.to_string())
+            .ok_or_else(|| ProviderError::ModelNotFound(key.to_string()))?;
+        self.state
+            .providers
+            .get(&key.provider_id)
+            .ok_or_else(|| ProviderError::ProviderNotFound(key.provider_id.clone()))?;
+        if let Some(override_config) = self.model_provider_override(key)
+            && let Some(wire_api) = override_config.wire_api
+        {
+            return Ok(ResolvedWireApi {
+                provider: key.provider_id.clone(),
+                model: key.model_id.clone(),
+                wire_api,
+                source: WireApiSource::ProviderModelOverride,
+            });
+        }
+        if let Some(config) = self.state.model_configs.get(&key.model_id)
+            && let Some(wire_api) = config.wire_api
+        {
+            return Ok(ResolvedWireApi {
+                provider: key.provider_id.clone(),
+                model: key.model_id.clone(),
+                wire_api,
+                source: WireApiSource::ModelSetting,
+            });
+        }
+        if let Some(wire_api) = model.descriptor.wire_api {
+            return Ok(ResolvedWireApi {
+                provider: key.provider_id.clone(),
+                model: key.model_id.clone(),
+                wire_api,
+                source: WireApiSource::ModelSetting,
+            });
+        }
+        Ok(ResolvedWireApi {
+            provider: key.provider_id.clone(),
+            model: key.model_id.clone(),
+            wire_api: WireApi::ChatCompletions,
+            source: WireApiSource::DefaultChatCompletions,
+        })
+    }
+
     pub fn default_model(&self) -> Option<&ModelKey> {
         self.state.default_model.as_ref()
     }
@@ -1143,6 +1479,15 @@ impl ProviderRegistry {
         self.state
             .models
             .retain(|_, stored| stored.descriptor.key.provider_id != provider_id);
+        self.state
+            .model_provider_overrides
+            .retain(|key, _| !key.starts_with(&format!("{provider_id}/")));
+        for config in self.state.model_configs.values_mut() {
+            config.provider_overrides.remove(provider_id);
+        }
+        self.state
+            .model_configs
+            .retain(|_, config| config.wire_api.is_some() || !config.provider_overrides.is_empty());
         // Deliberately preserve default_model. A deleted provider must surface
         // as unavailable instead of silently switching to another provider.
         Ok(())
@@ -1191,6 +1536,11 @@ impl ProviderRegistry {
         let base_capabilities = descriptor.capabilities.clone();
         let base_source = descriptor.source.clone();
         let mut descriptor = descriptor;
+        if descriptor.wire_api.is_none()
+            && let Some(existing) = self.state.models.get(&id)
+        {
+            descriptor.wire_api = existing.descriptor.wire_api;
+        }
         descriptor.capabilities = overrides.apply_to(descriptor.capabilities.clone());
         if !overrides.is_empty() {
             descriptor.source = ModelSource::UserOverride;
@@ -1285,6 +1635,14 @@ impl ProviderRegistry {
         for provider in self.state.providers.values() {
             provider.validate()?;
         }
+        for override_config in self.state.model_provider_overrides.values() {
+            override_config.validate()?;
+        }
+        for config in self.state.model_configs.values() {
+            for override_config in config.provider_overrides.values() {
+                override_config.validate()?;
+            }
+        }
         self.state.roles.validate()?;
         let path = self.path.as_ref().ok_or_else(|| {
             ProviderError::Io(std::io::Error::new(
@@ -1324,6 +1682,12 @@ pub mod rpc {
     pub const PROVIDER_REFRESH_MODELS: &str = "_atelier/provider/refresh_models";
     pub const MODEL_LIST: &str = "_atelier/model/list";
     pub const MODEL_UPDATE: &str = "_atelier/model/update";
+    pub const MODEL_GET: &str = "_atelier/model/get";
+    pub const MODEL_UPDATE_WIRE_API: &str = "_atelier/model/update_wire_api";
+    pub const MODEL_PROVIDER_OVERRIDE_LIST: &str = "_atelier/model_provider_override/list";
+    pub const MODEL_PROVIDER_OVERRIDE_SET: &str = "_atelier/model_provider_override/set";
+    pub const MODEL_PROVIDER_OVERRIDE_DELETE: &str = "_atelier/model_provider_override/delete";
+    pub const MODEL_PROVIDER_OVERRIDE_TEST: &str = "_atelier/model_provider_override/test";
     pub const MODEL_SET_DEFAULT: &str = "_atelier/model/set_default";
     pub const CREDENTIAL_STATUS: &str = "_atelier/credential/status";
     pub const CREDENTIAL_SET: &str = "_atelier/credential/set";

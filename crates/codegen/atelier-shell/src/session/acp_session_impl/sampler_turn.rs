@@ -399,7 +399,8 @@ impl SessionActor {
             )));
         };
 
-        config.request_payload = role.effective_payload();
+        config.request_payload =
+            atelier_provider::merge_payloads(&config.request_payload, &role.effective_payload());
         config.client_identifier = self.client_identifier.clone();
         config.origin_client = self.origin_client.clone();
         config.attribution_callback = self.attribution_callback.clone();
@@ -419,7 +420,7 @@ impl SessionActor {
     /// Build a client for a fixed helper role. `None` means the role is not
     /// configured or its model is not in the live catalog; callers then keep
     /// the existing active-session behavior.
-    pub(super) async fn prepare_role_chat_completion(
+    pub(crate) async fn prepare_role_chat_completion(
         &self,
         role_id: atelier_provider::RoleId,
         force_http1: bool,
@@ -610,7 +611,7 @@ impl SessionActor {
         skip_all,
         fields(force_http1)
     )]
-    pub(super) async fn prepare_chat_completion(
+    pub(crate) async fn prepare_chat_completion(
         &self,
         force_http1: bool,
     ) -> Result<atelier_sampler::SamplingClient, acp::Error> {

@@ -120,7 +120,11 @@ fn relative_file_path_regex() -> &'static regex::Regex {
 fn file_path_regex() -> &'static regex::Regex {
     static RE: OnceLock<regex::Regex> = OnceLock::new();
     RE.get_or_init(|| {
-        // Absolute (`/Users/me/x.md`) or home-relative (`~/Desktop/x.md`) paths.
+        // Absolute (`/Users/me/x.md`, `C:\\Users\\me\\x.md`) or
+        // home-relative (`~/Desktop/x.md`) paths. Windows drive-letter paths
+        // use backslashes in normal terminal output, so keep that separator
+        // in the matcher instead of relying on Path's platform conversion
+        // after the match.
         // Leading `~` is expanded to $HOME when building the `file://` URL.
         //
         // The *final* segment may include internal spaces when it looks like a
@@ -130,7 +134,7 @@ fn file_path_regex() -> &'static regex::Regex {
         // Alternation prefers the spaced form first so it wins over the shorter
         // no-space prefix at the same start position.
         let pat = format!(
-            r"~?/(?:{seg}/)+(?:{spaced}|{seg})",
+            r"(?:~?/(?:{seg}/)+(?:{spaced}|{seg})|[A-Za-z]:[\\/](?:{seg}[\\/])+(?:{spaced}|{seg}))",
             seg = PATH_SEGMENT,
             spaced = PATH_SEGMENT_SPACED,
         );
@@ -594,6 +598,7 @@ mod tests {
 
     // ── tool_path_file_url ──
 
+    #[cfg(unix)]
     #[test]
     fn tool_path_file_url_resolves_relative_against_cwd() {
         let cwd = Path::new("/Users/me/project");
@@ -602,6 +607,7 @@ mod tests {
         assert!(url.contains("/Users/me/project/src/main.rs"), "got {url}");
     }
 
+    #[cfg(unix)]
     #[test]
     fn tool_path_file_url_accepts_absolute_without_existing_file() {
         let url = tool_path_file_url("/tmp/does-not-exist-xyz/foo.rs", None).expect("url");
@@ -609,6 +615,7 @@ mod tests {
         assert!(url.contains("foo.rs"), "got {url}");
     }
 
+    #[cfg(unix)]
     #[test]
     fn tool_path_file_url_preserves_parent_segments_for_os_resolution() {
         let url = tool_path_file_url("/repo/link/../target.rs", None).expect("url");
@@ -797,6 +804,7 @@ mod tests {
 
     // ── File path detection ──
 
+    #[cfg(unix)]
     #[test]
     fn scan_detects_absolute_file_path() {
         let line = make_line("Error in /Users/foo/src/main.rs at line 10");
@@ -855,6 +863,7 @@ mod tests {
         assert!(overlay.links().is_empty());
     }
 
+    #[cfg(unix)]
     #[test]
     fn scan_detects_atelier_session_media_path() {
         // Dot-directory (`.atelier`), percent-encoded session segment, and a
@@ -872,6 +881,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn scan_detects_media_path_soft_wrapped_across_rows() {
         // Regression: `image_gen` output prose wraps the long session path
@@ -915,6 +925,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn scan_wrapped_path_trailing_sentence_period_excluded() {
         // Wrapped path ending mid-sentence: trailing `.` on the last row is
@@ -981,6 +992,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn scan_word_break_joiner_restores_source_space() {
         // A `Some(" ")` joiner re-inserts the collapsed space, so a spaced
@@ -1006,6 +1018,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn scan_hard_break_rows_not_joined() {
         // `None` joiner = separate source lines: fragments must not be glued
@@ -1022,6 +1035,7 @@ mod tests {
         assert_eq!(overlay.links()[0].screen_row, 0);
     }
 
+    #[cfg(unix)]
     #[test]
     fn scan_path_split_across_styled_spans_single_row() {
         // Markdown styling can split one row into multiple spans; the path
@@ -1042,6 +1056,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn scan_file_path_stops_at_colon() {
         let line = make_line("/Users/foo/bar.rs:45:10: error message");
@@ -1084,6 +1099,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn scan_url_and_file_path_coexist() {
         let line = make_line("See https://docs.rs/foo and /Users/me/src/lib.rs end.");
@@ -1096,6 +1112,7 @@ mod tests {
         assert!(urls.contains(&"file:///Users/me/src/lib.rs"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn scan_file_path_with_dots_and_hyphens() {
         let line = make_line("Reading /tmp/atelier-impl-summary.md now.");
@@ -1109,6 +1126,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn scan_file_path_with_at_sign() {
         let line = make_line("In /node_modules/@scope/package/index.js now.");
@@ -1122,6 +1140,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn scan_file_path_with_space_in_segment_quoted() {
         // Tutor report: path underline/click target stopped at the space in
@@ -1151,6 +1170,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn scan_file_path_with_space_in_segment_unquoted() {
         // Same filename without surrounding quotes — final segment has a
@@ -1172,6 +1192,21 @@ mod tests {
         );
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn scan_detects_windows_absolute_file_path() {
+        let path =
+            std::env::temp_dir().join(format!("atelier-osc8-{}-main.rs", std::process::id()));
+        std::fs::write(&path, "fn main() {}\n").expect("create Windows path fixture");
+        let line = make_line(&format!("See {} for details.", path.display()));
+        let mut overlay = LinkOverlay::new();
+        scan_unjoined(std::iter::once((0, &line)), 0, &[], &mut overlay);
+        assert_eq!(overlay.links().len(), 1);
+        assert!(overlay.links()[0].url.contains("main.rs"));
+        assert!(overlay.links()[0].url.starts_with("file://"));
+        let _ = std::fs::remove_file(path);
+    }
+    #[cfg(unix)]
     #[test]
     fn scan_file_path_space_does_not_swallow_trailing_sentence() {
         // A space followed by prose (no `.ext` in the final segment) must not

@@ -1417,6 +1417,7 @@ fn build_prefetched_map(
             api_key: None,
             env_key: None,
             api_base_url: m.api_base_url.clone().or(api_base_url_override.clone()),
+            request_payload: serde_json::Map::new(),
         };
         map.insert(key, entry);
     }
@@ -2049,6 +2050,7 @@ mod tests {
             api_key: None,
             env_key: None,
             api_base_url: None,
+            request_payload: serde_json::Map::new(),
         };
         flagged.info.show_model_fingerprint = true;
         mgr.insert_test_entry("fp-model", flagged);
@@ -2061,6 +2063,7 @@ mod tests {
                 api_key: None,
                 env_key: None,
                 api_base_url: None,
+                request_payload: serde_json::Map::new(),
             },
         );
 
@@ -2071,6 +2074,7 @@ mod tests {
             api_key: None,
             env_key: None,
             api_base_url: None,
+            request_payload: serde_json::Map::new(),
         };
         custom.info.show_model_fingerprint = true;
         mgr.insert_test_entry("enterprise-key", custom);
@@ -2140,6 +2144,7 @@ mod tests {
                 key: atelier_provider::ModelKey::new("local", "test-model").unwrap(),
                 display_name: "Test Model".into(),
                 description: None,
+                wire_api: Some(atelier_provider::WireApi::Responses),
                 context_window: Some(32_000),
                 capabilities: atelier_provider::ModelCapabilities {
                     tool_calls: true,
@@ -2167,6 +2172,30 @@ mod tests {
             crate::sampling::ApiBackend::Responses
         );
         assert!(!model.info.supports_backend_search);
+
+        let key = atelier_provider::ModelKey::new("local", "test-model").unwrap();
+        registry
+            .set_model_provider_override(
+                &key,
+                atelier_provider::ProviderModelOverride {
+                    wire_api: Some(atelier_provider::WireApi::ChatCompletions),
+                    payload: Default::default(),
+                },
+            )
+            .unwrap();
+        registry.save().unwrap();
+        manager
+            .reload_local_provider_catalog()
+            .expect("pair Wire API override should reload");
+        assert_eq!(
+            manager
+                .models()
+                .get("local/test-model")
+                .expect("reloaded model")
+                .info
+                .api_backend,
+            crate::sampling::ApiBackend::ChatCompletions
+        );
     }
 
     #[test]
@@ -2294,6 +2323,7 @@ mod tests {
                 api_key: None,
                 env_key: None,
                 api_base_url: None,
+                request_payload: serde_json::Map::new(),
             },
         );
 
@@ -2348,6 +2378,7 @@ mod tests {
             api_key: None,
             env_key: None,
             api_base_url: None,
+            request_payload: serde_json::Map::new(),
         };
         reasoning_entry.info.supports_reasoning_effort = true;
         prefetched.insert("reasoning-model".to_string(), reasoning_entry);
@@ -2370,6 +2401,7 @@ mod tests {
             api_key: None,
             env_key: None,
             api_base_url: None,
+            request_payload: serde_json::Map::new(),
         };
         prefetched.insert("plain-model".to_string(), plain_entry);
 
@@ -2397,6 +2429,7 @@ mod tests {
             api_key: None,
             env_key: None,
             api_base_url: None,
+            request_payload: serde_json::Map::new(),
         };
         no_none.info.supports_reasoning_effort = true;
         no_none.info.reasoning_efforts = vec![ReasoningEffortOption {
@@ -2415,6 +2448,7 @@ mod tests {
             api_key: None,
             env_key: None,
             api_base_url: None,
+            request_payload: serde_json::Map::new(),
         };
         with_none.info.supports_reasoning_effort = true;
         with_none.info.reasoning_efforts = vec![ReasoningEffortOption {
@@ -2521,6 +2555,7 @@ mod tests {
             api_key: None,
             env_key: None,
             api_base_url: None,
+            request_payload: serde_json::Map::new(),
         };
         reasoning_entry.info.supports_reasoning_effort = true;
         prefetched.insert("reasoning-model".to_string(), reasoning_entry);
@@ -2530,6 +2565,7 @@ mod tests {
             api_key: None,
             env_key: None,
             api_base_url: None,
+            request_payload: serde_json::Map::new(),
         };
         prefetched.insert("plain-model".to_string(), plain_entry);
 
@@ -2572,6 +2608,7 @@ mod tests {
             api_key: None,
             env_key: None,
             api_base_url: None,
+            request_payload: serde_json::Map::new(),
         }
     }
 
@@ -3355,6 +3392,7 @@ mod tests {
                 api_key: None,
                 env_key: None,
                 api_base_url: None,
+                request_payload: serde_json::Map::new(),
             },
         );
 
@@ -3382,6 +3420,7 @@ mod tests {
             api_key: None,
             env_key: None,
             api_base_url: None,
+            request_payload: serde_json::Map::new(),
         };
         oauth_only.info.supported_in_api = false;
         catalog.insert("oauth-only".to_string(), oauth_only);
@@ -3391,6 +3430,7 @@ mod tests {
             api_key: None,
             env_key: None,
             api_base_url: None,
+            request_payload: serde_json::Map::new(),
         };
         catalog.insert("public-model".to_string(), public);
 

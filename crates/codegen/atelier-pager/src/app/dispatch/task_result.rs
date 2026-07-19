@@ -43,14 +43,127 @@ use super::status::{
     handle_coding_data_sharing_failed, handle_coding_data_sharing_updated,
     handle_context_info_complete, scrub_error_for_toast,
 };
+
+fn format_runtime_extension_response(method: &str, response: &str) -> String {
+    let value = serde_json::from_str::<serde_json::Value>(response)
+        .unwrap_or_else(|_| serde_json::Value::String(response.to_owned()));
+    let result = value.get("result").unwrap_or(&value);
+    let rendered = match result {
+        serde_json::Value::String(text) => text.clone(),
+        _ => serde_json::to_string_pretty(result).unwrap_or_else(|_| result.to_string()),
+    };
+    format!("{method}\n{rendered}")
+}
+
+#[cfg(test)]
+mod runtime_task_format_tests {
+    use super::format_runtime_task_response;
+
+    #[test]
+    fn runtime_tasks_are_rendered_as_a_control_table() {
+        let rendered = format_runtime_task_response(
+            r#"{"tasks":[{"taskId":"task-1","sessionId":"session-1","role":"main","state":"waiting_for_permission","attachable":true}]}"#,
+        );
+        assert!(rendered.contains("ID"));
+        assert!(rendered.contains("task-1"));
+        assert!(rendered.contains("NEEDS INPUT"));
+        assert!(rendered.contains("ATTACH"));
+        assert!(rendered.contains("/attach <task-id>"));
+    }
+
+    #[test]
+    fn auxiliary_tasks_are_marked_result_only() {
+        let rendered = format_runtime_task_response(
+            r#"{"tasks":[{"taskId":"btw-1","sessionId":"session-1","role":"main","state":"completed","attachable":false}]}"#,
+        );
+        assert!(rendered.contains("RESULT ONLY"));
+        assert!(!rendered.contains("btw-1                         ATTACH"));
+    }
+
+    #[test]
+    fn empty_runtime_tasks_have_a_clear_empty_state() {
+        assert_eq!(
+            format_runtime_task_response(r#"{"tasks":[]}"#),
+            "Runtime tasks\nNo runtime tasks."
+        );
+    }
+}
+
+fn format_runtime_task_response(response: &str) -> String {
+    let value = serde_json::from_str::<serde_json::Value>(response).unwrap_or_default();
+    let result = value.get("result").unwrap_or(&value);
+    let Some(tasks) = result.get("tasks").and_then(|tasks| tasks.as_array()) else {
+        return format_runtime_extension_response("_atelier/task/list", response);
+    };
+    if tasks.is_empty() {
+        return "Runtime tasks\nNo runtime tasks.".to_owned();
+    }
+    let mut lines = vec![
+        "Runtime tasks".to_owned(),
+        "ID                   Session              Role       State                  Access"
+            .to_owned(),
+    ];
+    for task in tasks {
+        let id = task
+            .get("taskId")
+            .and_then(|value| value.as_str())
+            .unwrap_or("-");
+        let session = task
+            .get("sessionId")
+            .and_then(|value| value.as_str())
+            .unwrap_or("-");
+        let role = task
+            .get("role")
+            .and_then(|value| value.as_str())
+            .unwrap_or("-");
+        let state = task
+            .get("state")
+            .and_then(|value| value.as_str())
+            .unwrap_or("-");
+        let state = if state == "waiting_for_permission" {
+            "NEEDS INPUT"
+        } else {
+            state
+        };
+        let access = if task
+            .get("attachable")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(true)
+        {
+            "ATTACH"
+        } else {
+            "RESULT ONLY"
+        };
+        lines.push(format!(
+            "{:<20} {:<20} {:<10} {:<22} {}",
+            truncate_runtime_task_field(id, 20),
+            truncate_runtime_task_field(session, 20),
+            truncate_runtime_task_field(role, 10),
+            state,
+            access,
+        ));
+    }
+    lines.push(String::new());
+    lines.push("Attach: /attach <task-id>    Stop: /stop <task-id>".to_owned());
+    lines.join("\n")
+}
+
+fn truncate_runtime_task_field(value: &str, max: usize) -> String {
+    if value.chars().count() <= max {
+        return value.to_owned();
+    }
+    let mut result: String = value.chars().take(max.saturating_sub(1)).collect();
+    result.push('…');
+    result
+}
 use super::transcript::{
     handle_hooks_list_loaded, handle_marketplace_list_loaded, handle_marketplace_updates_available,
     handle_mcp_toggle_done, handle_plugins_list_loaded, handle_skills_toggle_done,
 };
 use super::turn::handle_bg_task_killed;
 use crate::app::actions::{
-    ClipboardPasteCompletion, ClipboardPasteContext, ClipboardPasteFailure, ClipboardPasteTarget,
-    Effect, ProbedAttachment, SubagentKillOutcome, TaskResult,
+    Action, ClipboardPasteCompletion, ClipboardPasteContext, ClipboardPasteFailure,
+    ClipboardPasteTarget, Effect, ProbedAttachment, SubagentKillOutcome, TaskResult,
 };
 use crate::app::app_view::{ActiveView, AppView, AuthState};
 use crate::scrollback::block::RenderBlock;
@@ -862,6 +975,125 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             vec![]
         }
         TaskResult::BtwResponse { agent_id, result } => handle_btw_response(app, agent_id, result),
+        TaskResult::RuntimeExtensionFailed {
+            agent_id,
+            method,
+            error,
+        } => {
+            if let Some(agent) = app.agents.get_mut(&agent_id) {
+                let toast = format!("{method} failed: {error}");
+                agent.show_toast(&toast);
+            }
+            vec![]
+        }
+        TaskResult::RuntimeExtensionComplete {
+            agent_id,
+            method,
+            response,
+        } => {
+            let parsed = serde_json::from_str::<serde_json::Value>(&response).ok();
+            let result = parsed
+                .as_ref()
+                .and_then(|value| value.get("result"))
+                .or_else(|| parsed.as_ref());
+            if method == "_atelier/task/list" || method == "atelier/task/list" {
+                if let Some(agent) = app.agents.get_mut(&agent_id) {
+                    agent
+                        .scrollback
+                        .push_block(crate::scrollback::block::RenderBlock::system(
+                            format_runtime_task_response(&response),
+                        ));
+                }
+                return vec![];
+            }
+            if method == "_atelier/btw/persist" || method == "atelier/btw/persist" {
+                let persisted = result
+                    .and_then(|value| value.get("persisted"))
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false);
+                if let Some(agent) = app.agents.get_mut(&agent_id) {
+                    if persisted {
+                        if let Some(state) = agent.btw_state.as_mut() {
+                            state.mark_persisted();
+                        }
+                        agent.show_toast("BTW saved locally");
+                    } else {
+                        agent.show_toast("BTW was not saved");
+                    }
+                }
+                return vec![];
+            }
+            if method == "_atelier/task/attach" || method == "atelier/task/attach" {
+                if let Some(session_id) = result
+                    .and_then(|value| value.get("task"))
+                    .and_then(|task| task.get("sessionId"))
+                    .and_then(|value| value.as_str())
+                {
+                    let active_session = app
+                        .agents
+                        .get(&agent_id)
+                        .and_then(|agent| agent.session.session_id.as_ref())
+                        .map(ToString::to_string);
+                    if active_session.as_deref() != Some(session_id) {
+                        return dispatch(
+                            Action::LoadSession(session_id.to_owned(), None, false),
+                            app,
+                        );
+                    }
+                }
+            }
+            if method == "_atelier/task/detach" || method == "atelier/task/detach" {
+                let detached = result
+                    .and_then(|value| value.get("detached"))
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false);
+                if detached {
+                    return dispatch(Action::OpenDashboard, app);
+                }
+            }
+            let attach_session = if method == "_atelier/agent/spawn_derived" {
+                let value = serde_json::from_str::<serde_json::Value>(&response).ok();
+                let result = value
+                    .as_ref()
+                    .and_then(|value| value.get("result"))
+                    .or(value.as_ref());
+                let background = result
+                    .and_then(|result| result.get("background"))
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false);
+                if !background {
+                    result
+                        .and_then(|result| result.get("sessionId"))
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_owned)
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            if let Some(agent) = app.agents.get_mut(&agent_id) {
+                if attach_session.is_none() {
+                    let response = if method == "_atelier/task/attach"
+                        || method == "atelier/task/attach"
+                    {
+                        "Attached to runtime task; replayed events are available in the session."
+                            .to_owned()
+                    } else if method == "_atelier/task/detach" || method == "atelier/task/detach" {
+                        "Turn detached; execution continues in the background.".to_owned()
+                    } else {
+                        format_runtime_extension_response(&method, &response)
+                    };
+                    agent
+                        .scrollback
+                        .push_block(crate::scrollback::block::RenderBlock::system(response));
+                }
+            }
+            if let Some(session_id) = attach_session {
+                return dispatch(Action::LoadSession(session_id, None, false), app);
+            }
+            vec![]
+        }
         TaskResult::ProviderModelsRefreshed {
             agent_id,
             provider_id,

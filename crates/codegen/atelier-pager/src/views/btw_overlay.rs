@@ -13,6 +13,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Widget};
 use unicode_width::UnicodeWidthStr;
 
+use crate::app::actions::BtwResponseData;
 use crate::render::osc8::{LinkOverlay, scan_lines_for_url_overlays};
 use crate::scrollback::blocks::markdown_content::MarkdownContent;
 use crate::scrollback::render::map_hyperlinks_to_overlay;
@@ -38,6 +39,10 @@ pub enum BtwOverlayState {
         content: Box<MarkdownContent>,
         /// Line offset for scrolling through long responses.
         scroll_offset: usize,
+        /// Original response metadata used by the `P` persist action.
+        persist_data: Option<BtwResponseData>,
+        /// Prevent duplicate persistence when `P` is pressed repeatedly.
+        persisted: bool,
     },
     /// Request failed (shown until user presses Esc).
     Error { question: String, error: String },
@@ -52,6 +57,52 @@ impl BtwOverlayState {
             question,
             content: Box::new(MarkdownContent::new(response)),
             scroll_offset: 0,
+            persist_data: None,
+            persisted: false,
+        }
+    }
+
+    /// Build a completed panel from the raw side-query response. The panel
+    /// renders a compact provider/Wire API header while retaining the raw
+    /// answer for exact persistence.
+    pub fn done_with_data(question: String, data: BtwResponseData) -> Self {
+        let display = display_response(&data);
+        Self::Done {
+            question,
+            content: Box::new(MarkdownContent::new(display)),
+            scroll_offset: 0,
+            persist_data: Some(data),
+            persisted: false,
+        }
+    }
+
+    /// Return the exact result payload for `_atelier/btw/persist`.
+    pub fn persist_request(&self, session_id: &str) -> Option<serde_json::Value> {
+        let Self::Done {
+            question,
+            persist_data: Some(data),
+            persisted: false,
+            ..
+        } = self
+        else {
+            return None;
+        };
+        Some(serde_json::json!({
+            "sessionId": session_id,
+            "btwId": data.btw_id,
+            "question": question,
+            "answer": data.answer,
+            "snapshotId": data.snapshot_id,
+            "provider": data.provider,
+            "model": data.model,
+            "wireApi": data.wire_api,
+            "wireApiSource": data.wire_api_source,
+        }))
+    }
+
+    pub fn mark_persisted(&mut self) {
+        if let Self::Done { persisted, .. } = self {
+            *persisted = true;
         }
     }
 
@@ -130,6 +181,21 @@ impl BtwOverlayState {
             }
         });
         model
+    }
+}
+
+fn display_response(data: &BtwResponseData) -> String {
+    match (
+        data.provider.as_deref(),
+        Some(data.model.as_str()),
+        data.wire_api.as_deref(),
+        data.wire_api_source.as_deref(),
+    ) {
+        (Some(provider), Some(model), Some(wire_api), Some(source)) => format!(
+            "Provider: `{provider}`  Model: `{model}`  Wire API: `{wire_api}`  (source: `{source}`)\n\n{}",
+            data.answer
+        ),
+        _ => data.answer.clone(),
     }
 }
 
@@ -464,6 +530,29 @@ pub fn render_btw_panel(
 mod tests {
     use super::*;
 
+    #[test]
+    fn persist_request_uses_the_original_answer_and_is_idempotent() {
+        let data = BtwResponseData {
+            btw_id: "btw-1".to_owned(),
+            snapshot_id: Some("snapshot-1".to_owned()),
+            answer: "the original answer".to_owned(),
+            provider: Some("proxy".to_owned()),
+            model: "gpt-5".to_owned(),
+            wire_api: Some("responses".to_owned()),
+            wire_api_source: Some("model_setting".to_owned()),
+        };
+        let mut state = BtwOverlayState::done_with_data("why?".to_owned(), data);
+        let request = state
+            .persist_request("session-1")
+            .expect("done BTW should be persistable");
+        assert_eq!(request["btwId"], "btw-1");
+        assert_eq!(request["answer"], "the original answer");
+        assert_eq!(request["sessionId"], "session-1");
+
+        state.mark_persisted();
+        assert!(state.persist_request("session-1").is_none());
+    }
+
     fn render_with_model(
         state: &BtwOverlayState,
         width: u16,
@@ -734,15 +823,21 @@ mod tests {
     fn done_state_scans_file_paths_like_scrollback() {
         // Absolute path text (not a markdown hyperlink) should still become a
         // file:// overlay via scan_lines_for_url_overlays.
-        let path = "/Users/test/project/src/main.rs";
+        let path = std::env::temp_dir().join(format!(
+            "atelier-btw-overlay-{}-main.rs",
+            std::process::id()
+        ));
+        std::fs::write(&path, "fn main() {}\n").expect("create a path the scanner can resolve");
+        let path = path.to_string_lossy().into_owned();
         let state = BtwOverlayState::done("q".to_string(), format!("See {path} for details."));
         let (_model, overlay) = render_with_links(&state, 80, 8);
         let urls: Vec<&str> = overlay.links().iter().map(|l| l.url.as_ref()).collect();
         assert!(
             urls.iter()
-                .any(|u| u.contains("main.rs") && u.starts_with("file://")),
+                .any(|u| { u.contains("main.rs") && u.starts_with("file://") }),
             "file path should map to file:// overlay, got: {urls:?}"
         );
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]

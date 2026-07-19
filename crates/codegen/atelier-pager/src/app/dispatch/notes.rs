@@ -307,6 +307,40 @@ pub(super) fn dispatch_send_btw(app: &mut AppView, question: String) -> Vec<Effe
     }]
 }
 
+/// Dispatch a slash command backed by an Atelier control-plane extension.
+/// The slash layer stays transport-neutral; this helper adds the active
+/// session id for object-shaped requests before the effect crosses ACP.
+pub(super) fn dispatch_runtime_extension(
+    app: &mut AppView,
+    method: String,
+    mut params: serde_json::Value,
+) -> Vec<Effect> {
+    let ActiveView::Agent(id) = app.active_view else {
+        return vec![];
+    };
+    let Some(agent) = app.agents.get_mut(&id) else {
+        return vec![];
+    };
+    let Some(session_id) = agent.session.session_id.clone() else {
+        agent.show_toast("No active session");
+        return vec![];
+    };
+    let should_scope_to_session = !matches!(
+        method.as_str(),
+        "_atelier/task/list" | "atelier/task/list" | "_atelier/model/list" | "atelier/model/list"
+    );
+    if should_scope_to_session && let Some(object) = params.as_object_mut() {
+        object
+            .entry("sessionId".to_owned())
+            .or_insert_with(|| serde_json::Value::String(session_id.to_string()));
+    }
+    vec![Effect::RuntimeExtension {
+        agent_id: id,
+        method,
+        params,
+    }]
+}
+
 /// Toast when a manual `/recap` produces no summary. Empty sessions get a clear
 /// empty-state message; anything else (model failure, empty summary, etc.) keeps
 /// the generic failure toast.
@@ -442,7 +476,7 @@ pub(super) fn handle_memory_note_saved(
 pub(super) fn handle_btw_response(
     app: &mut AppView,
     agent_id: AgentId,
-    result: Result<String, String>,
+    result: Result<crate::app::actions::BtwResponseData, String>,
 ) -> Vec<Effect> {
     if let Some(agent) = app.agents.get_mut(&agent_id) {
         use crate::views::btw_overlay::BtwOverlayState;
@@ -454,7 +488,7 @@ pub(super) fn handle_btw_response(
             Ok(response) => {
                 // Answer arrived: show it (until Esc) and focus the panel
                 // so Up/Down scroll it until the user returns to the prompt.
-                agent.btw_state = Some(BtwOverlayState::done(question, response));
+                agent.btw_state = Some(BtwOverlayState::done_with_data(question, response));
                 agent.btw_focused = true;
             }
             Err(error) => {

@@ -2,6 +2,7 @@ pub mod acp_types;
 pub mod announcement_state;
 pub mod commands;
 pub mod compaction_config;
+pub mod context_snapshot;
 pub mod handle;
 pub mod memory_state;
 pub mod merge;
@@ -12,6 +13,7 @@ pub mod two_pass;
 pub use self::acp_session::*;
 pub use self::acp_types::*;
 pub use self::commands::*;
+pub use self::context_snapshot::{ContextSnapshot, ContextSnapshotId};
 pub use self::fork::{ForkSessionRequest, ForkSessionResponse, fork_session};
 pub use self::handle::*;
 pub use self::persistence::{

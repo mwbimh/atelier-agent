@@ -714,10 +714,16 @@ pub(super) async fn run_session(
             let _ = responds_to.send(ctx); }); } SessionCommand::GetActiveAgent {
             responds_to } => { let agent_type = session.active_agent_type.lock().clone();
             let _ = responds_to.send(agent_type); } SessionCommand::SideQuestion {
-            question, respond_to } => { let s = session.clone();
-            tokio::task::spawn_local(async move { let result = s.handle_side_question(&
-            question). await; let _ = respond_to.send(result); }); }
-            SessionCommand::Recap { auto } => { let s = session.clone();
+            question, persist, respond_to } => { let s = session.clone();
+            tokio::task::spawn_local(async move { let result = s
+             .handle_side_question_snapshot(&question, persist).await; let _ = respond_to.send(result); }); }
+             SessionCommand::SideQuestionDetailed {
+             snapshot_id, question, append_context, persist, respond_to } => { let s = session.clone();
+             tokio::task::spawn_local(async move { let result = s
+             .handle_side_question_snapshot_detailed_from(snapshot_id.as_deref(), &question,
+             append_context.as_deref(), persist)
+             .await; let _ = respond_to.send(result); }); }
+             SessionCommand::Recap { auto } => { let s = session.clone();
             tokio::task::spawn_local(async move { s.handle_recap(auto). await; }); }
             SessionCommand::AISuggest { prefix, cwd, model_override, respond_to } => {
             let s = session.clone(); tokio::task::spawn_local(async move { let result = s

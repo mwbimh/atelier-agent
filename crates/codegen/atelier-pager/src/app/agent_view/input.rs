@@ -420,6 +420,34 @@ impl AgentView {
         {
             return self.dismiss_btw_panel();
         }
+        if let Some(crate::views::btw_overlay::BtwOverlayState::Done { content, .. }) =
+            self.btw_state.as_ref()
+            && let Event::Key(key) = ev
+            && key.kind != KeyEventKind::Release
+            && key.modifiers.is_empty()
+        {
+            match key.code {
+                KeyCode::Char('c') | KeyCode::Char('C') => {
+                    let text = content.text();
+                    self.copy_to_clipboard(&text);
+                    return InputOutcome::Changed;
+                }
+                KeyCode::Char('p') | KeyCode::Char('P') => {
+                    if let Some(session_id) = self.session.session_id.as_ref()
+                        && let Some(params) = self
+                            .btw_state
+                            .as_ref()
+                            .and_then(|state| state.persist_request(&session_id.to_string()))
+                    {
+                        return InputOutcome::Action(Action::RuntimeExtension {
+                            method: "_atelier/btw/persist".to_owned(),
+                            params,
+                        });
+                    }
+                }
+                _ => {}
+            }
+        }
         if self.btw_state.is_some()
             && let Event::Mouse(mouse) = ev
             && matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))

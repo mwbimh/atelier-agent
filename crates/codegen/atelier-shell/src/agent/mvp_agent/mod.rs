@@ -2,7 +2,7 @@
 #![allow(unused_imports)]
 use std::path::PathBuf;
 use std::sync::OnceLock;
-use std::{cell::RefCell, collections::HashMap, rc::Rc, sync::Arc};
+use std::{cell::RefCell, collections::{HashMap, HashSet}, rc::Rc, sync::Arc};
 use tokio::sync::mpsc;
 /// A `'static` reference to a value on a single-threaded `LocalSet`.
 ///
@@ -888,6 +888,14 @@ pub struct MvpAgent {
     /// available until the agent process exits or the bounded cache evicts
     /// them. The prompt body never enters the runtime trace/snapshot payload.
     pub(crate) retryable_prompts: RefCell<HashMap<String, acp::PromptRequest>>,
+    /// Waiters used by `_atelier/task/detach` to release a client waiting on
+    /// a prompt while the session actor continues the turn in the background.
+    pub(crate) detached_prompt_waiters:
+        RefCell<HashMap<String, tokio::sync::oneshot::Sender<()>>>,
+    /// Runtime task subscriptions keyed by task id.  The subscription task
+    /// runs on the agent's LocalSet and emits replay/live task updates through
+    /// the existing ACP gateway.
+    pub(crate) runtime_subscriptions: RefCell<HashSet<String>>,
     /// Idempotency guard: the join-handle supervisor task is spawned at most
     /// once (on the first `spawn_and_register_session`). See
     /// `ensure_session_supervisor`.

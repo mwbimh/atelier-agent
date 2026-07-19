@@ -1,7 +1,7 @@
 use atelier_provider::{
     CapabilityOverrides, CredentialRef, ModelCapabilities, ModelDescriptor, ModelKey, ModelSource,
-    ProviderConfig, ProviderDiscovery, ProviderProtocol, ProviderRegistry, SecretString,
-    parse_custom_model_id, parse_openai_models_response,
+    ProviderConfig, ProviderDiscovery, ProviderModelOverride, ProviderProtocol, ProviderRegistry,
+    SecretString, WireApi, WireApiSource, parse_custom_model_id, parse_openai_models_response,
 };
 #[cfg(not(windows))]
 use atelier_provider::{CredentialError, CredentialErrorCode};
@@ -29,6 +29,7 @@ fn model(key: ModelKey) -> ModelDescriptor {
         key,
         display_name: "Shared model".into(),
         description: None,
+        wire_api: None,
         context_window: None,
         capabilities: ModelCapabilities::default(),
         reasoning_efforts: Vec::new(),
@@ -284,6 +285,7 @@ fn clearing_capability_override_restores_latest_remote_metadata() {
                 key: key.clone(),
                 display_name: "Shared model".into(),
                 description: None,
+                wire_api: None,
                 context_window: None,
                 capabilities: ModelCapabilities {
                     tool_calls: true,
@@ -422,4 +424,151 @@ fn save_replaces_existing_registry_as_one_complete_document() {
     let ids: Vec<_> = loaded.providers().map(|value| value.id.as_str()).collect();
     assert_eq!(ids, vec!["first", "second"]);
     assert!(toml::from_str::<toml::Value>(&std::fs::read_to_string(path).unwrap()).is_ok());
+}
+
+#[test]
+fn model_wire_api_and_provider_model_override_resolve_in_order() {
+    let key = ModelKey::new("proxy", "gpt-5").unwrap();
+    let mut registry = ProviderRegistry::in_memory();
+    registry.upsert_provider(provider("proxy")).unwrap();
+
+    let mut descriptor = model(key.clone());
+    descriptor.wire_api = Some(WireApi::Responses);
+    registry.upsert_model(descriptor).unwrap();
+    let resolved = registry.resolve_wire_api(&key).unwrap();
+    assert_eq!(resolved.wire_api, WireApi::Responses);
+    assert_eq!(resolved.source, WireApiSource::ModelSetting);
+
+    registry
+        .set_model_provider_override(
+            &key,
+            ProviderModelOverride {
+                wire_api: Some(WireApi::ChatCompletions),
+                payload: serde_json::json!({ "temperature": 0.2 })
+                    .as_object()
+                    .cloned()
+                    .unwrap(),
+            },
+        )
+        .unwrap();
+    let resolved = registry.resolve_wire_api(&key).unwrap();
+    assert_eq!(resolved.wire_api, WireApi::ChatCompletions);
+    assert_eq!(resolved.source, WireApiSource::ProviderModelOverride);
+}
+
+#[test]
+fn model_wire_api_settings_survive_registry_reload() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("providers.toml");
+    let key = ModelKey::new("proxy", "gpt-5").unwrap();
+    let mut registry = ProviderRegistry::load_or_create(&path).unwrap();
+    registry.upsert_provider(provider("proxy")).unwrap();
+    registry.upsert_model(model(key.clone())).unwrap();
+    registry
+        .set_model_wire_api(&key, Some(WireApi::Responses))
+        .unwrap();
+    registry
+        .set_model_provider_override(
+            &key,
+            ProviderModelOverride {
+                wire_api: Some(WireApi::ChatCompletions),
+                payload: serde_json::json!({ "temperature": 0.2 })
+                    .as_object()
+                    .cloned()
+                    .unwrap(),
+            },
+        )
+        .unwrap();
+    registry.save().unwrap();
+
+    let reloaded = ProviderRegistry::load_or_create(&path).unwrap();
+    let resolved = reloaded.resolve_wire_api(&key).unwrap();
+    assert_eq!(resolved.wire_api, WireApi::ChatCompletions);
+    assert_eq!(resolved.source, WireApiSource::ProviderModelOverride);
+    assert_eq!(
+        reloaded.model_provider_override(&key).unwrap().payload["temperature"],
+        0.2
+    );
+}
+
+#[test]
+fn absent_model_wire_api_uses_chat_completions_default() {
+    let key = ModelKey::new("responses-provider", "legacy-model").unwrap();
+    let mut registry = ProviderRegistry::in_memory();
+    registry
+        .upsert_provider(provider("responses-provider"))
+        .unwrap();
+    registry.upsert_model(model(key.clone())).unwrap();
+
+    let resolved = registry.resolve_wire_api(&key).unwrap();
+    assert_eq!(resolved.wire_api, WireApi::ChatCompletions);
+    assert_eq!(resolved.source, WireApiSource::DefaultChatCompletions);
+}
+
+#[test]
+fn model_wire_api_is_shared_across_providers_but_pair_override_remains_local() {
+    let key_a = ModelKey::new("proxy-a", "shared-model").unwrap();
+    let key_b = ModelKey::new("proxy-b", "shared-model").unwrap();
+    let mut registry = ProviderRegistry::in_memory();
+    registry.upsert_provider(provider("proxy-a")).unwrap();
+    registry.upsert_provider(provider("proxy-b")).unwrap();
+    registry.upsert_model(model(key_a.clone())).unwrap();
+    registry.upsert_model(model(key_b.clone())).unwrap();
+
+    registry
+        .set_model_wire_api(&key_a, Some(WireApi::Responses))
+        .unwrap();
+    assert_eq!(
+        registry.resolve_wire_api(&key_a).unwrap().wire_api,
+        WireApi::Responses
+    );
+    assert_eq!(
+        registry.resolve_wire_api(&key_b).unwrap().wire_api,
+        WireApi::Responses
+    );
+
+    registry
+        .set_model_provider_override(
+            &key_a,
+            ProviderModelOverride {
+                wire_api: Some(WireApi::ChatCompletions),
+                payload: Default::default(),
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        registry.resolve_wire_api(&key_a).unwrap().wire_api,
+        WireApi::ChatCompletions
+    );
+    assert_eq!(
+        registry.resolve_wire_api(&key_b).unwrap().wire_api,
+        WireApi::Responses
+    );
+    assert!(
+        registry
+            .snapshot()
+            .model_provider_overrides
+            .contains_key("proxy-a/shared-model")
+    );
+}
+
+#[test]
+fn model_override_rejects_credential_payload_keys() {
+    let key = ModelKey::new("proxy", "gpt-5").unwrap();
+    let mut registry = ProviderRegistry::in_memory();
+    registry.upsert_provider(provider("proxy")).unwrap();
+    registry.upsert_model(model(key.clone())).unwrap();
+    let error = registry
+        .set_model_provider_override(
+            &key,
+            ProviderModelOverride {
+                wire_api: None,
+                payload: serde_json::json!({ "api_key": "secret" })
+                    .as_object()
+                    .cloned()
+                    .unwrap(),
+            },
+        )
+        .expect_err("credential-like payload must be rejected");
+    assert!(error.to_string().contains("credential-like"));
 }

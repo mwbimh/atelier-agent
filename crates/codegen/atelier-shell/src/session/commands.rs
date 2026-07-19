@@ -621,7 +621,22 @@ pub enum SessionCommand {
     /// tool-free model call, and returns the response text.
     SideQuestion {
         question: String,
+        /// Persist the side-query record in `btw_history.jsonl`.
+        persist: bool,
         respond_to: oneshot::Sender<Result<String, String>>,
+    },
+    /// Detailed /btw side query used by the Atelier control plane.  It keeps
+    /// the legacy `SideQuestion` contract intact for existing callers while
+    /// exposing snapshot and Wire API metadata to new clients.
+    SideQuestionDetailed {
+        /// Use a previously persisted immutable snapshot when supplied;
+        /// otherwise the session captures its current completed context.
+        snapshot_id: Option<String>,
+        question: String,
+        append_context: Option<String>,
+        persist: bool,
+        respond_to:
+            oneshot::Sender<Result<crate::session::context_snapshot::SideQueryResponse, String>>,
     },
     /// Generate a session recap (a short "where was I" summary) and broadcast
     /// it to clients via `SessionUpdate::SessionRecap`.

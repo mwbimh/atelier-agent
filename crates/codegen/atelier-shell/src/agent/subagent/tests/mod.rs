@@ -3134,6 +3134,7 @@ fn test_model_entry(model_id: &str) -> crate::agent::config::ModelEntry {
         api_key: None,
         env_key: None,
         api_base_url: None,
+        request_payload: serde_json::Map::new(),
     }
 }
 fn byok_model_entry(model_id: &str) -> crate::agent::config::ModelEntry {

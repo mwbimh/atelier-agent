@@ -2709,6 +2709,7 @@ fn catalog_with(
                 api_key: None,
                 env_key: None,
                 api_base_url: None,
+                request_payload: serde_json::Map::new(),
             },
         );
     }

@@ -5,7 +5,7 @@ use crate::{config::StorageMode, sampling::ApiBackend, tools::config::ShellTools
 use agent_client_protocol as acp;
 use atelier_agent::prompt::skills::SkillsConfig;
 use atelier_provider::{
-    ModelDescriptor as ProviderModelDescriptor, ProviderProtocol, ProviderSnapshot,
+    ModelDescriptor as ProviderModelDescriptor, ProviderProtocol, ProviderSnapshot, WireApi,
 };
 use atelier_sampler::{AuthScheme, SamplerConfig};
 use atelier_sampling_types::{
@@ -3260,16 +3260,25 @@ pub fn model_entries_from_provider_snapshot(
             info.context_window =
                 NonZeroU64::new(model.context_window.unwrap_or(DEFAULT_CONTEXT_WINDOW))
                     .expect("DEFAULT_CONTEXT_WINDOW is non-zero");
-            info.api_backend = match provider.protocol {
-                ProviderProtocol::OpenAiResponses => ApiBackend::Responses,
-                ProviderProtocol::OpenAiChatCompletions => ApiBackend::ChatCompletions,
-                ProviderProtocol::AnthropicMessages => ApiBackend::Messages,
+            let provider_model_override = snapshot
+                .model_provider_overrides
+                .get(&model.key.to_string());
+            let wire_api = provider_model_override
+                .and_then(|override_config| override_config.wire_api)
+                .or(model.wire_api)
+                // Wire API belongs to the model. An unset model setting is
+                // deliberately the formal Chat Completions default; the
+                // Provider protocol must not silently decide how every model
+                // on that Provider is called.
+                .unwrap_or(WireApi::ChatCompletions);
+            info.api_backend = match wire_api {
+                WireApi::Responses => ApiBackend::Responses,
+                WireApi::ChatCompletions => ApiBackend::ChatCompletions,
+                WireApi::Messages => ApiBackend::Messages,
             };
-            info.auth_scheme = match provider.protocol {
-                ProviderProtocol::AnthropicMessages => AuthScheme::XApiKey,
-                ProviderProtocol::OpenAiResponses | ProviderProtocol::OpenAiChatCompletions => {
-                    AuthScheme::Bearer
-                }
+            info.auth_scheme = match wire_api {
+                WireApi::Messages => AuthScheme::XApiKey,
+                WireApi::Responses | WireApi::ChatCompletions => AuthScheme::Bearer,
             };
             info.hidden = false;
             info.user_selectable = true;
@@ -3312,6 +3321,9 @@ pub fn model_entries_from_provider_snapshot(
                 api_key,
                 env_key,
                 api_base_url: None,
+                request_payload: provider_model_override
+                    .map(|override_config| override_config.payload.clone())
+                    .unwrap_or_default(),
             };
             Some((model.key.to_string(), entry))
         })
@@ -4031,6 +4043,8 @@ pub struct ModelEntry {
     pub env_key: Option<EnvKeys>,
     /// When set, `base_url` is used for session auth, `api_base_url` for API-key auth.
     pub api_base_url: Option<String>,
+    #[serde(default)]
+    pub request_payload: serde_json::Map<String, serde_json::Value>,
 }
 impl ModelEntry {
     /// Minimal fallback entry for an unknown model slug.
@@ -4042,6 +4056,7 @@ impl ModelEntry {
             api_key: None,
             env_key: None,
             api_base_url: None,
+            request_payload: serde_json::Map::new(),
         }
     }
     pub fn info(&self) -> &ModelInfo {
@@ -4053,6 +4068,7 @@ impl ModelEntry {
             api_key: entry.api_key.clone(),
             env_key: entry.env_key.clone(),
             api_base_url: entry.api_base_url.clone(),
+            request_payload: serde_json::Map::new(),
         }
     }
     /// The model's own (BYOK) credential: a non-empty `api_key`, else the first
@@ -4693,6 +4709,7 @@ pub fn resolve_aux_model_sampling_config(
             api_key: Some(bearer),
             env_key: None,
             api_base_url: None,
+            request_payload: serde_json::Map::new(),
         };
         let credentials = resolve_credentials_enforced(&entry, session_key, disable_api_key_auth);
         let sampler = sampling_config_for_model(
@@ -4796,7 +4813,7 @@ pub fn sampling_config_for_model(
         max_completion_tokens,
         temperature,
         top_p,
-        request_payload: Default::default(),
+        request_payload: model.request_payload.clone(),
         api_backend,
         auth_scheme: credentials.auth_scheme,
         extra_headers,
@@ -4917,6 +4934,7 @@ fn resolve_hidden_default_web_search_sampling_config(
         api_key: None,
         env_key: None,
         api_base_url: None,
+        request_payload: serde_json::Map::new(),
     };
     let credentials = resolve_credentials_enforced(&entry, session_key, disable_api_key_auth);
     sampling_config_for_model(
@@ -5572,6 +5590,7 @@ reasoning_effort = "low"
             api_key: api_key.map(|s| s.to_string()),
             env_key: env_key.map(EnvKeys::single),
             api_base_url: api_base_url.map(|s| s.to_string()),
+            request_payload: serde_json::Map::new(),
         }
     }
     /// The effective-model RE-support lookup must use the model ACTUALLY used:
@@ -7419,6 +7438,7 @@ reasoning_effort = "low"
                 key: atelier_provider::ModelKey::new("anthropic-local", "claude-test").unwrap(),
                 display_name: "Claude Test".into(),
                 description: Some("local test model".into()),
+                wire_api: None,
                 context_window: Some(64_000),
                 capabilities: atelier_provider::ModelCapabilities {
                     tool_calls: true,
@@ -7430,6 +7450,7 @@ reasoning_effort = "low"
                 enabled: true,
             }],
             default_model: None,
+            model_provider_overrides: Default::default(),
         };
         let mut remote = IndexMap::new();
         remote.insert(
@@ -7449,8 +7470,8 @@ reasoning_effort = "low"
         assert_eq!(resolved.len(), 1);
         let entry = resolved.get("anthropic-local/claude-test").unwrap();
         assert_eq!(entry.info.model, "claude-test");
-        assert_eq!(entry.info.api_backend, ApiBackend::Messages);
-        assert_eq!(entry.info.auth_scheme, AuthScheme::XApiKey);
+        assert_eq!(entry.info.api_backend, ApiBackend::ChatCompletions);
+        assert_eq!(entry.info.auth_scheme, AuthScheme::Bearer);
         assert_eq!(entry.info.context_window.get(), 64_000);
         assert!(entry.info.supports_reasoning_effort);
         assert!(entry.info.reasoning_effort.is_some());
@@ -7491,6 +7512,7 @@ reasoning_effort = "low"
             providers: Vec::new(),
             models: Vec::new(),
             default_model: None,
+            model_provider_overrides: Default::default(),
         };
         let cfg = Config::default();
         let mut prefetched = IndexMap::new();
@@ -10890,6 +10912,7 @@ default = "atelier-4.5"
             api_key: None,
             env_key: None,
             api_base_url: None,
+            request_payload: serde_json::Map::new(),
         }
     }
     #[test]

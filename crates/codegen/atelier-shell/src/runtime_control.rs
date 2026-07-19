@@ -32,6 +32,34 @@ pub struct RuntimeStatus {
     pub diagnostic_message: Option<String>,
 }
 
+/// Stable task identity exposed by the third-batch runtime control plane.
+///
+/// `RuntimeStatus` is intentionally a live per-session view.  This separate
+/// record keeps completed and detached work queryable after a later request
+/// starts in the same session.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeTask {
+    pub id: String,
+    pub session_id: String,
+    pub turn_id: Option<String>,
+    pub agent_id: String,
+    pub role: String,
+    pub state: RuntimeState,
+    pub started_at_ms: u64,
+    pub last_event_id: u64,
+    /// Whether a client may attach to this task's live turn.
+    ///
+    /// Auxiliary requests such as `/btw` are observable but do not own a
+    /// session turn and must not be attached or cancelled as if they did.
+    #[serde(default = "default_task_attachable")]
+    pub attachable: bool,
+}
+
+fn default_task_attachable() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ContextBlock {
@@ -50,6 +78,10 @@ pub struct RequestSnapshot {
     pub role: String,
     pub provider: Option<String>,
     pub model: Option<String>,
+    #[serde(default)]
+    pub wire_api: Option<String>,
+    #[serde(default)]
+    pub wire_api_source: Option<String>,
     pub effort: Option<String>,
     pub fast_mode: Option<bool>,
     pub payload: Value,
@@ -113,12 +145,14 @@ pub struct RecoveryResult {
 #[derive(Debug)]
 pub struct RuntimeControl {
     statuses: HashMap<String, RuntimeStatus>,
+    tasks: VecDeque<RuntimeTask>,
     requests: VecDeque<RequestSnapshot>,
     events: VecDeque<TraceRecord>,
     pending_retry_counts: HashMap<String, u32>,
     next_event_id: u64,
     request_limit: usize,
     event_limit: usize,
+    event_watch: tokio::sync::watch::Sender<u64>,
 }
 
 impl Default for RuntimeControl {
@@ -129,14 +163,17 @@ impl Default for RuntimeControl {
 
 impl RuntimeControl {
     pub fn new(request_limit: usize, event_limit: usize) -> Self {
+        let (event_watch, _) = tokio::sync::watch::channel(0);
         Self {
             statuses: HashMap::new(),
+            tasks: VecDeque::new(),
             requests: VecDeque::new(),
             events: VecDeque::new(),
             pending_retry_counts: HashMap::new(),
             next_event_id: 0,
             request_limit: request_limit.max(1),
             event_limit: event_limit.max(1),
+            event_watch,
         }
     }
 
@@ -175,6 +212,18 @@ impl RuntimeControl {
                 diagnostic_message: None,
             },
         );
+        self.tasks.retain(|task| task.id != request_id);
+        self.tasks.push_back(RuntimeTask {
+            id: request_id.clone(),
+            session_id: session_id.clone(),
+            turn_id: turn_id.clone(),
+            agent_id: session_id.clone(),
+            role: role.clone(),
+            state: RuntimeState::PreparingContext,
+            started_at_ms: now_ms,
+            last_event_id: 0,
+            attachable: true,
+        });
         self.requests.push_back(RequestSnapshot {
             request_id: request_id.clone(),
             session_id: session_id.clone(),
@@ -182,6 +231,8 @@ impl RuntimeControl {
             role,
             provider,
             model,
+            wire_api: None,
+            wire_api_source: None,
             effort: None,
             fast_mode: None,
             payload: Value::Object(Default::default()),
@@ -198,13 +249,17 @@ impl RuntimeControl {
             state: RuntimeState::PreparingContext,
         });
         self.trim();
-        self.record_event_at(
+        let event_id = self.record_event_at(
             now_ms,
             Some(session_id),
             Some(request_id),
             "request.started",
             Value::Null,
         );
+        if let Some(task) = self.tasks.back_mut() {
+            task.last_event_id = event_id;
+        }
+        self.trim();
     }
 
     pub fn update_status(
@@ -235,14 +290,108 @@ impl RuntimeControl {
         {
             request.state = state;
         }
-        self.record_event_at(
+        let event_id = self.record_event_at(
             now_ms,
             Some(session_id.to_owned()),
-            request_id,
+            request_id.clone(),
             "runtime.state_changed",
             serde_json::json!({ "state": state }),
         );
+        if let Some(request_id) = request_id
+            && let Some(task) = self
+                .tasks
+                .iter_mut()
+                .rev()
+                .find(|task| task.id == request_id)
+        {
+            task.state = state;
+            task.last_event_id = event_id;
+        }
         true
+    }
+
+    /// Register a model request which is visible in the task registry but is
+    /// not the session's foreground turn.  This is used for side queries and
+    /// other auxiliary runtime work so that recording it never overwrites the
+    /// live `RuntimeStatus` for the parent session.
+    pub fn begin_auxiliary_task(
+        &mut self,
+        task_id: impl Into<String>,
+        session_id: impl Into<String>,
+        turn_id: Option<String>,
+        agent_id: impl Into<String>,
+        role: impl Into<String>,
+        state: RuntimeState,
+        attachable: bool,
+        now_ms: u64,
+    ) {
+        let task_id = task_id.into();
+        let session_id = session_id.into();
+        self.tasks.retain(|task| task.id != task_id);
+        self.tasks.push_back(RuntimeTask {
+            id: task_id.clone(),
+            session_id: session_id.clone(),
+            turn_id,
+            agent_id: agent_id.into(),
+            role: role.into(),
+            state,
+            started_at_ms: now_ms,
+            last_event_id: 0,
+            attachable,
+        });
+        let event_id = self.record_event_at(
+            now_ms,
+            Some(session_id),
+            Some(task_id.clone()),
+            "runtime.task_started",
+            serde_json::json!({ "state": state, "attachable": attachable }),
+        );
+        if let Some(task) = self.tasks.iter_mut().rev().find(|task| task.id == task_id) {
+            task.last_event_id = event_id;
+        }
+        self.trim();
+    }
+
+    pub fn update_task(
+        &mut self,
+        task_id: &str,
+        state: RuntimeState,
+        now_ms: u64,
+        diagnostic_message: Option<String>,
+    ) -> bool {
+        let session_id = {
+            let Some(task) = self.tasks.iter_mut().rev().find(|task| task.id == task_id) else {
+                return false;
+            };
+            task.state = state;
+            task.session_id.clone()
+        };
+        let event_id = self.record_event_at(
+            now_ms,
+            Some(session_id),
+            Some(task_id.to_owned()),
+            "runtime.task_state_changed",
+            serde_json::json!({
+                "state": state,
+                "diagnosticMessage": diagnostic_message
+                    .as_deref()
+                    .map(xai_acp_lib::redact_text),
+            }),
+        );
+        if let Some(task) = self.tasks.iter_mut().rev().find(|task| task.id == task_id) {
+            task.last_event_id = event_id;
+        }
+        true
+    }
+
+    pub fn finish_task(
+        &mut self,
+        task_id: &str,
+        state: RuntimeState,
+        now_ms: u64,
+        diagnostic_message: Option<String>,
+    ) -> bool {
+        self.update_task(task_id, state, now_ms, diagnostic_message)
     }
 
     pub fn finish_request(
@@ -275,10 +424,10 @@ impl RuntimeControl {
             request.finished_at_ms = Some(now_ms);
             request.total_duration_ms = Some(now_ms.saturating_sub(started_at));
         }
-        self.record_event_at(
+        let event_id = self.record_event_at(
             now_ms,
             Some(session_id.to_owned()),
-            request_id,
+            request_id.clone(),
             if state == RuntimeState::Completed {
                 "request.completed"
             } else {
@@ -286,6 +435,16 @@ impl RuntimeControl {
             },
             Value::Null,
         );
+        if let Some(request_id) = request_id
+            && let Some(task) = self
+                .tasks
+                .iter_mut()
+                .rev()
+                .find(|task| task.id == request_id)
+        {
+            task.state = state;
+            task.last_event_id = event_id;
+        }
         true
     }
 
@@ -331,6 +490,25 @@ impl RuntimeControl {
         true
     }
 
+    pub fn set_request_wire_api(
+        &mut self,
+        request_id: &str,
+        wire_api: Option<String>,
+        source: Option<String>,
+    ) -> bool {
+        let Some(request) = self
+            .requests
+            .iter_mut()
+            .rev()
+            .find(|request| request.request_id == request_id)
+        else {
+            return false;
+        };
+        request.wire_api = wire_api;
+        request.wire_api_source = source;
+        true
+    }
+
     pub fn status(&self, session_id: &str) -> Option<RuntimeStatus> {
         self.statuses.get(session_id).cloned()
     }
@@ -339,6 +517,22 @@ impl RuntimeControl {
         let mut statuses: Vec<_> = self.statuses.values().cloned().collect();
         statuses.sort_by(|left, right| left.session_id.cmp(&right.session_id));
         statuses
+    }
+
+    pub fn tasks(&self, session_id: Option<&str>) -> Vec<RuntimeTask> {
+        self.tasks
+            .iter()
+            .filter(|task| session_id.is_none_or(|id| id == task.session_id))
+            .cloned()
+            .collect()
+    }
+
+    pub fn task(&self, task_id: &str) -> Option<RuntimeTask> {
+        self.tasks
+            .iter()
+            .rev()
+            .find(|task| task.id == task_id)
+            .cloned()
     }
 
     pub fn request(&self, request_id: &str) -> Option<RequestSnapshot> {
@@ -427,6 +621,10 @@ impl RuntimeControl {
         self.events.back().map(|event| event.event_id)
     }
 
+    pub fn subscribe_events(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.event_watch.subscribe()
+    }
+
     pub fn doctor(&self, now_ms: u64, stale_after_ms: u64) -> DoctorReport {
         let issues = self
             .statuses
@@ -507,12 +705,16 @@ impl RuntimeControl {
             details: xai_acp_lib::redact_payload(&details),
         });
         self.trim();
+        let _ = self.event_watch.send(event_id);
         event_id
     }
 
     fn trim(&mut self) {
         while self.requests.len() > self.request_limit {
             self.requests.pop_front();
+        }
+        while self.tasks.len() > self.request_limit {
+            self.tasks.pop_front();
         }
         while self.events.len() > self.event_limit {
             self.events.pop_front();
@@ -661,5 +863,73 @@ mod tests {
 
         assert_eq!(control.status("session-1").unwrap().retry_count, 1);
         assert_eq!(control.request("request-2").unwrap().retry_count, 1);
+    }
+
+    #[test]
+    fn task_registry_keeps_completed_tasks_when_a_session_starts_another_request() {
+        let mut control = RuntimeControl::default();
+        control.begin_request("session-1", "request-1", None, "main", None, None, 1);
+        control.finish_request("session-1", RuntimeState::Completed, 2, None, None);
+        control.begin_request("session-1", "request-2", None, "main", None, None, 3);
+
+        let tasks = control.tasks(Some("session-1"));
+        assert_eq!(tasks.len(), 2);
+        assert_eq!(tasks[0].id, "request-1");
+        assert_eq!(tasks[0].state, RuntimeState::Completed);
+        assert_eq!(tasks[1].id, "request-2");
+        assert_eq!(tasks[1].state, RuntimeState::PreparingContext);
+        assert!(tasks[0].last_event_id < tasks[1].last_event_id);
+    }
+
+    #[test]
+    fn task_registry_tracks_last_event_id_and_filters_by_session() {
+        let mut control = RuntimeControl::default();
+        control.begin_request("session-1", "request-1", None, "main", None, None, 1);
+        control.begin_request("session-2", "request-2", None, "explore", None, None, 2);
+        control.update_status("session-1", RuntimeState::WaitingForProvider, 3, None);
+
+        let task = control.task("request-1").expect("task");
+        assert_eq!(task.state, RuntimeState::WaitingForProvider);
+        assert_eq!(task.last_event_id, 3);
+        assert_eq!(control.tasks(Some("session-2")).len(), 1);
+    }
+
+    #[test]
+    fn auxiliary_task_does_not_replace_the_parent_session_status() {
+        let mut control = RuntimeControl::default();
+        control.begin_request("session-1", "request-1", None, "main", None, None, 1);
+        control.update_status("session-1", RuntimeState::RunningTool, 2, None);
+        control.begin_auxiliary_task(
+            "btw-1",
+            "session-1",
+            None,
+            "session-1",
+            "main",
+            RuntimeState::WaitingForProvider,
+            false,
+            3,
+        );
+
+        assert_eq!(
+            control.status("session-1").unwrap().state,
+            RuntimeState::RunningTool
+        );
+        let task = control.task("btw-1").expect("auxiliary task");
+        assert!(!task.attachable);
+        control.finish_task("btw-1", RuntimeState::Completed, 4, None);
+        assert_eq!(
+            control.task("btw-1").unwrap().state,
+            RuntimeState::Completed
+        );
+    }
+
+    #[test]
+    fn event_watch_is_woken_for_runtime_events() {
+        let mut control = RuntimeControl::default();
+        let receiver = control.subscribe_events();
+        control.begin_request("session-1", "request-1", None, "main", None, None, 1);
+        assert_eq!(*receiver.borrow(), 1);
+        control.update_status("session-1", RuntimeState::Completed, 2, None);
+        assert_eq!(*receiver.borrow(), 2);
     }
 }

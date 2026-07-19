@@ -33,7 +33,7 @@ use super::modes::{
     set_permission_mode, set_plan_mode, set_yolo_mode,
 };
 use super::notes::{
-    dispatch_enter_feedback_mode, dispatch_enter_remember_mode,
+    dispatch_enter_feedback_mode, dispatch_enter_remember_mode, dispatch_runtime_extension,
     dispatch_save_remember_note_from_modal, dispatch_send_btw, dispatch_send_feedback,
     dispatch_send_recap, dispatch_send_remember_note,
 };
@@ -892,6 +892,9 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
         Action::SendRememberNote(text) => dispatch_send_remember_note(app, text),
         Action::SaveRememberNoteFromModal => dispatch_save_remember_note_from_modal(app),
         Action::SendBtw(question) => dispatch_send_btw(app, question),
+        Action::RuntimeExtension { method, params } => {
+            dispatch_runtime_extension(app, method, params)
+        }
         Action::RefreshProviderModels(provider_id) => {
             dispatch_refresh_provider_models(app, provider_id)
         }
@@ -953,6 +956,9 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
         Action::PreviewAutoLightTheme(v) => preview_auto_light_theme(app, v),
         Action::OpenSettings => dispatch_open_settings(app),
         Action::OpenSlashArgPicker { command } => dispatch_open_slash_arg_picker(app, command),
+        Action::OpenSlashCommandInput { command } => {
+            dispatch_open_slash_command_input(app, command)
+        }
         Action::OpenCommandPalette => dispatch_open_command_palette(app),
         Action::OpenHowtoGuides => dispatch_open_howto_guides(app),
         Action::OpenResetConfirm { key } => dispatch_open_reset_confirm(app, key),
@@ -1322,6 +1328,17 @@ fn dispatch_open_slash_arg_picker(app: &mut AppView, command_name: String) -> Ve
         previous_palette: None,
         window: crate::views::modal_window::ModalWindowState::new(),
     });
+    vec![]
+}
+
+fn dispatch_open_slash_command_input(app: &mut AppView, command_name: String) -> Vec<Effect> {
+    let ActiveView::Agent(id) = app.active_view else {
+        return vec![];
+    };
+    let Some(agent) = app.agents.get_mut(&id) else {
+        return vec![];
+    };
+    agent.prompt.set_text(&format!("/{command_name} "));
     vec![]
 }
 

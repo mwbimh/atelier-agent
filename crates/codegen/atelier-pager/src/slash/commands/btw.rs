@@ -30,7 +30,7 @@ impl SlashCommand for BtwCommand {
     }
 
     fn args_required(&self) -> bool {
-        true
+        false
     }
 
     fn arg_placeholder(&self) -> Option<&str> {
@@ -38,6 +38,49 @@ impl SlashCommand for BtwCommand {
     }
 
     fn run(&self, _ctx: &mut CommandExecCtx, args: &str) -> CommandResult {
+        if args.trim().is_empty() {
+            return CommandResult::Action(Action::OpenSlashCommandInput {
+                command: self.name().to_owned(),
+            });
+        }
         CommandResult::Action(Action::SendBtw(args.trim().to_string()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::BtwCommand;
+    use crate::app::actions::Action;
+    use crate::slash::command::{CommandExecCtx, CommandResult, SlashCommand};
+
+    fn ctx() -> CommandExecCtx<'static> {
+        let models = Box::leak(Box::new(crate::acp::model_state::ModelState::default()));
+        let bundle = Box::leak(Box::new(crate::app::bundle::BundleState::default()));
+        CommandExecCtx {
+            models,
+            session_id: None,
+            bundle_state: bundle,
+            screen_mode: crate::app::ScreenMode::Inline,
+            pager_state: crate::settings::PagerLocalSnapshot::default(),
+        }
+    }
+
+    #[test]
+    fn bare_btw_opens_free_form_command_input() {
+        let mut command_ctx = ctx();
+        assert!(matches!(
+            BtwCommand.run(&mut command_ctx, ""),
+            CommandResult::Action(Action::OpenSlashCommandInput { command })
+                if command == "btw"
+        ));
+    }
+
+    #[test]
+    fn btw_with_question_keeps_complete_command_path() {
+        let mut command_ctx = ctx();
+        assert!(matches!(
+            BtwCommand.run(&mut command_ctx, "why Responses?"),
+            CommandResult::Action(Action::SendBtw(question)) if question == "why Responses?"
+        ));
     }
 }

@@ -1,7 +1,7 @@
-use super::MvpAgent;
+use super::{LocalRef, MvpAgent};
 use crate::runtime_control::{
     ContextBlock, DoctorReport, RecoveryResult, RequestSnapshot, RuntimeState, RuntimeStatus,
-    TraceRecord,
+    RuntimeTask, TraceRecord,
 };
 use crate::session::{SessionCommand, SessionHandle, SessionLiveState};
 use agent_client_protocol as acp;
@@ -26,12 +26,163 @@ fn build_retry_request(
 }
 
 impl MvpAgent {
+    pub(crate) fn register_detach_waiter(
+        &self,
+        prompt_id: &str,
+        waiter: tokio::sync::oneshot::Sender<()>,
+    ) {
+        self.detached_prompt_waiters
+            .borrow_mut()
+            .insert(prompt_id.to_owned(), waiter);
+    }
+
+    pub(crate) fn clear_detach_waiter(&self, prompt_id: &str) {
+        self.detached_prompt_waiters.borrow_mut().remove(prompt_id);
+    }
+
+    pub(crate) fn detach_prompt(&self, session_id: &str) -> Option<String> {
+        let prompt_id = self
+            .session_handle_now(session_id)
+            .and_then(|handle| handle.current_prompt_id.lock().ok()?.clone())?;
+        self.detached_prompt_waiters
+            .borrow_mut()
+            .remove(&prompt_id)
+            .and_then(|waiter| waiter.send(()).ok().map(|()| prompt_id))
+    }
+
+    pub(crate) fn runtime_begin_auxiliary_task(
+        &self,
+        task_id: &str,
+        session_id: &str,
+        role: &str,
+        state: RuntimeState,
+        attachable: bool,
+    ) {
+        self.runtime_control.borrow_mut().begin_auxiliary_task(
+            task_id,
+            session_id,
+            None,
+            session_id,
+            role,
+            state,
+            attachable,
+            crate::runtime_control::now_millis(),
+        );
+    }
+
+    pub(crate) fn runtime_update_task(
+        &self,
+        task_id: &str,
+        state: RuntimeState,
+        diagnostic_message: Option<String>,
+    ) {
+        let _ = self.runtime_control.borrow_mut().update_task(
+            task_id,
+            state,
+            crate::runtime_control::now_millis(),
+            diagnostic_message,
+        );
+    }
+
+    pub(crate) fn runtime_finish_task(
+        &self,
+        task_id: &str,
+        state: RuntimeState,
+        diagnostic_message: Option<String>,
+    ) {
+        let _ = self.runtime_control.borrow_mut().finish_task(
+            task_id,
+            state,
+            crate::runtime_control::now_millis(),
+            diagnostic_message,
+        );
+    }
+
+    pub(crate) fn start_runtime_task_subscription(
+        &self,
+        task_id: String,
+        session_id: String,
+        after_event_id: u64,
+        limit: usize,
+    ) -> bool {
+        if !self
+            .runtime_subscriptions
+            .borrow_mut()
+            .insert(task_id.clone())
+        {
+            return false;
+        }
+
+        let mut event_rx = self.runtime_control.borrow().subscribe_events();
+        let gateway = self.gateway.clone();
+        let agent_ref = LocalRef::new(self);
+        let limit = limit.max(1);
+        tokio::task::spawn_local(async move {
+            let mut cursor = after_event_id;
+            loop {
+                let events = agent_ref
+                    .get()
+                    .runtime_events(Some(&session_id), cursor, limit);
+                if let Some(last) = events.last() {
+                    cursor = last.event_id;
+                    let task = agent_ref.get().runtime_task(&task_id);
+                    let payload = serde_json::json!({
+                        "subscriptionId": task_id.clone(),
+                        "sessionId": session_id.clone(),
+                        "task": task,
+                        "events": events,
+                        "lastEventId": cursor,
+                    });
+                    if let Ok(raw) = serde_json::value::to_raw_value(&payload) {
+                        gateway.forward_fire_and_forget(acp::ExtNotification::new(
+                            "atelier/task/update",
+                            raw.into(),
+                        ));
+                    }
+                    if agent_ref
+                        .get()
+                        .runtime_task(&task_id)
+                        .is_some_and(|task| task.state.is_terminal())
+                    {
+                        break;
+                    }
+                    continue;
+                }
+
+                if agent_ref
+                    .get()
+                    .runtime_task(&task_id)
+                    .is_some_and(|task| task.state.is_terminal())
+                {
+                    break;
+                }
+                if event_rx.changed().await.is_err() {
+                    break;
+                }
+            }
+            agent_ref
+                .get()
+                .runtime_subscriptions
+                .borrow_mut()
+                .remove(&task_id);
+        });
+        true
+    }
+
     pub(crate) fn runtime_status(&self, session_id: &str) -> Option<RuntimeStatus> {
         self.runtime_control.borrow().status(session_id)
     }
 
     pub(crate) fn runtime_statuses(&self) -> Vec<RuntimeStatus> {
         self.runtime_control.borrow().statuses()
+    }
+
+    pub(crate) fn runtime_tasks(&self, session_id: Option<&str>) -> Vec<RuntimeTask> {
+        self.runtime_control.borrow().tasks(session_id)
+    }
+
+    pub(crate) fn runtime_task(&self, task_id: &str) -> Option<RuntimeTask> {
+        self.runtime_control.borrow().task(task_id)
     }
 
     pub(crate) fn runtime_requests(&self, session_id: Option<&str>) -> Vec<RequestSnapshot> {
@@ -202,6 +353,18 @@ impl MvpAgent {
             .runtime_control
             .borrow_mut()
             .set_request_parameters(request_id, effort, fast_mode);
+    }
+
+    pub(crate) fn runtime_set_request_wire_api(
+        &self,
+        request_id: &str,
+        wire_api: Option<String>,
+        source: Option<String>,
+    ) {
+        let _ = self
+            .runtime_control
+            .borrow_mut()
+            .set_request_wire_api(request_id, wire_api, source);
     }
 
     pub(crate) fn runtime_finish_request(

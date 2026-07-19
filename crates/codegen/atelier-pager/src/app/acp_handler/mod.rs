@@ -45,6 +45,7 @@ mod permissions;
 mod prompt_origin;
 mod queue;
 mod routing;
+mod runtime_task;
 mod session_notification;
 mod settings;
 mod subagent_activity;
@@ -76,6 +77,7 @@ use session_notification::{
 
 pub(crate) use queue::PendingRunningAdoption;
 use queue::{handle_prompt_complete, handle_queue_changed};
+use runtime_task::handle_task_update;
 
 use background::{
     derive_child_cwd, handle_git_head_changed, handle_monitor_event, handle_scheduled_task_created,
@@ -612,6 +614,7 @@ fn handle_ext_notification(notif: &acp::ExtNotification, app: &mut AppView) -> b
         // TODO(prompt_complete-deprecation): Legacy removal (gated): durable turn_completed is already consumed via finalize_turn_from_terminal; keep & re-point the lost-RPC reconcile to the durable rail before deleting.
         "atelier/session/prompt_complete" => handle_prompt_complete(notif, app),
         "atelier/session/interjection" => handle_interjection(notif, app),
+        "atelier/task/update" | "_atelier/task/update" => handle_task_update(notif, app),
         "atelier/monitor_event" => handle_monitor_event(notif, app),
         "atelier/scheduled_task_created" => handle_scheduled_task_created(notif, app),
         "atelier/scheduled_task_fired" => handle_scheduled_task_fired(notif, app),

@@ -1,16 +1,16 @@
 //! `/tasks` -- list background tasks, subagents, and scheduled tasks.
 //!
-//! Minimal mode has no interactive `TasksPane`, so `/tasks` is the way
-//! to snapshot what's running in the background. It works in every render mode.
-//! The dispatcher (`dispatch_show_tasks`) reads the three task sources and
-//! commits a read-only list; killing/attaching is out of scope here (use the
-//! tasks pane in the full TUI).
+//! `/tasks` queries the unified Runtime task registry. The response includes
+//! main turns, derived Agents, parallel Agents, and replay metadata.
 
 use crate::app::actions::Action;
 use crate::slash::command::{CommandExecCtx, CommandResult, SlashCommand};
+use serde_json::json;
 
 /// List background tasks, subagents, and scheduled tasks.
 pub struct TasksCommand;
+
+const TASK_LIST: &str = "_atelier/task/list";
 
 impl SlashCommand for TasksCommand {
     fn name(&self) -> &str {
@@ -33,7 +33,10 @@ impl SlashCommand for TasksCommand {
         if ctx.session_id.is_none() {
             return CommandResult::Error("No active session".to_string());
         }
-        CommandResult::Action(Action::ShowTasks)
+        CommandResult::Action(Action::RuntimeExtension {
+            method: TASK_LIST.to_owned(),
+            params: json!({}),
+        })
     }
 }
 
@@ -80,7 +83,8 @@ mod tests {
         let sid = agent_client_protocol::SessionId::from("s1".to_string());
         assert!(matches!(
             run_with_session(Some(&sid)),
-            CommandResult::Action(Action::ShowTasks)
+            CommandResult::Action(Action::RuntimeExtension { method, .. })
+                if method == "_atelier/task/list"
         ));
     }
 

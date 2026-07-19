@@ -169,8 +169,9 @@ fn open_fork_question(app: &mut AppView, directive: Option<String>) -> Vec<Effec
 ///
 /// `worktree == true` reuses the existing
 /// [`Effect::CreateWorktreeSession`] pipeline (with `load_session_id`
-/// set to the parent session id). `worktree == false` emits the new
-/// [`Effect::ForkSession`] which calls `atelier/session/fork` directly.
+/// set to the parent session id). `worktree == false` uses the explicit
+/// ContextSnapshot derivation RPC; the legacy fork-copy path is reserved for
+/// the explicit worktree flow.
 pub(in crate::app::dispatch) fn dispatch_fork_resolved(
     app: &mut AppView,
     worktree: bool,
@@ -188,6 +189,31 @@ pub(in crate::app::dispatch) fn dispatch_fork_resolved(
     };
     let parent_cwd = parent.session.cwd.clone();
     let parent_is_worktree = parent.session.is_worktree;
+
+    if !worktree {
+        let parent_marker = match directive.as_deref() {
+            Some(d) => format!("Forked: {d}"),
+            None => "Forked".to_owned(),
+        };
+        if let Some(parent_mut) = app.agents.get_mut(&parent_id) {
+            parent_mut
+                .scrollback
+                .push_block(RenderBlock::system(parent_marker));
+        }
+        return vec![Effect::RuntimeExtension {
+            agent_id: parent_id,
+            method: "_atelier/agent/spawn_derived".to_owned(),
+            params: serde_json::json!({
+                "sessionId": parent_session_id.to_string(),
+                "role": "main",
+                "prompt": directive.unwrap_or_default(),
+                "background": false,
+                "fresh": false,
+                "isolation": "none",
+            }),
+        }];
+    }
+
     let new_id = AgentId(app.next_agent_id);
     app.next_agent_id += 1;
     let new_agent = build_fork_placeholder(app, new_id, parent_id, &parent_cwd, worktree);

@@ -2,6 +2,51 @@
 
 use super::*;
 
+fn assert_derived_spawn_effect(effects: &[Effect], expected_prompt: &str) {
+    match effects {
+        [
+            Effect::RuntimeExtension {
+                agent_id,
+                method,
+                params,
+            },
+        ] => {
+            assert_eq!(*agent_id, AgentId(0));
+            assert_eq!(method, "_atelier/agent/spawn_derived");
+            let object = params
+                .as_object()
+                .expect("derived-agent params must be an object");
+            assert_eq!(
+                object.get("sessionId").and_then(serde_json::Value::as_str),
+                Some("test-session")
+            );
+            assert_eq!(
+                object.get("role").and_then(serde_json::Value::as_str),
+                Some("main")
+            );
+            assert_eq!(
+                object.get("prompt").and_then(serde_json::Value::as_str),
+                Some(expected_prompt)
+            );
+            assert_eq!(
+                object
+                    .get("background")
+                    .and_then(serde_json::Value::as_bool),
+                Some(false)
+            );
+            assert_eq!(
+                object.get("fresh").and_then(serde_json::Value::as_bool),
+                Some(false)
+            );
+            assert_eq!(
+                object.get("isolation").and_then(serde_json::Value::as_str),
+                Some("none")
+            );
+        }
+        other => panic!("expected derived-agent RuntimeExtension, got {other:?}"),
+    }
+}
+
 // ── Worktree session tests ───────────────────────────────────────
 
 #[test]
@@ -374,7 +419,7 @@ fn dispatch_fork_worktree_flag_skips_modal() {
 fn dispatch_fork_no_worktree_flag_skips_modal() {
     let mut app = fork_test_app();
     let effects = dispatch(Action::Fork(fork_args(Some(false), None)), &mut app);
-    assert!(matches!(effects.as_slice(), [Effect::ForkSession { .. }]));
+    assert_derived_spawn_effect(&effects, "");
     assert!(
         app.agents.values().all(|a| a.question_view.is_none()),
         "--no-worktree must skip the modal"
@@ -412,21 +457,14 @@ fn dispatch_fork_no_flag_non_git_skips_modal_and_forks_without_worktree() {
         Action::Fork(fork_args(None, Some("explore offline"))),
         &mut app,
     );
-    // Must skip the modal and emit ForkSession immediately.
-    assert!(
-        matches!(effects.as_slice(), [Effect::ForkSession { .. }]),
-        "non-git cwd must skip modal and emit ForkSession, got {effects:?}"
-    );
+    // Must skip the modal and ask the runtime to derive the new main agent.
+    assert_derived_spawn_effect(&effects, "explore offline");
     assert!(
         app.agents.values().all(|a| a.question_view.is_none()),
         "non-git cwd must not open the modal"
     );
-    // Directive must still reach the new agent.
-    let new_agent = app.agents.get(&AgentId(1)).expect("fork agent created");
-    assert_eq!(
-        new_agent.pending_first_prompt.as_deref(),
-        Some("explore offline")
-    );
+    // No local placeholder is created; the runtime owns the derived session.
+    assert_eq!(app.agents.len(), 1);
 }
 
 #[test]
@@ -502,26 +540,11 @@ fn open_fork_question_refuses_when_existing_question_is_open() {
 }
 
 #[test]
-fn dispatch_fork_resolved_no_worktree_emits_fork_effect() {
+fn dispatch_fork_resolved_no_worktree_emits_derived_agent_effect() {
     let mut app = fork_test_app();
     let effects = dispatch(Action::Fork(fork_args(Some(false), None)), &mut app);
-    match effects.as_slice() {
-        [
-            Effect::ForkSession {
-                agent_id,
-                parent_session_id,
-                parent_cwd,
-                parent_is_worktree,
-                new_session_id: None,
-            },
-        ] => {
-            assert_eq!(*agent_id, AgentId(1));
-            assert_eq!(parent_session_id.0.as_ref(), "test-session");
-            assert_eq!(parent_cwd, std::path::Path::new("/tmp"));
-            assert!(!*parent_is_worktree);
-        }
-        other => panic!("expected ForkSession, got {other:?}"),
-    }
+    assert_derived_spawn_effect(&effects, "");
+    assert_eq!(app.agents.len(), 1);
 }
 
 #[test]
@@ -546,7 +569,7 @@ fn dispatch_fork_resolved_worktree_reuses_create_worktree_session() {
 #[test]
 fn dispatch_fork_sets_forked_from_on_new_agent() {
     let mut app = fork_test_app();
-    dispatch(Action::Fork(fork_args(Some(false), None)), &mut app);
+    dispatch(Action::Fork(fork_args(Some(true), None)), &mut app);
     let new_agent = app.agents.get(&AgentId(1)).expect("fork agent created");
     assert_eq!(new_agent.session.forked_from, Some(AgentId(0)));
 }
@@ -592,15 +615,11 @@ fn dispatch_fork_defers_banner_worktree() {
 }
 
 #[test]
-fn dispatch_fork_defers_banner_no_worktree() {
+fn dispatch_fork_no_worktree_does_not_create_local_placeholder() {
     let mut app = fork_test_app();
-    dispatch(Action::Fork(fork_args(Some(false), None)), &mut app);
-    let info = app.agents[&AgentId(1)]
-        .pending_fork_banner
-        .as_ref()
-        .expect("pending_fork_banner must be set");
-    assert_eq!(info.parent_sid, "test-session");
-    assert!(!info.worktree, "worktree flag must be false");
+    let effects = dispatch(Action::Fork(fork_args(Some(false), None)), &mut app);
+    assert_derived_spawn_effect(&effects, "");
+    assert_eq!(app.agents.len(), 1);
 }
 
 #[test]
@@ -711,17 +730,14 @@ fn dispatch_fork_pushes_progress_message_worktree() {
 }
 
 #[test]
-fn dispatch_fork_stashes_directive_in_pending_first_prompt() {
+fn dispatch_fork_sends_directive_to_derived_agent_request() {
     let mut app = fork_test_app();
-    dispatch(
+    let effects = dispatch(
         Action::Fork(fork_args(Some(false), Some("first prompt text"))),
         &mut app,
     );
-    let new_agent = app.agents.get(&AgentId(1)).unwrap();
-    assert_eq!(
-        new_agent.pending_first_prompt.as_deref(),
-        Some("first prompt text")
-    );
+    assert_derived_spawn_effect(&effects, "first prompt text");
+    assert_eq!(app.agents.len(), 1);
 }
 
 #[test]
@@ -743,7 +759,7 @@ fn dispatch_fork_inherits_appearance_sharing_and_plugin_visibility() {
         topup_amount_cents: Some(2000),
         max_amount_cents: None,
     });
-    dispatch(Action::Fork(fork_args(Some(false), None)), &mut app);
+    dispatch(Action::Fork(fork_args(Some(true), None)), &mut app);
     let new_agent = app.agents.get(&AgentId(1)).unwrap();
     assert!(!new_agent.sharing_enabled);
     assert!(
@@ -775,12 +791,8 @@ fn dispatch_fork_answered_re_dispatches_to_dispatch_fork_resolved() {
         },
         &mut app,
     );
-    assert!(matches!(effects.as_slice(), [Effect::ForkSession { .. }]));
-    let new_agent = app.agents.get(&AgentId(1)).expect("fork created");
-    assert_eq!(
-        new_agent.pending_first_prompt.as_deref(),
-        Some("answered directive")
-    );
+    assert_derived_spawn_effect(&effects, "answered directive");
+    assert_eq!(app.agents.len(), 1);
 }
 
 /// `Action::ForkAnswered { worktree: true, .. }` produces the
@@ -802,8 +814,8 @@ fn dispatch_fork_answered_worktree_true_emits_create_worktree_session() {
     ));
 }
 
-/// `Action::ForkAnswered { worktree: false, .. }` produces the
-/// `ForkSession` effect (the "No" submit path).
+/// `Action::ForkAnswered { worktree: false, .. }` produces the derived-agent
+/// request (the "No" submit path).
 #[test]
 fn dispatch_fork_answered_worktree_false_emits_fork_session() {
     let mut app = fork_test_app();
@@ -815,7 +827,8 @@ fn dispatch_fork_answered_worktree_false_emits_fork_session() {
         },
         &mut app,
     );
-    assert!(matches!(effects.as_slice(), [Effect::ForkSession { .. }]));
+    assert_derived_spawn_effect(&effects, "");
+    assert_eq!(app.agents.len(), 1);
 }
 
 #[test]
@@ -844,12 +857,7 @@ fn dispatch_fork_worktree_mode_never_skips_modal_and_forks_in_cwd() {
         app.agents[&AgentId(0)].question_view.is_none(),
         "modal must not open when fork_worktree_mode is Never"
     );
-    assert!(
-        effects
-            .iter()
-            .any(|e| matches!(e, Effect::ForkSession { .. })),
-        "expected ForkSession, got {effects:?}"
-    );
+    assert_derived_spawn_effect(&effects, "");
 }
 
 #[test]
@@ -1022,6 +1030,10 @@ fn fork_session_ready_emits_load_session_with_new_id() {
 /// No-worktree fork under sticky `--chat` must refuse a local Build row
 /// (same gate as WorktreeForked / dispatch_load_session_ungated).
 #[test]
+#[cfg_attr(
+    windows,
+    ignore = "requires write access to ~/.atelier, unavailable in the managed test sandbox"
+)]
 fn fork_session_ready_refuses_local_build_under_chat_mode() {
     let mut app = fork_test_app();
     insert_placeholder_agent(&mut app, AgentId(1));
@@ -1029,7 +1041,9 @@ fn fork_session_ready_refuses_local_build_under_chat_mode() {
     app.agents.get_mut(&AgentId(1)).unwrap().chat_kind = false;
     app.chat_mode = true;
     let cwd = app.cwd.clone();
-    let session_id = format!("fork-build-{}", std::process::id());
+    // Other dispatch tests plant/remove local sessions in parallel. Include a
+    // UUID so this test cannot race with another test using the same process.
+    let session_id = format!("fork-build-{}", uuid::Uuid::new_v4());
     let sess_dir = plant_local_build_session(&cwd, &session_id);
 
     let effects = dispatch(

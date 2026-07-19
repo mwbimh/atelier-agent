@@ -63,6 +63,7 @@ async fn handle_btw(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
     let (tx, rx) = oneshot::channel();
     let _ = session.cmd_tx.send(SessionCommand::SideQuestion {
         question: req.question,
+        persist: false,
         respond_to: tx,
     });
     let result = rx

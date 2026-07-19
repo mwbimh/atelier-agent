@@ -3,9 +3,12 @@
 //! Each command lives in its own submodule. This module re-exports
 //! command structs and provides `builtin_commands()` for registry
 //! construction.
+pub mod agent;
 pub mod always_approve;
 pub mod announcements;
+pub mod attach;
 pub mod auto;
+pub mod background;
 pub mod btw;
 pub mod cd;
 pub mod compact;
@@ -37,8 +40,10 @@ pub mod logout;
 pub mod loop_cmd;
 pub mod mcps;
 pub mod model;
+pub mod model_config;
 pub mod multiline;
 pub mod new;
+pub mod parallel;
 pub mod personas;
 pub mod plan;
 pub mod plugin;
@@ -57,6 +62,7 @@ pub mod scroll_debug;
 pub mod session_info;
 pub mod settings_cmd;
 pub mod share;
+pub mod stop;
 pub mod tasks;
 pub mod terminal_setup;
 pub mod theme;
@@ -82,6 +88,8 @@ pub fn builtin_commands() -> Vec<Arc<dyn SlashCommand>> {
         Arc::new(home::HomeCommand),
         Arc::new(new::NewCommand),
         Arc::new(fork::ForkCommand),
+        Arc::new(agent::AgentCommand),
+        Arc::new(parallel::ParallelCommand),
         Arc::new(compact::CompactCommand),
         Arc::new(copy::CopyCommand),
         Arc::new(find::FindCommand),
@@ -104,6 +112,7 @@ pub fn builtin_commands() -> Vec<Arc<dyn SlashCommand>> {
         Arc::new(plugin::MarketplaceCommand),
         Arc::new(plugin::SkillsCommand),
         Arc::new(provider::ProviderCommand),
+        Arc::new(model_config::ModelConfigCommand),
         Arc::new(roles::RolesCommand),
         Arc::new(share::ShareCommand),
         Arc::new(session_info::SessionInfoCommand),
@@ -119,6 +128,9 @@ pub fn builtin_commands() -> Vec<Arc<dyn SlashCommand>> {
         Arc::new(resume::ResumeCommand),
         Arc::new(mcps::McpsCommand),
         Arc::new(btw::BtwCommand),
+        Arc::new(background::BackgroundCommand),
+        Arc::new(attach::AttachCommand),
+        Arc::new(stop::StopCommand),
         Arc::new(recap::RecapCommand),
         Arc::new(terminal_setup::TerminalSetupCommand),
         Arc::new(voice::VoiceCommand),
@@ -204,6 +216,14 @@ mod tests {
         assert!(reg.get("roles").is_some());
         assert!(reg.get("home").is_some());
         assert!(reg.get("view-plan").is_some());
+        assert!(reg.get("agent").is_some());
+        assert!(reg.get("parallel").is_some());
+        assert!(reg.get("background").is_some());
+        assert!(reg.get("attach").is_some());
+        assert!(reg.get("fg").is_some());
+        assert!(reg.get("stop").is_some());
+        assert!(reg.get("model-config").is_some());
+        assert!(reg.get("models").is_some());
         reg.set_available_tools(std::collections::HashSet::from([
             "scheduler_create".to_string()
         ]));

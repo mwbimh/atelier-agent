@@ -112,7 +112,7 @@ impl SlashCommand for ForkCommand {
     }
 
     fn usage(&self) -> &str {
-        "/fork [--worktree|--no-worktree] [directive]"
+        "/fork [--worktree|--no-worktree] [--append <context>] [directive]"
     }
 
     fn takes_args(&self) -> bool {
@@ -127,12 +127,62 @@ impl SlashCommand for ForkCommand {
         Some("[directive]")
     }
 
-    fn run(&self, _ctx: &mut CommandExecCtx, args: &str) -> CommandResult {
+    fn run(&self, ctx: &mut CommandExecCtx, args: &str) -> CommandResult {
+        if args.split_whitespace().any(|value| value == "--append") {
+            let Some(session_id) = ctx.session_id else {
+                return CommandResult::Error("No active session".to_owned());
+            };
+            let (append_context, directive) = match parse_explicit_context_fork(args) {
+                Ok(value) => value,
+                Err(error) => return CommandResult::Error(error),
+            };
+            return CommandResult::Action(Action::RuntimeExtension {
+                method: "_atelier/agent/spawn_derived".to_owned(),
+                params: serde_json::json!({
+                    "sessionId": session_id.to_string(),
+                    "role": "main",
+                    "prompt": directive.unwrap_or_default(),
+                    "appendContext": append_context,
+                    "background": false,
+                    "fresh": false,
+                }),
+            });
+        }
         match parse_fork_args(args) {
             Ok(parsed) => CommandResult::Action(Action::Fork(parsed)),
             Err(msg) => CommandResult::Error(msg),
         }
     }
+}
+
+fn parse_explicit_context_fork(args: &str) -> Result<(String, Option<String>), String> {
+    let tokens = crate::slash::commands::agent::tokenize(args)?;
+    let mut append_context = None;
+    let mut directive = Vec::new();
+    let mut index = 0;
+    while let Some(token) = tokens.get(index) {
+        match token.as_str() {
+            "--append" => {
+                index += 1;
+                let Some(context) = tokens.get(index) else {
+                    return Err("--append requires a context string".to_owned());
+                };
+                append_context = Some(context.clone());
+            }
+            "--worktree" | "--no-worktree" => {
+                return Err("--append cannot be combined with worktree flags".to_owned());
+            }
+            value => directive.push(value.to_owned()),
+        }
+        index += 1;
+    }
+    let Some(append_context) = append_context else {
+        return Err("--append requires a context string".to_owned());
+    };
+    Ok((
+        append_context,
+        (!directive.is_empty()).then(|| directive.join(" ")),
+    ))
 }
 
 #[cfg(test)]
@@ -333,5 +383,25 @@ mod tests {
         assert!(cmd.takes_args(), "/fork accepts args");
         assert!(!cmd.args_required(), "/fork allows no args");
         assert_eq!(cmd.arg_placeholder(), Some("[directive]"));
+    }
+
+    #[test]
+    fn append_uses_explicit_context_derivation_path() {
+        let models = ModelState::default();
+        let mut ctx = make_ctx(&models);
+        let session_id = Box::leak(Box::new(agent_client_protocol::SessionId::new("s1")));
+        ctx.session_id = Some(session_id);
+        let result = ForkCommand.run(
+            &mut ctx,
+            r#"--append "focus on Windows" continue from here"#,
+        );
+        assert!(matches!(
+            result,
+            CommandResult::Action(Action::RuntimeExtension { method, params })
+                if method == "_atelier/agent/spawn_derived"
+                    && params["role"] == "main"
+                    && params["appendContext"] == "focus on Windows"
+                    && params["prompt"] == "continue from here"
+        ));
     }
 }

@@ -3098,11 +3098,11 @@ pub(crate) fn execute(
             tasks
                 .spawn(async move {
                     let request = acp::ExtRequest::new(
-                        "atelier/btw",
+                        "_atelier/btw/ask",
                         serde_json::value::to_raw_value(
                                 &serde_json::json!(
                                     { "sessionId" : session_id.0.to_string(), "question" :
-                                    question, }
+                                    question, "persist": false }
                                 ),
                             )
                             .expect("serialize btw params")
@@ -3114,15 +3114,68 @@ pub(crate) fn execute(
                                     resp.0.get(),
                                 )
                                 .unwrap_or_default();
-                            let answer = parsed
-                                .get("result")
-                                .and_then(|r| r.get("answer"))
+                            let result = parsed.get("result").unwrap_or(&parsed);
+                            if let Some(error) = parsed.get("error") {
+                                let message = error
+                                    .get("message")
+                                    .and_then(|value| value.as_str())
+                                    .map(str::to_owned)
+                                    .unwrap_or_else(|| error.to_string());
+                                return TaskResult::BtwResponse {
+                                    agent_id,
+                                    result: Err(sanitize_user_error(&format!(
+                                        "side question failed: {message}"
+                                    ))),
+                                };
+                            }
+                            let answer = result
+                                .get("answer")
                                 .and_then(|a| a.as_str())
+                                .filter(|answer| !answer.trim().is_empty())
                                 .unwrap_or("No response")
                                 .to_string();
+                            let btw_id = result
+                                .get("btwId")
+                                .and_then(|value| value.as_str())
+                                .unwrap_or_default()
+                                .to_owned();
+                            let model = result
+                                .get("model")
+                                .and_then(|value| value.as_str())
+                                .unwrap_or_default()
+                                .to_owned();
+                            if btw_id.is_empty() || model.is_empty() {
+                                return TaskResult::BtwResponse {
+                                    agent_id,
+                                    result: Err(
+                                        "side question response was missing btwId or model"
+                                            .to_owned(),
+                                    ),
+                                };
+                            }
                             TaskResult::BtwResponse {
                                 agent_id,
-                                result: Ok(answer),
+                                result: Ok(crate::app::actions::BtwResponseData {
+                                    btw_id,
+                                    snapshot_id: result
+                                        .get("snapshotId")
+                                        .and_then(|value| value.as_str())
+                                        .map(str::to_owned),
+                                    answer,
+                                    provider: result
+                                        .get("provider")
+                                        .and_then(|value| value.as_str())
+                                        .map(str::to_owned),
+                                    model,
+                                    wire_api: result
+                                        .get("wireApi")
+                                        .and_then(|value| value.as_str())
+                                        .map(str::to_owned),
+                                    wire_api_source: result
+                                        .get("wireApiSource")
+                                        .and_then(|value| value.as_str())
+                                        .map(str::to_owned),
+                                }),
                             }
                         }
                         Err(e) => {
@@ -3135,6 +3188,36 @@ pub(crate) fn execute(
                         }
                     }
                 });
+        }
+        Effect::RuntimeExtension {
+            agent_id,
+            method,
+            params,
+        } => {
+            let tx = acp_tx.clone();
+            tasks.spawn(async move {
+                let request = acp::ExtRequest::new(
+                    method.clone(),
+                    serde_json::value::to_raw_value(&params)
+                        .expect("serialize runtime extension params")
+                        .into(),
+                );
+                match acp_send(request, &tx).await {
+                    Ok(response) => TaskResult::RuntimeExtensionComplete {
+                        agent_id,
+                        method,
+                        response: response.0.get().to_owned(),
+                    },
+                    Err(error) => {
+                        tracing::warn!(method, "runtime extension failed: {error}");
+                        TaskResult::RuntimeExtensionFailed {
+                            agent_id,
+                            method,
+                            error: sanitize_user_error(&error.to_string()),
+                        }
+                    }
+                }
+            });
         }
         Effect::RefreshProviderModels {
             agent_id,

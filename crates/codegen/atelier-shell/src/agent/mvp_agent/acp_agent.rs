@@ -1008,7 +1008,10 @@ impl acp::Agent for MvpAgent {
             );
         }
         if let Some(role) = main_role.as_ref() {
-            session_sampling.request_payload = role.effective_payload();
+            session_sampling.request_payload = atelier_provider::merge_payloads(
+                &session_sampling.request_payload,
+                &role.effective_payload(),
+            );
         }
         if main_role.is_none()
             && let Some(effort) = self.models_manager.current_reasoning_effort()
@@ -2326,7 +2329,7 @@ impl acp::Agent for MvpAgent {
                 next_trace_turn,
                 request_id: Some(prompt_id.clone()),
             });
-        let (tx, rx) = oneshot::channel();
+        let (tx, mut rx) = oneshot::channel();
         let prompt_client_identifier = arguments
             .meta
             .as_ref()
@@ -2357,19 +2360,26 @@ impl acp::Agent for MvpAgent {
             .and_then(|value| value.as_str())
             .map(str::to_owned);
         let provider_and_model = model.split_once('/');
-        let main_role = self.configured_role(atelier_provider::RoleId::Main)?;
+        let role_id = arguments
+            .meta
+            .as_ref()
+            .and_then(|meta| meta.get("role"))
+            .and_then(|value| value.as_str())
+            .and_then(|value| value.parse::<atelier_provider::RoleId>().ok())
+            .unwrap_or(atelier_provider::RoleId::Main);
+        let active_role = self.configured_role(role_id)?;
         self.runtime_begin_request(
             &arguments.session_id,
             &prompt_id,
             turn_id,
-            "main",
+            role_id.as_str(),
             provider_and_model.map(|(provider, _)| provider.to_owned()),
             Some(model.clone()),
         );
         self.runtime_set_request_parameters(
             &prompt_id,
-            main_role.as_ref().and_then(|role| role.effort.clone()),
-            main_role.as_ref().map(|role| role.fast_mode),
+            active_role.as_ref().and_then(|role| role.effort.clone()),
+            active_role.as_ref().map(|role| role.fast_mode),
         );
         let prompt_tokens = arguments
             .prompt
@@ -2389,18 +2399,34 @@ impl acp::Agent for MvpAgent {
             .get_sampling_config()
             .await
             .and_then(|config| config.max_completion_tokens.map(u64::from));
+        let resolved_provider_owned = active_role
+            .as_ref()
+            .map(|role| role.provider.clone())
+            .or_else(|| provider_and_model.map(|(provider, _)| provider.to_owned()));
+        let wire_resolution = resolved_provider_owned.as_deref().and_then(|provider| {
+            let key = atelier_provider::ModelKey::new(provider, model.clone()).ok()?;
+            let registry = atelier_provider::ProviderRegistry::load_or_create(
+                atelier_config::atelier_home().join("providers.toml"),
+            )
+            .ok()?;
+            registry.resolve_wire_api(&key).ok()
+        });
         let mut runtime_payload = serde_json::json!({
             "promptBlockCount": arguments.prompt.len(),
             "sendNow": send_now,
             "verbatim": verbatim,
         });
-        if let Some(role) = &main_role {
-            runtime_payload["role"] = serde_json::json!("main");
+        if let Some(role) = &active_role {
+            runtime_payload["role"] = serde_json::json!(role_id.as_str());
             runtime_payload["provider"] = serde_json::json!(role.provider);
             runtime_payload["model"] = serde_json::json!(role.model);
             runtime_payload["payload"] = xai_acp_lib::redact_payload(
                 &serde_json::Value::Object(role.effective_payload()),
             );
+        }
+        if let Some(resolved) = &wire_resolution {
+            runtime_payload["wireApi"] = serde_json::json!(resolved.wire_api);
+            runtime_payload["wireApiSource"] = serde_json::json!(resolved.source);
         }
         self.runtime_set_request_context(
             &prompt_id,
@@ -2422,14 +2448,26 @@ impl acp::Agent for MvpAgent {
             output_token_budget,
             runtime_payload,
         );
-        let resolved_provider = main_role
-            .as_ref()
-            .map(|role| role.provider.as_str())
-            .or_else(|| provider_and_model.map(|(provider, _)| provider));
+        self.runtime_set_request_wire_api(
+            &prompt_id,
+            wire_resolution.as_ref().map(|resolved| {
+                serde_json::to_string(&resolved.wire_api)
+                    .unwrap_or_default()
+                    .trim_matches('"')
+                    .to_owned()
+            }),
+            wire_resolution.as_ref().map(|resolved| {
+                serde_json::to_string(&resolved.source)
+                    .unwrap_or_default()
+                    .trim_matches('"')
+                    .to_owned()
+            }),
+        );
+        let resolved_provider = resolved_provider_owned.as_deref();
         if let Err(error) = self.enforce_provider_request(
             arguments.session_id.0.as_ref(),
             &prompt_id,
-            Some("main"),
+            Some(role_id.as_str()),
             resolved_provider,
         ) {
             self.runtime_finish_request(
@@ -2445,6 +2483,8 @@ impl acp::Agent for MvpAgent {
             xai_acp_lib::RuntimeState::WaitingForProvider,
             None,
         );
+        let (detach_tx, detach_rx) = tokio::sync::oneshot::channel();
+        self.register_detach_waiter(&prompt_id, detach_tx);
         if let Err(error) = handle.cmd_tx.send(SessionCommand::Prompt {
                 prompt_id: prompt_id.clone(),
                 prompt_blocks: arguments.prompt.clone(),
@@ -2461,7 +2501,8 @@ impl acp::Agent for MvpAgent {
                 respond_to: tx,
                 persist_ack: None,
                 parsed_prompt_tx,
-            }) {
+        }) {
+            self.clear_detach_waiter(&prompt_id);
             self.runtime_finish_request(
                 &arguments.session_id,
                 xai_acp_lib::RuntimeState::Failed,
@@ -2478,16 +2519,57 @@ impl acp::Agent for MvpAgent {
             &arguments.session_id,
             crate::agent::roster::RosterActivity::Working,
         );
-        let stop_result = match rx.await {
-            Ok(result) => result,
-            Err(_) => {
-                self.runtime_finish_request(
+        let stop_result = tokio::select! {
+            result = &mut rx => {
+                self.clear_detach_waiter(&prompt_id);
+                match result {
+                    Ok(result) => result,
+                    Err(_) => {
+                        self.runtime_finish_request(
+                            &arguments.session_id,
+                            xai_acp_lib::RuntimeState::Failed,
+                            Some("session_response".to_owned()),
+                            Some("session failed to respond".to_owned()),
+                        );
+                        return Err(acp::Error::internal_error().data("session failed to respond"));
+                    }
+                }
+            }
+            _ = detach_rx => {
+                self.runtime_update_status(
                     &arguments.session_id,
-                    xai_acp_lib::RuntimeState::Failed,
-                    Some("session_response".to_owned()),
-                    Some("session failed to respond".to_owned()),
+                    xai_acp_lib::RuntimeState::Paused,
+                    Some("turn detached; execution continues in background".to_owned()),
                 );
-                return Err(acp::Error::internal_error().data("session failed to respond"));
+                // The foreground ACP request returns at detach time, but the
+                // session actor still owns `rx` and will resolve it when the
+                // actual turn finishes.  Keep a local observer so the
+                // RuntimeTask does not remain permanently stuck in Paused.
+                let agent_ref = crate::agent::mvp_agent::LocalRef::new(self);
+                let detached_session_id = arguments.session_id.clone();
+                let detached_prompt_id = prompt_id.clone();
+                tokio::task::spawn_local(async move {
+                    let runtime_state = match rx.await {
+                        Ok(Ok(result)) if matches!(result.stop_reason, acp::StopReason::EndTurn) => {
+                            xai_acp_lib::RuntimeState::Completed
+                        }
+                        Ok(Ok(_)) => xai_acp_lib::RuntimeState::Paused,
+                        Ok(Err(_)) | Err(_) => xai_acp_lib::RuntimeState::Failed,
+                    };
+                    agent_ref.get().runtime_finish_request(
+                        &detached_session_id,
+                        runtime_state,
+                        (runtime_state == xai_acp_lib::RuntimeState::Failed)
+                            .then(|| "provider_or_tool".to_owned()),
+                        None,
+                    );
+                    if runtime_state == xai_acp_lib::RuntimeState::Completed {
+                        agent_ref.get().forget_retryable_prompt(&detached_prompt_id);
+                    }
+                });
+                let mut meta = acp::Meta::new();
+                meta.insert("detached".to_owned(), serde_json::Value::Bool(true));
+                return Ok(acp::PromptResponse::new(acp::StopReason::EndTurn).meta(meta));
             }
         };
         let runtime_state = match &stop_result {
@@ -3401,6 +3483,15 @@ impl acp::Agent for MvpAgent {
             "atelier/feedback" | "atelier/feedback/dismiss" | "atelier/btw" => {
                 crate::extensions::feedback::handle(self, &args).await
             }
+            s if s.starts_with("_atelier/btw/") || s.starts_with("atelier/btw/") => {
+                crate::extensions::btw::handle(self, &args).await
+            }
+            s if s.starts_with("_atelier/context_snapshot/")
+                || s.starts_with("atelier/context_snapshot/")
+                || s.starts_with("_atelier/agent/spawn_")
+                || s.starts_with("atelier/agent/spawn_") => {
+                crate::extensions::context_snapshot::handle(self, &args).await
+            }
             "atelier/recap" => crate::extensions::recap::handle(self, &args).await,
             "atelier/cloud/terminate" => {
                 crate::extensions::auth_gate::require_xai_auth(
@@ -3623,7 +3714,8 @@ impl acp::Agent for MvpAgent {
                 || s.starts_with("_atelier/request/")
                 || s.starts_with("atelier/request/")
                 || s.starts_with("_atelier/trace/")
-                || s.starts_with("atelier/trace/") => {
+                || s.starts_with("atelier/trace/")
+                || s.starts_with("_atelier/task/") => {
                 crate::extensions::runtime::handle(self, &args).await
             }
             s if s.starts_with("_atelier/role/") || s.starts_with("atelier/role/") => {
