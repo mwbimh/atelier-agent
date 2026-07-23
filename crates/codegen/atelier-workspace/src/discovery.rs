@@ -79,8 +79,9 @@ pub async fn discover_agents_md(root_cwd: &Path) -> Vec<Value> {
         .into_iter()
         .map(|mut file| {
             // Strip rules-file YAML frontmatter so it does not leak as raw YAML (matches atelier-build render).
-            if file.file_path.contains("/.atelier/rules/")
-                || file.file_path.contains("/.claude/rules/")
+            let normalized_path = file.file_path.replace('\\', "/");
+            if normalized_path.contains("/.atelier/rules/")
+                || normalized_path.contains("/.claude/rules/")
             {
                 file.content = atelier_tools::implementations::skills::skill::extract_skill_body(
                     &file.content,
@@ -377,7 +378,8 @@ mod tests {
             .iter()
             .find(|f| {
                 f["file_path"].as_str().is_some_and(|p| {
-                    p.ends_with("/.atelier/rules/xyzzy-discover-agents-md-test.md")
+                    p.replace('\\', "/")
+                        .ends_with("/.atelier/rules/xyzzy-discover-agents-md-test.md")
                 })
             })
             .expect("should discover the rules file");

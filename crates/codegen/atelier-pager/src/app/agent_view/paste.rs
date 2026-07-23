@@ -2536,19 +2536,21 @@ pub(super) mod paste_key_tests {
         let mut agent = make_agent();
         agent.set_active_pane(ActivePane::Prompt, true);
         let ctx = agent_completion_ctx(&agent, None);
+        let missing = std::env::current_dir()
+            .unwrap()
+            .join(".tmp-tests")
+            .join("definitely-missing-paste.png");
+        let file_url = url::Url::from_file_path(&missing).unwrap().to_string();
         let completion = agent.complete_clipboard_attachment_paste(
             ctx,
             crate::app::actions::ProbedAttachment::NoRaster,
-            Some("file:///definitely/missing/xai-primary-paste.png".to_owned()),
+            Some(file_url),
         );
         assert_eq!(
             completion,
             crate::app::actions::ClipboardPasteCompletion::Handled
         );
-        assert_eq!(
-            agent.prompt.text(),
-            "/definitely/missing/xai-primary-paste.png "
-        );
+        assert_eq!(agent.prompt.text(), format!("{} ", missing.display()));
         assert!(agent.prompt.images.is_empty());
     }
     #[test]

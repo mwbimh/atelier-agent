@@ -24,6 +24,7 @@ pub(crate) enum AuxiliaryRequestState {
     Compacting,
     GeneratingSummary,
     GeneratingTitle,
+    Disabled,
     Recovering,
     Paused,
     Completed,
@@ -39,6 +40,7 @@ impl AuxiliaryRequestState {
             Self::Compacting => "compacting",
             Self::GeneratingSummary => "generating_summary",
             Self::GeneratingTitle => "generating_title",
+            Self::Disabled => "disabled",
             Self::Recovering => "recovering",
             Self::Paused => "paused",
             Self::Completed => "completed",
@@ -47,7 +49,10 @@ impl AuxiliaryRequestState {
     }
 
     fn is_terminal(self) -> bool {
-        matches!(self, Self::Completed | Self::Failed | Self::Paused)
+        matches!(
+            self,
+            Self::Completed | Self::Failed | Self::Paused | Self::Disabled
+        )
     }
 }
 
@@ -147,6 +152,19 @@ impl AuxiliaryRequestLifecycle {
             snapshot.error = Some(redacted);
         }
         self.transition(AuxiliaryRequestState::Failed);
+    }
+
+    pub(crate) fn disable(&self, reason: impl Into<String>) {
+        let redacted = xai_acp_lib::redact_text(&reason.into());
+        {
+            let mut snapshot = self
+                .trace
+                .state
+                .lock()
+                .expect("auxiliary request trace mutex poisoned");
+            snapshot.error = Some(redacted);
+        }
+        self.transition(AuxiliaryRequestState::Disabled);
     }
 
     pub(crate) fn recover(&self, diagnostic: impl Into<String>) {
@@ -1055,6 +1073,34 @@ mod classify_tests {
         assert_eq!(
             snapshot.history,
             vec!["generating_title", "failed", "recovering", "completed"]
+        );
+    }
+
+    #[test]
+    fn disabled_title_backend_is_terminal_and_reports_its_reason() {
+        let lifecycle = AuxiliaryRequestLifecycle::new(
+            "title",
+            "disabled",
+            "disabled",
+            "request-disabled-title",
+            AuxiliaryRequestState::GeneratingTitle,
+        );
+        let trace = lifecycle.trace_context();
+
+        lifecycle.disable("title role is not configured");
+
+        let snapshot = trace.snapshot();
+        assert_eq!(snapshot.state, AuxiliaryRequestState::Disabled);
+        assert_eq!(
+            snapshot.error.as_deref(),
+            Some("title role is not configured")
+        );
+        assert_eq!(snapshot.history, vec!["generating_title", "disabled"]);
+        drop(lifecycle);
+        assert_eq!(
+            trace.snapshot().history,
+            vec!["generating_title", "disabled"],
+            "dropping a disabled Title lifecycle must not rewrite it as failed"
         );
     }
 

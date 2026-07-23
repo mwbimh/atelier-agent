@@ -19,7 +19,8 @@
         "x64"
     ],
     "scripts": {
-        "postinstall": "node bin/postinstall.js"
+        "postinstall": "node bin/postinstall.js",
+        "test": "node scripts/test-postinstall.js"
     },
     "publishConfig": {
         "access": "public"

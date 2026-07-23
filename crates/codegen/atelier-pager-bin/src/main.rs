@@ -26,12 +26,12 @@ mod jemalloc_malloc_conf {
     static MALLOC_CONF: MallocConfPtr = MallocConfPtr(CONF.as_ptr());
 }
 use anyhow::Result;
+use atelier_pager::app::WorkspaceStartArgs;
 use atelier_pager::app::{
     AgentCmd, Command, HeadlessArgs, LeaderMgmtArgs, LeaderMgmtCommand, LeaderTargetArgs,
-    PagerArgs, join_early_prefetch, resolve_use_leader,
+    PagerArgs, resolve_use_leader,
 };
-use atelier_pager::app::{WorkspaceMgmtArgs, WorkspaceMgmtCommand, WorkspaceStartArgs};
-use atelier_pager::client_identity::PAGER_CLIENT_VERSION;
+use atelier_pager::runtime_identity::PAGER_CLIENT_VERSION;
 use atelier_shell::agent::app::{run_headless, run_leader, run_stdio_agent};
 use atelier_shell::agent::config::Config as AgentConfig;
 use atelier_shell::leader::{
@@ -41,7 +41,6 @@ use atelier_shell::leader::{
 use atelier_shell::leader::{
     ControlPayload, LeaderClient, LeaderEnvUrls, connect_or_spawn, socket_path_for_ws_url,
 };
-use atelier_update::{UpdateConfig, auto_update, enforce_minimum_version_or_exit};
 use std::env;
 use std::future::Future;
 use std::net::SocketAddr;
@@ -125,29 +124,8 @@ fn init_tracing_simple(app_entrypoint: &'static str) {
         .with(fmt_layer.with_filter(env_filter))
         .with(atelier_telemetry::sampling_log::layer())
         .with(atelier_telemetry::instrumentation::layer())
-        .with(atelier_telemetry::hooks_log::layer())
-        .with(atelier_telemetry::otel_layer::build_otel_layer(
-            atelier_telemetry::otel_layer::OtelClientInfo {
-                client_name: "atelier",
-                client_version: atelier_version::VERSION,
-                service_version: env!("VERSION_WITH_COMMIT"),
-                app_entrypoint,
-            },
-            atelier_shell::auth::credential_provider::build_default_otel_layer_config(),
-        ));
+        .with(atelier_telemetry::hooks_log::layer());
     atelier_telemetry::debug_log::install_firehose(registry, app_entrypoint);
-    atelier_telemetry::external::init(atelier_shell::agent::config::resolve_external_otel_config(
-        atelier_telemetry::external::config::ExternalClientInfo {
-            service_version: env!("VERSION_WITH_COMMIT").to_owned(),
-            client_version: atelier_version::VERSION.to_owned(),
-            app_entrypoint: app_entrypoint.to_owned(),
-        },
-    ));
-}
-/// Legacy vendor setup is disabled in Atelier.
-/// `json` prints the served configuration instead of installing it.
-async fn run_setup_command(_json: bool) {
-    eprintln!("Atelier managed configuration is disabled; use local config and Providers.");
 }
 
 async fn run_leader_mgmt(args: LeaderMgmtArgs) -> Result<()> {
@@ -301,104 +279,6 @@ fn ensure_control_caps(reg: &LeaderRegistration) -> Result<&LeaderCapabilities> 
     reg.leader_capabilities
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("Leader does not advertise capabilities (legacy version)"))
-}
-/// Env override for the `atelier workspace` gate: any truthy value enables the
-/// command locally, a falsy one disables it — bypassing the remote settings flag.
-const WORKSPACE_COMMAND_ENV: &str = "ATELIER_WORKSPACE_COMMAND";
-/// Resolution of the `atelier workspace` gate. `Unknown` is kept separate from
-/// `Disabled` so we don't tell the user the flag is off when the settings were
-/// simply never read (both fail closed, but `Unknown` earns an honest message).
-#[derive(Debug, PartialEq, Eq)]
-enum WorkspaceGate {
-    Enabled,
-    Disabled,
-    Unknown,
-}
-/// The `ATELIER_WORKSPACE_COMMAND` override, if set (`Some(true)`/`Some(false)`);
-/// `None` defers to the remote settings flag.
-fn workspace_command_env_override() -> Option<bool> {
-    std::env::var(WORKSPACE_COMMAND_ENV)
-        .ok()
-        .map(|v| env_flag_enabled(&v))
-}
-/// Resolve the gate. Precedence: env override > remote `Some(true)` >
-/// loaded-but-off (`Disabled`) > settings-not-loaded (`Unknown`).
-fn workspace_command_gate(
-    env_override: Option<bool>,
-    remote_settings: Option<&atelier_shell::util::config::RemoteSettings>,
-) -> WorkspaceGate {
-    if let Some(enabled) = env_override {
-        return if enabled {
-            WorkspaceGate::Enabled
-        } else {
-            WorkspaceGate::Disabled
-        };
-    }
-    match remote_settings {
-        Some(rs) if rs.workspace_command_enabled.unwrap_or(false) => WorkspaceGate::Enabled,
-        Some(_) => WorkspaceGate::Disabled,
-        None => WorkspaceGate::Unknown,
-    }
-}
-/// Truthy parse for atelier on/off env vars: everything enables except the common
-/// falsy spellings (`0`, `false`, `off`, `no`, empty).
-fn env_flag_enabled(value: &str) -> bool {
-    !matches!(
-        value.trim().to_ascii_lowercase().as_str(),
-        "" | "0" | "false" | "off" | "no"
-    )
-}
-/// Blocking fetch of remote settings via the startup prefetch path.
-fn fetch_remote_settings() -> Option<atelier_shell::util::config::RemoteSettings> {
-    join_early_prefetch(atelier_shell::agent::models::start_early_prefetch(None))
-}
-async fn run_workspace_mgmt(args: WorkspaceMgmtArgs) -> Result<()> {
-    let _ = args;
-    anyhow::bail!("remote workspaces are disabled in the private build");
-
-    #[allow(unreachable_code)]
-    let env_override = workspace_command_env_override();
-    let remote_settings = if env_override.is_none() {
-        fetch_remote_settings()
-    } else {
-        None
-    };
-    match workspace_command_gate(env_override, remote_settings.as_ref()) {
-        WorkspaceGate::Enabled => {}
-        WorkspaceGate::Disabled => {
-            anyhow::bail!(
-                "`atelier workspace` is not enabled for this account \
-             (gated by a server-side feature flag that is currently off)."
-            )
-        }
-        WorkspaceGate::Unknown => {
-            anyhow::bail!(
-                "Could not load your settings for `atelier workspace`. Check your \
-             network connection (run `atelier login` if you are signed out), then \
-             try again."
-            )
-        }
-    }
-    match args.command {
-        WorkspaceMgmtCommand::Start(a) => {
-            workspace_start(a, false, remote_settings.or_else(fetch_remote_settings)).await
-        }
-        WorkspaceMgmtCommand::Restart(a) => {
-            workspace_start(a, true, remote_settings.or_else(fetch_remote_settings)).await
-        }
-        WorkspaceMgmtCommand::Pause { target, json } => {
-            workspace_control(&target, json, ControlCommand::WorkspacePause).await
-        }
-        WorkspaceMgmtCommand::Resume { target, json } => {
-            workspace_control(&target, json, ControlCommand::WorkspaceResume).await
-        }
-        WorkspaceMgmtCommand::Stop { target, json } => {
-            workspace_control(&target, json, ControlCommand::WorkspaceStop).await
-        }
-        WorkspaceMgmtCommand::Status { target, json } => {
-            workspace_control(&target, json, ControlCommand::WorkspaceStatus).await
-        }
-    }
 }
 fn ensure_workspace_caps(reg: &LeaderRegistration) -> Result<()> {
     let caps = ensure_control_caps(reg)?;
@@ -888,8 +768,6 @@ async fn replay_acp_state_after_reconnect(
 /// The TUI has its own signal handler (`app::signal_handler`) that does the
 /// full crossterm teardown.
 fn shutdown_and_flush_telemetry(exit_code: i32) -> ! {
-    atelier_telemetry::sentry::flush_on_shutdown();
-    atelier_telemetry::otel_layer::shutdown_otel();
     atelier_telemetry::debug_log::flush();
     std::process::exit(exit_code);
 }
@@ -902,9 +780,7 @@ async fn run_agent_command(
     agent_args: Box<atelier_pager::app::AgentArgs>,
     permission_mode_flag: Option<String>,
     trust: bool,
-    no_auto_update: bool,
     disable_web_search: bool,
-    update_config: &UpdateConfig,
 ) -> Result<()> {
     let _signal_flush = tokio::spawn(async {
         #[cfg(unix)]
@@ -929,7 +805,6 @@ async fn run_agent_command(
         }
     });
     init_tracing_simple("agent");
-    let _otel_guard = atelier_telemetry::otel_layer::otel_guard();
     atelier_telemetry::instrumentation::install_panic_hook();
     if trust {
         match std::env::current_dir() {
@@ -941,31 +816,14 @@ async fn run_agent_command(
             }
         }
     }
-    let early_prefetch = atelier_shell::agent::models::start_early_prefetch(None);
     atelier_shell::agent::mvp_agent::warm_async_http_client();
     tokio::task::spawn_blocking(|| {});
     let is_stdio = matches!(agent_args.mode, Some(AgentCmd::Stdio));
     let is_leader = matches!(agent_args.mode, Some(AgentCmd::Leader(_)));
     if !is_stdio && !is_leader {
-        eprintln!(
-            "Atelier - v{}",
-            atelier_version::display_version_with_commit(
-                env!("VERSION_WITH_COMMIT"),
-                atelier_update::channel_label(),
-            )
-        );
-        if should_check_for_updates(no_auto_update) {
-            auto_update::run_update_if_available(
-                auto_update::UpdateRunMode::NonBlocking,
-                false,
-                update_config,
-            )
-            .await
-            .ok();
-        }
+        eprintln!("Atelier - v{}", env!("VERSION_WITH_COMMIT"));
     }
-    let remote_settings = join_early_prefetch(early_prefetch);
-    atelier_shell::util::config::set_remote_campaigns_from_settings(remote_settings.as_ref());
+    let remote_settings = None;
     let raw_config = atelier_shell::config::load_effective_config()
         .map_err(|e| anyhow::anyhow!("Failed to load config: {}", e))?;
     let mut agent_config = AgentConfig::new_from_toml_cfg(&raw_config)
@@ -1029,20 +887,6 @@ async fn run_agent_command(
         leader_eligible,
     );
     tracing::info!(use_leader, ?policy_disable_reason, "leader mode resolved");
-    if stdio_direct_update_eligible(is_stdio, use_leader)
-        && should_check_for_updates(no_auto_update)
-    {
-        let update_config = update_config.clone();
-        tokio::spawn(async move {
-            auto_update::run_update_if_available(
-                auto_update::UpdateRunMode::NonBlocking,
-                false,
-                &update_config,
-            )
-            .await
-            .ok();
-        });
-    }
     if use_leader {
         if !agent_args.plugin_dirs.is_empty() {
             eprintln!("{PLUGIN_DIR_LEADER_WARNING}");
@@ -1251,59 +1095,11 @@ async fn run_agent_command(
         Some(AgentCmd::Leader(a)) => {
             let mut agent_config = agent_config.clone();
             apply_headless_args_to_config(&a.headless, &mut agent_config);
-            let leader_auto_update = if !should_check_for_updates(
-                no_auto_update || a.no_auto_update,
-            ) {
-                tracing::info!("Leader auto-update disabled");
-                None
-            } else {
-                let update_config_for_leader = update_config.clone();
-                Some(atelier_shell::agent::app::LeaderAutoUpdateConfig {
-                    check_interval: std::time::Duration::from_secs(60 * 60),
-                    check_fn: Box::new(move || {
-                        let uc = update_config_for_leader.clone();
-                        Box::pin(async move {
-                            let current_config = atelier_shell::util::config::load_config().await;
-                            if current_config.cli.auto_update == Some(false) {
-                                return false;
-                            }
-                            match auto_update::ensure_latest_on_disk(&uc).await {
-                                Ok(outcome) => {
-                                    if let Some(v) = &outcome.installed {
-                                        if let Err(e) = atelier_shell::managed_config::sync().await
-                                        {
-                                            tracing::warn!(
-                                                "Leader auto-update: managed config refresh failed: {e}"
-                                            );
-                                        }
-                                        tracing::info!(
-                                            "Leader auto-update: v{v} installed successfully"
-                                        );
-                                    } else if outcome.relaunch_needed {
-                                        tracing::info!(
-                                            "Leader auto-update: newer binary already on disk, \
-                                             relaunching without download"
-                                        );
-                                    }
-                                    outcome.relaunch_needed
-                                }
-                                Err(e) => {
-                                    tracing::warn!(
-                                        "Leader auto-update: check/download failed, \
-                                         staying alive: {e:#}"
-                                    );
-                                    false
-                                }
-                            }
-                        })
-                    }),
-                })
-            };
             run_leader(
                 &agent_config,
                 a.no_exit_on_disconnect,
                 a.relay_on_demand,
-                leader_auto_update,
+                None,
                 agent_memory_config,
             )
             .await
@@ -1553,12 +1349,6 @@ fn main() {
         );
         std::process::exit(2);
     }
-    let _sentry_guard = atelier_telemetry::sentry::init(atelier_telemetry::sentry::Config {
-        client: "atelier",
-        client_version: PAGER_CLIENT_VERSION,
-        release: env!("VERSION_WITH_COMMIT"),
-        disabled: atelier_shell::agent::config::is_error_reporting_disabled_sync(),
-    });
     atelier_pager::docs::extract_user_guide_docs(&atelier_shell::util::atelier_home::atelier_home());
     xai_crash_handler::install_terminal_restore_only();
     if atelier_shell::util::config::load_crash_handler_enabled_sync() {
@@ -1596,7 +1386,6 @@ fn main() {
     if let Err(e) = result {
         xai_tty_utils::restore_native_stderr();
         eprintln!("Error: {e:#}");
-        drop(_sentry_guard);
         std::process::exit(1);
     }
 }
@@ -1710,20 +1499,16 @@ async fn async_main() -> Result<()> {
     } else {
         atelier_workspace::permission::ClientType::Generic
     });
-    let update_config = build_update_config();
-    run_async_command_loop(args, update_config).await
+    run_async_command_loop(args).await
 }
 
-fn run_async_command_loop(
-    mut args: PagerArgs,
-    update_config: UpdateConfig,
-) -> Pin<Box<dyn Future<Output = Result<()>>>> {
+fn run_async_command_loop(mut args: PagerArgs) -> Pin<Box<dyn Future<Output = Result<()>>>> {
     if !args
         .command
         .as_ref()
         .is_some_and(|command| matches!(command, Command::Agent(_)))
     {
-        return Box::pin(legacy_async_command_loop(args, update_config));
+        return Box::pin(legacy_async_command_loop(args));
     }
 
     let Some(Command::Agent(agent_args)) = args.command.take() else {
@@ -1738,7 +1523,6 @@ fn run_async_command_loop(
     };
     let permission_mode_flag = args.permission_mode_flag.clone();
     let trust = args.trust;
-    let no_auto_update = args.no_auto_update;
     let disable_web_search = args.disable_web_search;
 
     Box::pin(async move {
@@ -1748,38 +1532,22 @@ fn run_async_command_loop(
                  Use `atelier agent {flag}` instead."
             );
         }
-        enforce_minimum_version_or_exit(&update_config).await;
-        run_agent_command(
-            agent_args,
-            permission_mode_flag,
-            trust,
-            no_auto_update,
-            disable_web_search,
-            &update_config,
-        )
-        .await
+        run_agent_command(agent_args, permission_mode_flag, trust, disable_web_search).await
     })
 }
 
 #[inline(never)]
-async fn legacy_async_command_loop(mut args: PagerArgs, update_config: UpdateConfig) -> Result<()> {
+async fn legacy_async_command_loop(mut args: PagerArgs) -> Result<()> {
     if let Some(command) = args.command.take() {
         match command {
             Command::Version { json } => {
                 if json {
-                    let payload = serde_json::json!(
-                        { "currentVersion" : env!("VERSION_WITH_COMMIT"), "channel" :
-                        atelier_update::channel_name().unwrap_or("unknown"), }
-                    );
+                    let payload = serde_json::json!({
+                        "currentVersion": env!("VERSION_WITH_COMMIT")
+                    });
                     println!("{}", serde_json::to_string(&payload)?);
                 } else {
-                    println!(
-                        "atelier {}",
-                        atelier_version::display_version_with_commit(
-                            env!("VERSION_WITH_COMMIT"),
-                            atelier_update::channel_label(),
-                        )
-                    );
+                    println!("atelier {}", env!("VERSION_WITH_COMMIT"));
                 }
                 return Ok(());
             }
@@ -1795,14 +1563,11 @@ async fn legacy_async_command_loop(mut args: PagerArgs, update_config: UpdateCon
                          Use `atelier agent {flag}` instead."
                     );
                 }
-                enforce_minimum_version_or_exit(&update_config).await;
                 return run_agent_command(
                     agent_args,
                     args.permission_mode_flag.clone(),
                     args.trust,
-                    args.no_auto_update,
                     args.disable_web_search,
-                    &update_config,
                 )
                 .await;
             }
@@ -1811,24 +1576,16 @@ async fn legacy_async_command_loop(mut args: PagerArgs, update_config: UpdateCon
                 atelier_shell::inspect::inspect(&cwd, json).await?;
                 return Ok(());
             }
-            Command::Setup { json } => {
-                init_tracing_simple("cli");
-                let _otel_guard = atelier_telemetry::otel_layer::otel_guard();
-                run_setup_command(json).await;
-                return Ok(());
-            }
             Command::Mcp(mcp_args) => {
                 init_tracing_simple("cli");
                 return atelier_pager::mcp_cmd::run(mcp_args).await;
             }
             Command::Plugin(plugin_args) => {
                 init_tracing_simple("cli");
-                let _otel_guard = atelier_telemetry::otel_layer::otel_guard();
                 return atelier_pager::plugin_cmd::run(plugin_args).await;
             }
             Command::Models => {
                 init_tracing_simple("cli");
-                let _otel_guard = atelier_telemetry::otel_layer::otel_guard();
                 let config = atelier_shell::config::load_effective_config_disk_only()
                     .map_err(|e| anyhow::anyhow!("Failed to load config: {e}"))?;
                 let agent_config = AgentConfig::new_from_toml_cfg(&config)
@@ -1837,91 +1594,30 @@ async fn legacy_async_command_loop(mut args: PagerArgs, update_config: UpdateCon
             }
             Command::Leader(leader_args) => {
                 init_tracing_simple("cli");
-                let _otel_guard = atelier_telemetry::otel_layer::otel_guard();
                 return run_leader_mgmt(leader_args).await;
             }
             Command::Worktree(worktree_args) => {
                 init_tracing_simple("cli");
-                let _otel_guard = atelier_telemetry::otel_layer::otel_guard();
                 let config = atelier_shell::config::load_effective_config_disk_only()
                     .map_err(|e| anyhow::anyhow!("Failed to load config: {e}"))?;
                 let agent_config = AgentConfig::new_from_toml_cfg(&config)
                     .map_err(|e| anyhow::anyhow!("Failed to create agent config: {e}"))?;
                 return atelier_pager::worktree_cmd::run(worktree_args, &agent_config).await;
             }
-            Command::Workspace(workspace_args) => {
-                init_tracing_simple("cli");
-                let _otel_guard = atelier_telemetry::otel_layer::otel_guard();
-                return run_workspace_mgmt(workspace_args).await;
-            }
             Command::Sessions(sessions_args) => {
                 init_tracing_simple("cli");
-                let _otel_guard = atelier_telemetry::otel_layer::otel_guard();
                 let config = atelier_shell::config::load_effective_config_disk_only()
                     .map_err(|e| anyhow::anyhow!("Failed to load config: {e}"))?;
                 let agent_config = AgentConfig::new_from_toml_cfg(&config)
                     .map_err(|e| anyhow::anyhow!("Failed to create agent config: {e}"))?;
                 return atelier_pager::sessions_cmd::run(sessions_args, &agent_config).await;
             }
-            Command::Share(ref share_args) => {
-                init_tracing_simple("cli");
-                let _otel_guard = atelier_telemetry::otel_layer::otel_guard();
-                let config = atelier_shell::config::load_effective_config_disk_only()
-                    .map_err(|e| anyhow::anyhow!("Failed to load config: {e}"))?;
-                let agent_config = AgentConfig::new_from_toml_cfg(&config)
-                    .map_err(|e| anyhow::anyhow!("Failed to create agent config: {e}"))?;
-                return atelier_pager::share_cmd::run(share_args, &agent_config).await;
-            }
             Command::Export(export_args) => {
                 init_tracing_simple("cli");
                 return atelier_pager::export_cmd::run(export_args);
             }
-            Command::Trace(trace_args) => {
-                init_tracing_simple("cli");
-                let _otel_guard = atelier_telemetry::otel_layer::otel_guard();
-                let config = atelier_shell::config::load_effective_config_disk_only()
-                    .map_err(|e| anyhow::anyhow!("Failed to load config: {e}"))?;
-                let agent_config = AgentConfig::new_from_toml_cfg(&config)
-                    .map_err(|e| anyhow::anyhow!("Failed to create agent config: {e}"))?;
-                return atelier_pager::trace_cmd::run(trace_args, &agent_config).await;
-            }
             Command::Memory(memory_args) => {
                 return atelier_pager::memory_cmd::run(memory_args);
-            }
-            Command::Update {
-                check,
-                json,
-                force_reinstall,
-                version,
-                alpha,
-                stable,
-                enterprise,
-            } => {
-                init_tracing_simple("cli");
-                let _otel_guard = atelier_telemetry::otel_layer::otel_guard();
-                let channel_switch = get_channel_switch(alpha, stable, enterprise);
-                return run_update_command(
-                    check,
-                    json,
-                    force_reinstall,
-                    version,
-                    channel_switch,
-                    &update_config,
-                )
-                .await;
-            }
-            Command::Login {
-                legacy: _,
-                oauth: _,
-                device_auth: _,
-                devbox: _,
-            } => {
-                anyhow::bail!("vendor login is disabled; configure a local Provider instead");
-            }
-            Command::Logout => {
-                anyhow::bail!(
-                    "vendor logout is disabled; Provider credentials are managed locally"
-                );
             }
             Command::Wrap(ref wrap_args) => {
                 return atelier_pager::wrap_cmd::run(wrap_args);
@@ -1943,8 +1639,6 @@ async fn legacy_async_command_loop(mut args: PagerArgs, update_config: UpdateCon
     )?;
     if let Some(prompt) = headless_prompt {
         init_tracing_simple(HEADLESS_ENTRYPOINT);
-        let _otel_guard = atelier_telemetry::otel_layer::otel_guard();
-        enforce_minimum_version_or_exit(&update_config).await;
         let launch_yolo = atelier_shell::util::config::effective_yolo_for_launch(
             args.yolo,
             args.permission_mode_flag.as_deref(),
@@ -2007,34 +1701,10 @@ async fn legacy_async_command_loop(mut args: PagerArgs, update_config: UpdateCon
         )
         .await;
     }
-    enforce_minimum_version_or_exit(&update_config).await;
-    let _otel_guard = atelier_telemetry::otel_layer::otel_guard();
-    type UpdateWaitHandle = tokio::task::JoinHandle<std::io::Result<std::process::ExitStatus>>;
-    let bg_update_wait: std::sync::Arc<tokio::sync::Mutex<Option<UpdateWaitHandle>>> =
-        std::sync::Arc::new(tokio::sync::Mutex::new(None));
-    let bg_update_rx: Option<tokio::sync::oneshot::Receiver<Option<auto_update::UpdateAvailable>>> =
-        if should_check_for_updates(args.no_auto_update) {
-            let update_config = update_config.clone();
-            let wait_slot = bg_update_wait.clone();
-            let (tx, rx) = tokio::sync::oneshot::channel();
-            tokio::spawn(async move {
-                let check = auto_update::check_update_background(&update_config).await;
-                if let Some(mut child) = check.download {
-                    *wait_slot.lock().await = Some(tokio::spawn(async move { child.wait().await }));
-                }
-                let _ = tx.send(check.update);
-            });
-            Some(rx)
-        } else {
-            None
-        };
-    let result = atelier_pager::app::run(args, bg_update_rx).await;
+    let result = atelier_pager::app::run(args).await;
     atelier_sandbox::flush();
     match result {
-        Ok(true) => {
-            eprintln!("Automatic updates are disabled; install a new Atelier build explicitly.");
-            Ok(())
-        }
+        Ok(true) => Ok(()),
         Ok(false) => Ok(()),
         Err(e) => Err(e),
     }
@@ -2048,146 +1718,6 @@ async fn legacy_async_command_loop(mut args: PagerArgs, update_config: UpdateCon
 /// because the target was already on disk) or the child failed does this
 /// fall back to a fresh blocking `atelier update`, which itself resolves to
 /// "Already up to date" without downloading when the disk is current.
-async fn finish_update_on_exit(
-    adopted: Option<tokio::task::JoinHandle<std::io::Result<std::process::ExitStatus>>>,
-    update_config: &UpdateConfig,
-) -> bool {
-    let run_blocking = |reason: Option<String>| async move {
-        if let Some(reason) = reason {
-            eprintln!("{reason}");
-        }
-        auto_update::run_update_if_available(
-            auto_update::UpdateRunMode::Blocking,
-            false,
-            update_config,
-        )
-        .await
-        .is_ok()
-    };
-    match adopted {
-        Some(handle) => {
-            eprintln!("Waiting for the update download to finish...");
-            match handle.await {
-                Ok(Ok(status)) if status.success() => true,
-                Ok(Ok(status)) => {
-                    run_blocking(Some(format!(
-                        "Background update exited with {status}; retrying..."
-                    )))
-                    .await
-                }
-                Ok(Err(e)) => {
-                    run_blocking(Some(format!(
-                        "Could not wait for the background update ({e}); retrying..."
-                    )))
-                    .await
-                }
-                Err(join_err) => {
-                    run_blocking(Some(format!(
-                        "Background update waiter failed ({join_err}); retrying..."
-                    )))
-                    .await
-                }
-            }
-        }
-        None => run_blocking(None).await,
-    }
-}
-/// Build an [`UpdateConfig`] from the current environment and config files.
-fn build_update_config() -> UpdateConfig {
-    let environment = atelier_shell::env::AtelierBuildEnvironment::from_flags(false, false);
-    let mut config = UpdateConfig::from_environment(&environment);
-    cryptify::flow_stmt!({
-        {
-            config.deployment_key =
-                atelier_shell::agent::config::EndpointsConfig::default().deployment_key;
-        }
-    });
-    config.npm_registry = std::env::var(obfstr::obfstr!("ATELIER_NPM_REGISTRY"))
-        .ok()
-        .or_else(atelier_shell::util::config::load_npm_registry_sync);
-    if let Ok(root) = atelier_shell::config::load_effective_config_disk_only()
-        && let Some(ch) = atelier_shell::util::config::channel_from_toml_opt(&root)
-    {
-        config.channel = ch;
-    }
-    config
-}
-/// Centralized gate for all auto-update checks. Add new suppression
-/// rules here — not at each call site.
-fn should_check_for_updates(no_auto_update_flag: bool) -> bool {
-    let _ = no_auto_update_flag;
-    // Atelier releases are installed by the operator. The upstream update
-    // service is intentionally not part of the private build.
-    false
-}
-/// Mode-gate for the direct stdio agent's background auto-update.
-///
-/// Only the *direct* stdio agent is newly eligible: every other agent mode
-/// already self-updates at the top of `run_agent_command`, and a leader-backed
-/// stdio process is a thin bridge whose updates are owned by the leader
-/// (`LeaderAutoUpdateConfig`). Update suppression (`--no-auto-update`,
-/// `ATELIER_DISABLE_AUTOUPDATER`, debug builds) is layered on separately via
-/// [`should_check_for_updates`].
-fn stdio_direct_update_eligible(is_stdio: bool, use_leader: bool) -> bool {
-    is_stdio && !use_leader
-}
-/// Map the mutually-exclusive channel flags to a channel name. clap enforces
-/// that at most one is set, so the order is irrelevant.
-fn get_channel_switch(alpha: bool, stable: bool, enterprise: bool) -> Option<&'static str> {
-    if alpha {
-        Some("alpha")
-    } else if stable {
-        Some("stable")
-    } else if enterprise {
-        Some("enterprise")
-    } else {
-        None
-    }
-}
-/// Handle `atelier update [--check] [--json] [--force-reinstall] [--version X] [--alpha|--stable|--enterprise]`.
-async fn run_update_command(
-    check: bool,
-    json: bool,
-    force_reinstall: bool,
-    version: Option<String>,
-    channel_switch: Option<&str>,
-    base_update_config: &UpdateConfig,
-) -> Result<()> {
-    anyhow::bail!("Atelier automatic updates are disabled; install a new build explicitly");
-    #[allow(unreachable_code)]
-    if json && !check {
-        anyhow::bail!("--json requires --check");
-    }
-    let mut update_config = base_update_config.clone();
-    if check {
-        if version.is_some() {
-            anyhow::bail!("--version cannot be used with --check");
-        }
-        auto_update::apply_channel_switch(channel_switch, &mut update_config).await;
-        let status = auto_update::check_update_status(&update_config).await;
-        auto_update::print_update_status(&status, json)?;
-        return Ok(());
-    }
-    if let Some(ref v) = version
-        && semver::Version::parse(v).is_err()
-    {
-        anyhow::bail!(
-            "'{}' is not a valid version. Expected semver like 0.1.150",
-            v
-        );
-    }
-    let installed = auto_update::run_update(
-        force_reinstall,
-        version.as_deref(),
-        channel_switch,
-        &mut update_config,
-    )
-    .await?;
-    if let Some(installed_version) = installed {
-        signal_leaders_to_relaunch(&installed_version).await;
-    }
-    Ok(())
-}
 /// After a successful `atelier update`, ask any running leader on this machine that
 /// is older than `installed_version` to relaunch onto the new binary (bounded
 /// grace; running sessions close and reconnect via `session/load`).

@@ -620,6 +620,7 @@ mod tests {
     }
     /// Bootstrap mode: `snapshot()` re-reads disk so sibling-rotated
     /// tokens are picked up without a live AuthManager.
+    #[cfg(any())] // Remote OTLP exporter authentication was removed; observability is local-only.
     #[test]
     fn otel_bootstrap_snapshot_picks_up_disk_writes() {
         let _guard = EarlyInvalidationGuard::pin_to_default();
@@ -650,6 +651,7 @@ mod tests {
     /// After `set_live()`, `snapshot()` reads from the live manager's
     /// in-memory cache (no disk re-read) and `refresh_after_unauthorized()`
     /// drives the recovery state machine.
+    #[cfg(any())] // Remote OTLP exporter authentication was removed; observability is local-only.
     #[tokio::test]
     async fn otel_live_mode_uses_shared_auth_manager() {
         let _guard = EarlyInvalidationGuard::pin_to_default();
@@ -677,6 +679,7 @@ mod tests {
         );
     }
     /// `refresh_after_unauthorized` drives recovery when live.
+    #[cfg(any())] // Remote OTLP exporter authentication was removed; observability is local-only.
     #[tokio::test]
     async fn otel_live_refresh_after_unauthorized_drives_recovery() {
         let _guard = EarlyInvalidationGuard::pin_to_default();
@@ -723,6 +726,7 @@ mod tests {
         );
         assert_eq!(live_mgr.current().unwrap().key, "refreshed");
     }
+    #[cfg(any())] // Remote OTLP exporter authentication was removed; observability is local-only.
     #[test]
     fn otel_deployment_key_sent_when_no_oidc_token() {
         let _guard = EarlyInvalidationGuard::pin_to_default();
@@ -737,6 +741,7 @@ mod tests {
             "deployment key must be sent when no OIDC token exists"
         );
     }
+    #[cfg(any())] // Remote OTLP exporter authentication was removed; observability is local-only.
     #[test]
     fn otel_deployment_key_wins_over_oidc_token() {
         let _guard = EarlyInvalidationGuard::pin_to_default();
@@ -755,6 +760,7 @@ mod tests {
         );
         assert!(snap.user_id.is_none());
     }
+    #[cfg(any())] // Remote OTLP exporter authentication was removed; observability is local-only.
     #[test]
     fn has_usable_credential_reflects_auth_state() {
         let _guard = EarlyInvalidationGuard::pin_to_default();
@@ -802,6 +808,7 @@ mod tests {
     /// expiry), and the sender puts it on the wire via `current_or_expired()`.
     /// The export gate must therefore keep it usable even though `current()`
     /// reports `None`. Regression for the buffer-window export drop.
+    #[cfg(any())] // Remote OTLP exporter authentication was removed; observability is local-only.
     #[test]
     fn has_usable_credential_true_inside_early_invalidation_buffer() {
         let _guard = EarlyInvalidationGuard::pin_to_default();

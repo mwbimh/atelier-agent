@@ -118,7 +118,10 @@ fn jwt_claim_matches_user_subscription_tier_rejects_stale_and_unknown() {
         "superatelier",
         "SuperAtelierPro"
     ));
-    assert!(!jwt_claim_matches_user_subscription_tier("free", "AtelierPro"));
+    assert!(!jwt_claim_matches_user_subscription_tier(
+        "free",
+        "AtelierPro"
+    ));
     assert!(!jwt_claim_matches_user_subscription_tier("", "XPremium"));
     assert!(!jwt_claim_matches_user_subscription_tier(
         "superatelier_heavy",
@@ -432,6 +435,7 @@ fn harness_pair(id: &str) -> Vec<atelier_sampling_types::conversation::Conversat
 /// This is what makes each sibling `turn_{N}` reachable — without the
 /// advance every harness turn would clobber the same GCS path.
 #[tokio::test(flavor = "current_thread")]
+#[cfg(any())] // Vendor trace upload was removed from Atelier.
 async fn upload_harness_trace_turns_numbers_siblings_and_persists_counter() {
     let agent = build_minimal_agent_for_tests();
     {
@@ -550,6 +554,7 @@ async fn upload_harness_trace_turns_uploads_disabled_does_not_burn_counter() {
 /// manifest listing exactly those two; (3) `fully_uploaded` is true iff
 /// neither failed.
 #[tokio::test(flavor = "current_thread")]
+#[cfg(any())] // Vendor trace upload was removed from Atelier.
 async fn upload_harness_trace_turns_build_per_turn_manifest() {
     use crate::upload::manifest::{
         ArtifactResult, ArtifactStatus, build_manifest, record_artifact, resolve_upload_method,
@@ -765,7 +770,11 @@ fn resolve_agent_definition_acp_profile_wins_for_explicit_atelier_build_family()
         "Custom devbox profile", }
     ))
     .expect("agent definition must parse");
-    for family_variant in ["atelier-build", "atelier-build-plan", "atelier-build-concise"] {
+    for family_variant in [
+        "atelier-build",
+        "atelier-build-plan",
+        "atelier-build-concise",
+    ] {
         let def = MvpAgent::resolve_agent_definition(
             tmp.path(),
             None,
@@ -977,8 +986,14 @@ fn enqueue_replace_system_prompt_override_noop_when_absent_or_empty() {
 /// custom prompt body is preserved.
 #[test]
 fn harnesses_are_compatible_for_stock_family_pairs() {
-    assert!(harnesses_are_compatible("atelier-build", "atelier-build-plan"));
-    assert!(harnesses_are_compatible("atelier-build-plan", "atelier-build"));
+    assert!(harnesses_are_compatible(
+        "atelier-build",
+        "atelier-build-plan"
+    ));
+    assert!(harnesses_are_compatible(
+        "atelier-build-plan",
+        "atelier-build"
+    ));
     assert!(harnesses_are_compatible("atelier-build", "atelier-build"));
     assert!(harnesses_are_compatible(
         "atelier-build-concise",
@@ -1117,6 +1132,7 @@ fn make_test_handle(
     yolo: bool,
     client_id: Option<&str>,
 ) -> crate::session::SessionHandle {
+    let test_root = std::env::temp_dir();
     let (cmd_tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let (persistence_tx, _persistence_rx) = tokio::sync::mpsc::unbounded_channel();
     let (hunk_event_tx, _hunk_event_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -1137,7 +1153,7 @@ fn make_test_handle(
         )),
         info: crate::session::info::Info {
             id: acp::SessionId::new("test"),
-            cwd: "/tmp".to_string(),
+            cwd: test_root.to_string_lossy().into_owned(),
         },
         max_turns: None,
         hunk_tracker_handle,
@@ -1153,9 +1169,9 @@ fn make_test_handle(
         upload_queue: Arc::new(OnceLock::new()),
         upload_failures_since_success: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         tool_context: crate::tools::ToolContext::new_local_context(
-            atelier_paths::AbsPathBuf::new(std::path::PathBuf::from("/tmp")).unwrap(),
+            atelier_paths::AbsPathBuf::new(test_root.clone()).unwrap(),
             std::sync::Arc::new(atelier_workspace::file_system::LocalFs::new(
-                std::path::PathBuf::from("/tmp"),
+                test_root.clone(),
             )),
             std::sync::Arc::new(crate::terminal::LocalTerminalRunner),
         ),
@@ -1169,13 +1185,12 @@ fn make_test_handle(
         code_nav_enabled: false,
         ask_user_question_enabled: true,
         plan_mode: std::sync::Arc::new(parking_lot::Mutex::new(
-            crate::session::plan_mode::PlanModeTracker::new(std::path::PathBuf::from("/tmp")),
+            crate::session::plan_mode::PlanModeTracker::new(test_root),
         )),
         force_compact: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         permission_handle: atelier_workspace::permission::PermissionHandle::allow_all(),
         attribution_callback: None,
         agent_name: "atelier-build".to_string(),
-        managed_mcp_proxy_base_url: String::new(),
         session_default_agent_profile: None,
         allowed_subagent_types: None,
         hook_registry: None,
@@ -1192,7 +1207,10 @@ async fn lookup_session_model_returns_per_session_model() {
     let sid_b = acp::SessionId::new("sess-b");
     let default_model = acp::ModelId::new("default-model");
     let sessions: HashMap<acp::SessionId, crate::session::SessionHandle> = [
-        (sid_a.clone(), make_test_handle("atelier-3-fast", false, None)),
+        (
+            sid_a.clone(),
+            make_test_handle("atelier-3-fast", false, None),
+        ),
         (sid_b.clone(), make_test_handle("codex-mini", false, None)),
     ]
     .into();
@@ -1289,6 +1307,265 @@ async fn model_state_prefers_session_reasoning_effort_over_global() {
         Some("low"),
         "absent session effort falls back to the global default",
     );
+}
+
+#[tokio::test]
+async fn provider_catalog_reconcile_latches_removed_session_model_without_switching_ui_state() {
+    let agent = build_minimal_agent_for_tests();
+    let session_id = acp::SessionId::new("provider-session");
+    let mut handle = make_test_handle("provider/removed-model", false, None);
+    handle.info.id = session_id.clone();
+    let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::unbounded_channel();
+    handle.cmd_tx = cmd_tx;
+    agent
+        .sessions
+        .borrow_mut()
+        .insert(session_id.clone(), handle);
+
+    agent.reconcile_live_provider_sessions().await;
+
+    assert_eq!(
+        agent
+            .model_state(Some(&session_id))
+            .current_model_id
+            .0
+            .as_ref(),
+        "provider/removed-model",
+        "catalog refresh must not silently switch the UI to another model",
+    );
+    let unavailable = agent
+        .model_unavailable_sessions
+        .borrow()
+        .get(session_id.0.as_ref())
+        .cloned()
+        .expect("removed active model must latch the session unavailable");
+    assert_ne!(
+        unavailable.0.as_ref(),
+        "provider/removed-model",
+        "live-removal latch must not auto-heal merely because the same model later reappears",
+    );
+    agent.models_manager.insert_test_entry(
+        "provider/removed-model",
+        crate::agent::config::ModelEntry::fallback(
+            "removed-model",
+            &crate::agent::config::EndpointsConfig::default(),
+        ),
+    );
+    assert!(
+        resolve_catalog_key(&agent.models_manager.models(), &unavailable).is_none(),
+        "reappearing catalog entries must stay blocked until set_session_model clears the latch",
+    );
+    assert!(
+        cmd_rx.try_recv().is_err(),
+        "removed models must not install a fallback sampler",
+    );
+}
+
+#[tokio::test]
+async fn provider_catalog_reconcile_forces_same_model_sampler_refresh_without_role_rewrite() {
+    use atelier_sampling_types::{ApiBackend, ReasoningEffort};
+
+    let agent = build_minimal_agent_for_tests();
+    let mut entry = crate::agent::config::ModelEntry::fallback(
+        "routing-model",
+        &crate::agent::config::EndpointsConfig::default(),
+    );
+    entry.info.base_url = "https://provider.example/v2".to_string();
+    entry.info.api_backend = ApiBackend::Responses;
+    entry.info.use_concise = true;
+    entry
+        .request_payload
+        .insert("provider_override".to_string(), serde_json::json!("fresh"));
+    agent
+        .models_manager
+        .insert_test_entry("provider/routing-model", entry);
+
+    let session_id = acp::SessionId::new("provider-session");
+    let mut handle = make_test_handle("provider/routing-model", false, None);
+    handle.info.id = session_id.clone();
+    handle.reasoning_effort = Some(ReasoningEffort::High);
+    let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::unbounded_channel();
+    handle.cmd_tx = cmd_tx;
+    agent.sessions.borrow_mut().insert(session_id, handle);
+
+    let actor = tokio::spawn(async move {
+        let SessionCommand::GetRequestPayload { responds_to } = cmd_rx
+            .recv()
+            .await
+            .expect("payload query must be sent before refresh")
+        else {
+            panic!("expected GetRequestPayload before sampler refresh");
+        };
+        responds_to
+            .send(serde_json::Map::new())
+            .expect("payload response receiver must remain open");
+        let SessionCommand::RefreshProviderModel {
+            sampling_config,
+            responds_to,
+            ..
+        } = cmd_rx
+            .recv()
+            .await
+            .expect("same model must receive a forced sampler refresh")
+        else {
+            panic!("expected SetSessionModel refresh command");
+        };
+        responds_to
+            .send(Ok(acp::ModelId::new(sampling_config.model.clone())))
+            .expect("refresh response receiver must remain open");
+        sampling_config
+    });
+
+    agent.reconcile_live_provider_sessions().await;
+    let sampling_config = actor.await.expect("test session actor must not panic");
+    assert_eq!(sampling_config.model, "routing-model");
+    assert_eq!(sampling_config.base_url, "https://provider.example/v2");
+    assert_eq!(sampling_config.api_backend, ApiBackend::Responses);
+    assert_eq!(
+        sampling_config.request_payload["provider_override"],
+        serde_json::json!("fresh"),
+    );
+    assert_eq!(
+        sampling_config.reasoning_effort,
+        Some(ReasoningEffort::High)
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[serial_test::serial]
+async fn provider_catalog_reload_refreshes_live_session_from_the_new_registry_snapshot() {
+    use atelier_provider::{
+        CredentialRef, ModelDescriptor, ModelKey, ModelSource, ProviderConfig, ProviderDiscovery,
+        ProviderModelOverride, ProviderProtocol, ProviderRegistry, WireApi,
+    };
+    use atelier_sampling_types::ApiBackend;
+    use atelier_test_support::EnvGuard;
+
+    let atelier_home = tempfile::tempdir().unwrap();
+    let _home = EnvGuard::set("ATELIER_HOME", atelier_home.path());
+    let registry_path = atelier_home.path().join("providers.toml");
+    let model_key = ModelKey::new("provider", "model").unwrap();
+    let mut registry = ProviderRegistry::load_or_create(&registry_path).unwrap();
+    registry
+        .upsert_provider(ProviderConfig {
+            id: "provider".into(),
+            display_name: "Provider".into(),
+            protocol: ProviderProtocol::OpenAiChatCompletions,
+            base_url: url::Url::parse("https://provider.example/v1").unwrap(),
+            credential: CredentialRef::None,
+            discovery: ProviderDiscovery::Static,
+            extra_headers: Default::default(),
+            enabled: true,
+        })
+        .unwrap();
+    registry
+        .upsert_model(ModelDescriptor {
+            key: model_key.clone(),
+            display_name: "Model".into(),
+            description: None,
+            wire_api: Some(WireApi::ChatCompletions),
+            context_window: Some(128_000),
+            capabilities: Default::default(),
+            reasoning_efforts: Vec::new(),
+            source: ModelSource::Static,
+            enabled: true,
+        })
+        .unwrap();
+    registry
+        .set_model_provider_override(
+            &model_key,
+            ProviderModelOverride {
+                wire_api: Some(WireApi::ChatCompletions),
+                payload: serde_json::json!({
+                    "provider_only": "old",
+                    "shared": "provider-old",
+                })
+                .as_object()
+                .unwrap()
+                .clone(),
+            },
+        )
+        .unwrap();
+    registry.save().unwrap();
+
+    let agent = build_minimal_agent_for_tests();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        agent.reload_local_provider_catalog_and_reconcile_sessions_from(&registry_path),
+    )
+    .await
+    .expect("initial Provider catalog reload timed out")
+    .unwrap();
+
+    let session_id = acp::SessionId::new("provider-session");
+    let mut handle = make_test_handle("provider/model", false, None);
+    handle.info.id = session_id.clone();
+    let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::unbounded_channel();
+    handle.cmd_tx = cmd_tx;
+    agent.sessions.borrow_mut().insert(session_id, handle);
+    let actor = tokio::spawn(async move {
+        let SessionCommand::GetRequestPayload { responds_to } = cmd_rx.recv().await.unwrap() else {
+            panic!("expected payload query");
+        };
+        responds_to
+            .send(
+                serde_json::json!({
+                    "provider_only": "old",
+                    "role_only": true,
+                    "shared": "role",
+                })
+                .as_object()
+                .unwrap()
+                .clone(),
+            )
+            .unwrap();
+        let SessionCommand::RefreshProviderModel {
+            sampling_config,
+            responds_to,
+            ..
+        } = cmd_rx.recv().await.unwrap()
+        else {
+            panic!("expected Provider sampler refresh");
+        };
+        responds_to
+            .send(Ok(acp::ModelId::new(sampling_config.model.clone())))
+            .unwrap();
+        sampling_config
+    });
+
+    let mut registry = ProviderRegistry::load_or_create(&registry_path).unwrap();
+    registry
+        .set_model_provider_override(
+            &model_key,
+            ProviderModelOverride {
+                wire_api: Some(WireApi::Responses),
+                payload: serde_json::json!({
+                    "provider_only": "new",
+                    "shared": "provider-new",
+                })
+                .as_object()
+                .unwrap()
+                .clone(),
+            },
+        )
+        .unwrap();
+    registry.save().unwrap();
+
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        agent.reload_local_provider_catalog_and_reconcile_sessions_from(&registry_path),
+    )
+    .await
+    .expect("updated Provider catalog reload timed out")
+    .unwrap();
+    let sampling_config = tokio::time::timeout(std::time::Duration::from_secs(5), actor)
+        .await
+        .expect("live session did not acknowledge Provider refresh")
+        .unwrap();
+    assert_eq!(sampling_config.api_backend, ApiBackend::Responses);
+    assert_eq!(sampling_config.request_payload["provider_only"], "new");
+    assert_eq!(sampling_config.request_payload["role_only"], true);
+    assert_eq!(sampling_config.request_payload["shared"], "role");
 }
 /// A session persisted under a routing *slug* (not the catalog map key) must
 /// still get reasoning modes and a selected model from
@@ -1568,7 +1845,7 @@ fn test_sessionless_request_requires_session_id() {
     );
 }
 #[tokio::test(flavor = "current_thread")]
-async fn ext_method_routes_auth_cleared_and_refreshes_resident_sessions() {
+async fn ext_method_routes_auth_cleared_without_touching_resident_sessions() {
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
@@ -1590,22 +1867,62 @@ async fn ext_method_routes_auth_cleared_and_refreshes_resident_sessions() {
                 ))
                 .await
                 .expect("auth_cleared must route through session-admin");
-            let cmd = tokio::time::timeout(std::time::Duration::from_secs(1), cmd_rx.recv())
-                .await
-                .expect("refresh command should be sent")
-                .expect("channel should stay open until command is received");
-            assert!(matches!(cmd, SessionCommand::RefreshMcpSearchIndex));
-            assert!(!agent.managed_mcp_cache.lock().await.gateway_tools_active);
+            assert!(
+                tokio::time::timeout(std::time::Duration::from_millis(50), cmd_rx.recv())
+                    .await
+                    .is_err(),
+                "vendorless auth cleanup must not refresh resident MCP sessions"
+            );
+            assert!(
+                agent.managed_mcp_cache.lock().await.gateway_tools_active,
+                "auth cleanup must not mutate the local MCP cache"
+            );
         })
         .await;
+}
+#[tokio::test(flavor = "current_thread")]
+#[serial_test::serial]
+async fn model_provider_override_extensions_route_to_provider_handler() {
+    use acp::Agent as _;
+    use atelier_test_support::EnvGuard;
+
+    let atelier_home = tempfile::tempdir().unwrap();
+    let _env = EnvGuard::set("ATELIER_HOME", atelier_home.path());
+    let agent = build_minimal_agent_for_tests();
+    let params: std::sync::Arc<serde_json::value::RawValue> =
+        std::sync::Arc::from(serde_json::value::to_raw_value(&serde_json::json!({})).unwrap());
+
+    for method in [
+        "_atelier/model_provider_override/list",
+        "_atelier/model_provider_override/set",
+        "_atelier/model_provider_override/delete",
+        "_atelier/model_provider_override/test",
+        "atelier/model_provider_override/list",
+        "atelier/model_provider_override/set",
+        "atelier/model_provider_override/delete",
+        "atelier/model_provider_override/test",
+    ] {
+        let result = agent
+            .ext_method(acp::ExtRequest::new(method, params.clone()))
+            .await;
+        assert!(
+            !matches!(
+                result,
+                Err(ref error) if error.code == acp::Error::method_not_found().code
+            ),
+            "{method} must route to the provider extension; got {result:?}"
+        );
+    }
 }
 /// Build a minimal MvpAgent suitable for testing extension methods.
 fn build_minimal_agent_for_tests() -> MvpAgent {
     use crate::agent::config::Config as AgentConfig;
-    use crate::auth::{AuthManager, AtelierComConfig};
+    use crate::auth::{AtelierComConfig, AuthManager};
     let temp_dir = tempfile::tempdir().unwrap();
-    let auth_manager =
-        std::sync::Arc::new(AuthManager::new(temp_dir.path(), AtelierComConfig::default()));
+    let auth_manager = std::sync::Arc::new(AuthManager::new(
+        temp_dir.path(),
+        AtelierComConfig::default(),
+    ));
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let gateway = GatewaySender::new(tx);
     let cfg = AgentConfig::default();
@@ -1613,13 +1930,38 @@ fn build_minimal_agent_for_tests() -> MvpAgent {
 }
 
 #[tokio::test]
+async fn unrelated_session_cwds_receive_distinct_workspace_runtimes() {
+    let agent = build_minimal_agent_for_tests();
+    let temp_root = std::env::current_dir().expect("current dir");
+    let first = tempfile::tempdir_in(&temp_root).expect("first workspace");
+    let second = tempfile::tempdir_in(&temp_root).expect("second workspace");
+
+    let first_ops = agent
+        .resolve_session_workspace_ops(first.path())
+        .expect("first workspace runtime");
+    let second_ops = agent
+        .resolve_session_workspace_ops(second.path())
+        .expect("second workspace runtime");
+
+    assert_eq!(
+        first_ops.local_root_cwd().unwrap(),
+        std::fs::canonicalize(first.path()).unwrap()
+    );
+    assert_eq!(
+        second_ops.local_root_cwd().unwrap(),
+        std::fs::canonicalize(second.path()).unwrap()
+    );
+    assert_ne!(
+        first_ops.local_root_cwd().unwrap(),
+        second_ops.local_root_cwd().unwrap()
+    );
+}
+
+#[tokio::test]
 async fn runtime_policy_denial_is_traced_and_plan_mode_cannot_be_overridden() {
     let agent = build_minimal_agent_for_tests();
     agent.replace_runtime_policy(atelier_hooks::PolicyEngine::new([
-        atelier_hooks::PolicyRule::ask(
-            atelier_hooks::PolicyScope::File,
-            "review before editing",
-        ),
+        atelier_hooks::PolicyRule::ask(atelier_hooks::PolicyScope::File, "review before editing"),
     ]));
 
     let error = agent
@@ -1659,10 +2001,12 @@ async fn runtime_policy_denies_provider_requests_and_keeps_the_reason_in_trace()
 /// Build a minimal MvpAgent with pre-loaded auth for gate tests.
 fn build_agent_with_auth(auth: crate::auth::AtelierAuth) -> MvpAgent {
     use crate::agent::config::Config as AgentConfig;
-    use crate::auth::{AuthManager, AtelierComConfig};
+    use crate::auth::{AtelierComConfig, AuthManager};
     let temp_dir = tempfile::tempdir().unwrap();
-    let auth_manager =
-        std::sync::Arc::new(AuthManager::new(temp_dir.path(), AtelierComConfig::default()));
+    let auth_manager = std::sync::Arc::new(AuthManager::new(
+        temp_dir.path(),
+        AtelierComConfig::default(),
+    ));
     auth_manager.hot_swap(auth);
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let gateway = GatewaySender::new(tx);
@@ -1679,7 +2023,7 @@ fn build_agent_with_auth(auth: crate::auth::AtelierAuth) -> MvpAgent {
 #[serial_test::serial]
 async fn ensure_plugin_registry_lazily_populates_snapshot() {
     use crate::agent::config::Config as AgentConfig;
-    use crate::auth::{AuthManager, AtelierComConfig};
+    use crate::auth::{AtelierComConfig, AuthManager};
     use atelier_test_support::EnvGuard;
     let atelier_home = tempfile::tempdir().unwrap();
     let _env = EnvGuard::set("ATELIER_HOME", atelier_home.path());
@@ -1695,8 +2039,10 @@ async fn ensure_plugin_registry_lazily_populates_snapshot() {
     )
     .unwrap();
     let auth_home = tempfile::tempdir().unwrap();
-    let auth_manager =
-        std::sync::Arc::new(AuthManager::new(auth_home.path(), AtelierComConfig::default()));
+    let auth_manager = std::sync::Arc::new(AuthManager::new(
+        auth_home.path(),
+        AtelierComConfig::default(),
+    ));
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let gateway = GatewaySender::new(tx);
     let mut cfg = AgentConfig::default();
@@ -1883,10 +2229,12 @@ fn drain_roster_changed(
 async fn push_roster_activity_delta_broadcasts_overridden_activity() {
     use crate::agent::config::Config as AgentConfig;
     use crate::agent::roster::RosterActivity;
-    use crate::auth::{AuthManager, AtelierComConfig};
+    use crate::auth::{AtelierComConfig, AuthManager};
     let temp_dir = tempfile::tempdir().unwrap();
-    let auth_manager =
-        std::sync::Arc::new(AuthManager::new(temp_dir.path(), AtelierComConfig::default()));
+    let auth_manager = std::sync::Arc::new(AuthManager::new(
+        temp_dir.path(),
+        AtelierComConfig::default(),
+    ));
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     let gateway = GatewaySender::new(tx);
     let cfg = AgentConfig::default();
@@ -2408,10 +2756,12 @@ async fn auth_type_no_method_id_with_current_returns_session_token() {
 /// (`disable_api_key_auth = true`), mirroring a forced-IdP deployment.
 fn build_agent_with_api_key_auth_disabled() -> MvpAgent {
     use crate::agent::config::Config as AgentConfig;
-    use crate::auth::{AuthManager, AtelierComConfig};
+    use crate::auth::{AtelierComConfig, AuthManager};
     let temp_dir = tempfile::tempdir().unwrap();
-    let auth_manager =
-        std::sync::Arc::new(AuthManager::new(temp_dir.path(), AtelierComConfig::default()));
+    let auth_manager = std::sync::Arc::new(AuthManager::new(
+        temp_dir.path(),
+        AtelierComConfig::default(),
+    ));
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let gateway = GatewaySender::new(tx);
     let mut cfg = AgentConfig::default();
@@ -2687,7 +3037,6 @@ async fn trace_uploads_are_unconditionally_removed() {
     }
 
     assert!(agent.trace_upload_config_snapshot().is_none());
-    assert!(agent.diagnostic_upload_config().is_none());
     assert!(agent.trace_upload_config().await.is_none());
 }
 /// `parse_session_kind` routes `session/load` to the gateway Chat path vs. the
@@ -2727,7 +3076,12 @@ fn parse_session_kind_matrix() {
 #[test]
 fn chat_initial_model_matrix() {
     let cases: &[(&str, bool, Option<&str>, Option<&str>)] = &[
-        ("chat_with_model", true, Some("atelier-4.5"), Some("atelier-4.5")),
+        (
+            "chat_with_model",
+            true,
+            Some("atelier-4.5"),
+            Some("atelier-4.5"),
+        ),
         ("chat_without_model", true, None, None),
         ("build_with_model", false, Some("atelier-4.5"), None),
         ("build_without_model", false, None, None),
@@ -3064,6 +3418,24 @@ fn disconnect_unloads_idle_session_without_finalize() {
         let agent = build_minimal_agent_for_tests();
         let sid = acp::SessionId::new("sess-idle");
         let (handle, _cmd_tx, cmd_rx) = make_live_session_handle(&sid, None);
+        let workspace_ops = handle.workspace_ops.clone();
+        let workspace_root = workspace_ops.local_root_cwd().expect("workspace root");
+        workspace_ops
+            .set_local_session_filesystem(std::sync::Arc::new(
+                atelier_workspace::file_system::MockFs::new(workspace_root.clone()),
+            ))
+            .expect("configure session filesystem");
+        workspace_ops
+            .bind_local_session(
+                sid.0.as_ref(),
+                workspace_root,
+                xai_hunk_tracker::HunkTrackerHandle::noop(),
+                std::sync::Arc::new(
+                    atelier_tools::registry::types::FinalizedToolset::empty_for_test(),
+                ),
+                None,
+            )
+            .expect("bind workspace session");
         agent.sessions.borrow_mut().insert(sid.clone(), handle);
         let mut observed = spawn_fake_actor(cmd_rx, false);
         let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
@@ -3078,6 +3450,10 @@ fn disconnect_unloads_idle_session_without_finalize() {
         assert!(
             !agent.sessions.borrow().contains_key(&sid),
             "idle session must be unloaded from the resident map on disconnect"
+        );
+        assert!(
+            workspace_ops.local_session_filesystem().is_none(),
+            "idle unload must release the last Workspace Worker filesystem"
         );
         assert!(
             agent.session_threads.borrow().contains_key(&sid),
@@ -3443,10 +3819,12 @@ fn build_agent_with_gateway_rx() -> (
     tokio::sync::mpsc::UnboundedReceiver<xai_acp_lib::AcpClientMessage>,
 ) {
     use crate::agent::config::Config as AgentConfig;
-    use crate::auth::{AuthManager, AtelierComConfig};
+    use crate::auth::{AtelierComConfig, AuthManager};
     let temp_dir = tempfile::tempdir().unwrap();
-    let auth_manager =
-        std::sync::Arc::new(AuthManager::new(temp_dir.path(), AtelierComConfig::default()));
+    let auth_manager = std::sync::Arc::new(AuthManager::new(
+        temp_dir.path(),
+        AtelierComConfig::default(),
+    ));
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     let gateway = GatewaySender::new(tx);
     let cfg = AgentConfig::default();
@@ -3921,30 +4299,6 @@ fn test_now() -> chrono::DateTime<chrono::Utc> {
         .unwrap()
         .with_timezone(&chrono::Utc)
 }
-/// Pushes must carry strictly increasing generations, seeded from unix-epoch
-/// seconds so a restarted leader still beats pager watermarks that survived
-/// re-election (`AppView.announcements_last_gen` is never reset).
-#[tokio::test]
-async fn announcements_gen_seeds_from_epoch_and_strictly_increases() {
-    let agent = build_minimal_agent_for_tests();
-    let epoch_before = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
-    let first = agent.next_announcements_gen();
-    let second = agent.next_announcements_gen();
-    assert!(
-        first >= epoch_before,
-        "first gen must be epoch-seeded: {first} < {epoch_before}"
-    );
-    assert!(
-        second > first,
-        "gens must strictly increase: {first} -> {second}"
-    );
-    let far_ahead = first + 1_000_000;
-    agent.announcements_gen.set(far_ahead);
-    assert_eq!(agent.next_announcements_gen(), far_ahead + 1);
-}
 /// An unchanged visible list must not produce a push (idle steady-state is
 /// silent); a changed one — including clearing to empty — must.
 #[test]
@@ -4100,155 +4454,6 @@ fn announcements_push_gate_emits_on_expiry_crossing() {
         None
     );
 }
-/// A poll apply must touch ONLY `remote_settings.announcements`; every other
-/// stored field keeps its pre-poll value (full reapply stays owned by
-/// startup, auth, and `/new`).
-#[tokio::test]
-async fn polled_announcements_apply_touches_announcements_only() {
-    let agent = build_minimal_agent_for_tests();
-    let mut stored = settings_with(Some(vec![ann("old")]));
-    stored.tips = Some(vec!["stored-tip".to_string()]);
-    stored.allow_access = Some(true);
-    stored.default_model = Some("stored-model".to_string());
-    agent.cfg.borrow_mut().remote_settings = Some(stored);
-    let mut fresh = settings_with(Some(vec![ann("new")]));
-    fresh.tips = Some(vec!["fresh-tip".to_string()]);
-    fresh.allow_access = Some(false);
-    fresh.default_model = Some("fresh-model".to_string());
-    agent.apply_polled_announcements(fresh, Some(vec![ann("old")]));
-    let cfg = agent.cfg.borrow();
-    let after = cfg
-        .remote_settings
-        .as_ref()
-        .expect("settings still present");
-    assert_eq!(after.announcements, Some(vec![ann("new")]));
-    assert_eq!(
-        after.tips,
-        Some(vec!["stored-tip".to_string()]),
-        "tips must be untouched by a poll apply"
-    );
-    assert_eq!(
-        after.allow_access,
-        Some(true),
-        "allow_access must be untouched by a poll apply"
-    );
-    assert_eq!(
-        after.default_model.as_deref(),
-        Some("stored-model"),
-        "default_model must be untouched by a poll apply"
-    );
-}
-/// A poll apply must never fabricate `remote_settings` from scratch — the
-/// `is_none()`-keyed retry/gating semantics of the full-refresh owners
-/// depend on absence staying observable.
-#[tokio::test]
-async fn polled_announcements_apply_never_fabricates_settings() {
-    let agent = build_minimal_agent_for_tests();
-    agent.cfg.borrow_mut().remote_settings = None;
-    agent.apply_polled_announcements(settings_with(Some(vec![ann("a")])), None);
-    assert!(
-        agent.cfg.borrow().remote_settings.is_none(),
-        "a poll must leave absent remote_settings absent"
-    );
-}
-/// A full-refresh writer landing during the poll's fetch makes the poll's
-/// result stale; the apply must skip rather than clobber the fresher store
-/// (the next tick reconciles).
-#[tokio::test]
-async fn polled_announcements_apply_skips_when_writer_landed_mid_fetch() {
-    let agent = build_minimal_agent_for_tests();
-    let pre_fetch = Some(vec![ann("old")]);
-    agent.cfg.borrow_mut().remote_settings = Some(settings_with(Some(vec![ann("mid-fetch")])));
-    agent.apply_polled_announcements(settings_with(Some(vec![ann("stale-poll")])), pre_fetch);
-    assert_eq!(
-        agent
-            .cfg
-            .borrow()
-            .remote_settings
-            .as_ref()
-            .and_then(|s| s.announcements.clone()),
-        Some(vec![ann("mid-fetch")]),
-        "the mid-fetch writer's store must win over the stale poll result"
-    );
-}
-/// End-to-end through the shared gate: every emission advances the baseline
-/// and carries a strictly larger gen; unchanged state is silent unless
-/// seeding a new client.
-#[tokio::test]
-async fn emit_announcements_gate_emits_updates_baseline_and_bumps_gen() {
-    let (agent, mut rx) = build_agent_with_gateway_rx();
-    agent.cfg.borrow_mut().remote_settings = Some(settings_with(Some(vec![ann("a")])));
-    let recv_gen =
-        |rx: &mut tokio::sync::mpsc::UnboundedReceiver<xai_acp_lib::AcpClientMessage>| {
-            let msg = rx.try_recv().expect("expected an announcements push");
-            let xai_acp_lib::AcpClientMessage::ExtNotification(args) = msg else {
-                panic!("expected ExtNotification, got another message kind");
-            };
-            assert_eq!(args.request.method.as_ref(), "atelier/announcements/update");
-            let parsed: serde_json::Value =
-                serde_json::from_str(args.request.params.get()).expect("valid JSON payload");
-            parsed
-                .get("gen")
-                .and_then(|g| g.as_u64())
-                .expect("gen field")
-        };
-    agent.emit_announcements(AnnouncementsPushMode::IfChanged);
-    let first_gen = recv_gen(&mut rx);
-    agent.emit_announcements(AnnouncementsPushMode::IfChanged);
-    assert!(rx.try_recv().is_err(), "unchanged list must not re-push");
-    agent.emit_announcements(AnnouncementsPushMode::SeedNewClient);
-    let seed_gen = recv_gen(&mut rx);
-    assert!(
-        seed_gen > first_gen,
-        "gen must strictly increase: {first_gen} -> {seed_gen}"
-    );
-    agent.cfg.borrow_mut().remote_settings = Some(settings_with(None));
-    agent.emit_announcements(AnnouncementsPushMode::IfChanged);
-    let clear_gen = recv_gen(&mut rx);
-    assert!(clear_gen > seed_gen);
-    agent.emit_announcements(AnnouncementsPushMode::IfChanged);
-    assert!(
-        rx.try_recv().is_err(),
-        "cleared state must push exactly once"
-    );
-    agent.emit_announcements(AnnouncementsPushMode::Force);
-    let force_gen = recv_gen(&mut rx);
-    assert!(
-        force_gen > clear_gen,
-        "forced push must keep gens increasing"
-    );
-}
-/// A send the gateway channel rejects must not advance the last-emitted
-/// baseline; the next gate call then re-diffs and re-pushes the same list
-/// (the poll's natural retry, no dedicated retry machinery).
-#[tokio::test]
-async fn emit_announcements_gate_keeps_baseline_on_failed_send_and_retries() {
-    let (mut agent, rx) = build_agent_with_gateway_rx();
-    agent.cfg.borrow_mut().remote_settings = Some(settings_with(Some(vec![ann("a")])));
-    drop(rx);
-    agent.emit_announcements(AnnouncementsPushMode::IfChanged);
-    assert!(
-        agent.last_emitted_announcements.borrow().is_empty(),
-        "a failed send must leave the baseline untouched"
-    );
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    agent.gateway = GatewaySender::new(tx);
-    agent.emit_announcements(AnnouncementsPushMode::IfChanged);
-    let msg = rx
-        .try_recv()
-        .expect("next gate call must re-push after a failed send");
-    let xai_acp_lib::AcpClientMessage::ExtNotification(args) = msg else {
-        panic!("expected ExtNotification, got another message kind");
-    };
-    assert_eq!(args.request.method.as_ref(), "atelier/announcements/update");
-    assert_eq!(
-        *agent.last_emitted_announcements.borrow(),
-        vec![ann("a")],
-        "a successful send advances the baseline"
-    );
-    agent.emit_announcements(AnnouncementsPushMode::IfChanged);
-    assert!(rx.try_recv().is_err(), "unchanged list must not re-push");
-}
 mod direct_hub_cloud_removed {
     use super::super::{DIRECT_HUB_CLOUD_REMOVED_MSG, reject_direct_hub_cloud_meta};
     use crate::agent::config::HubConfig;
@@ -4337,49 +4542,5 @@ mod direct_hub_cloud_removed {
         ))
         .expect("ignore unknown fields");
         assert_eq!(from_legacy.url.as_deref(), Some("wss://hub.example/ws"));
-    }
-}
-mod soft_default_settings_emit {
-    use super::*;
-    #[tokio::test]
-    async fn emit_settings_update_carries_permission_mode_from_cfg() {
-        use crate::agent::config::Config as AgentConfig;
-        use crate::auth::{AuthManager, AtelierComConfig};
-        let local = tokio::task::LocalSet::new();
-        local
-            .run_until(async {
-                let temp_dir = tempfile::tempdir().unwrap();
-                let auth_manager = std::sync::Arc::new(AuthManager::new(
-                    temp_dir.path(),
-                    AtelierComConfig::default(),
-                ));
-                let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-                let gateway = GatewaySender::new(tx);
-                let cfg = AgentConfig {
-                    remote_settings: Some(crate::util::config::RemoteSettings {
-                        permission_mode: Some("always-approve".into()),
-                        ..Default::default()
-                    }),
-                    ..Default::default()
-                };
-                let agent =
-                    MvpAgent::new(gateway, &cfg, auth_manager, None).expect("valid test config");
-                agent.cfg.borrow_mut().remote_settings = cfg.remote_settings.clone();
-                agent.emit_settings_update_notification();
-                let msg = rx.try_recv().expect("settings/update must be emitted");
-                let xai_acp_lib::AcpClientMessage::ExtNotification(args) = msg else {
-                    panic!("expected ExtNotification, got {msg:?}");
-                };
-                assert_eq!(args.request.method.as_ref(), "atelier/settings/update");
-                let params: serde_json::Value =
-                    serde_json::from_str(args.request.params.get()).expect("parse params");
-                assert_eq!(
-                    params.get("permission_mode").and_then(|v| v.as_str()),
-                    Some("always-approve"),
-                    "post-auth emit must carry remote permission_mode for first session"
-                );
-                let _ = args.response_tx.send(Ok(()));
-            })
-            .await;
     }
 }

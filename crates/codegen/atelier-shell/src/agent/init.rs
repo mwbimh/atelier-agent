@@ -101,10 +101,6 @@ fn init_process(cfg: &AgentConfig, auth_manager: &AuthManager) {
     use std::sync::Once;
     static INIT: Once = Once::new();
     INIT.call_once(|| {
-        if !cfg!(test) {
-            crate::managed_config::spawn_sync(tokio_util::sync::CancellationToken::new());
-        }
-
         let atelier_home = crate::util::atelier_home::atelier_home();
         crate::builtin::extract_bundled_files(&atelier_home);
 

@@ -141,25 +141,22 @@
     }
 
     #[test]
-    fn retry_exhausted_rate_limited_message_is_auth_aware() {
-        use atelier_shell::sampling::error::{
-            RATE_LIMITED_USER_MESSAGE_API_KEY, RATE_LIMITED_USER_MESSAGE_OAUTH,
-        };
-
+    fn retry_exhausted_rate_limited_message_is_provider_neutral() {
         let exhausted = RetryState::Exhausted {
             attempts: 3,
             reason: "rate limited".into(),
             is_rate_limited: true,
         };
+        let expected = "failed after 3 retries: rate limited";
 
         let mut session = make_session(Some("s1"));
         let mut scrollback = ScrollbackState::new();
         apply_retry_state(&exhausted, &mut session, &mut scrollback, false);
         match last_session_event(&scrollback) {
             Some(SessionEvent::RetryFailed { error, .. }) => {
-                assert_eq!(error, RATE_LIMITED_USER_MESSAGE_OAUTH);
+                assert_eq!(error, expected);
             }
-            other => panic!("expected OAuth rate-limit RetryFailed, got {other:?}"),
+            other => panic!("expected provider rate-limit RetryFailed, got {other:?}"),
         }
 
         let mut session = make_session(Some("s1"));
@@ -167,9 +164,9 @@
         apply_retry_state(&exhausted, &mut session, &mut scrollback, true);
         match last_session_event(&scrollback) {
             Some(SessionEvent::RetryFailed { error, .. }) => {
-                assert_eq!(error, RATE_LIMITED_USER_MESSAGE_API_KEY);
+                assert_eq!(error, expected);
             }
-            other => panic!("expected API-key rate-limit RetryFailed, got {other:?}"),
+            other => panic!("expected provider rate-limit RetryFailed, got {other:?}"),
         }
     }
 
@@ -192,138 +189,6 @@
             !session.rate_limited,
             "rate_limited flag must not be set when is_rate_limited is false"
         );
-    }
-
-    /// A rate-limit exhaustion whose flattened reason carries the
-    /// free-usage code sets both flags and pushes NO generic block (the
-    /// driver shows the paywall modal on PromptResponse; viewers keep no
-    /// marker).
-    #[test]
-    fn retry_exhausted_free_usage_sets_paywall_flag_without_marker() {
-        let mut session = make_session(Some("s1"));
-        let mut scrollback = ScrollbackState::new();
-        session.in_flight_prompt = Some(InFlightPrompt {
-            text: "try me again".into(),
-            images: Vec::new(),
-            scrollback_entry: EntryId::new(2),
-            chip_elements: Vec::new(),
-        });
-
-        apply_retry_state(
-            &RetryState::Exhausted {
-                attempts: 0,
-                reason: "API error (status 429 Too Many Requests): \
-                         subscription:free-usage-exhausted: You have used all your free usage."
-                    .into(),
-                is_rate_limited: true,
-            },
-            &mut session,
-            &mut scrollback,
-            false,
-        );
-        assert!(
-            session.rate_limited,
-            "free-usage keeps rate_limited (TurnFailed/toast suppression)"
-        );
-        assert!(session.free_usage_blocked);
-        assert_eq!(
-            scrollback.len(),
-            0,
-            "no RetryFailed marker — the paywall modal shows instead"
-        );
-        assert!(
-            session.in_flight_prompt.is_none(),
-            "free-usage exhaustion clears in_flight_prompt like other failures"
-        );
-    }
-
-    #[test]
-    fn apply_retry_state_credit_limit_exhausted_preserves_in_flight_prompt() {
-        let mut session = make_session(Some("s1"));
-        let mut scrollback = ScrollbackState::new();
-        session.in_flight_prompt = Some(InFlightPrompt {
-            text: "stash me".into(),
-            images: Vec::new(),
-            scrollback_entry: EntryId::new(2),
-            chip_elements: Vec::new(),
-        });
-        apply_retry_state(
-            &RetryState::Exhausted {
-                attempts: 3,
-                reason: "status 403: run out of credits".into(),
-                is_rate_limited: false,
-            },
-            &mut session,
-            &mut scrollback,
-            false,
-        );
-        assert!(
-            session.credit_limit_blocked,
-            "credit_limit_blocked must be set for credit-limit 403"
-        );
-        assert!(
-            session.in_flight_prompt.is_some(),
-            "in_flight_prompt must be preserved so PromptResponse handler can stash it"
-        );
-        assert_eq!(session.in_flight_prompt.unwrap().text, "stash me");
-    }
-
-    #[test]
-    fn apply_retry_state_credit_limit_failed_preserves_in_flight_prompt() {
-        let mut session = make_session(Some("s1"));
-        let mut scrollback = ScrollbackState::new();
-        session.in_flight_prompt = Some(InFlightPrompt {
-            text: "stash me too".into(),
-            images: Vec::new(),
-            scrollback_entry: EntryId::new(3),
-            chip_elements: Vec::new(),
-        });
-        apply_retry_state(
-            &RetryState::Failed {
-                error_type: "proxy_error".into(),
-                message: "status 403: run out of credits".into(),
-            },
-            &mut session,
-            &mut scrollback,
-            false,
-        );
-        assert!(
-            session.credit_limit_blocked,
-            "credit_limit_blocked must be set for credit-limit 403"
-        );
-        assert!(
-            session.in_flight_prompt.is_some(),
-            "in_flight_prompt must be preserved so PromptResponse handler can stash it"
-        );
-        assert_eq!(session.in_flight_prompt.unwrap().text, "stash me too");
-    }
-
-    #[test]
-    fn apply_retry_state_pool_402_sets_credit_limit_blocked() {
-        let mut session = make_session(Some("s1"));
-        let mut scrollback = ScrollbackState::new();
-        session.in_flight_prompt = Some(InFlightPrompt {
-            text: "pool blocked".into(),
-            images: Vec::new(),
-            scrollback_entry: EntryId::new(5),
-            chip_elements: Vec::new(),
-        });
-        apply_retry_state(
-            &RetryState::Failed {
-                error_type: "proxy_error".into(),
-                message:
-                    "API error (status 402 Payment Required): Atelier usage balance exhausted"
-                        .into(),
-            },
-            &mut session,
-            &mut scrollback,
-            false,
-        );
-        assert!(
-            session.credit_limit_blocked,
-            "credit_limit_blocked must be set for pool 402 balance exhausted"
-        );
-        assert!(session.in_flight_prompt.is_some());
     }
 
     #[test]

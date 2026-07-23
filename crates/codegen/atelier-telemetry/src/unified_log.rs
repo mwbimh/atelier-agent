@@ -204,11 +204,98 @@ fn write_lines(lines: &[u8]) {
 }
 
 fn write_entry(entry: &LogEntry) {
-    let Ok(mut line) = serde_json::to_vec(entry) else {
+    let sanitized = sanitize_entry_for_storage(entry.clone());
+    let Ok(mut line) = serde_json::to_vec(&sanitized) else {
         return;
     };
     line.push(b'\n');
     write_lines(&line);
+}
+
+fn sanitize_entry_for_storage(mut entry: LogEntry) -> LogEntry {
+    entry.msg = redact_log_text(&entry.msg);
+    if let Some(ctx) = entry.ctx.as_mut() {
+        sanitize_json_value(None, ctx);
+    }
+    entry
+}
+
+fn sanitize_json_value(field_name: Option<&str>, value: &mut serde_json::Value) {
+    if field_name.is_some_and(log_field_is_sensitive) {
+        *value = serde_json::Value::String("<redacted>".to_owned());
+        return;
+    }
+
+    match value {
+        serde_json::Value::String(text) => *text = redact_log_text(text),
+        serde_json::Value::Array(values) => {
+            for value in values {
+                sanitize_json_value(None, value);
+            }
+        }
+        serde_json::Value::Object(map) => {
+            for (key, value) in map {
+                sanitize_json_value(Some(key), value);
+            }
+        }
+        serde_json::Value::Null | serde_json::Value::Bool(_) | serde_json::Value::Number(_) => {}
+    }
+}
+
+fn log_field_is_sensitive(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    name.contains("api_key")
+        || name.contains("authorization")
+        || name.contains("credential")
+        || name.contains("password")
+        || name.contains("secret")
+        || name.contains("cookie")
+        || name.contains("private_key")
+        || name.contains("key_prefix")
+        || name.contains("key_suffix")
+        || name.contains("token_prefix")
+        || name.contains("token_suffix")
+        || name.ends_with("_token")
+        || matches!(
+            name.as_str(),
+            "headers"
+                | "extra_headers"
+                | "payload"
+                | "request_body"
+                | "response_body"
+                | "prompt"
+                | "content"
+        )
+}
+
+fn redact_log_text(input: &str) -> String {
+    let scrubbed = crate::redact_common::redact_to_owned(input);
+    redact_bearer_values(&scrubbed)
+}
+
+fn redact_bearer_values(input: &str) -> String {
+    let lower = input.to_ascii_lowercase();
+    let mut out = String::with_capacity(input.len());
+    let mut cursor = 0;
+    while let Some(relative) = lower[cursor..].find("bearer ") {
+        let start = cursor + relative;
+        let value_start = start + "bearer ".len();
+        out.push_str(&input[cursor..value_start]);
+        out.push_str("<redacted>");
+        let mut value_end = value_start;
+        for (offset, ch) in input[value_start..].char_indices() {
+            if ch.is_whitespace() || matches!(ch, '"' | '\'' | ',' | '}' | ']') {
+                break;
+            }
+            value_end = value_start + offset + ch.len_utf8();
+        }
+        cursor = value_end;
+        if cursor == value_start {
+            break;
+        }
+    }
+    out.push_str(&input[cursor..]);
+    out
 }
 
 /// Drop the oldest lines from the file, keeping roughly the last half.
@@ -263,7 +350,7 @@ pub fn ingest_client_entries(src: LogSource, entries: &[ClientLogEntry]) {
     // Serialize all entries up front, then write in a single lock acquisition.
     let mut buf = Vec::new();
     for client_entry in entries {
-        let entry = LogEntry {
+        let entry = sanitize_entry_for_storage(LogEntry {
             ts: client_entry.ts.clone(),
             src,
             pid: client_entry.pid,
@@ -272,7 +359,7 @@ pub fn ingest_client_entries(src: LogSource, entries: &[ClientLogEntry]) {
             sid: client_entry.sid.clone(),
             msg: client_entry.msg.clone(),
             ctx: client_entry.ctx.clone(),
-        };
+        });
         if let Ok(mut line) = serde_json::to_vec(&entry) {
             line.push(b'\n');
             buf.extend_from_slice(&line);
@@ -356,6 +443,48 @@ pub fn snapshot_session_log(session_id: &str) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn storage_redaction_removes_credential_fragments_from_messages_and_context() {
+        let access_token = "access-token-canary-TAIL12345678";
+        let refresh_token = "refresh-token-canary-TAIL87654321";
+        let entry = LogEntry {
+            ts: "2025-07-14T10:30:00.123Z".into(),
+            src: LogSource::Shell,
+            pid: Some(42),
+            ver: Some("test".into()),
+            lvl: LogLevel::Warn,
+            sid: Some("session-1".into()),
+            msg: format!("request failed with bearer {access_token}"),
+            ctx: Some(serde_json::json!({
+                "key_prefix": "TAIL12345678",
+                "refresh_token": refresh_token,
+                "authorization": format!("Bearer {access_token}"),
+                "nested": {
+                    "credential": access_token,
+                    "safe": "kept"
+                }
+            })),
+        };
+
+        let sanitized = sanitize_entry_for_storage(entry);
+        let json = serde_json::to_string(&sanitized).unwrap();
+
+        for forbidden in [access_token, refresh_token, "TAIL12345678", "TAIL87654321"] {
+            assert!(
+                !json.contains(forbidden),
+                "credential fragment leaked: {json}"
+            );
+        }
+        assert!(
+            json.contains("kept"),
+            "non-sensitive context was lost: {json}"
+        );
+        assert!(
+            json.contains("<redacted>"),
+            "redaction marker missing: {json}"
+        );
+    }
 
     #[test]
     fn log_entry_serializes_minimal() {

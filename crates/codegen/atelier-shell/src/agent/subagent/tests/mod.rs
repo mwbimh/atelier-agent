@@ -20,6 +20,116 @@ fn fixed_runtime_roles_cover_builtin_subagent_types() {
     assert_eq!(fixed_role_for_subagent_type("plan"), None);
     assert_eq!(fixed_role_for_subagent_type("custom-agent"), None);
 }
+
+#[tokio::test(flavor = "current_thread")]
+#[serial_test::serial]
+async fn configured_fixed_role_model_unavailable_is_returned_instead_of_inheriting_parent() {
+    use atelier_agent::config::ModelOverride;
+    use atelier_provider::{ProviderRegistry, RoleConfig};
+    use atelier_test_support::EnvGuard;
+
+    let atelier_home = tempfile::tempdir().unwrap();
+    let _home = EnvGuard::set("ATELIER_HOME", atelier_home.path());
+    let registry_path = atelier_home.path().join("providers.toml");
+    let mut registry = ProviderRegistry::load_or_create(&registry_path).unwrap();
+    registry
+        .update_role(
+            RoleId::Explore,
+            RoleConfig::new("provider", "missing-model").unwrap(),
+        )
+        .unwrap();
+    registry.save().unwrap();
+
+    let mut ctx = ctx_with_toggle(HashMap::new());
+    ctx.role_registry_path = Some(registry_path);
+    ctx.sampling_config.model = "parent-model".into();
+    ctx.model_id = acp::ModelId::new("parent-model");
+
+    let error = resolve_effective_model_config(
+        None,
+        "explore",
+        &ModelOverride::Inherit,
+        &ctx,
+    )
+    .await
+    .expect_err("configured Role model must fail closed");
+
+    assert!(
+        error.contains(
+            "configured explore role model is unavailable: provider/missing-model"
+        ),
+        "unexpected error: {error}"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[serial_test::serial]
+async fn unconfigured_fixed_role_is_returned_instead_of_inheriting_parent() {
+    use atelier_agent::config::ModelOverride;
+    use atelier_test_support::EnvGuard;
+
+    let atelier_home = tempfile::tempdir().unwrap();
+    let _home = EnvGuard::set("ATELIER_HOME", atelier_home.path());
+    let mut ctx = ctx_with_toggle(HashMap::new());
+    ctx.role_registry_path = Some(atelier_home.path().join("providers.toml"));
+    ctx.sampling_config.model = "parent-model".into();
+    ctx.model_id = acp::ModelId::new("parent-model");
+
+    let error = resolve_effective_model_config(
+        None,
+        "review",
+        &ModelOverride::Inherit,
+        &ctx,
+    )
+    .await
+    .expect_err("an unconfigured fixed Role must not inherit the parent model");
+
+    assert!(error.contains("role review is not configured"), "{error}");
+}
+
+#[test]
+#[serial_test::serial]
+fn fixed_role_payload_overrides_provider_defaults_without_dropping_them() {
+    use atelier_provider::{ProviderRegistry, RoleConfig};
+    use atelier_test_support::EnvGuard;
+    use serde_json::json;
+
+    let atelier_home = tempfile::tempdir().unwrap();
+    let _home = EnvGuard::set("ATELIER_HOME", atelier_home.path());
+    let mut role = RoleConfig::new("provider", "role-model").unwrap();
+    role.fast_mode = true;
+    role.payload.insert("role_only".into(), json!(true));
+    role.payload.insert("shared".into(), json!("role"));
+    let registry_path = atelier_home.path().join("providers.toml");
+    let mut registry = ProviderRegistry::load_or_create(&registry_path).unwrap();
+    registry.update_role(RoleId::Explore, role).unwrap();
+    registry.save().unwrap();
+
+    let mut entry = crate::agent::config::ModelEntry::fallback(
+        "role-model",
+        &crate::agent::config::EndpointsConfig::default(),
+    );
+    entry
+        .request_payload
+        .insert("provider_only".into(), json!("default"));
+    entry
+        .request_payload
+        .insert("shared".into(), json!("provider"));
+    let mut ctx = ctx_with_toggle(HashMap::new());
+    ctx.role_registry_path = Some(registry_path);
+    ctx.available_models
+        .insert("provider/role-model".into(), entry);
+
+    let (config, model_id) = resolve_fixed_runtime_role("explore", &ctx)
+        .unwrap()
+        .expect("configured fixed Role must resolve");
+
+    assert_eq!(model_id.0.as_ref(), "provider/role-model");
+    assert_eq!(config.request_payload["provider_only"], json!("default"));
+    assert_eq!(config.request_payload["role_only"], json!(true));
+    assert_eq!(config.request_payload["shared"], json!("role"));
+    assert_eq!(config.request_payload["fast_mode"], json!(true));
+}
 /// Invariant: resolving a subagent applies the parent session's
 /// `--tools`/`--disallowed-tools`/`--permission-mode` — driven through
 /// `resolve_agent_definition` so the spawn path can't skip them.
@@ -1070,9 +1180,10 @@ fn dummy_tracker(
     use crate::session::signals::SessionSignalsHandle;
     use std::sync::atomic::AtomicBool;
     let gateway = test_gateway();
-    let cwd = atelier_paths::AbsPathBuf::new(PathBuf::from("/tmp")).unwrap();
+    let test_root = std::env::current_dir().expect("absolute test cwd");
+    let cwd = atelier_paths::AbsPathBuf::new(test_root.clone()).unwrap();
     let fs: Arc<dyn atelier_workspace::file_system::AsyncFileSystem> = Arc::new(
-        atelier_workspace::file_system::LocalFs::new(PathBuf::from("/tmp")),
+        atelier_workspace::file_system::LocalFs::new(test_root),
     );
     let terminal: Arc<dyn crate::terminal::AsyncTerminalRunner> = Arc::new(
         crate::terminal::TerminalRunner::new(
@@ -1130,7 +1241,6 @@ fn dummy_tracker(
         permission_handle: atelier_workspace::permission::PermissionHandle::allow_all(),
         attribution_callback: None,
         agent_name: "atelier-build".to_string(),
-        managed_mcp_proxy_base_url: String::new(),
         session_default_agent_profile: None,
         allowed_subagent_types: None,
         hook_registry: None,

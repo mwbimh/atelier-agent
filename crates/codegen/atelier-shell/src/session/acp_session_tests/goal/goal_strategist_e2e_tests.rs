@@ -184,8 +184,15 @@ fn parse_details_path(prompt: &str) -> Option<String> {
 /// Pull the absolute `.../strategy.md` path out of the strategist prompt
 /// (walk left from `/strategy.md` to the path start).
 fn parse_strategy_path(prompt: &str) -> Option<String> {
-    let end_idx = prompt.find("/strategy.md")?;
-    let end = end_idx + "/strategy.md".len();
+    let (end_idx, suffix) = prompt
+        .find("/strategy.md")
+        .map(|index| (index, "/strategy.md"))
+        .or_else(|| {
+            prompt
+                .find("\\strategy.md")
+                .map(|index| (index, "\\strategy.md"))
+        })?;
+    let end = end_idx + suffix.len();
     let start = prompt[..end_idx]
         .rfind(|c: char| !c.is_ascii_graphic() || c == '`')
         .map(|i| i + 1)

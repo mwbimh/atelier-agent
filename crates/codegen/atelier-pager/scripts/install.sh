@@ -2,18 +2,21 @@
 #
 # Atelier CLI installer — https://atelier/cli/install.sh
 #
-# Auth: ATELIER_DEPLOYMENT_KEY (takes precedence) or ~/.atelier/auth.json from `atelier login`.
-# Env: ATELIER_CHANNEL (stable|alpha|enterprise, default: stable), ATELIER_BIN_DIR, ATELIER_PROXY_URL
+# Env: ATELIER_RELEASE_BASE_URL, ATELIER_CHANNEL (stable|alpha|enterprise,
+# default: stable), ATELIER_BIN_DIR
 #
 # Usage:
 #   curl -fsSL https://atelier/cli/install.sh | bash            # latest stable
 #   curl -fsSL https://atelier/cli/install.sh | bash -s 0.1.42  # specific version
-#   ATELIER_DEPLOYMENT_KEY=<key> bash <(curl -fsSL https://atelier/cli/install.sh)
+#   ATELIER_RELEASE_BASE_URL=https://releases.example/atelier bash install.sh
 #
 # Windows: run under Git for Windows / MSYS2 Bash (same curl | bash flow); WSL
 # uses the Linux binary.
 
 set -e
+
+: "${ATELIER_RELEASE_BASE_URL:?ATELIER_RELEASE_BASE_URL must point to the Atelier release directory}"
+BASE_URL="${ATELIER_RELEASE_BASE_URL%/}"
 
 TARGET="$1"
 
@@ -99,44 +102,6 @@ is_not_found() {
     [ "$code" = "404" ]
 }
 
-# JSON field extractor — extract a top-level string value using sed.
-json_get() {
-    local json="$1" field="$2"
-    # Extract value (handling \" inside strings), then unescape JSON sequences.
-    printf '%s' "$json" | sed -n -E 's/.*"'"$field"'"[[:space:]]*:[[:space:]]*"(([^"\\]|\\.)*)".*/\1/p' | head -1 \
-        | sed -e 's/\\"/"/g' -e 's/\\n/\'$'\n''/g' -e 's/\\t/\'$'\t''/g' -e 's/\\\\/\\/g'
-}
-
-# Read a token from ~/.atelier/auth.json for the given scope key.
-# Format: {"scope_url": {"key": "token"}, ...}
-read_atelier_token() {
-    local auth_file="$HOME/.atelier/auth.json"
-    local scope="$1"
-    [ -f "$auth_file" ] || return 1
-    # Flatten to one line then extract: find the scope, then the "key" value after it
-    tr -d '\n' < "$auth_file" | sed -n 's|.*"'"$scope"'"[[:space:]]*:[[:space:]]*{[^}]*"key"[[:space:]]*:[[:space:]]*"\([^"]*\)".*|\1|p' | head -1
-}
-
-# Resolve auth: ATELIER_DEPLOYMENT_KEY > OIDC token > legacy token
-OIDC_SCOPE="https://auth.x.ai::b1a00492-073a-47ea-816f-4c329264a828"
-LEGACY_SCOPE="https://accounts.atelier/sign-in"
-AUTH_SOURCE=""
-
-if [ -n "$ATELIER_DEPLOYMENT_KEY" ]; then
-    AUTH_SOURCE="deployment key"
-    echo "Auth: using deployment key." >&2
-else
-    OIDC_TOKEN=$(read_atelier_token "$OIDC_SCOPE" 2>/dev/null) || true
-    LEGACY_TOKEN=$(read_atelier_token "$LEGACY_SCOPE" 2>/dev/null) || true
-    if [ -n "$OIDC_TOKEN" ]; then
-        AUTH_SOURCE="auth.json (oidc)"
-        echo "Auth: using OIDC token from ~/.atelier/auth.json." >&2
-    elif [ -n "$LEGACY_TOKEN" ]; then
-        AUTH_SOURCE="auth.json (legacy)"
-        echo "Auth: using legacy token from ~/.atelier/auth.json." >&2
-    fi
-fi
-
 case "$(uname -s)" in
     Darwin) os="macos" ;;
     Linux)  os="linux" ;;
@@ -151,8 +116,6 @@ case "$(uname -m)" in
     *)                    echo "Unsupported architecture: $(uname -m)" >&2; exit 1 ;;
 esac
 
-BASE_URL_PRIMARY="https://atelier/cli"
-BASE_URL_FALLBACK="https://storage.googleapis.com/atelier-build-public-artifacts/cli"
 DOWNLOAD_DIR="$HOME/.atelier/downloads"
 BIN_DIR="${ATELIER_BIN_DIR:-$HOME/.atelier/bin}"
 mkdir -p "$DOWNLOAD_DIR" "$BIN_DIR"
@@ -160,17 +123,9 @@ mkdir -p "$DOWNLOAD_DIR" "$BIN_DIR"
 platform="${os}-${arch}"
 CHANNEL="${ATELIER_CHANNEL:-stable}"
 
-# Pick a working BASE_URL: try Cloudflare-fronted x.ai first, fall back to
-# direct GCS if it's unreachable. The probe doubles as the channel-pointer
-# fetch when no explicit TARGET was passed, so the happy path costs zero
-# extra HTTP requests.
-if [ -z "$TARGET" ]; then echo "Fetching latest ${CHANNEL} version..." >&2; fi
-probe_result=$(download_file "${BASE_URL_PRIMARY}/${CHANNEL}" 2>/dev/null) || true
-if [ -n "$probe_result" ]; then
-    BASE_URL="$BASE_URL_PRIMARY"
-else
-    echo "Note: ${BASE_URL_PRIMARY} unreachable, falling back to direct GCS." >&2
-    BASE_URL="$BASE_URL_FALLBACK"
+probe_result=""
+if [ -z "$TARGET" ]; then
+    echo "Fetching latest ${CHANNEL} version..." >&2
     probe_result=$(download_file "${BASE_URL}/${CHANNEL}" 2>/dev/null) || true
 fi
 
@@ -179,7 +134,7 @@ if [ -n "$TARGET" ]; then
 else
     version=$(printf '%s' "$probe_result" | tr -d '\r' | head -n1 | tr -d '[:space:]')
     if [ -z "$version" ]; then
-        echo "Error: failed to fetch latest version from ${BASE_URL_PRIMARY}/${CHANNEL} and ${BASE_URL_FALLBACK}/${CHANNEL}" >&2
+        echo "Error: failed to fetch latest version from ${BASE_URL}/${CHANNEL}" >&2
         exit 1
     fi
 fi
@@ -189,11 +144,7 @@ if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9._]+)?$ ]]; then
     exit 1
 fi
 
-if [ -n "$AUTH_SOURCE" ]; then
-    echo "Installing Atelier $version ($platform, $AUTH_SOURCE)..." >&2
-else
-    echo "Installing Atelier $version ($platform)..." >&2
-fi
+echo "Installing Atelier $version ($platform)..." >&2
 
 binary_path="$DOWNLOAD_DIR/atelier-$platform"
 artifact_base="${BASE_URL}/atelier-${version}-${platform}"
@@ -293,42 +244,6 @@ elif grep -q '^\[cli\]' "$CONFIG_FILE"; then
     ' "$CONFIG_FILE" > "$tmp" && mv "$tmp" "$CONFIG_FILE"
 else
     printf '\n[cli]\n%b\n' "$CLI_BLOCK" >> "$CONFIG_FILE"
-fi
-
-# Fetch managed_config.toml + requirements.toml from server (deployment key only).
-if [ -n "$ATELIER_DEPLOYMENT_KEY" ]; then
-    PROXY_URL="${ATELIER_PROXY_URL:-https://cli-chat-proxy.atelier.com/v1}"
-    echo "  Fetching deployment config..." >&2
-    DEPLOY_RESPONSE=""
-    AUTH_HEADER_FILE=$(mktemp 2>/dev/null) || AUTH_HEADER_FILE=""
-    if [ -n "$AUTH_HEADER_FILE" ]; then
-        chmod 600 "$AUTH_HEADER_FILE" 2>/dev/null || true
-        printf 'Authorization: Bearer %s\n' "$ATELIER_DEPLOYMENT_KEY" > "$AUTH_HEADER_FILE"
-        DEPLOY_RESPONSE=$(curl -sS -f \
-            -H "@${AUTH_HEADER_FILE}" \
-            "${PROXY_URL}/deployment/config" 2>/dev/null) || DEPLOY_RESPONSE=""
-        : > "$AUTH_HEADER_FILE" 2>/dev/null || true
-        rm -f "$AUTH_HEADER_FILE"
-    fi
-    if [ -z "$DEPLOY_RESPONSE" ]; then
-        echo "  Warning: failed to fetch deployment config from ${PROXY_URL}/deployment/config" >&2
-    fi
-    if [ -n "$DEPLOY_RESPONSE" ]; then
-        MANAGED_CONFIG=$(json_get "$DEPLOY_RESPONSE" "managed_config")
-        REQUIREMENTS=$(json_get "$DEPLOY_RESPONSE" "requirements")
-        if [ -n "$MANAGED_CONFIG" ] && [ "$MANAGED_CONFIG" != "null" ]; then
-            printf '%s\n' "$MANAGED_CONFIG" > "$HOME/.atelier/managed_config.toml"
-            echo "  Managed config applied." >&2
-        else
-            rm -f "$HOME/.atelier/managed_config.toml"
-        fi
-        if [ -n "$REQUIREMENTS" ] && [ "$REQUIREMENTS" != "null" ]; then
-            printf '%s\n' "$REQUIREMENTS" > "$HOME/.atelier/requirements.toml"
-            echo "  Requirements applied." >&2
-        else
-            rm -f "$HOME/.atelier/requirements.toml"
-        fi
-    fi
 fi
 
 if [ "$os" = "windows" ]; then

@@ -195,7 +195,10 @@ fn bounded_output(
     tools: RecoveryTools<'_>,
 ) -> String {
     if let Some(path) = saved_path {
-        let path_hint = format!(" Full content saved to: {}.", path.display());
+        let path_hint = format!(
+            " Full content saved to: {}.",
+            path.display().to_string().replace('\\', "/")
+        );
         let steer = web_fetch_steer(classification, tools, QueryTools::detect());
         if !steer.is_empty() {
             let full_hint = format!("{path_hint}{steer}");
@@ -360,7 +363,11 @@ mod tests {
         assert!(result.content.contains("showing first 100 of"));
         assert!(result.content.contains("ReadAsset"));
         let dump = tmp.path().join("web_fetch/1.md");
-        assert!(result.content.contains(dump.to_string_lossy().as_ref()));
+        assert!(
+            result
+                .content
+                .contains(&dump.to_string_lossy().replace('\\', "/"))
+        );
         assert_eq!(tokio::fs::read_to_string(dump).await.unwrap(), full);
     }
 
@@ -765,7 +772,11 @@ mod tests {
 
         let artifact = result.artifact_path.unwrap();
         assert!(result.content.len() <= 300);
-        assert!(result.content.contains(artifact.to_string_lossy().as_ref()));
+        assert!(
+            result
+                .content
+                .contains(&artifact.to_string_lossy().replace('\\', "/"))
+        );
         assert!(!result.content.contains(read_tool.as_str()));
         assert!(tokio::fs::try_exists(artifact).await.unwrap());
     }

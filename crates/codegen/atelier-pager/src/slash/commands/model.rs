@@ -76,8 +76,9 @@ impl SlashCommand for ModelCommand {
             return CommandResult::Action(Action::SetDefaultModel(id));
         }
 
-        // Trailing effort token + reasoning model → session-scoped switch
-        // (not persisted as default). Resolve via the shared gate so a rejected
+        // Trailing effort token + reasoning model → typed switch. Successful
+        // completion persists the resolved model and effort to `roles.main`.
+        // Resolve via the shared gate so a rejected
         // level (e.g. `none` on atelier-4.5) surfaces the effort error with the
         // model's offered ids — not "Unknown model: … none".
         if let Some((prefix, token)) = split_trailing_token(trimmed)
@@ -445,9 +446,8 @@ mod tests {
     /// The bare `/model <name>` form dispatches
     /// `Action::SetDefaultModel(<ModelId>)` instead of the legacy
     /// `Action::SwitchModel { effort: None }`. The dispatcher routes
-    /// the typed setter through both `Effect::SwitchModel`
-    /// (session-level mutation) AND `Effect::PersistSetting`
-    /// (next-session default).
+    /// the typed setter through `Effect::SwitchModel`; successful completion
+    /// persists the same selection to `roles.main` for new Sessions.
     ///
     /// The payload is the typed `acp::ModelId` (resolved at the slash
     /// boundary), not a String.

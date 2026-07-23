@@ -370,6 +370,65 @@ impl SessionActor {
                 self.send_slash_command_output(&text).await;
                 ok_end_turn(0, None)
             }
+            BuiltinAction::RuntimeStatus => {
+                let running = self
+                    .current_prompt_id
+                    .lock()
+                    .ok()
+                    .and_then(|prompt| prompt.clone());
+                let pending = self
+                    .pending_interactions
+                    .lock()
+                    .map(|pending| pending.len())
+                    .unwrap_or_default();
+                let state = if pending > 0 {
+                    "waiting_for_permission"
+                } else if running.is_some() {
+                    "streaming_response"
+                } else {
+                    "paused"
+                };
+                let text = format!(
+                    "Runtime status\nSession: {}\nState: {state}\nRequest: {}\nPending interactions: {pending}",
+                    self.session_info.id.0,
+                    running.as_deref().unwrap_or("none"),
+                );
+                self.send_slash_command_output(&text).await;
+                ok_end_turn(0, None)
+            }
+            BuiltinAction::RuntimeRequest { request_id } => {
+                let running = self
+                    .current_prompt_id
+                    .lock()
+                    .ok()
+                    .and_then(|prompt| prompt.clone());
+                let text = match request_id {
+                    Some(request_id) if running.as_deref() == Some(request_id.as_str()) => format!(
+                        "Runtime request\nRequest ID: {request_id}\nSession: {}\nState: running",
+                        self.session_info.id.0,
+                    ),
+                    Some(request_id) => format!(
+                        "Runtime request not found in the active session: {request_id}\nUse _atelier/request/get for retained request history."
+                    ),
+                    None => match running {
+                        Some(request_id) => format!(
+                            "Runtime requests\n{request_id} (active)\nUse /request <request-id> for details."
+                        ),
+                        None => "Runtime requests\nNo active request.\nUse _atelier/request/list for retained request history."
+                            .to_owned(),
+                    },
+                };
+                self.send_slash_command_output(&text).await;
+                ok_end_turn(0, None)
+            }
+            BuiltinAction::RuntimeTrace { after_event_id } => {
+                let cursor = after_event_id.unwrap_or_default();
+                self.send_slash_command_output(&format!(
+                    "Runtime trace\nNo session-local replay buffer is exposed on the shell fallback path (afterEventId={cursor}).\nUse _atelier/trace/get for retained trace events."
+                ))
+                .await;
+                ok_end_turn(0, None)
+            }
             BuiltinAction::RolesInfo => {
                 let text = match atelier_provider::ProviderRegistry::load_or_create(
                     atelier_config::atelier_home().join("providers.toml"),

@@ -29,7 +29,6 @@ pub mod managed_config;
 pub mod mcp_doctor;
 pub use atelier_models as models;
 pub mod plugin;
-pub mod relay;
 pub mod remote;
 pub mod runtime_control;
 pub mod sampling;

@@ -716,7 +716,8 @@ fn worktree_record_for_cwd(cwd: &str) -> Option<(WorktreeDb, WorktreeRecord)> {
         }
     };
     while path.starts_with(&worktrees_dir) && path != worktrees_dir {
-        if let Ok(Some(record)) = db.get(&path.to_string_lossy()) {
+        let lookup_path = path.to_string_lossy().replace('\\', "/");
+        if let Ok(Some(record)) = db.get(&lookup_path) {
             return Some((db, record));
         }
         path = path.parent()?;

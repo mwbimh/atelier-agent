@@ -48,6 +48,65 @@ fn model_keys_are_provider_scoped() {
 }
 
 #[test]
+fn absent_wire_api_defaults_to_chat_completions_for_every_provider_protocol() {
+    for (provider_id, protocol) in [
+        ("responses", ProviderProtocol::OpenAiResponses),
+        ("chat", ProviderProtocol::OpenAiChatCompletions),
+        ("messages", ProviderProtocol::AnthropicMessages),
+    ] {
+        let key = ModelKey::new(provider_id, "model").unwrap();
+        let mut registry = ProviderRegistry::in_memory();
+        let mut config = provider(provider_id);
+        config.protocol = protocol;
+        registry.upsert_provider(config).unwrap();
+        registry.upsert_model(model(key.clone())).unwrap();
+
+        let resolved = registry.resolve_wire_api(&key).unwrap();
+        let snapshot_resolved = registry.snapshot().resolve_wire_api(&key).unwrap();
+
+        assert_eq!(resolved.wire_api, WireApi::ChatCompletions);
+        assert_eq!(resolved.source, WireApiSource::DefaultChatCompletions);
+        assert_eq!(snapshot_resolved, resolved);
+    }
+}
+
+#[test]
+fn discovery_refresh_removes_only_missing_remote_models() {
+    let mut registry = ProviderRegistry::in_memory();
+    registry.upsert_provider(provider("proxy")).unwrap();
+    let remote = |id: &str| ModelDescriptor {
+        source: ModelSource::Remote,
+        ..model(ModelKey::new("proxy", id).unwrap())
+    };
+    registry
+        .merge_discovered_models("proxy", vec![remote("a"), remote("b")])
+        .unwrap();
+    registry
+        .upsert_model(model(ModelKey::new("proxy", "static").unwrap()))
+        .unwrap();
+
+    registry
+        .merge_discovered_models("proxy", vec![remote("a")])
+        .unwrap();
+
+    assert!(
+        registry
+            .model(&ModelKey::new("proxy", "a").unwrap())
+            .is_some()
+    );
+    assert!(
+        registry
+            .model(&ModelKey::new("proxy", "b").unwrap())
+            .is_none()
+    );
+    assert!(
+        registry
+            .model(&ModelKey::new("proxy", "static").unwrap())
+            .is_some()
+    );
+}
+
+#[test]
 fn unknown_model_capabilities_are_disabled() {
     let capabilities = ModelCapabilities::default();
     assert!(!capabilities.image_generation);

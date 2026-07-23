@@ -1,5 +1,4 @@
 use super::*;
-use atelier_shell::sampling::error::rate_limited_user_message;
 /// Stash a live stop/stop_failure batch under `stash_pid` for the turn marker
 /// to fold. `merge_same_name` merges a same-name repeat instead of standalone.
 pub(super) fn stash_live_stop_batch(
@@ -364,13 +363,6 @@ pub(super) fn handle_session_notification(notif: &acp::ExtNotification, app: &mu
             child_view.is_subagent_view = true;
             child_view.active_pane = crate::views::agent::ActivePane::Scrollback;
             child_view.set_sharing_enabled(agent.sharing_enabled);
-            let usage_visible = agent
-                .prompt
-                .slash_controller
-                .registry()
-                .get("usage")
-                .is_some();
-            child_view.set_usage_visible(usage_visible);
             let dashboard_visible = agent
                 .prompt
                 .slash_controller
@@ -399,12 +391,6 @@ pub(super) fn handle_session_notification(notif: &acp::ExtNotification, app: &mu
                 .get("voice")
                 .is_some();
             child_view.set_voice_mode_available(voice_visible);
-            let restricted = agent
-                .prompt
-                .slash_controller
-                .registry()
-                .restricted_commands();
-            child_view.set_restricted_commands(&restricted);
             agent
                 .subagent_views
                 .insert(child_session_id.clone(), Box::new(child_view));
@@ -1223,9 +1209,8 @@ pub(super) fn apply_retry_state(
     retry: &atelier_shell::extensions::notification::RetryState,
     session: &mut AgentSession,
     scrollback: &mut crate::scrollback::state::ScrollbackState,
-    is_api_key_auth: bool,
+    _is_api_key_auth: bool,
 ) {
-    let mut is_credit_limit = false;
     let mut is_reauth = false;
     use atelier_shell::extensions::notification::RetryState;
     match retry {
@@ -1260,24 +1245,12 @@ pub(super) fn apply_retry_state(
                     },
                 );
             }
-            is_credit_limit = super::super::dispatch::is_credit_limit_error(None, reason);
-            let is_free_usage =
-                *rate_limited && super::super::dispatch::is_free_usage_exhausted_error(reason);
-            if is_credit_limit {
-                session.credit_limit_blocked = true;
-            } else if is_free_usage {
-                session.free_usage_blocked = true;
-            } else if !*rate_limited && is_reauthable_failure(None, reason) {
+            if !*rate_limited && is_reauthable_failure(None, reason) {
                 is_reauth = true;
                 scrollback.push_block(RenderBlock::session_event(SessionEvent::ReAuthRequired));
             } else {
-                let error = if *rate_limited {
-                    rate_limited_user_message(is_api_key_auth).into()
-                } else {
-                    format!("failed after {attempts} retries: {reason}")
-                };
                 scrollback.push_block(RenderBlock::session_event(SessionEvent::RetryFailed {
-                    error,
+                    error: format!("failed after {attempts} retries: {reason}"),
                     error_type: None,
                 }));
             }
@@ -1290,10 +1263,7 @@ pub(super) fn apply_retry_state(
             if error_type == "encrypted_content_mismatch" {
                 session.model_incompatible = true;
             }
-            is_credit_limit = super::super::dispatch::is_credit_limit_error(None, message);
-            if is_credit_limit {
-                session.credit_limit_blocked = true;
-            } else if is_reauthable_failure(Some(error_type.as_str()), message) {
+            if is_reauthable_failure(Some(error_type.as_str()), message) {
                 is_reauth = true;
                 scrollback.push_block(RenderBlock::session_event(SessionEvent::ReAuthRequired));
             } else if error_type == "context_length" {
@@ -1309,16 +1279,7 @@ pub(super) fn apply_retry_state(
             }
         }
     }
-    if is_credit_limit {
-        atelier_telemetry::session_ctx::log_event(atelier_telemetry::events::CreditLimitHit {
-            model_id: session
-                .models
-                .current
-                .as_ref()
-                .map(|m| m.0.to_string())
-                .unwrap_or_default(),
-        });
-    } else if !is_reauth {
+    if !is_reauth {
         session.in_flight_prompt = None;
     }
 }

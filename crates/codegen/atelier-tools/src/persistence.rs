@@ -47,9 +47,23 @@ impl ResourcesPersistence {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         let writer_path = state_path.clone();
 
-        tokio::spawn(async move {
+        let writer = async move {
             Self::writer_loop(rx, writer_path).await;
-        });
+        };
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn(writer);
+        } else {
+            std::thread::Builder::new()
+                .name("atelier-resource-persistence".to_string())
+                .spawn(move || {
+                    let runtime = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .expect("failed to build resource persistence runtime");
+                    runtime.block_on(writer);
+                })
+                .expect("failed to spawn resource persistence thread");
+        }
 
         Self { state_path, tx }
     }

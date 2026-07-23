@@ -2270,7 +2270,7 @@ mod tests {
         assert!(waiter.await.unwrap(), "auth wired late should resolve Ok");
     }
     #[tokio::test]
-    async fn workspace_start_errors_when_cancelled_before_auth() {
+    async fn workspace_start_rejects_legacy_remote_start_before_auth() {
         let state = default_test_control_state(Path::new("/tmp/atelier-ws-auth-test.sock"));
         let cancel = CancellationToken::new();
         cancel.cancel();
@@ -2278,7 +2278,7 @@ mod tests {
             .await
             .unwrap_err();
         assert!(
-            err.message.contains("shutting down"),
+            err.message.contains("remote workspace start is disabled"),
             "unexpected error: {}",
             err.message
         );

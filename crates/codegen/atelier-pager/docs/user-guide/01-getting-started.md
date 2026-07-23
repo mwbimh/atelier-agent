@@ -1,6 +1,6 @@
 # Getting Started
 
-Atelier is a terminal-based AI coding assistant from SpaceXAI. It runs as a TUI (Terminal User Interface) that understands your codebase, executes shell commands, edits files, searches the web, and manages tasks.
+Atelier is a local-first terminal coding agent. It runs as a TUI (Terminal User Interface) that understands your codebase, executes shell commands, edits files, searches the web when requested, and manages tasks.
 
 You can use it interactively as a full-screen TUI, run it headlessly for scripting and CI/CD, or integrate it into editors via the Agent Client Protocol (ACP).
 
@@ -8,31 +8,25 @@ You can use it interactively as a full-screen TUI, run it headlessly for scripti
 
 ## Installation
 
-Install the latest stable release (macOS, Linux, or Windows via Git Bash):
+Install the packaged release with npm:
 
 ```bash
-curl -fsSL https://atelier/cli/install.sh | bash
+npm install -g @atelier/atelier
 ```
 
-Install a specific version:
+Or build the release binary from source:
 
 ```bash
-curl -fsSL https://atelier/cli/install.sh | bash -s 0.1.42
+cargo build -p atelier-pager-bin --bin atelier --release
 ```
 
-On **Windows (PowerShell)**, use the native PowerShell installer:
+The user-facing release contains one executable. On Windows this is
+`atelier.exe`; the Workspace Worker and command runner are embedded and start
+as hidden child-process modes of the same executable.
 
-```powershell
-irm https://atelier/cli/install.ps1 | iex
-```
-
-Install a specific version:
-
-```powershell
-$env:ATELIER_VERSION="0.1.42"; irm https://atelier/cli/install.ps1 | iex
-```
-
-The PowerShell installer automatically adds `%USERPROFILE%\.atelier\bin` to your User PATH. Alternatively, install via [Git for Windows](https://gitforwindows.org/) (Git Bash) or MSYS2 using the bash script above. WSL users get the Linux binary automatically.
+The npm package installs the executable under `~/.atelier/bin`
+(`%USERPROFILE%\.atelier\bin` on Windows). `ATELIER_HOME` controls Runtime
+state after launch; it does not relocate the npm-installed executable.
 
 Verify the installation:
 
@@ -40,10 +34,10 @@ Verify the installation:
 atelier --version
 ```
 
-Update to the latest version at any time:
+Update npm installations through npm:
 
 ```bash
-atelier update
+npm install -g @atelier/atelier@latest
 ```
 
 ---
@@ -56,22 +50,37 @@ Start Atelier by running:
 atelier
 ```
 
-On first launch, Atelier opens your browser to authenticate with atelier.invalid. After you sign in, Atelier stores your credentials in `~/.atelier/auth.json`, where they persist across sessions. Atelier refreshes your credentials automatically and prompts you to sign in again when they can no longer be renewed.
+Atelier does not include a hosted default model or product login. Configure a
+Provider and assign the required Roles before sending a prompt.
 
-If you prefer API key authentication (e.g., for CI/CD or environments without a browser), set the `XAI_API_KEY` environment variable instead:
+Set the Provider credential in the environment, then start the TUI:
 
 ```bash
-export XAI_API_KEY="xai-..."
+export ALLM_API_KEY="..."
 atelier
 ```
 
-See [Authentication](02-authentication.md) for the full set of auth options including OIDC, external auth providers, and device code flow.
+Inside Atelier, run either the interactive commands or their complete forms:
+
+```text
+/provider add allm chat https://api.example.com/v1 env:ALLM_API_KEY
+/provider test allm
+/provider refresh allm
+/model
+/roles
+```
+
+The current directory becomes the workspace. To use another directory, launch
+with `atelier --cwd <path>`.
+
+See [Provider Credentials](02-authentication.md) and
+[Providers, Models, and Roles](11-custom-models.md).
 
 ---
 
 ## Basic Interaction
 
-Once authenticated, Atelier presents a full-screen TUI with two main areas:
+Once configured, Atelier presents a full-screen TUI with two main areas:
 
 - **Scrollback** -- the conversation history showing your prompts, Atelier's responses, tool calls, file edits, and more.
 - **Prompt** -- the input area at the bottom where you type messages.
@@ -151,7 +160,9 @@ Tools can be extended with [MCP servers](05-configuration.md#mcp-servers) for in
 Type `/` in the prompt to access commands. These provide quick actions without writing a full prompt:
 
 ```
-/model atelier-build                 # Switch model
+/model allm/deepseek-v4-flash       # Switch model
+/provider                           # Manage Providers interactively
+/roles                              # Configure fixed Runtime Roles
 /compact                          # Compress conversation history
 /always-approve                   # Toggle always-approve mode
 /new                              # Start a new session
@@ -186,7 +197,7 @@ atelier --rules "Always use TypeScript. Prefer functional components."
 atelier --yolo
 
 # Use a specific model
-atelier -m atelier-build
+atelier -m allm/deepseek-v4-flash
 
 # Resume a previous session
 atelier --resume <session-id>
@@ -236,7 +247,7 @@ atelier -p "Review changes for bugs" --output-format json --yolo | jq -r '.text'
 Add per-project instructions by creating an `AGENTS.md` file in your repository. Atelier reads these files and injects their contents as a project-instructions message at the start of the conversation:
 
 ```
-~/.atelier/AGENTS.md           # Global rules (apply to all projects)
+$ATELIER_HOME/AGENTS.md        # Global rules (default: ~/.atelier/AGENTS.md)
 <repo-root>/AGENTS.md       # Repository-level rules
 <cwd>/AGENTS.md             # Directory-level rules (highest priority)
 ```
@@ -249,7 +260,8 @@ Deeper files take precedence. Atelier also reads `CLAUDE.md` files for compatibi
 
 | Document | What You Will Learn |
 |----------|-------------------|
-| [Authentication](02-authentication.md) | Browser login, API keys, OIDC, external auth, device code flow |
+| [Provider Credentials](02-authentication.md) | Provider CRUD, credentials, discovery, and local storage |
 | [Keyboard Shortcuts](03-keyboard-shortcuts.md) | Complete reference for all key bindings |
 | [Slash Commands](04-slash-commands.md) | All available `/` commands |
-| [Configuration](05-configuration.md) | config.toml, pager.toml, environment variables |
+| [Configuration](05-configuration.md) | `ATELIER_HOME`, config.toml, pager.toml, and environment variables |
+| [Providers, Models, and Roles](11-custom-models.md) | Model discovery, selection, Wire API, and eight fixed Roles |

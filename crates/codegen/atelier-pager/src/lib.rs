@@ -5,7 +5,6 @@
 pub mod acp;
 pub mod actions;
 pub mod app;
-pub mod client_identity;
 pub mod completions_cmd;
 mod config_toml_edit;
 pub mod diagnostics;
@@ -22,6 +21,7 @@ pub mod mcp_cmd;
 pub mod memory_cmd;
 pub mod memory_release;
 pub mod memory_trace;
+pub mod runtime_identity;
 // ── Minimal (scrollback-native) mode seam ────────────────────────────────────
 // The *only* minimal-specific surface in this (the "full pager") crate. Both
 // modules are grouped under `src/minimal/` so a full-pager contributor sees one
@@ -47,7 +47,6 @@ pub mod scrollback;
 pub mod search;
 pub mod sessions_cmd;
 pub mod settings;
-pub mod share_cmd;
 pub mod slash;
 pub mod startup;
 pub mod tips;
@@ -63,12 +62,23 @@ pub use atelier_pager_render::{
     appearance, clipboard, gboom, glyphs, host, link_opener, modal_window_state, prompt_images,
     render, syntax, terminal, theme, util,
 };
-pub mod trace_cmd;
+#[path = "voice/mod.rs"]
+pub mod dictation;
 pub mod tracing;
 pub mod unified_log;
 pub mod views;
-pub mod voice;
 pub mod worktree_cmd;
+
+#[path = "voice_stub.rs"]
+mod dictation_stub;
+pub use dictation as voice;
+pub use dictation_stub::{
+    AUDIO_SUPPORTED, STT_LANGUAGE_AUTO, STT_LANGUAGE_DEFAULT, STT_LANGUAGES, SharedVoiceAuth,
+    SttLanguage, VoiceAuthProvider, VoiceCommand, VoiceConfig, VoiceEvent,
+    canonicalize_stt_language, language_for_api, run_voice_pipeline, stt_language_by_code,
+};
+
+extern crate self as atelier_voice;
 
 #[cfg(test)]
 pub mod test_util;

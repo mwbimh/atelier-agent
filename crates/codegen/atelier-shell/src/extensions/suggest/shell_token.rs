@@ -71,7 +71,7 @@ impl TokenBuild {
         self.value.push(c);
         self.plain_mask
             .extend(std::iter::repeat_n(plain, c.len_utf8()));
-        if c == '/' {
+        if c == '/' || (cfg!(windows) && c == '\\') {
             self.dir_value_len = Some(self.value.len());
             self.dir_raw_end = i + 1;
         }
@@ -162,8 +162,21 @@ pub(super) fn parse_current_token(prefix: &str) -> CurrentToken {
             },
             QuoteStyle::None => match c {
                 '\\' => {
-                    ensure_token(&mut cur, i, &mut pending_redirect);
-                    escape = true;
+                    let next = prefix[i + c.len_utf8()..].chars().next();
+                    if cfg!(windows)
+                        && next.is_some_and(|next| {
+                            !next.is_whitespace()
+                                && !matches!(
+                                    next,
+                                    '"' | '\'' | '\\' | '$' | '`' | '&' | '|' | ';' | '<' | '>'
+                                )
+                        })
+                    {
+                        ensure_token(&mut cur, i, &mut pending_redirect).push(i, c, true);
+                    } else {
+                        ensure_token(&mut cur, i, &mut pending_redirect);
+                        escape = true;
+                    }
                 }
                 '\'' => {
                     ensure_token(&mut cur, i, &mut pending_redirect);
@@ -408,6 +421,15 @@ mod tests {
         assert_eq!(tok.value, "My Fi");
         assert_eq!(tok.start, 4);
         assert_eq!(tok.quote, QuoteStyle::None);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn parse_windows_backslash_path_preserves_directory_separators() {
+        let tok = parse_current_token(r"cat C:\Users\atelier");
+        assert_eq!(tok.value, r"C:\Users\atelier");
+        assert_eq!(tok.dir_value_len, Some(r"C:\Users\".len()));
+        assert_eq!(tok.dir_raw_end, "cat C:\\Users\\".len());
     }
 
     #[test]

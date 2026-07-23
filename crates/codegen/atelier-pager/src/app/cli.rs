@@ -17,31 +17,6 @@ pub enum Command {
     },
     /// Manage running leader processes
     Leader(LeaderMgmtArgs),
-    /// Sign out and clear cached credentials
-    Logout,
-    /// Sign in to Atelier
-    Login {
-        /// Ignored (kept for backwards compatibility). OAuth2 is now the only auth method.
-        #[arg(long, hide = true)]
-        legacy: bool,
-        /// Use Atelier OAuth via auth.x.ai.
-        #[arg(long = "oauth", alias = "oidc", conflicts_with_all = ["device_auth"])]
-        oauth: bool,
-        /// Use device-code authentication for headless/remote environments.
-        #[arg(
-            long = "device-auth",
-            visible_alias = "device-code",
-            conflicts_with_all = ["oauth"]
-        )]
-        device_auth: bool,
-        /// Authenticate for remote development environments (hidden).
-        ///
-        /// Field is always present so match arms stay feature-unification-safe
-        /// across Bazel/cargo graphs; clap only registers `--devbox` when
-        /// `devbox-login` is enabled (`arg(skip)` otherwise → always false).
-        #[arg(skip)]
-        devbox: bool,
-    },
     /// Manage MCP server configurations
     Mcp(crate::mcp_cmd::McpArgs),
     /// Manage plugins and marketplace sources
@@ -52,16 +27,6 @@ pub enum Command {
     Models,
     /// List, search, or restore sessions
     Sessions(crate::sessions_cmd::SessionsArgs),
-    /// Fetch and install managed configuration
-    Setup {
-        /// Print the fetched configuration as JSON instead of installing it;
-        /// writes nothing to ~/.atelier.
-        #[arg(long)]
-        json: bool,
-    },
-    /// Share a session and print the share URL
-    #[command(hide = true)]
-    Share(crate::share_cmd::ShareArgs),
     /// Run any command with local clipboard support (OSC 52 → system clipboard).
     #[cfg_attr(not(any(unix, windows)), command(hide = true))]
     #[command(long_about = "\
@@ -84,32 +49,6 @@ See ~/.atelier/README.md for more information.
     Wrap(WrapArgs),
     /// Export a session transcript as Markdown
     Export(crate::export_cmd::ExportArgs),
-    /// Export or upload session trace data
-    Trace(crate::trace_cmd::TraceArgs),
-    /// Check for updates or install a specific version
-    Update {
-        /// Check for updates without installing.
-        #[arg(long)]
-        check: bool,
-        /// Emit machine-readable JSON output (for --check).
-        #[arg(long)]
-        json: bool,
-        /// Force re-download and install even if already up to date.
-        #[arg(long)]
-        force_reinstall: bool,
-        /// Install a specific version (e.g. 0.1.150 or 0.1.151-alpha.2).
-        #[arg(long)]
-        version: Option<String>,
-        /// Switch to the alpha release channel (faster updates, may have bugs).
-        #[arg(long, conflicts_with_all = ["stable", "enterprise"])]
-        alpha: bool,
-        /// Switch to the stable release channel (default, weekly releases).
-        #[arg(long, conflicts_with_all = ["alpha", "enterprise"])]
-        stable: bool,
-        /// Switch to the enterprise release channel.
-        #[arg(long, conflicts_with_all = ["alpha", "stable"], hide = true)]
-        enterprise: bool,
-    },
     /// Print version information
     #[command(visible_alias = "v")]
     Version {
@@ -125,12 +64,6 @@ See ~/.atelier/README.md for more information.
     },
     /// Manage git worktrees
     Worktree(crate::worktree_cmd::WorktreeArgs),
-    /// Expose this workspace to the Computer Hub (via the leader).
-    ///
-    /// Disabled by default and enabled server-side per account; set
-    /// `ATELIER_WORKSPACE_COMMAND=1` to enable it locally for testing.
-    #[command(hide = true)]
-    Workspace(WorkspaceMgmtArgs),
     /// Open the Agent Dashboard view at startup.
     ///
     /// Centralised, agent-native overview of every session (top-level and
@@ -387,9 +320,6 @@ pub struct LeaderArgs {
     /// headless client appears.
     #[arg(long)]
     pub relay_on_demand: bool,
-    /// Disable periodic auto-update checks for the leader.
-    #[arg(long)]
-    pub no_auto_update: bool,
     /// All environment URL overrides (passed from follower process)
     #[command(flatten)]
     pub headless: HeadlessArgs,
@@ -399,12 +329,7 @@ pub struct LeaderArgs {
 /// Uses a `OnceLock` so the formatting happens once and the result lives
 /// for `'static` (required by clap's `ArgAction::Version`).
 fn version_with_channel() -> &'static str {
-    use std::sync::OnceLock;
-    static V: OnceLock<String> = OnceLock::new();
-    V.get_or_init(|| {
-        let label = atelier_update::channel_label();
-        atelier_version::display_version_with_commit(env!("VERSION_WITH_COMMIT"), label)
-    })
+    env!("VERSION_WITH_COMMIT")
 }
 #[derive(Debug, Clone, Parser)]
 #[command(
@@ -692,9 +617,6 @@ pub struct PagerArgs {
     /// Enable client-side file writes.
     #[arg(long = "fs-write", hide = true)]
     pub fs_write: bool,
-    /// Disable automatic updates for this session.
-    #[arg(long = "no-auto-update", hide = true)]
-    pub no_auto_update: bool,
     /// Enable the runtime turn-end TodoGate for this session.
     ///
     /// Session-scoped (not persisted). Highest precedence —
@@ -901,6 +823,29 @@ impl PagerArgs {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn vendor_control_plane_commands_are_not_exposed() {
+        use clap::CommandFactory;
+
+        let command = PagerArgs::command();
+        let registered: std::collections::HashSet<_> = command
+            .get_subcommands()
+            .map(|sub| sub.get_name())
+            .collect();
+        for command in ["login", "logout", "setup", "share", "trace", "update"] {
+            assert!(
+                !registered.contains(command),
+                "vendor command `{command}` must not be registered as a CLI subcommand"
+            );
+        }
+    }
+
+    #[test]
+    fn vendor_auto_update_flag_is_not_exposed() {
+        let err = PagerArgs::try_parse_from(["atelier", "--no-auto-update"]).unwrap_err();
+        assert_eq!(err.kind(), clap::error::ErrorKind::UnknownArgument);
+    }
     #[test]
     fn version_flag_exits_zero() {
         let err = PagerArgs::try_parse_from(["atelier", "--version"]).unwrap_err();
@@ -1158,12 +1103,6 @@ mod tests {
         assert_eq!(args.initial_prompt(), Some("spaced"));
         let blank = PagerArgs::try_parse_from(["atelier", "   "]).expect("blank prompt parses");
         assert_eq!(blank.initial_prompt(), None);
-    }
-    #[test]
-    fn subcommand_takes_precedence_over_positional_prompt() {
-        let args = PagerArgs::try_parse_from(["atelier", "logout"]).expect("subcommand parses");
-        assert!(matches!(args.command, Some(Command::Logout)));
-        assert!(args.prompt.is_none());
     }
     #[test]
     fn positional_prompt_conflicts_with_headless_single() {

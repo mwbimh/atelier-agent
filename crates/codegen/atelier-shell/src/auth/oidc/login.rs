@@ -11,7 +11,7 @@ use std::sync::Arc;
 use axum::{
     Router,
     extract::{Query, State},
-    http::{Method, StatusCode},
+    http::StatusCode,
     response::Html,
     routing::get,
 };
@@ -115,12 +115,8 @@ pub(crate) fn callback_page(title: &str, message: &str, is_success: bool) -> Str
 
 /// Build the axum router for the OIDC loopback callback server.
 fn build_callback_router(tx: tokio::sync::mpsc::Sender<CallbackResult>) -> Router {
-    let cors =
-        crate::auth::config::accounts_app_cors_layer(Method::GET).allow_private_network(true);
-
     Router::new()
         .route("/callback", get(handle_callback))
-        .layer(cors)
         .with_state(tx)
 }
 
@@ -426,11 +422,11 @@ pub async fn run_login_flow_with_config(
     } else {
         // No client UI — print to stderr.
         eprintln!();
-        let provider_label = if oidc.issuer == super::super::config::XAI_OAUTH2_ISSUER {
-            "Atelier".to_owned()
-        } else {
-            oidc.issuer.clone()
-        };
+        let provider_label = auth_manager
+            .atelier_com_config()
+            .auth_provider_label
+            .clone()
+            .unwrap_or_else(|| oidc.issuer.clone());
         eprintln!("Signing in with {}...", provider_label);
         eprintln!();
         if let Err(e) = webbrowser::open(&auth_url) {

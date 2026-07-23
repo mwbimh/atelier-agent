@@ -31,6 +31,7 @@ pub(crate) fn ctx_with_toggle_and_cmd_tx(
 }
 pub(crate) fn ctx_with_toggle(toggle: HashMap<String, bool>) -> SubagentSpawnContext {
     let (tx, _rx) = mpsc::unbounded_channel();
+    let test_root = std::env::current_dir().expect("absolute test cwd");
     SubagentSpawnContext {
         lsp: None,
         parent_max_turns: None,
@@ -69,21 +70,26 @@ pub(crate) fn ctx_with_toggle(toggle: HashMap<String, bool>) -> SubagentSpawnCon
         alpha_test_key: None,
         auth_method_id: acp::AuthMethodId::new("test"),
         model_id: acp::ModelId::new("test"),
+        role_registry_path: None,
         storage_mode: crate::config::StorageMode::Local,
         auth: None,
-        parent_cwd: PathBuf::from("/tmp"),
+        parent_cwd: test_root.clone(),
         parent_session_id: "test-parent".into(),
         yolo_mode: false,
         subagent_event_tx: tx,
         hunk_tracker_handle: xai_hunk_tracker::HunkTrackerHandle::noop(),
         hunk_tracking_enabled: false,
-        fs: Arc::new(atelier_workspace::file_system::LocalFs::new(PathBuf::from(
-            "/tmp",
-        ))),
+        fs: Arc::new(atelier_workspace::file_system::LocalFs::new(
+            test_root.clone(),
+        )),
         terminal: Arc::new(crate::terminal::TerminalRunner::new(
             Arc::new(test_gateway()),
             acp::SessionId::new("test"),
         )),
+        runtime_policy: Arc::new(parking_lot::RwLock::new(
+            atelier_hooks::PolicyEngine::default(),
+        )),
+        runtime_control: None,
         session_env: Arc::new(HashMap::new()),
         memory_config: None,
         web_search_sampling_config: None,
@@ -127,7 +133,7 @@ pub(crate) fn ctx_with_toggle(toggle: HashMap<String, bool>) -> SubagentSpawnCon
         image_description_model: crate::test_support::TEST_MODEL.to_owned(),
         workspace_ops: atelier_workspace::WorkspaceOps::for_test(),
         auth_manager: Arc::new(crate::auth::AuthManager::new(
-            std::path::Path::new("/tmp/nonexistent-atelier-test"),
+            &test_root.join("nonexistent-atelier-test"),
             crate::auth::AtelierComConfig::default(),
         )),
         attribution_callback: None,
@@ -136,7 +142,6 @@ pub(crate) fn ctx_with_toggle(toggle: HashMap<String, bool>) -> SubagentSpawnCon
         allowed_subagent_types: None,
         parent_mcp_configs: vec![],
         managed_mcp_state: crate::session::managed_mcp::ManagedMcpStateHandle::default(),
-        managed_mcp_proxy_base_url: String::new(),
         parent_mcp_pool: None,
         parent_tool_snapshot: None,
         parent_skills: None,

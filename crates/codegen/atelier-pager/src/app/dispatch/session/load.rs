@@ -198,14 +198,11 @@ fn dispatch_load_session_ungated(
     }
     agent_mut.apply_app_scoped_gates(
         app.sharing_enabled,
-        app.usage_visible,
         app.chat_mode,
         app.screen_mode,
         &app.active_announcements,
-        &app.tier_restricted_commands,
     );
     agent_mut.chat_kind = chat_kind || app.chat_mode;
-    agent_mut.apply_credit_balance(app.credit_balance.clone(), app.auto_topup.clone());
     agent_mut
         .prompt
         .slash_controller
@@ -841,14 +838,11 @@ pub(in crate::app::dispatch) fn dispatch_load_session_with_restore(
         agent.set_voice_mode_available(app.voice_mode_enabled);
         agent.apply_app_scoped_gates(
             app.sharing_enabled,
-            app.usage_visible,
             app.chat_mode,
             app.screen_mode,
             &app.active_announcements,
-            &app.tier_restricted_commands,
         );
         agent.chat_kind = app.chat_mode;
-        agent.apply_credit_balance(app.credit_balance.clone(), app.auto_topup.clone());
         agent
             .prompt
             .slash_controller
@@ -968,10 +962,6 @@ pub(in crate::app::dispatch) fn handle_session_loaded(
                 session_id: hydrate_sid.clone(),
             });
         }
-        effects.push(Effect::FetchBilling {
-            agent_id,
-            silent: true,
-        });
         if let Some((model_id, effort)) = deferred {
             agent.session.model_switch_pending = true;
             effects.push(Effect::SwitchModel {
@@ -1120,7 +1110,6 @@ pub(in crate::app::dispatch) fn handle_session_restored(
         supersede_open_reload_window(agent, agent_id, "SessionRestored");
         agent.bind_session_id(sid);
         agent.chat_kind = app.chat_mode;
-        agent.apply_credit_balance(app.credit_balance.clone(), app.auto_topup.clone());
         agent.scrollback.push_block(RenderBlock::system(format!(
             "Session restored. Loading {local_session_id}..."
         )));

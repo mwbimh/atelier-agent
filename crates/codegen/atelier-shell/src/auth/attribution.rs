@@ -1,33 +1,27 @@
 //! Shell-side 401-attribution helpers.
 //!
-//! Every 401 emit site in the shell joins the bearer the client
-//! actually sent on the wire (the `Authorization` value for OAI-compat
-//! backends, `x-api-key` for Anthropic Messages, the API proxy
-//! `Authorization` header for storage / feedback / registry /
-//! idle-resume) with the live
-//! [`AuthManager::current_api_key`] value. The two sinks are:
+//! Every 401 emit site records credential presence and, when the full
+//! in-memory values are available, whether the rejected credential differs
+//! from the current one. Credential bytes and fragments never enter either
+//! diagnostic sink.
 //!
 //! 1. [`atelier_telemetry::unified_log::warn`] for the local
-//!    `~/.atelier/logs/unified.jsonl` file (best-effort; ships to GCS
-//!    only on OIDC refresh failure via `auth/refresh.rs`).
-//! 2. A discrete `tracing::warn_span!("auth_401_attribution", ...)`
-//!    captured by the OTel layer in `util/otel_layer.rs` and shipped
-//!    via OTLP export to the configured telemetry backend
-//!    (queryable by span name `auth_401_attribution`).
+//!    `~/.atelier/logs/unified.jsonl` file.
+//! 2. A discrete local `tracing::warn_span!("auth_401_attribution", ...)`.
 //!
 //! # Schema (every emit)
 //!
 //! ```text
 //! {
-//!   "sent_key_prefix": "<last 12 chars of bearer the client sent, or """>,
-//!   "current_key_prefix": "<last 12 chars of AuthManager::current_api_key()>",
+//!   "credential_was_present": <bool>,
+//!   "current_credential_present": <bool>,
 //!   "mint_age_seconds": <i64; current time minus auth.create_time, or -1>,
 //!   "expires_at_seconds_from_now": <i64; auth.expires_at minus now,
 //!                                 or 0 when no current token>,
 //!   "consumer": "OaiCompatClient.<endpoint>" | "StorageClient.<op>"
 //!             | "FeedbackClient.<op>" | "SessionRegistryClient.<op>"
 //!             | "IdleResumeModelRefresh",
-//!   "is_stale_snapshot": <bool; true iff sent_prefix differs from a *known* current_prefix>
+//!   "is_stale_snapshot": <bool; true iff two full in-memory credentials differ>
 //! }
 //! ```
 //!
@@ -48,7 +42,7 @@ use atelier_sampler::{Auth401AttributionCallback, SamplingConsumer};
 use atelier_tools::{Auth401AttributionCallback as ToolAuth401AttributionCallback, ToolConsumer};
 use serde_json::Value as JsonValue;
 
-use crate::auth::{AuthManager, TOKEN_TTL, token_suffix};
+use crate::auth::{AuthManager, TOKEN_TTL};
 
 /// `cfg(test)`-only process-global counter that bumps on every
 /// successful `record_auth_401` invocation.
@@ -139,24 +133,13 @@ impl ShellAttribution {
 }
 
 impl Auth401AttributionCallback for ShellAttribution {
-    fn record_401(&self, consumer: SamplingConsumer, sent_bearer_prefix: Option<&str>) {
-        // The sampler crate has already truncated `sent_bearer_prefix`
-        // to `atelier_sampler::SENT_BEARER_PREFIX_LEN` characters
-        // before this trait method fires (see
-        // `SamplingClient::extract_sent_bearer`); the truncation
-        // inside `compute_attribution_payload` (via `token_suffix`)
-        // is therefore idempotent for this code path. The doubled
-        // truncation is intentional belt-and-suspenders -- the
-        // sampler-side scrub keeps the full bearer from ever leaving
-        // that crate, and the shell-side scrub keeps the local-log
-        // and OTel-span sinks aligned with the existing 12-char
-        // convention used by every other auth log line.
+    fn record_401(&self, consumer: SamplingConsumer, sent_credential_marker: Option<&str>) {
         record_consumer_401(
             self.auth_manager.as_ref(),
             self.session_id.as_deref(),
             ConsumerKind::OaiCompatClient,
             consumer.as_endpoint(),
-            sent_bearer_prefix,
+            sent_credential_marker,
         );
     }
 }
@@ -170,7 +153,7 @@ impl Auth401AttributionCallback for ShellAttribution {
 /// same [`ConsumerKind::VideoGen`] with different op strings so the
 /// gate query can break down video-gen 401s by phase.
 impl ToolAuth401AttributionCallback for ShellAttribution {
-    fn record_401(&self, consumer: ToolConsumer, sent_bearer_prefix: Option<&str>) {
+    fn record_401(&self, consumer: ToolConsumer, sent_credential_marker: Option<&str>) {
         let (kind, op) = match consumer {
             ToolConsumer::ImageGen => (ConsumerKind::ImageGen, ""),
             ToolConsumer::VideoGenStart => (ConsumerKind::VideoGen, "start"),
@@ -182,7 +165,7 @@ impl ToolAuth401AttributionCallback for ShellAttribution {
             self.session_id.as_deref(),
             kind,
             op,
-            sent_bearer_prefix,
+            sent_credential_marker,
         );
     }
 }
@@ -271,14 +254,9 @@ fn format_consumer(kind: ConsumerKind, op: &str) -> String {
 /// and `upload/storage_client.rs` each
 /// resolve their bearer and call this with the right `(kind, op)`.
 ///
-/// `sent_bearer` may be either a full bearer (passed by the
-/// non-sampler call sites listed above, which read directly from the
-/// client's `user_token` / `deployment_key` snapshot) or a 12-char
-/// prefix (passed by the sampler-side
-/// [`Auth401AttributionCallback`] boundary; the sampler scrubs to a
-/// prefix before crossing the crate boundary). The truncation inside
-/// [`record_auth_401`] / `compute_attribution_payload` is idempotent
-/// for the prefix case.
+/// The optional marker is used only to record credential presence. When a
+/// caller provides the complete in-memory credential, staleness can also be
+/// computed without copying any credential material into diagnostics.
 pub(crate) fn record_consumer_401(
     auth_manager: &AuthManager,
     session_id: Option<&str>,
@@ -290,20 +268,7 @@ pub(crate) fn record_consumer_401(
     record_auth_401(auth_manager, session_id, &consumer, sent_bearer);
 }
 
-/// Emit a single `auth 401 attribution` event to both sinks (local
-/// unified log file + OTel span for OTLP export).
-///
-/// Schema:
-/// `(sent_key_prefix, current_key_prefix, mint_age_seconds,
-///   expires_at_seconds_from_now, consumer, is_stale_snapshot)`.
-///
-/// `sent_bearer` is the bearer that was sent on the wire (the
-/// `Authorization` value with `"Bearer "` already stripped, or the
-/// `x-api-key` value for Anthropic Messages backends), OR a 12-char
-/// prefix of same -- the sampler boundary always passes a prefix
-/// here, the non-sampler shell sites pass full bearers and rely on
-/// the [`compute_attribution_payload`] truncation. `None` is fine;
-/// the prefix becomes the empty string.
+/// Emit a single local auth 401 diagnostic event.
 ///
 /// `consumer` should be one of the canonical strings used by the
 /// per-client wrappers, e.g. `"OaiCompatClient.chat_completions_stream"`,
@@ -318,46 +283,18 @@ pub(crate) fn record_auth_401(
 ) {
     let payload = compute_attribution_payload(auth_manager, consumer, sent_bearer);
 
-    // Sink 1 -- local file (~/.atelier/logs/unified.jsonl) + scrubbed
-    // tracing event. The local file is reliable but only ships to GCS
-    // on OIDC refresh failure (auth/refresh.rs::spawn_diagnostic_upload),
-    // so by itself it does not give visibility into the steady-state
-    // 401 population. Sink 2 below provides that.
     atelier_telemetry::unified_log::warn("auth 401 attribution", session_id, Some(payload.clone()));
 
-    // Sink 2 -- discrete OTel span exported via OTLP
-    // (util/otel_layer.rs). Auth 401 attribution schema fields below
-    // become OTel span attributes under `attributes.custom.<name>`
-    // per the tracing-opentelemetry bridge; query by span name
-    // `auth_401_attribution` in the configured telemetry backend.
-    //
-    // Wrapping in a `warn_span!` (vs. plain `tracing::warn!`) ensures
-    // emission even when no parent span is active. The OTel layer
-    // attaches plain events to the currently-entered span only, so a
-    // `tracing::warn!` from a `spawn_blocking` closure (idle-resume
-    // model refresh) or a background sync task is silently dropped.
-    // A `warn_span!` itself is always emitted by the layer's
-    // `on_new_span`/`on_close` hooks regardless of parent context.
-    //
-    // The span carries no body and is dropped immediately at the end
-    // of this function, so its `duration` is a few microseconds and
-    // it is logically a one-shot record (not a wrapping context for
-    // any other work).
     let _attribution_span = tracing::warn_span!(
         "auth_401_attribution",
-        // String fields. tracing flattens Option<&str> via Display, so
-        // we pre-collapse `None` to "" for both prefix fields and for
-        // session_id; downstream queries should treat "" as absent.
-        sent_key_prefix = payload["sent_key_prefix"].as_str().unwrap_or(""),
-        current_key_prefix = payload["current_key_prefix"].as_str().unwrap_or(""),
         consumer = consumer,
         session_id = session_id.unwrap_or(""),
-        // Numeric fields. The sentinel values from
-        // `compute_attribution_payload` (-1, 0) carry through
-        // unchanged.
         mint_age_seconds = payload["mint_age_seconds"].as_i64().unwrap_or(-1),
         expires_at_seconds_from_now = payload["expires_at_seconds_from_now"].as_i64().unwrap_or(0),
-        // Boolean -- the load-bearing field for stale-vs-live splits.
+        credential_was_present = payload["credential_was_present"].as_bool().unwrap_or(false),
+        current_credential_present = payload["current_credential_present"]
+            .as_bool()
+            .unwrap_or(false),
         is_stale_snapshot = payload["is_stale_snapshot"].as_bool().unwrap_or(false),
     )
     .entered();
@@ -371,10 +308,8 @@ pub(crate) fn record_auth_401(
 /// directly without reaching into `unified_log`'s file writer or the
 /// tracing layer.
 ///
-/// This function performs **exactly one** read-side acquisition of
-/// [`AuthManager`]'s internal `RwLock` -- it calls
-/// [`AuthManager::current`] once and derives both `current_key_prefix`
-/// and the mint/expiry fields from the resulting `AtelierAuth`.
+/// This function performs exactly one read-side acquisition of
+/// [`AuthManager`]'s internal `RwLock`.
 ///
 /// `is_stale_snapshot` is `true` only when the live `current()` token
 /// differs from the bearer the client sent. When `current()` returns
@@ -387,27 +322,13 @@ fn compute_attribution_payload(
 ) -> JsonValue {
     let now = chrono::Utc::now();
 
-    // Last-12-char suffix of the bearer the wire actually carried
-    // (see [`token_suffix`]: JWT headers share a common base64 prefix).
-    // `""` when the request had no bearer at all (distinct case from
-    // "had a bearer that turned out to be stale" -- the gate-criteria
-    // query can break down on this).
-    let sent_prefix = sent_bearer.map(token_suffix).unwrap_or("");
-
-    // Single read-lock acquisition: pull the live `AtelierAuth` (or
-    // `None`) once and derive every other field from it.
     let current_auth = auth_manager.current();
-    let current_prefix_owned: Option<String> = current_auth
-        .as_ref()
-        .map(|a| token_suffix(&a.key).to_string());
-
-    // None current means "no evidence of staleness," not stale --
-    // the downstream stale-vs-live split should only count
-    // true-positive staleness (sent bearer differs from a known live
-    // bearer).
-    let is_stale_snapshot = match current_prefix_owned.as_deref() {
-        Some(c) => sent_prefix != c,
-        None => false,
+    // Cross-crate callbacks provide a 12-character scrubbed fragment. Shell
+    // call sites can provide the complete in-memory credential. Only compare
+    // values longer than the scrubbed boundary; fragments are presence-only.
+    let is_stale_snapshot = match (sent_bearer, current_auth.as_ref()) {
+        (Some(sent), Some(current)) if sent.len() > 12 => sent != current.key,
+        _ => false,
     };
 
     // Mint-age + expiry come from the same `current_auth` we already
@@ -420,7 +341,7 @@ fn compute_attribution_payload(
     // (`expires_at` if Some else `create_time + TOKEN_TTL`) is good
     // enough for diagnostic metadata; the External-ttl branch is
     // worth wiring once a real consumer needs it.
-    let (mint_age_seconds, expires_at_seconds_from_now) = match current_auth {
+    let (mint_age_seconds, expires_at_seconds_from_now) = match current_auth.as_ref() {
         Some(auth) => {
             let mint_age = now.signed_duration_since(auth.create_time).num_seconds();
             let expiry = auth.expires_at.unwrap_or(auth.create_time + TOKEN_TTL);
@@ -430,8 +351,8 @@ fn compute_attribution_payload(
     };
 
     serde_json::json!({
-        "sent_key_prefix": sent_prefix,
-        "current_key_prefix": current_prefix_owned,
+        "credential_was_present": sent_bearer.is_some(),
+        "current_credential_present": current_auth.is_some(),
         "mint_age_seconds": mint_age_seconds,
         "expires_at_seconds_from_now": expires_at_seconds_from_now,
         "consumer": consumer,
@@ -473,9 +394,35 @@ mod tests {
             .unwrap_or_else(|| panic!("payload missing field {key:?}: {payload:?}"))
     }
 
+    #[test]
+    fn attribution_payload_never_contains_credential_material_or_fragment_fields() {
+        let (_dir, am) = empty_auth_manager();
+        let current = "current-access-token-canary-TAIL12345678";
+        let sent = "sent-access-token-canary-TAIL87654321";
+        am.hot_swap(fresh_auth(current));
+
+        let payload = compute_attribution_payload(&am, "test-consumer", Some(sent));
+        let serialized = serde_json::to_string(&payload).unwrap();
+
+        for forbidden in [current, sent, "TAIL12345678", "TAIL87654321"] {
+            assert!(
+                !serialized.contains(forbidden),
+                "credential material leaked through attribution payload: {serialized}"
+            );
+        }
+        for key in payload.as_object().unwrap().keys() {
+            assert!(
+                !key.contains("prefix") && !key.contains("suffix"),
+                "credential-fragment field remains: {key}"
+            );
+        }
+        assert_eq!(payload["credential_was_present"], true);
+        assert_eq!(payload["is_stale_snapshot"], true);
+    }
+
     /// Live token sent + 401 with matching `current()` ->
     /// `is_stale_snapshot` must be `false`. Also assert the auxiliary
-    /// fields are set sensibly (prefix, mint age, expiry).
+    /// fields are set sensibly (presence, mint age, expiry).
     #[test]
     fn live_token_sent_is_not_stale() {
         let (_dir, am) = empty_auth_manager();
@@ -486,12 +433,8 @@ mod tests {
 
         assert_eq!(payload_field(&payload, "is_stale_snapshot"), false);
         assert_eq!(payload_field(&payload, "consumer"), "Test.live");
-        // Last 12 chars (tail prefix for JWT-friendly diagnostics).
-        assert_eq!(payload_field(&payload, "sent_key_prefix"), "567890abcdef");
-        assert_eq!(
-            payload_field(&payload, "current_key_prefix"),
-            "567890abcdef"
-        );
+        assert_eq!(payload_field(&payload, "credential_was_present"), true);
+        assert_eq!(payload_field(&payload, "current_credential_present"), true);
         // mint_age_seconds: should be small and non-negative for a
         // freshly-created auth.
         let mint = payload_field(&payload, "mint_age_seconds")
@@ -524,19 +467,15 @@ mod tests {
         let payload = compute_attribution_payload(&am, "Test.stale", Some(stale));
 
         assert_eq!(payload_field(&payload, "is_stale_snapshot"), true);
-        assert_eq!(payload_field(&payload, "sent_key_prefix"), "n-1234567890");
-        assert_eq!(
-            payload_field(&payload, "current_key_prefix"),
-            "en-different"
-        );
+        assert_eq!(payload_field(&payload, "credential_was_present"), true);
+        assert_eq!(payload_field(&payload, "current_credential_present"), true);
         assert_eq!(payload_field(&payload, "consumer"), "Test.stale");
     }
 
     /// Live token sent + 401 with `current() == None` ->
     /// `is_stale_snapshot` must be `false` (no evidence of staleness).
     /// Sentinel `mint_age_seconds = -1`,
-    /// `expires_at_seconds_from_now = 0`. `current_key_prefix` is JSON
-    /// `null`.
+    /// `expires_at_seconds_from_now = 0`.
     #[test]
     fn absent_current_is_not_stale() {
         let (_dir, am) = empty_auth_manager();
@@ -545,8 +484,8 @@ mod tests {
         let payload = compute_attribution_payload(&am, "Test.absent", Some("any-token"));
 
         assert_eq!(payload_field(&payload, "is_stale_snapshot"), false);
-        assert_eq!(payload_field(&payload, "sent_key_prefix"), "any-token");
-        assert!(payload_field(&payload, "current_key_prefix").is_null());
+        assert_eq!(payload_field(&payload, "credential_was_present"), true);
+        assert_eq!(payload_field(&payload, "current_credential_present"), false);
         assert_eq!(payload_field(&payload, "mint_age_seconds"), -1);
         assert_eq!(payload_field(&payload, "expires_at_seconds_from_now"), 0);
     }
@@ -769,14 +708,10 @@ mod tests {
     }
 
     /// `record_auth_401` emits a discrete `warn_span!` with name
-    /// `"auth_401_attribution"` and the attribution fields as span
-    /// attributes. This is the span the tracing-opentelemetry bridge
-    /// ships via OTLP export to the configured telemetry backend.
-    /// Verifies field names, types, and values match the schema
-    /// documented at the top of this module.
+    /// `"auth_401_attribution"` and credential-free attribution fields.
     #[test]
     #[serial_test::serial(attribution_emit_count)]
-    fn record_auth_401_emits_otel_span_with_attribution_fields() {
+    fn record_auth_401_emits_local_span_with_attribution_fields() {
         use tracing_subscriber::layer::SubscriberExt;
         use tracing_subscriber::util::SubscriberInitExt;
 
@@ -801,23 +736,7 @@ mod tests {
             .find(|s| s.name == "auth_401_attribution")
             .expect("expected one auth_401_attribution span; got: {spans:?}");
 
-        // String fields: prefixes truncated to 12 chars, consumer +
-        // session_id passed verbatim.
-        assert_eq!(
-            attribution
-                .fields_str
-                .get("sent_key_prefix")
-                .map(String::as_str),
-            Some("pshot-aaaaaa"),
-            "sent_key_prefix should be last 12 chars",
-        );
-        assert_eq!(
-            attribution
-                .fields_str
-                .get("current_key_prefix")
-                .map(String::as_str),
-            Some("n-1234567890"),
-        );
+        // String fields contain only non-secret routing information.
         assert_eq!(
             attribution.fields_str.get("consumer").map(String::as_str),
             Some("OaiCompatClient.chat_completions_stream"),
@@ -831,6 +750,14 @@ mod tests {
         // `true` because `sent != current`.
         assert_eq!(
             attribution.fields_bool.get("is_stale_snapshot"),
+            Some(&true),
+        );
+        assert_eq!(
+            attribution.fields_bool.get("credential_was_present"),
+            Some(&true),
+        );
+        assert_eq!(
+            attribution.fields_bool.get("current_credential_present"),
             Some(&true),
         );
 

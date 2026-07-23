@@ -963,9 +963,7 @@ dependencies = [
  "atelier-telemetry",
  "atelier-test-support",
  "atelier-tools",
- "atelier-update",
  "atelier-version",
- "atelier-voice",
  "atelier-workspace",
  "backon",
  "base64",
@@ -1043,7 +1041,6 @@ dependencies = [
  "atelier-sandbox",
  "atelier-shell",
  "atelier-telemetry",
- "atelier-update",
  "atelier-version",
  "atelier-windows-sandbox",
  "atelier-workspace",
@@ -1191,6 +1188,17 @@ dependencies = [
  "tracing",
  "xai-hooks-plugins-types",
  "xai-tty-utils",
+]
+
+[[package]]
+name = "atelier-protocol"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "serde",
+ "serde_json",
+ "tokio",
+ "xai-acp-lib",
 ]
 
 [[package]]
@@ -1656,21 +1664,6 @@ dependencies = [
  "tonic-prost",
  "xai-proto-build",
  "xai-tool-protocol",
-]
-
-[[package]]
-name = "atelier-update"
-version = "0.1.220-alpha.4"
-dependencies = [
- "anyhow",
- "atelier-shell",
- "atelier-version",
- "semver",
- "serde",
- "serde_json",
- "time",
- "tokio",
- "tracing",
 ]
 
 [[package]]

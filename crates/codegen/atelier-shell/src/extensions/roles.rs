@@ -9,6 +9,7 @@ use serde::Deserialize;
 pub const ROLE_LIST: &str = "_atelier/role/list";
 pub const ROLE_GET: &str = "_atelier/role/get";
 pub const ROLE_UPDATE: &str = "_atelier/role/update";
+pub const ROLE_UPDATE_PAYLOAD: &str = "_atelier/role/update_payload";
 pub const ROLE_TEST: &str = "_atelier/role/test";
 
 #[derive(Debug, Deserialize)]
@@ -22,6 +23,15 @@ struct RoleParams {
 struct RoleUpdateParams {
     role_id: RoleId,
     config: RoleConfig,
+    #[serde(default)]
+    preserve_payload: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RolePayloadParams {
+    role_id: RoleId,
+    payload: serde_json::Map<String, serde_json::Value>,
 }
 
 fn registry() -> Result<ProviderRegistry, acp::Error> {
@@ -34,6 +44,7 @@ pub async fn handle(_agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
         ROLE_LIST | "atelier/role/list" => list(),
         ROLE_GET | "atelier/role/get" => get(args),
         ROLE_UPDATE | "atelier/role/update" => update(args),
+        ROLE_UPDATE_PAYLOAD | "atelier/role/update_payload" => update_payload(args),
         ROLE_TEST | "atelier/role/test" => test(args),
         _ => Err(acp::Error::method_not_found()),
     }
@@ -44,12 +55,7 @@ fn list() -> ExtResult {
     let roles: Vec<_> = registry
         .roles()
         .iter()
-        .map(|(role, config)| {
-            serde_json::json!({
-                "roleId": role,
-                "config": redacted_role_config(config),
-            })
-        })
+        .map(|(role, config)| role_list_entry(role, config))
         .collect();
     to_raw_response(&serde_json::json!({ "roles": roles }))
 }
@@ -57,9 +63,7 @@ fn list() -> ExtResult {
 fn get(args: &acp::ExtRequest) -> ExtResult {
     let params: RoleParams = parse_params(args)?;
     let registry = registry()?;
-    let config = registry.role(params.role_id).ok_or_else(|| {
-        acp::Error::invalid_params().data(format!("role is not configured: {}", params.role_id))
-    })?;
+    let config = configured_role(&registry, params.role_id)?;
     to_raw_response(&serde_json::json!({
         "roleId": params.role_id,
         "config": redacted_role_config(config),
@@ -67,10 +71,31 @@ fn get(args: &acp::ExtRequest) -> ExtResult {
 }
 
 fn update(args: &acp::ExtRequest) -> ExtResult {
-    let params: RoleUpdateParams = parse_params(args)?;
+    let mut params: RoleUpdateParams = parse_params(args)?;
     let mut registry = registry()?;
+    if params.preserve_payload
+        && let Some(existing) = registry.role(params.role_id)
+    {
+        params.config.payload = existing.payload.clone();
+    }
     registry
         .update_role(params.role_id, params.config)
+        .map_err(role_error)?;
+    registry
+        .save()
+        .map_err(|error| acp::Error::internal_error().data(error.to_string()))?;
+    get_from_registry(&registry, params.role_id)
+}
+
+fn update_payload(args: &acp::ExtRequest) -> ExtResult {
+    let params: RolePayloadParams = parse_params(args)?;
+    let mut registry = registry()?;
+    let mut config = registry.role(params.role_id).cloned().ok_or_else(|| {
+        acp::Error::invalid_params().data(format!("role is not configured: {}", params.role_id))
+    })?;
+    config.payload = params.payload;
+    registry
+        .update_role(params.role_id, config)
         .map_err(role_error)?;
     registry
         .save()
@@ -81,15 +106,22 @@ fn update(args: &acp::ExtRequest) -> ExtResult {
 fn test(args: &acp::ExtRequest) -> ExtResult {
     let params: RoleParams = parse_params(args)?;
     let registry = registry()?;
-    let Some(config) = registry.role(params.role_id) else {
-        return to_raw_response(&serde_json::json!({
-            "roleId": params.role_id,
+    to_raw_response(&role_test_response(&registry, params.role_id))
+}
+
+fn role_test_response(registry: &ProviderRegistry, role_id: RoleId) -> serde_json::Value {
+    let Some(config) = registry
+        .role(role_id)
+        .filter(|config| config.is_configured())
+    else {
+        return serde_json::json!({
+            "roleId": role_id,
             "configured": false,
             "providerExists": false,
             "modelExists": false,
             "credentialAvailable": false,
             "message": "role is not configured",
-        }));
+        });
     };
     let provider_exists = registry.provider(&config.provider).is_some();
     let model_exists = ModelKey::new(&config.provider, &config.model)
@@ -108,14 +140,34 @@ fn test(args: &acp::ExtRequest) -> ExtResult {
     } else {
         "role configuration is ready"
     };
-    to_raw_response(&serde_json::json!({
-        "roleId": params.role_id,
+    serde_json::json!({
+        "roleId": role_id,
         "configured": true,
         "providerExists": provider_exists,
         "modelExists": model_exists,
         "credentialAvailable": credential_available,
         "message": message,
-    }))
+    })
+}
+
+fn configured_role(
+    registry: &ProviderRegistry,
+    role_id: RoleId,
+) -> Result<&RoleConfig, acp::Error> {
+    registry
+        .role(role_id)
+        .filter(|config| config.is_configured())
+        .ok_or_else(|| {
+            acp::Error::invalid_params().data(format!("role is not configured: {role_id}"))
+        })
+}
+
+fn role_list_entry(role_id: RoleId, config: &RoleConfig) -> serde_json::Value {
+    serde_json::json!({
+        "roleId": role_id,
+        "configured": config.is_configured(),
+        "config": redacted_role_config(config),
+    })
 }
 
 fn get_from_registry(registry: &ProviderRegistry, role_id: RoleId) -> ExtResult {
@@ -138,8 +190,9 @@ fn redacted_role_config(config: &RoleConfig) -> serde_json::Value {
 
 #[cfg(test)]
 mod tests {
-    use super::redacted_role_config;
-    use atelier_provider::RoleConfig;
+    use super::{configured_role, redacted_role_config, role_list_entry, role_test_response};
+    use agent_client_protocol as acp;
+    use atelier_provider::{ProviderRegistry, RoleConfig, RoleId};
     use serde_json::json;
 
     #[test]
@@ -157,6 +210,41 @@ mod tests {
         assert_eq!(value["payload"]["temperature"], 0.2);
         assert_eq!(value["payload"]["api_key"], "[REDACTED]");
         assert_eq!(value["payload"]["nested"]["authorization"], "[REDACTED]");
+    }
+
+    #[test]
+    fn role_list_reports_default_placeholder_as_unconfigured() {
+        let registry = ProviderRegistry::in_memory();
+        let config = registry.role(RoleId::Main).unwrap();
+
+        let value = role_list_entry(RoleId::Main, config);
+
+        assert_eq!(value["roleId"], "main");
+        assert_eq!(value["configured"], false);
+    }
+
+    #[test]
+    fn role_get_rejects_default_placeholder_as_unconfigured() {
+        let registry = ProviderRegistry::in_memory();
+
+        let error = configured_role(&registry, RoleId::Main).unwrap_err();
+
+        assert_eq!(error.code, acp::ErrorCode::InvalidParams);
+        assert_eq!(error.data, Some(json!("role is not configured: main")));
+    }
+
+    #[test]
+    fn role_test_reports_default_placeholder_as_unconfigured() {
+        let registry = ProviderRegistry::in_memory();
+
+        let value = role_test_response(&registry, RoleId::Main);
+
+        assert_eq!(value["roleId"], "main");
+        assert_eq!(value["configured"], false);
+        assert_eq!(value["providerExists"], false);
+        assert_eq!(value["modelExists"], false);
+        assert_eq!(value["credentialAvailable"], false);
+        assert_eq!(value["message"], "role is not configured");
     }
 }
 

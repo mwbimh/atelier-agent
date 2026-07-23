@@ -215,14 +215,14 @@ impl LeaderStdioClient {
         .unwrap_or_else(|_| panic!("initialize timed out\nstderr:\n{}", self.stderr_text()))
         .expect("initialize failed");
 
-        let api_key_method = init
+        let provider_method = init
             .auth_methods
             .iter()
-            .find(|m| &*m.id().0 == "xai.api_key")
-            .expect("xai.api_key auth method");
+            .find(|m| &*m.id().0 == "atelier.provider")
+            .expect("atelier.provider auth method");
         self.conn
             .authenticate(
-                acp::AuthenticateRequest::new(api_key_method.id().clone())
+                acp::AuthenticateRequest::new(provider_method.id().clone())
                     .meta(serde_json::json!({"headless": true}).as_object().cloned()),
             )
             .await

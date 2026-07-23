@@ -128,7 +128,7 @@ impl SlashCommand for ForkCommand {
     }
 
     fn run(&self, ctx: &mut CommandExecCtx, args: &str) -> CommandResult {
-        if args.split_whitespace().any(|value| value == "--append") {
+        if contains_unquoted_token(args, "--append") {
             let Some(session_id) = ctx.session_id else {
                 return CommandResult::Error("No active session".to_owned());
             };
@@ -153,6 +153,38 @@ impl SlashCommand for ForkCommand {
             Err(msg) => CommandResult::Error(msg),
         }
     }
+}
+
+fn contains_unquoted_token(input: &str, expected: &str) -> bool {
+    let mut current = String::new();
+    let mut quote = None;
+    let mut contains_quoted_content = false;
+    let mut characters = input.chars().peekable();
+
+    while let Some(character) = characters.next() {
+        match quote {
+            Some(delimiter) if character == delimiter => quote = None,
+            Some(delimiter) if character == '\\' && characters.peek() == Some(&delimiter) => {
+                current.push(delimiter);
+                characters.next();
+            }
+            Some(_) => current.push(character),
+            None if character == '\'' || character == '"' => {
+                quote = Some(character);
+                contains_quoted_content = true;
+            }
+            None if character.is_whitespace() => {
+                if current == expected && !contains_quoted_content {
+                    return true;
+                }
+                current.clear();
+                contains_quoted_content = false;
+            }
+            None => current.push(character),
+        }
+    }
+
+    current == expected && !contains_quoted_content
 }
 
 fn parse_explicit_context_fork(args: &str) -> Result<(String, Option<String>), String> {
@@ -402,6 +434,19 @@ mod tests {
                     && params["role"] == "main"
                     && params["appendContext"] == "focus on Windows"
                     && params["prompt"] == "continue from here"
+        ));
+    }
+
+    #[test]
+    fn quoted_append_text_remains_a_regular_fork_directive() {
+        let models = ModelState::default();
+        let mut ctx = make_ctx(&models);
+        let result = ForkCommand.run(&mut ctx, r#"investigate "why --append is mentioned""#);
+        assert!(matches!(
+            result,
+            CommandResult::Action(Action::Fork(args))
+                if args.directive.as_deref()
+                    == Some(r#"investigate "why --append is mentioned""#)
         ));
     }
 }

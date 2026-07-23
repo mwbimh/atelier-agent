@@ -15,6 +15,10 @@ impl SlashCommand for SessionInfoCommand {
         "Show session info"
     }
 
+    fn aliases(&self) -> &[&str] {
+        &["info"]
+    }
+
     fn session_scoped(&self) -> bool {
         true
     }

@@ -447,6 +447,17 @@ impl SubagentsConfig {
     /// When `cwd` is provided, file-based roles are discovered from
     /// `{cwd}/.atelier/roles/*.toml` and merged (inline config takes precedence).
     pub fn resolve(cli_flag: bool, config: &toml::Value, cwd: Option<&std::path::Path>) -> Self {
+        let atelier_home = crate::util::atelier_home::atelier_home();
+        let bundled_root = bundle::bundled_root();
+        Self::resolve_with_roots(cli_flag, config, cwd, &atelier_home, &bundled_root)
+    }
+    fn resolve_with_roots(
+        cli_flag: bool,
+        config: &toml::Value,
+        cwd: Option<&std::path::Path>,
+        user_root: &std::path::Path,
+        bundled_root: &std::path::Path,
+    ) -> Self {
         let mut result: Self = config
             .get("subagents")
             .and_then(|v| v.clone().try_into().ok())
@@ -464,11 +475,8 @@ impl SubagentsConfig {
             result.discover_roles(cwd);
             result.discover_personas(cwd);
         }
-        if let Some(home) = dirs::home_dir() {
-            result.discover_roles(&home);
-            result.discover_personas(&home);
-        }
-        let bundled_root = bundle::bundled_root();
+        result.discover_roles_in_dir(&user_root.join("roles"));
+        result.discover_personas_in_dir(&user_root.join("personas"));
         result.discover_roles_in_dir(&bundled_root.join("roles"));
         result.discover_personas_in_dir(&bundled_root.join("personas"));
         result

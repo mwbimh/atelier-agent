@@ -219,9 +219,40 @@ pub(super) const BUILTIN_COMMANDS: &[BuiltinCommand] = &[
         name: "session-info",
         description: "Show session details (model, turns, context usage)",
         argument_hint: None,
-        aliases: &["status", "info"],
+        aliases: &["info"],
         gate: BuiltinGate::AlwaysOn,
         resolve: |_args| BuiltinAction::SessionInfo,
+    },
+    BuiltinCommand {
+        name: "status",
+        description: "Show Runtime status for this session",
+        argument_hint: None,
+        aliases: &[],
+        gate: BuiltinGate::AlwaysOn,
+        resolve: |_args| BuiltinAction::RuntimeStatus,
+    },
+    BuiltinCommand {
+        name: "request",
+        description: "List Runtime requests or inspect one request",
+        argument_hint: Some("optional request id"),
+        aliases: &[],
+        gate: BuiltinGate::AlwaysOn,
+        resolve: |args| {
+            let request_id = args.trim();
+            BuiltinAction::RuntimeRequest {
+                request_id: (!request_id.is_empty()).then(|| request_id.to_owned()),
+            }
+        },
+    },
+    BuiltinCommand {
+        name: "trace",
+        description: "Show Runtime trace events",
+        argument_hint: Some("optional after-event id"),
+        aliases: &[],
+        gate: BuiltinGate::AlwaysOn,
+        resolve: |args| BuiltinAction::RuntimeTrace {
+            after_event_id: args.trim().parse().ok(),
+        },
     },
     BuiltinCommand {
         name: "roles",
@@ -652,6 +683,13 @@ pub(super) enum BuiltinAction {
     PluginsReload,
     PluginsTrust,
     SessionInfo,
+    RuntimeStatus,
+    RuntimeRequest {
+        request_id: Option<String>,
+    },
+    RuntimeTrace {
+        after_event_id: Option<u64>,
+    },
     RolesInfo,
     RuntimeDoctor,
     RuntimeRecover,
@@ -706,6 +744,9 @@ impl BuiltinAction {
             BuiltinAction::PluginsReload => "plugins-reload",
             BuiltinAction::PluginsTrust => "plugins-trust",
             BuiltinAction::SessionInfo => "session",
+            BuiltinAction::RuntimeStatus => "status",
+            BuiltinAction::RuntimeRequest { .. } => "request",
+            BuiltinAction::RuntimeTrace { .. } => "trace",
             BuiltinAction::RolesInfo => "roles",
             BuiltinAction::RuntimeDoctor => "doctor",
             BuiltinAction::RuntimeRecover => "recover",
@@ -741,6 +782,9 @@ impl BuiltinAction {
             BuiltinAction::PluginsReload => false,
             BuiltinAction::PluginsTrust => false,
             BuiltinAction::SessionInfo => false,
+            BuiltinAction::RuntimeStatus => false,
+            BuiltinAction::RuntimeRequest { request_id } => request_id.is_some(),
+            BuiltinAction::RuntimeTrace { after_event_id } => after_event_id.is_some(),
             BuiltinAction::RolesInfo => false,
             BuiltinAction::RuntimeDoctor => false,
             BuiltinAction::RuntimeRecover => false,
@@ -1264,7 +1308,7 @@ mod tests {
 
     #[test]
     fn second_batch_runtime_commands_are_advertised_and_resolved() {
-        for name in ["roles", "doctor", "recover"] {
+        for name in ["roles", "status", "request", "trace", "doctor", "recover"] {
             assert!(
                 BUILTIN_COMMANDS.iter().any(|command| command.name == name),
                 "missing built-in command {name}"
@@ -1275,12 +1319,93 @@ mod tests {
             Some(BuiltinAction::RolesInfo)
         ));
         assert!(matches!(
+            resolve_builtin("status", ""),
+            Some(BuiltinAction::RuntimeStatus)
+        ));
+        assert!(matches!(
+            resolve_builtin("request", ""),
+            Some(BuiltinAction::RuntimeRequest { request_id: None })
+        ));
+        assert!(matches!(
+            resolve_builtin("request", "request-1"),
+            Some(BuiltinAction::RuntimeRequest { request_id: Some(request_id) })
+                if request_id == "request-1"
+        ));
+        assert!(matches!(
+            resolve_builtin("trace", ""),
+            Some(BuiltinAction::RuntimeTrace {
+                after_event_id: None
+            })
+        ));
+        assert!(matches!(
+            resolve_builtin("trace", "42"),
+            Some(BuiltinAction::RuntimeTrace {
+                after_event_id: Some(42)
+            })
+        ));
+        assert!(matches!(
             resolve_builtin("doctor", ""),
             Some(BuiltinAction::RuntimeDoctor)
         ));
         assert!(matches!(
             resolve_builtin("recover", ""),
             Some(BuiltinAction::RuntimeRecover)
+        ));
+
+        let session_info = BUILTIN_COMMANDS
+            .iter()
+            .find(|command| command.name == "session-info")
+            .expect("session-info command");
+        assert!(session_info.aliases.contains(&"info"));
+        assert!(!session_info.aliases.contains(&"status"));
+    }
+
+    #[test]
+    fn runtime_commands_resolve_from_full_and_bare_invocations() {
+        let resolve_text = |text: &str| {
+            resolve(
+                vec![text_block(text)],
+                &[],
+                CommandAvailability::all_enabled(),
+                SkillSlashRewrite::Passthrough,
+            )
+        };
+
+        assert!(matches!(
+            resolve_text("/status"),
+            Err(SlashCommandOutcome::Builtin(BuiltinAction::RuntimeStatus))
+        ));
+        assert!(matches!(
+            resolve_text("/session-info"),
+            Err(SlashCommandOutcome::Builtin(BuiltinAction::SessionInfo))
+        ));
+        assert!(matches!(
+            resolve_text("/info"),
+            Err(SlashCommandOutcome::Builtin(BuiltinAction::SessionInfo))
+        ));
+        assert!(matches!(
+            resolve_text("/request"),
+            Err(SlashCommandOutcome::Builtin(
+                BuiltinAction::RuntimeRequest { request_id: None }
+            ))
+        ));
+        assert!(matches!(
+            resolve_text("/request request-1"),
+            Err(SlashCommandOutcome::Builtin(BuiltinAction::RuntimeRequest {
+                request_id: Some(request_id)
+            })) if request_id == "request-1"
+        ));
+        assert!(matches!(
+            resolve_text("/trace"),
+            Err(SlashCommandOutcome::Builtin(BuiltinAction::RuntimeTrace {
+                after_event_id: None
+            }))
+        ));
+        assert!(matches!(
+            resolve_text("/trace 42"),
+            Err(SlashCommandOutcome::Builtin(BuiltinAction::RuntimeTrace {
+                after_event_id: Some(42)
+            }))
         ));
     }
 
@@ -1336,7 +1461,7 @@ mod tests {
     }
 
     #[test]
-    fn status_alias_resolves_to_session_info() {
+    fn status_resolves_to_runtime_status() {
         let outcome = resolve(
             vec![text_block("/status")],
             &[],
@@ -1346,7 +1471,7 @@ mod tests {
         .unwrap_err();
         assert!(matches!(
             outcome,
-            SlashCommandOutcome::Builtin(BuiltinAction::SessionInfo)
+            SlashCommandOutcome::Builtin(BuiltinAction::RuntimeStatus)
         ));
     }
 
@@ -1578,6 +1703,12 @@ mod tests {
                 "plugins",
                 "reload-plugins",
                 "session-info",
+                "status",
+                "request",
+                "trace",
+                "roles",
+                "doctor",
+                "recover",
                 "feedback",
                 "goal",
                 "loop",

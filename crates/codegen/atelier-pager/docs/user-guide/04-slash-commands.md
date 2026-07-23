@@ -131,12 +131,65 @@ Aliases: `/title`
 Switch to a different model. Accepts model IDs or display names (case-insensitive). For reasoning models you can also pass an effort level as a second argument:
 
 ```
-/model atelier-build
-/model Atelier
-/model Reasoning X high
+/model allm/deepseek-v4-flash
+/model deepseek-v4-flash
+/model deepseek-v4-flash high
 ```
 
 Aliases: `/m`
+
+Bare `/model` opens the catalog picker. The catalog is populated by enabled
+Providers; use `/provider refresh <id>` when a configured Provider has not yet
+published its models to the local catalog.
+
+### `/provider`
+
+Manage the local Provider registry. Bare `/provider` opens an interactive
+subcommand picker; every action also has a complete command form:
+
+```text
+/provider list
+/provider add <id> <chat|responses|anthropic> <base-url> [env:NAME|cmd:PROGRAM|none]
+/provider edit <id> <chat|responses|anthropic> <base-url> [env:NAME|cmd:PROGRAM|none]
+/provider enable <id>
+/provider disable <id>
+/provider test <id>
+/provider refresh <id>
+/provider delete <id>
+```
+
+Aliases: `/providers`
+
+### `/roles`
+
+Configure the fixed `main`, `explore`, `implement`, `review`, `test`,
+`compact`, `summary`, and `title` Runtime Roles. Bare `/roles` opens the
+interactive picker.
+
+```text
+/roles list
+/roles get <role>
+/roles set <role> <provider/model> [effort] [fast_mode]
+/roles payload <role> <json-object>
+/roles test <role>
+```
+
+Aliases: `/role`
+
+### `/model-config`
+
+Inspect and change model-level Wire API settings:
+
+```text
+/model-config list
+/model-config get <provider/model>
+/model-config wire <provider/model> <chat_completions|responses|messages|default>
+/model-config override <provider/model> <wire-api|default> [json-payload]
+/model-config delete <provider/model>
+/model-config test <provider/model> [execute]
+```
+
+Bare `/model-config` opens the interactive picker. Alias: `/models`.
 
 ### `/effort <level>`
 
@@ -389,14 +442,6 @@ Switch the TUI color theme.
 
 Aliases: `/t`
 
-### `/feedback [message]`
-
-Report an issue or send feedback.
-
-```
-/feedback Something isn't working correctly
-```
-
 ### `/btw`
 
 Send an aside to the agent without interrupting the current task.
@@ -477,42 +522,6 @@ Manage personas -- create, edit, and delete personas. A subagent can apply a per
 
 ```
 /personas
-```
-
----
-
-## Account and Billing
-
-### `/login`
-
-Log in or re-authenticate with your account without leaving the session.
-
-```
-/login
-```
-
-### `/logout`
-
-Log out and return to the login screen.
-
-```
-/logout
-```
-
-### `/usage`
-
-View credit usage or manage billing.
-
-```
-/usage
-```
-
-### `/privacy`
-
-Show or toggle privacy and data-retention status.
-
-```
-/privacy
 ```
 
 ---

@@ -1,5 +1,5 @@
 use std::collections::{BTreeMap, HashMap};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 
 use crate::notification::ToolNotification;
@@ -361,12 +361,33 @@ while True:
     (dir, script_path)
 }
 
+fn test_python() -> String {
+    if cfg!(windows) {
+        "python".to_owned()
+    } else {
+        "python3".to_owned()
+    }
+}
+
+fn test_python_args(script_path: &Path) -> Vec<String> {
+    if cfg!(windows) {
+        vec![
+            "-u".to_owned(),
+            "-c".to_owned(),
+            "import runpy,sys; sys.stdin.reconfigure(newline=''); sys.stdout.reconfigure(newline=''); runpy.run_path(sys.argv[1], run_name='__main__')".to_owned(),
+            script_path.to_string_lossy().into_owned(),
+        ]
+    } else {
+        vec!["-u".to_owned(), script_path.to_string_lossy().into_owned()]
+    }
+}
+
 fn mock_server_config(script_path: &Path) -> LspServerConfig {
     let mut ext_map = HashMap::new();
     ext_map.insert(".ts".to_string(), "typescript".to_string());
     LspServerConfig {
-        command: "python3".to_string(),
-        args: vec!["-u".to_string(), script_path.to_string_lossy().into_owned()],
+        command: test_python(),
+        args: test_python_args(script_path),
         extensions: ext_map,
         startup_timeout: Some(10_000),
         ..Default::default()
@@ -571,8 +592,8 @@ async fn e2e_multi_server_routing() {
     servers.insert(
         "mock-ts".to_string(),
         LspServerConfig {
-            command: "python3".to_string(),
-            args: vec!["-u".to_string(), script_path.to_string_lossy().into_owned()],
+            command: test_python(),
+            args: test_python_args(&script_path),
             extensions: ts_ext,
             startup_timeout: Some(10_000),
             ..Default::default()
@@ -581,8 +602,8 @@ async fn e2e_multi_server_routing() {
     servers.insert(
         "mock-py".to_string(),
         LspServerConfig {
-            command: "python3".to_string(),
-            args: vec!["-u".to_string(), script_path.to_string_lossy().into_owned()],
+            command: test_python(),
+            args: test_python_args(&script_path),
             extensions: py_ext,
             startup_timeout: Some(10_000),
             ..Default::default()
@@ -997,8 +1018,8 @@ async fn e2e_finalize_no_longer_blocks_on_slow_lsp_startup() {
     let mut ext_map = HashMap::new();
     ext_map.insert(".ts".to_string(), "typescript".to_string());
     let server_config = LspServerConfig {
-        command: "python3".to_string(),
-        args: vec!["-u".to_string(), script_path.to_string_lossy().into_owned()],
+        command: test_python(),
+        args: test_python_args(&script_path),
         extensions: ext_map,
         startup_timeout: Some(5_000),
         ..Default::default()
@@ -1052,8 +1073,8 @@ async fn e2e_first_dispatch_waits_for_background_startup() {
     let mut ext_map = HashMap::new();
     ext_map.insert(".ts".to_string(), "typescript".to_string());
     let server_config = LspServerConfig {
-        command: "python3".to_string(),
-        args: vec!["-u".to_string(), script_path.to_string_lossy().into_owned()],
+        command: test_python(),
+        args: test_python_args(&script_path),
         extensions: ext_map,
         startup_timeout: Some(5_000),
         ..Default::default()
@@ -1116,8 +1137,8 @@ async fn e2e_restart_monitor_emits_failed_on_restart_init_error() {
                 counter_path.to_string_lossy().into_owned(),
             );
             let server_config = LspServerConfig {
-                command: "python3".to_string(),
-                args: vec!["-u".to_string(), script_path.to_string_lossy().into_owned()],
+                command: test_python(),
+                args: test_python_args(&script_path),
                 env,
                 extensions: ext_map,
                 // Generous startup window: the init-failure server responds to
@@ -1209,8 +1230,8 @@ async fn e2e_drain_timeout_preserves_pending_diagnostics() {
     let mut ext_map = HashMap::new();
     ext_map.insert(".ts".to_string(), "typescript".to_string());
     let server_config = LspServerConfig {
-        command: "python3".to_string(),
-        args: vec!["-u".to_string(), script_path.to_string_lossy().into_owned()],
+        command: test_python(),
+        args: test_python_args(&script_path),
         extensions: ext_map,
         startup_timeout: Some(10_000),
         ..Default::default()
@@ -1256,8 +1277,8 @@ async fn e2e_restart_replay_requeues_pending_diagnostics() {
     let mut ext_map = HashMap::new();
     ext_map.insert(".ts".to_string(), "typescript".to_string());
     let server_config = LspServerConfig {
-        command: "python3".to_string(),
-        args: vec!["-u".to_string(), script_path.to_string_lossy().into_owned()],
+        command: test_python(),
+        args: test_python_args(&script_path),
         extensions: ext_map,
         startup_timeout: Some(10_000),
         ..Default::default()
@@ -1295,7 +1316,7 @@ async fn e2e_restart_replay_requeues_pending_diagnostics() {
     .expect("restart should succeed");
 
     for (uri_str, lang_id) in &tracked_docs {
-        let path = PathBuf::from(uri_str.strip_prefix("file://").unwrap());
+        let path = super::restart::tracked_document_path(uri_str);
         let content = std::fs::read_to_string(&path).unwrap();
         restarted.notify_file_change(&path, &content, lang_id);
         mgr.mark_path_pending_diagnostics("delayed", lifecycle_id, &path);

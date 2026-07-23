@@ -2,11 +2,6 @@
 use super::auth::{
     ensure_login_method, handle_auth_complete, handle_auth_url_ready, handle_mcp_auth_trigger_done,
 };
-use super::billing::{
-    PAYWALL_AUTO_CHECK_TIMEOUT, apply_auto_topup, handle_billing_fetched,
-    handle_check_subscription_complete, handle_credit_limit_recheck_complete,
-    handle_gate_refreshed, handle_gate_verify_timeout,
-};
 use super::cta::{
     handle_cta_plugin_install_done, handle_cta_plugin_reload_done,
     handle_plugin_cta_catalog_loaded, handle_plugin_cta_debounce_expired,
@@ -39,10 +34,7 @@ use super::session::load::{
     handle_session_search_debounce_expired, remove_session_from_pickers,
 };
 use super::settings::ui::apply_setting_rollback;
-use super::status::{
-    handle_coding_data_sharing_failed, handle_coding_data_sharing_updated,
-    handle_context_info_complete, scrub_error_for_toast,
-};
+use super::status::{handle_context_info_complete, scrub_error_for_toast};
 
 fn format_runtime_extension_response(method: &str, response: &str) -> String {
     let value = serde_json::from_str::<serde_json::Value>(response)
@@ -55,9 +47,21 @@ fn format_runtime_extension_response(method: &str, response: &str) -> String {
     format!("{method}\n{rendered}")
 }
 
+fn show_dashboard_runtime_output(app: &mut AppView, output: &str) -> bool {
+    if !matches!(app.active_view, ActiveView::AgentDashboard) {
+        return false;
+    }
+    let Some(dashboard) = app.dashboard.as_mut() else {
+        return false;
+    };
+    dashboard.dispatch.set_text(output);
+    dashboard.error_toast = None;
+    true
+}
+
 #[cfg(test)]
 mod runtime_task_format_tests {
-    use super::format_runtime_task_response;
+    use super::{format_runtime_task_attach_response, format_runtime_task_response};
 
     #[test]
     fn runtime_tasks_are_rendered_as_a_control_table() {
@@ -86,6 +90,40 @@ mod runtime_task_format_tests {
             format_runtime_task_response(r#"{"tasks":[]}"#),
             "Runtime tasks\nNo runtime tasks."
         );
+    }
+
+    #[test]
+    fn runtime_task_ids_are_rendered_in_full_for_copying() {
+        let task_id = "task-019f95b4-2ef1-7c9a-a14f-9c21f5a0f817";
+        let rendered = format_runtime_task_response(
+            &serde_json::json!({
+                "tasks": [{
+                    "taskId": task_id,
+                    "sessionId": "session-1",
+                    "role": "main",
+                    "state": "running_model",
+                    "attachable": true,
+                }]
+            })
+            .to_string(),
+        );
+
+        assert!(rendered.contains(task_id));
+    }
+
+    #[test]
+    fn attach_response_renders_replay_and_replay_metadata() {
+        let rendered = format_runtime_task_attach_response(
+            r#"{"task":{"taskId":"task-1"},"events":[{"eventId":7,"kind":"runtime.task_state_changed","details":{"state":"running_tool"}}],"cursor":7,"gap":true,"truncated":true}"#,
+        )
+        .expect("attach response");
+
+        assert_eq!(rendered.task_id, "task-1");
+        assert_eq!(rendered.cursor, 7);
+        assert!(rendered.text.contains("runtime.task_state_changed"));
+        assert!(rendered.text.contains("running_tool"));
+        assert!(rendered.text.contains("gap"));
+        assert!(rendered.text.contains("truncated"));
     }
 }
 
@@ -136,7 +174,7 @@ fn format_runtime_task_response(response: &str) -> String {
         };
         lines.push(format!(
             "{:<20} {:<20} {:<10} {:<22} {}",
-            truncate_runtime_task_field(id, 20),
+            id,
             truncate_runtime_task_field(session, 20),
             truncate_runtime_task_field(role, 10),
             state,
@@ -155,6 +193,126 @@ fn truncate_runtime_task_field(value: &str, max: usize) -> String {
     let mut result: String = value.chars().take(max.saturating_sub(1)).collect();
     result.push('…');
     result
+}
+
+struct RuntimeTaskAttachReplay {
+    task_id: String,
+    cursor: u64,
+    text: String,
+}
+
+struct ForegroundDerivedSession {
+    session_id: String,
+    pending_first_prompt: Option<String>,
+}
+
+fn foreground_derived_session(
+    method: &str,
+    result: Option<&serde_json::Value>,
+) -> Option<ForegroundDerivedSession> {
+    if !matches!(
+        method,
+        "_atelier/agent/spawn_derived" | "atelier/agent/spawn_derived"
+    ) {
+        return None;
+    }
+    let result = result?;
+    if result
+        .get("background")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+    {
+        return None;
+    }
+    let session_id = result.get("sessionId")?.as_str()?.to_owned();
+    let pending_first_prompt = result
+        .get("pendingFirstPrompt")
+        .and_then(serde_json::Value::as_str)
+        .filter(|prompt| !prompt.trim().is_empty())
+        .map(str::to_owned);
+    Some(ForegroundDerivedSession {
+        session_id,
+        pending_first_prompt,
+    })
+}
+
+#[cfg(test)]
+pub(super) fn remembered_task_cursor(
+    _agent_id: crate::app::agent::AgentId,
+    task_id: &str,
+) -> Option<u64> {
+    crate::slash::commands::attach::runtime_task_cursor(task_id)
+}
+
+fn format_runtime_task_attach_response(response: &str) -> Option<RuntimeTaskAttachReplay> {
+    let value = serde_json::from_str::<serde_json::Value>(response).ok()?;
+    let result = value.get("result").unwrap_or(&value);
+    let task_id = result.get("task")?.get("taskId")?.as_str()?.to_owned();
+    let events = result
+        .get("events")
+        .and_then(serde_json::Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    let cursor = result
+        .get("cursor")
+        .or_else(|| result.get("subscriptionCursor"))
+        .or_else(|| result.get("lastEventId"))
+        .or_else(|| result.get("afterEventId"))
+        .and_then(serde_json::Value::as_u64)
+        .or_else(|| {
+            events
+                .last()
+                .and_then(|event| event.get("eventId"))
+                .and_then(serde_json::Value::as_u64)
+        })
+        .unwrap_or_default();
+    let gap = result
+        .get("gap")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    let truncated = result
+        .get("truncated")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+
+    let mut lines = vec![format!("Attached to runtime task {task_id}")];
+    if events.is_empty() {
+        lines.push(format!("Replay: no events (cursor {cursor})"));
+    } else {
+        lines.push(format!(
+            "Replay: {} event(s) (cursor {cursor})",
+            events.len()
+        ));
+        for event in events {
+            let event_id = event
+                .get("eventId")
+                .and_then(serde_json::Value::as_u64)
+                .map(|id| id.to_string())
+                .unwrap_or_else(|| "?".to_owned());
+            let kind = event
+                .get("kind")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("runtime.event");
+            let details = match event.get("details") {
+                None | Some(serde_json::Value::Null) => String::new(),
+                Some(serde_json::Value::String(text)) => format!(": {text}"),
+                Some(details) => format!(": {details}"),
+            };
+            lines.push(format!("#{event_id} {kind}{details}"));
+        }
+    }
+    if gap {
+        lines.push("Replay gap detected before the returned events.".to_owned());
+    }
+    if truncated {
+        lines.push("Replay was truncated by the runtime event buffer.".to_owned());
+    }
+
+    Some(RuntimeTaskAttachReplay {
+        task_id,
+        cursor,
+        text: lines.join("\n"),
+    })
 }
 use super::transcript::{
     handle_hooks_list_loaded, handle_marketplace_list_loaded, handle_marketplace_updates_available,
@@ -293,9 +451,18 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             tracing::error!(
                 agent = ? agent_id, error = % error, "Session creation failed"
             );
+            let failed_from_dashboard = matches!(app.active_view, ActiveView::AgentDashboard);
             if let Some(agent) = app.agents.get_mut(&agent_id) {
                 agent.pending_extensions_fetch = false;
                 agent.session.prompt_history_loading = false;
+                agent.mcp_init_progress = None;
+                agent.scrollback.push_block(RenderBlock::system(format!(
+                    "Session failed to start: {error}"
+                )));
+                agent.show_toast("Session failed to start");
+            }
+            if failed_from_dashboard && app.agents.contains_key(&agent_id) {
+                app.active_view = ActiveView::Agent(agent_id);
             }
             vec![]
         }
@@ -342,33 +509,6 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
         TaskResult::ForkSessionFailed { agent_id, error } => {
             handle_fork_session_failed(app, agent_id, error)
         }
-        TaskResult::BillingFetched {
-            agent_id,
-            balance,
-            silent,
-            subscription_tier,
-            autotopup,
-        } => handle_billing_fetched(app, agent_id, balance, silent, subscription_tier, autotopup),
-        TaskResult::BillingError {
-            agent_id,
-            error,
-            silent,
-        } => {
-            if !silent && let Some(agent) = app.agents.get_mut(&agent_id) {
-                agent.scrollback.push_block(RenderBlock::System(
-                    crate::scrollback::blocks::SystemMessageBlock::new(format!(
-                        "Billing error: {error}"
-                    )),
-                ));
-            }
-            vec![]
-        }
-        TaskResult::AppBillingFetched { balance, autotopup } => {
-            app.credit_balance = balance;
-            apply_auto_topup(&mut app.auto_topup, &autotopup);
-            vec![]
-        }
-        TaskResult::GateRefreshed { settings } => handle_gate_refreshed(app, settings),
         TaskResult::SessionLoaded {
             agent_id,
             session_id,
@@ -769,29 +909,6 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
         TaskResult::SkillsToggleDone { agent_id, result } => {
             handle_skills_toggle_done(app, agent_id, result)
         }
-        TaskResult::ShareSessionComplete {
-            agent_id,
-            share_url,
-        } => {
-            if let Some(agent) = app.agents.get_mut(&agent_id) {
-                agent
-                    .scrollback
-                    .push_block(crate::scrollback::block::RenderBlock::system(format!(
-                        "Session shared: {share_url}"
-                    )));
-            }
-            vec![]
-        }
-        TaskResult::ShareSessionFailed { agent_id, error } => {
-            if let Some(agent) = app.agents.get_mut(&agent_id) {
-                agent
-                    .scrollback
-                    .push_block(crate::scrollback::block::RenderBlock::system(format!(
-                        "Couldn't share session: {error}"
-                    )));
-            }
-            vec![]
-        }
         TaskResult::SessionAgentNameResolved {
             agent_id,
             agent_name,
@@ -831,14 +948,6 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             }
             vec![]
         }
-        TaskResult::CodingDataSharingUpdated { agent_id, opted_in } => {
-            handle_coding_data_sharing_updated(app, agent_id, opted_in)
-        }
-        TaskResult::CodingDataSharingFailed {
-            agent_id,
-            error,
-            rollback_to_opted_in,
-        } => handle_coding_data_sharing_failed(app, agent_id, error, rollback_to_opted_in),
         TaskResult::RenameSessionComplete { agent_id, title } => {
             if let Some(agent) = app.agents.get_mut(&agent_id) {
                 let safe = crate::views::session_title::sanitize_display_text(&title);
@@ -980,9 +1089,13 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             method,
             error,
         } => {
-            if let Some(agent) = app.agents.get_mut(&agent_id) {
-                let toast = format!("{method} failed: {error}");
+            let toast = format!("{method} failed: {error}");
+            if let Some(agent_id) = agent_id
+                && let Some(agent) = app.agents.get_mut(&agent_id)
+            {
                 agent.show_toast(&toast);
+            } else if !show_dashboard_runtime_output(app, &toast) {
+                app.show_toast(&toast);
             }
             vec![]
         }
@@ -996,13 +1109,21 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
                 .as_ref()
                 .and_then(|value| value.get("result"))
                 .or_else(|| parsed.as_ref());
+            let is_task_attach =
+                method == "_atelier/task/attach" || method == "atelier/task/attach";
+            let attach_replay = is_task_attach
+                .then(|| format_runtime_task_attach_response(&response))
+                .flatten();
             if method == "_atelier/task/list" || method == "atelier/task/list" {
-                if let Some(agent) = app.agents.get_mut(&agent_id) {
+                let rendered = format_runtime_task_response(&response);
+                if let Some(agent_id) = agent_id
+                    && let Some(agent) = app.agents.get_mut(&agent_id)
+                {
                     agent
                         .scrollback
-                        .push_block(crate::scrollback::block::RenderBlock::system(
-                            format_runtime_task_response(&response),
-                        ));
+                        .push_block(crate::scrollback::block::RenderBlock::system(rendered));
+                } else if !show_dashboard_runtime_output(app, &rendered) {
+                    app.show_toast(&rendered);
                 }
                 return vec![];
             }
@@ -1011,7 +1132,9 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
                     .and_then(|value| value.get("persisted"))
                     .and_then(serde_json::Value::as_bool)
                     .unwrap_or(false);
-                if let Some(agent) = app.agents.get_mut(&agent_id) {
+                if let Some(agent_id) = agent_id
+                    && let Some(agent) = app.agents.get_mut(&agent_id)
+                {
                     if persisted {
                         if let Some(state) = agent.btw_state.as_mut() {
                             state.mark_persisted();
@@ -1023,23 +1146,56 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
                 }
                 return vec![];
             }
-            if method == "_atelier/task/attach" || method == "atelier/task/attach" {
-                if let Some(session_id) = result
+            if is_task_attach {
+                if let Some(replay) = attach_replay.as_ref() {
+                    crate::slash::commands::attach::remember_runtime_task_cursor(
+                        &replay.task_id,
+                        replay.cursor,
+                    );
+                }
+                let target_session = result
                     .and_then(|value| value.get("task"))
                     .and_then(|task| task.get("sessionId"))
                     .and_then(|value| value.as_str())
-                {
-                    let active_session = app
-                        .agents
-                        .get(&agent_id)
+                    .map(str::to_owned);
+                let mut effects = Vec::new();
+                if let Some(session_id) = target_session.as_deref() {
+                    let active_session = agent_id
+                        .and_then(|agent_id| app.agents.get(&agent_id))
                         .and_then(|agent| agent.session.session_id.as_ref())
                         .map(ToString::to_string);
                     if active_session.as_deref() != Some(session_id) {
-                        return dispatch(
-                            Action::LoadSession(session_id.to_owned(), None, false),
-                            app,
-                        );
+                        effects =
+                            dispatch(Action::LoadSession(session_id.to_owned(), None, false), app);
                     }
+                }
+                if let Some(replay) = attach_replay.as_ref() {
+                    let target_agent_id = if let Some(session_id) = target_session.as_deref() {
+                        app.agents.iter().find_map(|(candidate_id, agent)| {
+                            agent
+                                .session
+                                .session_id
+                                .as_ref()
+                                .is_some_and(|candidate_session| {
+                                    candidate_session.0.as_ref() == session_id
+                                })
+                                .then_some(*candidate_id)
+                        })
+                    } else {
+                        agent_id
+                    };
+                    if let Some(agent) =
+                        target_agent_id.and_then(|agent_id| app.agents.get_mut(&agent_id))
+                    {
+                        agent
+                            .scrollback
+                            .push_block(RenderBlock::system(replay.text.clone()));
+                    } else {
+                        app.show_toast(&replay.text);
+                    }
+                }
+                if !effects.is_empty() {
+                    return effects;
                 }
             }
             if method == "_atelier/task/detach" || method == "atelier/task/detach" {
@@ -1051,46 +1207,49 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
                     return dispatch(Action::OpenDashboard, app);
                 }
             }
-            let attach_session = if method == "_atelier/agent/spawn_derived" {
-                let value = serde_json::from_str::<serde_json::Value>(&response).ok();
-                let result = value
-                    .as_ref()
-                    .and_then(|value| value.get("result"))
-                    .or(value.as_ref());
-                let background = result
-                    .and_then(|result| result.get("background"))
-                    .and_then(serde_json::Value::as_bool)
-                    .unwrap_or(false);
-                if !background {
-                    result
-                        .and_then(|result| result.get("sessionId"))
-                        .and_then(serde_json::Value::as_str)
-                        .map(str::to_owned)
-                } else {
-                    None
-                }
-            } else {
-                None
-            };
-            if let Some(agent) = app.agents.get_mut(&agent_id) {
-                if attach_session.is_none() {
-                    let response = if method == "_atelier/task/attach"
-                        || method == "atelier/task/attach"
-                    {
-                        "Attached to runtime task; replayed events are available in the session."
-                            .to_owned()
+            let derived_session = foreground_derived_session(&method, result);
+            if let Some(agent_id) = agent_id
+                && let Some(agent) = app.agents.get_mut(&agent_id)
+            {
+                if derived_session.is_none() {
+                    let response = if is_task_attach && attach_replay.is_some() {
+                        None
                     } else if method == "_atelier/task/detach" || method == "atelier/task/detach" {
-                        "Turn detached; execution continues in the background.".to_owned()
+                        let message = result
+                            .and_then(|value| value.get("message"))
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or("Turn was not detached");
+                        Some(message.to_owned())
                     } else {
-                        format_runtime_extension_response(&method, &response)
+                        Some(format_runtime_extension_response(&method, &response))
                     };
-                    agent
-                        .scrollback
-                        .push_block(crate::scrollback::block::RenderBlock::system(response));
+                    if let Some(response) = response {
+                        agent
+                            .scrollback
+                            .push_block(crate::scrollback::block::RenderBlock::system(response));
+                    }
+                }
+            } else if derived_session.is_none() {
+                let rendered = format_runtime_extension_response(&method, &response);
+                if !show_dashboard_runtime_output(app, &rendered) {
+                    app.show_toast(&rendered);
                 }
             }
-            if let Some(session_id) = attach_session {
-                return dispatch(Action::LoadSession(session_id, None, false), app);
+            if let Some(derived_session) = derived_session {
+                let effects = dispatch(
+                    Action::LoadSession(derived_session.session_id.clone(), None, false),
+                    app,
+                );
+                if let Some(prompt) = derived_session.pending_first_prompt
+                    && let Some(agent) = app.agents.values_mut().find(|agent| {
+                        agent.session.session_id.as_ref().is_some_and(|session_id| {
+                            session_id.0.as_ref() == derived_session.session_id
+                        })
+                    })
+                {
+                    agent.pending_first_prompt = Some(prompt);
+                }
+                return effects;
             }
             vec![]
         }
@@ -1099,12 +1258,21 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             provider_id,
             result,
         } => {
-            if let Some(agent) = app.agents.get_mut(&agent_id) {
-                let message = match result {
-                    Ok(message) => format!("Provider {provider_id}: {message}"),
-                    Err(error) => format!("Provider {provider_id}: {error}"),
-                };
-                agent.scrollback.push_block(RenderBlock::system(message));
+            let message = match result {
+                Ok(message) => format!("Provider {provider_id}: {message}"),
+                Err(error) => format!("Provider {provider_id}: {error}"),
+            };
+            if let Some(agent_id) = agent_id {
+                if let Some(agent) = app.agents.get_mut(&agent_id) {
+                    agent.scrollback.push_block(RenderBlock::system(message));
+                }
+            } else {
+                // Welcome has no agent scrollback. The actual model catalog is
+                // delivered separately through `atelier/models/update`; keep
+                // the completion visible in diagnostics for this sessionless
+                // path instead of silently dropping it.
+                tracing::info!(%message, "provider model refresh completed without active agent");
+                app.show_toast(&message);
             }
             vec![]
         }
@@ -1169,33 +1337,9 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             app.auth_clipboard_copied = false;
             vec![]
         }
-        TaskResult::PaywallCheckTick => {
-            let timed_out = app
-                .paywall_check_started
-                .is_some_and(|t| t.elapsed() >= PAYWALL_AUTO_CHECK_TIMEOUT);
-            if !app.has_access() && !timed_out {
-                vec![
-                    Effect::CheckSubscription { verify: None },
-                    Effect::SchedulePaywallCheck,
-                ]
-            } else {
-                vec![]
-            }
-        }
-        TaskResult::CheckSubscriptionComplete { verify, meta } => {
-            handle_check_subscription_complete(app, verify, meta)
-        }
-        TaskResult::GateVerifyTimeout { generation } => handle_gate_verify_timeout(app, generation),
-        TaskResult::CreditLimitRecheckComplete { agent_id, meta } => {
-            handle_credit_limit_recheck_complete(app, agent_id, meta)
-        }
         TaskResult::LogoutComplete => {
             app.auth_state = AuthState::Pending { error: None };
-            app.access_gate_shown_logged = false;
             app.announcement_cta_impressions_logged.clear();
-            app.gate = None;
-            app.pending_gate_verification = None;
-            app.last_subscription_check_at = None;
             app.login_method_id = None;
             ensure_login_method(app);
             app.auth_clipboard_copied = false;

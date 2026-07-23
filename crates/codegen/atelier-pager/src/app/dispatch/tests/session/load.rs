@@ -710,11 +710,8 @@ fn auth_complete_restores_view_after_mid_session_login() {
 #[test]
 fn session_loaded_drains_pending_first_prompt_to_front() {
     let mut app = fork_test_app();
-    dispatch(
-        Action::Fork(fork_args(Some(false), Some("first directive"))),
-        &mut app,
-    );
-    let new_id = AgentId(1);
+    let new_id = AgentId(0);
+    app.agents.get_mut(&new_id).unwrap().pending_first_prompt = Some("first directive".into());
     app.agents
         .get_mut(&new_id)
         .unwrap()

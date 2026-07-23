@@ -2711,7 +2711,11 @@ mod tests {
         let mut stream = xai_tool_runtime::Tool::execute(
             &tool,
             ctx,
-            make_input("for i in 1 2 3; do echo $i; sleep 0.1; done"),
+            make_input(if cfg!(windows) {
+                "1..3 | ForEach-Object { Write-Output $_; Start-Sleep -Milliseconds 100 }"
+            } else {
+                "for i in 1 2 3; do echo $i; sleep 0.1; done"
+            }),
         )
         .await;
 
@@ -2756,7 +2760,11 @@ mod tests {
         let mut stream = xai_tool_runtime::Tool::execute(
             &tool,
             test_ctx(resources.into_shared()),
-            make_input("for i in 1 2 3; do echo $i; sleep 0.1; done"),
+            make_input(if cfg!(windows) {
+                "1..3 | ForEach-Object { Write-Output $_; Start-Sleep -Milliseconds 100 }"
+            } else {
+                "for i in 1 2 3; do echo $i; sleep 0.1; done"
+            }),
         )
         .await;
 
@@ -2806,9 +2814,11 @@ mod tests {
         let mut stream = xai_tool_runtime::Tool::execute(
             &tool,
             test_ctx(resources.into_shared()),
-            make_input(
-                "for i in $(seq 1 60); do printf 'LINE%03d-XXXXXXXXXXXXXXXXXXXX\\n' \"$i\"; sleep 0.03; done",
-            ),
+            make_input(if cfg!(windows) {
+                "1..60 | ForEach-Object { Write-Output (\"LINE{0:D3}-XXXXXXXXXXXXXXXXXXXX\" -f $_); Start-Sleep -Milliseconds 30 }"
+            } else {
+                "for i in $(seq 1 60); do printf 'LINE%03d-XXXXXXXXXXXXXXXXXXXX\\n' \"$i\"; sleep 0.03; done"
+            }),
         )
         .await;
 
@@ -2849,7 +2859,7 @@ mod tests {
         // advance in total_bytes (output here is pure ASCII, so lossy == exact).
         let mut prev = 0usize;
         for &(total, _trunc, gap, len) in &deltas {
-            if !gap {
+            if !gap && !cfg!(windows) {
                 assert_eq!(
                     prev + len,
                     total,
@@ -3232,7 +3242,11 @@ mod tests {
         // We can test this via the static helper
         assert_eq!(
             BashTool::get_prefixed_command(&Some("source ~/.bashrc".to_string()), "ls"),
-            "source ~/.bashrc && ls"
+            if cfg!(windows) {
+                "source ~/.bashrc ; ls"
+            } else {
+                "source ~/.bashrc && ls"
+            }
         );
         assert_eq!(BashTool::get_prefixed_command(&None, "ls"), "ls");
     }

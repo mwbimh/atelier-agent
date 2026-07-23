@@ -1484,9 +1484,10 @@ mod tests {
     #[test]
     fn background_block_gutter_uses_block_background_fill() {
         // Background blocks own the gutter via the existing full-area fill, so
-        // the no-bg clear must not run for them. Concrete theme so bg_light !=
-        // bg_base (Theme::current() quantizes both to Reset in the test env).
-        let theme = Theme::ateliernight();
+        // the no-bg clear must not run for them. Pin the process-global theme
+        // because UserPrompt output and EntryRenderer both consult it.
+        let _theme_guard = pin_theme();
+        let theme = Theme::current();
         assert_ne!(
             theme.bg_light, theme.bg_base,
             "test premise: block bg must differ from base bg"
@@ -1500,12 +1501,21 @@ mod tests {
         let mut buf = Buffer::empty(area);
         renderer.render(area, &mut buf);
 
-        // Gutter cell carries the block background, proving the block fill
-        // (not the bg_base clear) owns it. UserPrompt has vpad → content on row 1.
+        let ctx = renderer
+            .entry
+            .context(width, &renderer.appearance, renderer.cwd);
+        let expected_bg = match renderer.entry.block.background(&ctx) {
+            BlockBackground::Light => theme.bg_light,
+            BlockBackground::Dark => theme.bg_dark,
+            BlockBackground::None => panic!("test premise: user prompt must own a background"),
+        };
+
+        // Gutter cell carries the configured block background, proving the block
+        // fill (not the bg_base clear) owns it. UserPrompt has vpad → row 1.
         let gutter_x = gutter_band(&renderer, width).start + 2;
         let gutter_cell = buf.cell((gutter_x, 1)).unwrap();
         assert_eq!(
-            gutter_cell.bg, theme.bg_light,
+            gutter_cell.bg, expected_bg,
             "background block gutter must use the block bg fill"
         );
     }

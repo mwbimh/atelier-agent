@@ -211,10 +211,10 @@ pub(crate) struct SessionSpawnOptions<'a> {
     pub managed_mcp_expires_at: Option<chrono::DateTime<chrono::Utc>>,
     pub model_agent_type: Option<&'a str>,
     pub session_model_id: acp::ModelId,
-    /// Fixed `main` Role snapshot selected for this session, if configured.
-    /// The snapshot is captured before spawning and is not re-read by the
-    /// running SessionActor, so Role edits cannot mutate an active turn.
-    pub main_role: Option<atelier_provider::RoleConfig>,
+    /// Fixed Role identity and configuration snapshot selected for this
+    /// Session. The snapshot is captured before spawning and is not re-read by
+    /// the running SessionActor, so Role edits cannot mutate an active turn.
+    pub session_role: Option<(atelier_provider::RoleId, atelier_provider::RoleConfig)>,
     pub session_yolo_mode: bool,
     pub session_auto_mode: bool,
     pub prompt_display_cwd: Option<String>,
@@ -351,7 +351,7 @@ pub(crate) fn chat_session_spawn_options<'a>(
         managed_mcp_expires_at: None,
         model_agent_type,
         session_model_id,
-        main_role: None,
+        session_role: None,
         session_yolo_mode,
         session_auto_mode: false,
         prompt_display_cwd: None,
@@ -732,7 +732,6 @@ pub struct MvpAgent {
     pub(crate) config_watcher_path_tx: Option<
         tokio::sync::mpsc::UnboundedSender<std::path::PathBuf>,
     >,
-    relay_sync_enabled: bool,
     /// Buffering configuration. LEADER-SAFE(init-once): set once per connection
     /// during initialize from client capabilities, read when spawning sessions.
     /// In leader mode, the last client to initialize overwrites previous settings
@@ -835,20 +834,6 @@ pub struct MvpAgent {
     /// this flag keeps that to a single discovery walk.
     plugin_registry_initialized: std::cell::Cell<bool>,
     persona_io_summaries: Vec<String>,
-    /// Single-flight guard for the proactive bundle sync background task.
-    ///
-    /// `maybe_sync_bundle_in_background` is invoked from each post-auth path
-    /// (initialize, cached-token reauth, oidc) and a rapid reconnect can fire
-    /// all three within the TTL window, giving us multiple concurrent
-    /// `tokio::task::spawn_local` tasks racing to extract the tar archive,
-    /// rewrite `manifest.json`, and prune stale files. The non-atomic
-    /// per-file write/prune semantics in `bundle::extract_bundle_archive`
-    /// make that race observable as a partially-written cache.
-    ///
-    /// We use an `Arc<AtomicBool>` so the spawned task can clear the flag
-    /// on completion without re-borrowing `&self`. `Send` is required
-    /// because the inner `sync_bundle_to_root` now uses `spawn_blocking`.
-    bundle_sync_in_flight: Arc<std::sync::atomic::AtomicBool>,
     /// Single-flight guard for [`spawn_post_unblock_jwt_and_catalog_retry`].
     ///
     /// After free→paid unblock the JWT may still lack a `tier` claim for
@@ -864,6 +849,10 @@ pub struct MvpAgent {
     /// The agent never opens Computer Hub as a harness/client; remote cloud
     /// sandboxes are gateway-owned (`gateway_bridge` / `computer_sessions`).
     workspace_ops: RefCell<Option<atelier_workspace::WorkspaceOps>>,
+    /// Session-scoped workspace runtimes keyed by canonical cwd. A Workspace
+    /// Worker is rooted permanently, so unrelated directories must never share
+    /// the process-lifetime launch workspace instance.
+    session_workspace_ops: RefCell<HashMap<PathBuf, atelier_workspace::WorkspaceOps>>,
     /// Sessions opened with `require_gateway` / chat light-frontend (K13).
     /// Prompt-time guard consults this when the bridge map entry is missing,
     /// independent of prompt `_meta` (pager often omits kind on prompt).
@@ -878,11 +867,12 @@ pub struct MvpAgent {
     /// Local runtime control-plane state used by Context/Request Inspector,
     /// diagnostics, and recovery RPCs. It is intentionally agent-scoped and
     /// in-memory; durable session replay remains owned by session storage.
-    pub(crate) runtime_control: RefCell<crate::runtime_control::RuntimeControl>,
+    pub(crate) runtime_control:
+        Arc<parking_lot::Mutex<crate::runtime_control::RuntimeControl>>,
     /// Runtime policy evaluator shared by the Provider and operation gates.
     /// The engine is intentionally agent-scoped so a policy update applies to
     /// future operations without mutating an already-built session snapshot.
-    pub(crate) policy_engine: RefCell<atelier_hooks::PolicyEngine>,
+    pub(crate) policy_engine: Arc<parking_lot::RwLock<atelier_hooks::PolicyEngine>>,
     /// In-memory copies of prompts that can be replayed by the runtime retry
     /// RPC. Completed requests are removed; failed and paused requests remain
     /// available until the agent process exits or the bounded cache evicts
@@ -1784,331 +1774,13 @@ impl MvpAgent {
         }
         result
     }
-    /// Check whether the user has access via remote settings `allow_access`.
-    ///
-    /// Non-xAI auth (API keys, enterprise) always passes. For xAI OAuth2
-    /// users, reads `allow_access` from remote settings. Defaults to
-    /// `false` (blocked) when remote settings are unavailable.
-    pub(super) async fn enforce_atelier_code_access(&self, auth: &crate::auth::AtelierAuth) {
-        if self.auth_manager.is_local_only() {
-            self.tier_allowed.set(true);
-            tracing::debug!("access gate skipped: local-only auth manager");
-            return;
-        }
-        if !auth.is_xai_auth() {
-            self.tier_allowed.set(true);
-            return;
-        }
-        let allow = settings_allow_access(self.cfg.borrow().remote_settings.as_ref());
-        self.tier_allowed.set(allow);
-        if !allow {
-            tracing::info!(
-                "auth: user blocked by allow_access (remote settings atelier_build_access_gate)"
-            );
-            self.retry_subscription_check().await;
-        }
-    }
-    /// Single-shot subscription check called by the pager's "Check
-    /// subscription" button (`atelier/auth/check_subscription`). The pager
-    /// calls this every 5s while the paywall is shown, acting as the poller.
-    ///
-    /// Queries `/user?include=subscription` for the live tier from the
-    /// subscription API. If a qualifying tier is found, does a best-effort
-    /// JWT refresh and settings re-fetch, lifts the gate, then — when the
-    /// access token's `tier` claim **matches** that live tier
-    /// ([`jwt_claim_matches_user_subscription_tier`]; bare `refresh_chain`
-    /// Ok or any older paid claim is not enough) — fire-and-forgets an
-    /// explicit model catalog refresh (`ModelsManager::on_auth_changed`) so
-    /// tier-targeted models appear without restart.
-    /// Catalog refresh is not awaited so gate lift / auth meta are not
-    /// blocked on `/v1/models`. Without a matching claim, defers to
-    /// `spawn_post_unblock_jwt_and_catalog_retry`.
-    pub(crate) async fn retry_subscription_check(&self) {
-        if self.auth_manager.is_local_only() {
-            tracing::debug!("subscription check skipped: local-only auth manager");
-            return;
-        }
-        let (proxy_base_url, alpha_test_key) = {
-            let cfg = self.cfg.borrow();
-            (cfg.endpoints.proxy_url(), cfg.endpoints.alpha_test_key.clone())
-        };
-        let user_id = self
-            .auth_manager
-            .current()
-            .map(|a| a.user_id.clone())
-            .unwrap_or_default();
-        let result = super::subscription_check::single_check(
-                self.auth_manager.clone(),
-                &proxy_base_url,
-                alpha_test_key.as_deref(),
-                &user_id,
-            )
-            .await;
-        if let Some(unblocked) = result {
-            tracing::info!(
-                new_tier = % unblocked.new_tier, "subscription detected, lifting gate"
-            );
-            atelier_telemetry::unified_log::info(
-                "paywall_check_gate_lifting",
-                None,
-                Some(
-                    serde_json::json!(
-                        { "user_id" : user_id, "new_tier" : unblocked.new_tier, }
-                    ),
-                ),
-            );
-            if let Some(settings) = unblocked.settings {
-                {
-                    let mut cfg = self.cfg.borrow_mut();
-                    cfg.remote_settings = Some(settings);
-                    crate::agent::config::apply_remote_settings_side_effects(
-                        cfg.remote_settings.as_ref(),
-                    );
-                }
-                self.sync_collection_config_gate();
-                self.emit_announcements(AnnouncementsPushMode::IfChanged);
-                self.reconfigure_heap_profile_monitor();
-            }
-            if crate::util::config::resolve_remote_fetch_enabled()
-                && !settings_allow_access(self.cfg.borrow().remote_settings.as_ref())
-            {
-                tracing::info!(
-                    new_tier = % unblocked.new_tier,
-                    "subscription detected but allow_access still false, keeping gate"
-                );
-                atelier_telemetry::unified_log::warn(
-                    "paywall_check_gate_kept_allow_access_false",
-                    None,
-                    Some(
-                        serde_json::json!(
-                            { "user_id" : user_id, "new_tier" : unblocked.new_tier, }
-                        ),
-                    ),
-                );
-                return;
-            }
-            self.tier_allowed.set(true);
-            let refresh_ok = match self
-                .auth_manager
-                .refresh_chain(
-                    crate::auth::token_type::TokenType::OidcSession,
-                    crate::auth::manager::RefreshReason::ServerRejected,
-                )
-                .await
-            {
-                Ok(_) => {
-                    tracing::info!("post-unblock: JWT refresh_chain succeeded");
-                    atelier_telemetry::unified_log::info(
-                        "paywall_check_jwt_refreshed",
-                        None,
-                        Some(serde_json::json!({ "user_id" : user_id })),
-                    );
-                    true
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        error = % e,
-                        "post-unblock: JWT refresh failed, user may need to re-login on next restart"
-                    );
-                    atelier_telemetry::unified_log::warn(
-                        "paywall_check_error",
-                        None,
-                        Some(
-                            serde_json::json!(
-                                { "user_id" : user_id, "kind" :
-                                "post_unblock_refresh_failed", "detail" : e.to_string(), }
-                            ),
-                        ),
-                    );
-                    false
-                }
-            };
-            let jwt_claim = self
-                .auth_manager
-                .current_or_expired()
-                .and_then(|auth| jwt_tier_claim(&auth.key));
-            let jwt_matches_new_tier = jwt_claim
-                .as_ref()
-                .is_some_and(|claim| jwt_claim_matches_user_subscription_tier(
-                    claim,
-                    &unblocked.new_tier,
-                ));
-            if jwt_matches_new_tier {
-                let models_manager = self.models_manager.clone();
-                let user_id_log = user_id.clone();
-                let new_tier = unblocked.new_tier.clone();
-                let jwt_claim_log = jwt_claim.clone();
-                tokio::task::spawn(async move {
-                    atelier_telemetry::unified_log::info(
-                        "model catalog: post_subscription_unblock refresh",
-                        None,
-                        Some(
-                            serde_json::json!(
-                                { "user_id" : user_id_log, "new_tier" : new_tier,
-                                "refresh_ok" : refresh_ok, "jwt_claim" : jwt_claim_log,
-                                "jwt_matches_new_tier" : true, }
-                            ),
-                        ),
-                    );
-                    models_manager.on_auth_changed().await;
-                });
-            } else {
-                tracing::warn!(
-                    refresh_ok, jwt_claim = ? jwt_claim, new_tier = % unblocked.new_tier,
-                    "post-unblock: JWT tier claim missing or stale vs live tier; deferring model catalog refresh with retry"
-                );
-                atelier_telemetry::unified_log::warn(
-                    "model catalog: post_subscription_unblock deferred (jwt tier missing or stale)",
-                    None,
-                    Some(
-                        serde_json::json!(
-                            { "user_id" : user_id, "new_tier" : unblocked.new_tier,
-                            "refresh_ok" : refresh_ok, "jwt_claim" : jwt_claim, }
-                        ),
-                    ),
-                );
-                spawn_post_unblock_jwt_and_catalog_retry(
-                    self.auth_manager.clone(),
-                    self.models_manager.clone(),
-                    self.post_unblock_jwt_retry_in_flight.clone(),
-                    user_id.clone(),
-                    unblocked.new_tier.clone(),
-                );
-            }
-        } else {
-            atelier_telemetry::unified_log::info(
-                "paywall_check_no_subscription",
-                None,
-                Some(serde_json::json!({ "user_id" : user_id, })),
-            );
-        }
+    /// Atelier access is controlled by local Provider configuration, never by
+    /// a vendor subscription or remote feature gate.
+    pub(super) async fn enforce_atelier_code_access(&self, _auth: &crate::auth::AtelierAuth) {
+        self.tier_allowed.set(true);
     }
     pub(crate) fn auth_response_with_meta(&self) -> AuthenticateResponse {
-        let (show_resolved_model, gate, subscription_tier) = {
-            let cfg = self.cfg.borrow();
-            let rs = cfg.remote_settings.as_ref();
-            let gate = rs
-                .and_then(|s| s.gate_message.as_ref())
-                .filter(|m| !m.is_empty())
-                .map(|message| crate::auth::GateInfo {
-                    message: message.clone(),
-                    url: rs.and_then(|s| s.gate_url.clone()),
-                    label: rs.and_then(|s| s.gate_label.clone()),
-                });
-            let subscription_tier = rs.and_then(|s| s.subscription_tier_display.clone());
-            (rs.and_then(|s| s.show_resolved_model), gate, subscription_tier)
-        };
-        let subscription_tier = resolve_subscription_tier_for_telemetry(
-            subscription_tier,
-            self.auth_manager.current_or_expired().as_ref(),
-        );
-        let meta = self
-            .auth_manager
-            .current()
-            .map(|auth| {
-                let gate = if !self.tier_allowed.get() && gate.is_none() {
-                    let message = "A subscription is required.".to_string();
-                    Some(crate::auth::GateInfo {
-                        message,
-                        url: Some(
-                            "https://atelier.invalid/superatelier?referrer=atelier-build".to_string(),
-                        ),
-                        label: Some("Subscribe".to_string()),
-                    })
-                } else {
-                    gate
-                };
-                let auth_meta = crate::auth::AuthMeta {
-                    email: auth.email.clone(),
-                    auth_mode: Some(format!("{:?}", auth.auth_mode)),
-                    team_id: auth.team_id.clone(),
-                    team_name: auth.team_name.clone(),
-                    is_zdr: auth.is_zdr_team(),
-                    team_role: auth.team_role.clone(),
-                    coding_data_retention_opt_out: auth.coding_data_retention_opt_out,
-                    show_resolved_model,
-                    gate,
-                    subscription_tier,
-                };
-                serde_json::to_value(auth_meta)
-                    .ok()
-                    .and_then(|v| v.as_object().cloned())
-                    .unwrap_or_default()
-            });
-        AuthenticateResponse::new().meta(meta)
-    }
-    /// Fetch remote settings after authentication when early prefetch had none.
-    /// Notifies the pager so soft-default permission_mode applies post-login.
-    pub(super) async fn maybe_fetch_post_auth_settings(&self) {
-        if self.auth_manager.is_local_only() {
-            tracing::debug!("post-auth settings fetch skipped: local-only auth manager");
-            return;
-        }
-        if self.cfg.borrow().remote_settings.is_some() {
-            return;
-        }
-        let Some(auth) = self.auth_manager.current() else {
-            return;
-        };
-        let Some(settings) = self.fetch_remote_settings(auth).await else {
-            return;
-        };
-        tracing::info!("post-auth remote_settings fetch succeeded");
-        {
-            let mut cfg = self.cfg.borrow_mut();
-            cfg.remote_settings = Some(settings);
-            crate::agent::config::apply_remote_settings_side_effects(
-                cfg.remote_settings.as_ref(),
-            );
-            // Remote settings are not allowed to control persistence. Atelier
-            // stores sessions locally and never performs vendor writeback.
-            cfg.storage_mode = StorageMode::Local;
-            if let Some(v) = cfg
-                .remote_settings
-                .as_ref()
-                .and_then(|s| s.path_not_found_hints)
-            {
-                cfg.path_not_found_hints = v;
-            }
-        }
-        self.sync_collection_config_gate();
-        self.emit_settings_update_notification();
-        self.emit_announcements(AnnouncementsPushMode::IfChanged);
-        self.reconfigure_heap_profile_monitor();
-    }
-    /// Fire-and-forget `atelier/settings/update` from the current remote snapshot.
-    pub(super) fn emit_settings_update_notification(&self) {
-        let payload = {
-            let cfg = self.cfg.borrow();
-            let rs = cfg.remote_settings.as_ref();
-            SettingsUpdateNotification {
-                show_resolved_model: rs.and_then(|s| s.show_resolved_model),
-                sharing_enabled: rs.and_then(|s| s.sharing_enabled),
-                session_picker_grouped: rs.and_then(|s| s.session_picker_grouped),
-                tips: rs.and_then(|s| s.tips.clone()),
-                announcements: rs.and_then(|s| s.announcements.clone()),
-                gate_message: rs.and_then(|s| s.gate_message.clone()),
-                gate_url: rs.and_then(|s| s.gate_url.clone()),
-                gate_label: rs.and_then(|s| s.gate_label.clone()),
-                allow_access: rs.and_then(|s| s.allow_access),
-                subscription_tier_display: rs
-                    .and_then(|s| s.subscription_tier_display.clone()),
-                auto_permission_mode_enabled: crate::util::config::remote_auto_mode_enabled(
-                    rs,
-                ),
-                permission_mode: rs.and_then(|s| s.permission_mode.clone()),
-                group_tool_verbs: rs.and_then(|s| s.group_tool_verbs),
-                collapsed_edit_blocks: rs.and_then(|s| s.collapsed_edit_blocks),
-                subscription_watch_interval_secs: rs
-                    .and_then(|s| s.subscription_watch_interval_secs),
-            }
-        };
-        if let Ok(params) = serde_json::value::to_raw_value(&payload) {
-            self.gateway
-                .forward_fire_and_forget(
-                    acp::ExtNotification::new("atelier/settings/update", params.into()),
-                );
-        }
+        AuthenticateResponse::new()
     }
     /// Fan out `RefreshSkillBaseline` to each provided sender.
     pub(super) fn broadcast_refresh_skill_baseline(
@@ -2174,83 +1846,6 @@ impl MvpAgent {
                     registry,
                 });
         }
-    }
-    /// Spawn a best-effort bundle sync. Re-fires on every call site (init,
-    /// cached_token, atelier.invalid/oidc); the cheap pre-checks below absorb repeats
-    /// so reconnects are cheap.
-    ///
-    /// Pre-spawn gating order (cheapest first, all synchronous):
-    /// 1. Auth gate — avoid spawning a no-op task on every init.
-    /// 2. Freshness check — skip the sender snapshot + spawn entirely on
-    ///    cache hits, which is the steady-state on every reconnect.
-    /// 3. Single-flight guard — if a previous sync is still in flight (e.g.,
-    ///    initialize + cached_token + oidc fired in quick succession before
-    ///    the first sync's tar extract finished), drop this call to avoid
-    ///    racing concurrent extracts that would interleave per-file writes
-    ///    against `~/.atelier/bundled/` and the manifest.
-    pub(crate) fn maybe_sync_bundle_in_background(&self, force: bool) {
-        let _ = (self, force);
-        // Bundled skills/personas are shipped with Atelier.  The upstream
-        // bundle endpoint is not part of the private build.
-        return;
-        #[allow(unreachable_code)]
-        use crate::extensions::bundle::{
-            BUNDLE_SYNC_TTL, bundle_cache_is_fresh, has_bundle_credentials,
-            maybe_sync_bundle_to_root,
-        };
-        use std::sync::atomic::Ordering;
-        let am = self.auth_manager.clone();
-        let deployment_key = self.deployment_key();
-        if !has_bundle_credentials(Some(&am), deployment_key.as_deref()) {
-            return;
-        }
-        let root = crate::bundle::bundled_root();
-        if !force && bundle_cache_is_fresh(&root, BUNDLE_SYNC_TTL) {
-            tracing::debug!("proactive bundle sync skipped pre-spawn: cache is fresh");
-            return;
-        }
-        let in_flight = self.bundle_sync_in_flight.clone();
-        if in_flight
-            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-            .is_err()
-        {
-            tracing::debug!(
-                "proactive bundle sync skipped: another sync is already in flight"
-            );
-            return;
-        }
-        let proxy_base_url = self.cli_chat_proxy_base_url();
-        let alpha_test_key = self.alpha_test_key();
-        let senders: Vec<
-            tokio::sync::mpsc::UnboundedSender<crate::session::SessionCommand>,
-        > = self.sessions.borrow().values().map(|h| h.cmd_tx.clone()).collect();
-        tokio::task::spawn_local(async move {
-            let result = maybe_sync_bundle_to_root(
-                    &root,
-                    &proxy_base_url,
-                    Some(&am),
-                    deployment_key.as_deref(),
-                    alpha_test_key.as_deref(),
-                    force,
-                    BUNDLE_SYNC_TTL,
-                )
-                .await;
-            in_flight.store(false, Ordering::Release);
-            match result {
-                Ok(Some(res)) => {
-                    tracing::info!(
-                        version = % res.version, personas = res.personas_count, roles =
-                        res.roles_count, agents = res.agents_count, skills = res
-                        .skills_count, "proactive bundle sync complete"
-                    );
-                    Self::broadcast_refresh_skill_baseline(senders);
-                }
-                Ok(None) => {}
-                Err(err) => {
-                    tracing::warn!(error = % err, "proactive bundle sync failed");
-                }
-            }
-        });
     }
 }
 /// Handle a synthetic turn trace request: allocate a turn number, build a

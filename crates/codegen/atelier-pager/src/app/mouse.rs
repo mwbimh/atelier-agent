@@ -758,49 +758,6 @@ impl AgentView {
                             .scrollback
                             .entry_index_at_screen_row(click_row, self.pane_areas.scrollback);
                         if let Some(idx) = hit_idx {
-                            let credit_click = self
-                                .scrollback
-                                .entry(idx)
-                                .and_then(|entry| {
-                                    if let crate::scrollback::block::RenderBlock::CreditLimit(
-                                        ref blk,
-                                    ) = entry.block
-                                    {
-                                        use crate::scrollback::blocks::CreditLimitCardAction;
-                                        let choice = match blk.action {
-                                            CreditLimitCardAction::PurchaseCredits => {
-                                                atelier_telemetry::events::CreditLimitChoice::PurchaseCredits
-                                            }
-                                            CreditLimitCardAction::EnablePayg
-                                            | CreditLimitCardAction::IncreasePaygLimit => {
-                                                atelier_telemetry::events::CreditLimitChoice::PayAsYouGo
-                                            }
-                                        };
-                                        Some((blk.url.clone(), choice))
-                                    } else {
-                                        None
-                                    }
-                                });
-                            if let Some((url, choice)) = credit_click
-                                && let Some((area, _, _)) = self
-                                    .scrollback
-                                    .entry_screen_area(idx, self.pane_areas.scrollback)
-                            {
-                                let url_row = area.y + area.height.saturating_sub(2);
-                                if click_row >= url_row {
-                                    self.scrollback.set_selected(Some(idx));
-                                    atelier_telemetry::session_ctx::log_event(atelier_telemetry::events::CreditLimitUpsellClicked {
-                                        surface: atelier_telemetry::events::CreditLimitUpsellSurface::InlineCard,
-                                        choice,
-                                    });
-                                    crate::app::link_opener::open_url_if_safe(
-                                        &url,
-                                        crate::terminal::hyperlinks::SchemeFilter::Standard,
-                                    );
-                                    self.last_click = None;
-                                    return InputOutcome::Changed;
-                                }
-                            }
                             let selectable = self
                                 .scrollback
                                 .get(idx)

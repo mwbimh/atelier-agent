@@ -293,17 +293,26 @@ pub(super) fn dispatch_send_btw(app: &mut AppView, question: String) -> Vec<Effe
         return vec![];
     };
 
+    let request = crate::app::agent::BtwRequest {
+        request_id: agent.next_btw_request_id,
+        question: question.clone(),
+    };
+    agent.next_btw_request_id = agent
+        .next_btw_request_id
+        .checked_add(1)
+        .expect("BTW request ID exhausted");
     agent.prompt.set_text("");
     agent.btw_state = Some(crate::views::btw_overlay::BtwOverlayState::Loading {
         question: question.clone(),
     });
+    agent.btw_request = Some(request.clone());
     // Prompt keeps focus while the answer is in flight (panel focuses on Done).
     agent.btw_focused = false;
 
     vec![Effect::SendBtw {
         agent_id: id,
         session_id,
-        question,
+        request,
     }]
 }
 
@@ -315,30 +324,97 @@ pub(super) fn dispatch_runtime_extension(
     method: String,
     mut params: serde_json::Value,
 ) -> Vec<Effect> {
-    let ActiveView::Agent(id) = app.active_view else {
-        return vec![];
+    if is_btw_persist_method(&method) {
+        let ActiveView::Agent(agent_id) = app.active_view else {
+            return vec![];
+        };
+        let Some(agent) = app.agents.get(&agent_id) else {
+            return vec![];
+        };
+        let Some(session_id) = agent.session.session_id.as_ref() else {
+            return vec![];
+        };
+        let Some(request) = agent.btw_request.as_ref() else {
+            return vec![];
+        };
+        let Some(state) = agent.btw_state.as_ref() else {
+            return vec![];
+        };
+        if state.question() != request.question.as_str() {
+            return vec![];
+        }
+        let Some(expected_params) = state.persist_request(&session_id.to_string()) else {
+            return vec![];
+        };
+        if params.get("btwId") != expected_params.get("btwId")
+            || params.get("question") != expected_params.get("question")
+        {
+            return vec![];
+        }
+        return vec![Effect::PersistBtw {
+            agent_id,
+            request: request.clone(),
+            params: expected_params,
+        }];
+    }
+
+    let requires_session = runtime_extension_requires_session(&method);
+    let agent_id = match app.active_view {
+        ActiveView::Agent(id) if app.agents.contains_key(&id) => Some(id),
+        _ => None,
     };
-    let Some(agent) = app.agents.get_mut(&id) else {
+    let session_id = agent_id
+        .and_then(|id| app.agents.get(&id))
+        .and_then(|agent| agent.session.session_id.clone());
+
+    if requires_session && session_id.is_none() {
+        if let Some(id) = agent_id {
+            if let Some(agent) = app.agents.get_mut(&id) {
+                agent.show_toast("No active session");
+            }
+        } else {
+            app.show_toast("No active session");
+        }
         return vec![];
-    };
-    let Some(session_id) = agent.session.session_id.clone() else {
-        agent.show_toast("No active session");
-        return vec![];
-    };
-    let should_scope_to_session = !matches!(
-        method.as_str(),
-        "_atelier/task/list" | "atelier/task/list" | "_atelier/model/list" | "atelier/model/list"
-    );
-    if should_scope_to_session && let Some(object) = params.as_object_mut() {
+    }
+    if requires_session
+        && let (Some(session_id), Some(object)) = (session_id, params.as_object_mut())
+    {
         object
             .entry("sessionId".to_owned())
             .or_insert_with(|| serde_json::Value::String(session_id.to_string()));
     }
     vec![Effect::RuntimeExtension {
-        agent_id: id,
+        agent_id,
         method,
         params,
     }]
+}
+
+fn is_btw_persist_method(method: &str) -> bool {
+    matches!(method, "_atelier/btw/persist" | "atelier/btw/persist")
+}
+
+fn runtime_extension_requires_session(method: &str) -> bool {
+    !method.starts_with("_atelier/provider/")
+        && !method.starts_with("atelier/provider/")
+        && !method.starts_with("_atelier/model/")
+        && !method.starts_with("atelier/model/")
+        && !method.starts_with("_atelier/model_provider_override/")
+        && !method.starts_with("atelier/model_provider_override/")
+        && !method.starts_with("_atelier/credential/")
+        && !method.starts_with("atelier/credential/")
+        && !method.starts_with("_atelier/role/")
+        && !method.starts_with("atelier/role/")
+        && !matches!(
+            method,
+            "_atelier/task/list"
+                | "atelier/task/list"
+                | "_atelier/task/attach"
+                | "atelier/task/attach"
+                | "_atelier/task/cancel"
+                | "atelier/task/cancel"
+        )
 }
 
 /// Toast when a manual `/recap` produces no summary. Empty sessions get a clear
@@ -476,27 +552,73 @@ pub(super) fn handle_memory_note_saved(
 pub(super) fn handle_btw_response(
     app: &mut AppView,
     agent_id: AgentId,
-    result: Result<crate::app::actions::BtwResponseData, String>,
+    result: crate::app::actions::BtwTaskResult,
 ) -> Vec<Effect> {
     if let Some(agent) = app.agents.get_mut(&agent_id) {
-        use crate::views::btw_overlay::BtwOverlayState;
-        let question = match &agent.btw_state {
-            Some(BtwOverlayState::Loading { question }) => question.clone(),
-            _ => String::new(),
-        };
-        match result {
-            Ok(response) => {
-                // Answer arrived: show it (until Esc) and focus the panel
-                // so Up/Down scroll it until the user returns to the prompt.
-                agent.btw_state = Some(BtwOverlayState::done_with_data(question, response));
-                agent.btw_focused = true;
+        let (request, result) = match result {
+            crate::app::actions::BtwTaskResult::Answer { request, result } => {
+                (request, EitherBtwResult::Answer(result))
             }
-            Err(error) => {
-                // Error stays until Esc; nothing to scroll, keep prompt focus.
-                agent.btw_state = Some(BtwOverlayState::Error { question, error });
-                agent.btw_focused = false;
+            crate::app::actions::BtwTaskResult::Persist { request, result } => {
+                (request, EitherBtwResult::Persist(result))
+            }
+        };
+        if agent.btw_request.as_ref() != Some(&request) {
+            return vec![];
+        }
+        use crate::views::btw_overlay::BtwOverlayState;
+        match result {
+            EitherBtwResult::Answer(result) => {
+                if !matches!(
+                    agent.btw_state.as_ref(),
+                    Some(BtwOverlayState::Loading { question }) if question == &request.question
+                ) {
+                    return vec![];
+                }
+                match result {
+                    Ok(response) => {
+                        // Answer arrived: show it (until Esc) and focus the panel
+                        // so Up/Down scroll it until the user returns to the prompt.
+                        agent.btw_state =
+                            Some(BtwOverlayState::done_with_data(request.question, response));
+                        agent.btw_focused = true;
+                    }
+                    Err(error) => {
+                        // Error stays until Esc; nothing to scroll, keep prompt focus.
+                        agent.btw_state = Some(BtwOverlayState::Error {
+                            question: request.question,
+                            error,
+                        });
+                        agent.btw_focused = false;
+                    }
+                }
+            }
+            EitherBtwResult::Persist(result) => {
+                if !matches!(
+                    agent.btw_state.as_ref(),
+                    Some(BtwOverlayState::Done { question, .. }) if question == &request.question
+                ) {
+                    return vec![];
+                }
+                match result {
+                    Ok(true) => {
+                        if let Some(state) = agent.btw_state.as_mut() {
+                            state.mark_persisted();
+                        }
+                        agent.show_toast("BTW saved locally");
+                    }
+                    Ok(false) => agent.show_toast("BTW was not saved"),
+                    Err(error) => {
+                        agent.show_toast(&format!("_atelier/btw/persist failed: {error}"))
+                    }
+                }
             }
         }
     }
     vec![]
+}
+
+enum EitherBtwResult {
+    Answer(Result<crate::app::actions::BtwResponseData, String>),
+    Persist(Result<bool, String>),
 }

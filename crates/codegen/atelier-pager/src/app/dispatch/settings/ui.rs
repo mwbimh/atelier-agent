@@ -2,8 +2,8 @@
 
 use super::setters::{
     pr13_effective_default, set_ask_user_question_timeout_enabled_inner, set_auto_dark_theme_inner,
-    set_auto_light_theme_inner, set_auto_update_inner, set_collapsed_edit_blocks_inner,
-    set_compact_mode, set_compact_mode_inner, set_contextual_hint_inner, set_default_model_inner,
+    set_auto_light_theme_inner, set_collapsed_edit_blocks_inner, set_compact_mode,
+    set_compact_mode_inner, set_contextual_hint_inner, set_default_model_inner,
     set_default_selected_permission_inner, set_display_refresh_auto_cadence_inner,
     set_fork_secondary_model_inner, set_group_tool_verbs_inner, set_hunk_tracker_mode_inner,
     set_invert_scroll_inner, set_keep_text_selection_inner, set_max_thoughts_width_inner,
@@ -45,9 +45,7 @@ pub(crate) fn refresh_open_settings_modals(app: &mut AppView) {
     }
     let ui_snapshot = app.current_ui.clone();
     // Capture app-level fields before the mut-borrow loop.
-    let coding_data_sharing_opt_out_from_app = app.coding_data_retention_opt_out;
     let show_tips_from_app = app.show_tips;
-    let auto_update_from_app = app.auto_update;
     let respect_manual_folds_from_app = app.appearance.scrollback.scroll.respect_manual_folds;
     let auto_mode_gate_from_app = app.auto_mode_gate;
     let ask_user_question_timeout_enabled_from_app = app.ask_user_question_timeout_enabled;
@@ -78,11 +76,9 @@ pub(crate) fn refresh_open_settings_modals(app: &mut AppView) {
                     .iter()
                     .map(|(id, info)| (info.name.clone(), id.clone()))
                     .collect(),
-                coding_data_sharing_opt_out: coding_data_sharing_opt_out_from_app,
                 // Prefer optimistic pending over confirmed active.
                 plan_mode_active: agent.plan_mode_pending.unwrap_or(agent.plan_mode_active),
                 show_tips: show_tips_from_app,
-                auto_update: auto_update_from_app,
                 vim_mode: crate::appearance::cache::load_vim_mode(),
                 scroll_speed: crate::appearance::cache::load_scroll_speed(),
                 respect_manual_folds: respect_manual_folds_from_app,
@@ -152,9 +148,7 @@ pub(in crate::app::dispatch) fn dispatch_open_settings(app: &mut AppView) -> Vec
     let registry = app.settings_registry.clone();
     let ui_snapshot = app.current_ui.clone();
     // Capture app-level fields before the mut-borrow on the agent.
-    let coding_data_sharing_opt_out_from_app = app.coding_data_retention_opt_out;
     let show_tips_from_app = app.show_tips;
-    let auto_update_from_app = app.auto_update;
     let respect_manual_folds_from_app = app.appearance.scrollback.scroll.respect_manual_folds;
     let auto_mode_gate_from_app = app.auto_mode_gate;
     let ask_user_question_timeout_enabled_from_app = app.ask_user_question_timeout_enabled;
@@ -191,11 +185,9 @@ pub(in crate::app::dispatch) fn dispatch_open_settings(app: &mut AppView) -> Vec
             .iter()
             .map(|(id, info)| (info.name.clone(), id.clone()))
             .collect(),
-        coding_data_sharing_opt_out: coding_data_sharing_opt_out_from_app,
         // Prefer optimistic pending over confirmed active.
         plan_mode_active: agent.plan_mode_pending.unwrap_or(agent.plan_mode_active),
         show_tips: show_tips_from_app,
-        auto_update: auto_update_from_app,
         vim_mode: crate::appearance::cache::load_vim_mode(),
         scroll_speed: crate::appearance::cache::load_scroll_speed(),
         respect_manual_folds: respect_manual_folds_from_app,
@@ -662,10 +654,8 @@ pub(crate) fn build_pager_snapshot(app: &AppView) -> crate::settings::PagerLocal
         auto_mode: agent_auto_mode(app),
         current_model_name: agent_current_model_name(app),
         available_models: agent_available_models(app),
-        coding_data_sharing_opt_out: app.coding_data_retention_opt_out,
         plan_mode_active: agent_plan_mode(app),
         show_tips: app.show_tips,
-        auto_update: app.auto_update,
         vim_mode: crate::appearance::cache::load_vim_mode(),
         scroll_speed: crate::appearance::cache::load_scroll_speed(),
         respect_manual_folds: app.appearance.scrollback.scroll.respect_manual_folds,
@@ -801,12 +791,6 @@ pub(in crate::app::dispatch) fn action_for_reset(
         ("max_thoughts_width", SettingValue::Int(i)) => Some(Action::SetMaxThoughtsWidth(*i)),
         // coding_data_sharing: "opt-in" / "opt-out" → bool.
         // "opt-out" arm is a skew guard (default is "opt-in").
-        ("coding_data_sharing", SettingValue::Enum("opt-in")) => {
-            Some(Action::SetCodingDataSharing { opted_in: true })
-        }
-        ("coding_data_sharing", SettingValue::Enum("opt-out")) => {
-            Some(Action::SetCodingDataSharing { opted_in: false })
-        }
         // plan_mode: "on" / "off" → PlanModeKind.
         // "on" arm is a skew guard (default is "off").
         ("plan_mode", SettingValue::Enum("off")) => {
@@ -815,9 +799,8 @@ pub(in crate::app::dispatch) fn action_for_reset(
         ("plan_mode", SettingValue::Enum("on")) => {
             Some(Action::SetPlanMode(crate::app::actions::PlanModeKind::On))
         }
-        // show_tips / auto_update / display_refresh_auto_cadence: direct bool.
+        // Direct boolean settings.
         ("show_tips", SettingValue::Bool(b)) => Some(Action::SetShowTips(*b)),
-        ("auto_update", SettingValue::Bool(b)) => Some(Action::SetAutoUpdate(*b)),
         ("display_refresh_auto_cadence", SettingValue::Bool(b)) => {
             Some(Action::SetDisplayRefreshAutoCadence(*b))
         }
@@ -959,66 +942,13 @@ pub(in crate::app::dispatch) fn apply_setting_rollback(
             // other rollback arms must not clobber it from the global canonical.
             sync_active_auto_flag(app);
         }
-        // default_model: best-effort rollback. If the prior model no
-        // longer resolves, leave optimistic value + log.
-        ("default_model", SettingValue::String(s)) => {
-            if s.is_empty() {
-                tracing::warn!(
-                    target: "settings",
-                    key = "default_model",
-                    "rollback to empty string requested but no \
-                     'clear current model' API exists — leaving live \
-                     state at optimistic value (next session reload \
-                     will resolve via shell default-resolution chain)",
-                );
-            } else {
-                // Resolve the prior model ID back to a ModelId
-                // and call the typed inner. If resolution fails
-                // (catalog changed mid-flight), log + leave
-                // optimistic.
-                let (resolved, session_id) = if let ActiveView::Agent(aid) = app.active_view
-                    && let Some(agent) = app.agents.get(&aid)
-                {
-                    (
-                        agent.session.models.resolve_by_name_or_id(s),
-                        agent.session.session_id.clone(),
-                    )
-                } else {
-                    (None, None)
-                };
-                match resolved {
-                    Some(id) => {
-                        let _ = set_default_model_inner(app, &id);
-                        // Emit reverse SwitchModel so the ACP session
-                        // matches the rolled-back pager mirror.
-                        if let ActiveView::Agent(aid) = app.active_view
-                            && let Some(sid) = session_id
-                        {
-                            if let Some(agent) = app.agents.get_mut(&aid) {
-                                agent.session.model_switch_pending = true;
-                            }
-                            companion_effects.push(Effect::SwitchModel {
-                                agent_id: aid,
-                                session_id: sid,
-                                model_id: id,
-                                effort: None,
-                                prev_model_id: None,
-                            });
-                        }
-                    }
-                    None => {
-                        tracing::warn!(
-                            target: "settings",
-                            key = "default_model",
-                            value = %s,
-                            "rollback model id no longer resolves in catalog — \
-                             in-memory state stays at optimistic value; ACP session \
-                             may diverge from pager mirror until next setter dispatch",
-                        );
-                    }
-                }
-            }
-        }
+        // `default_model` no longer uses PersistSetting, so this arm is only a
+        // defensive guard for stale queued results from an older pager build.
+        ("default_model", SettingValue::String(_)) => tracing::warn!(
+            target: "settings",
+            key = "default_model",
+            "ignored rollback for retired default_model setting; roles.main remains authoritative",
+        ),
         // max_thoughts_width: direct inner call.
         ("max_thoughts_width", SettingValue::Int(i)) => set_max_thoughts_width_inner(app, *i),
         // scroll_speed: direct inner call (clamp handled by inner).
@@ -1091,20 +1021,13 @@ pub(in crate::app::dispatch) fn apply_setting_rollback(
                 crate::settings::canonical_voice_stt_language(Some(s)),
             );
         }
-        // show_tips / auto_update: if rollback equals the effective
+        // If rollback equals the effective
         // default, restore to None (keeps mirror in sync with disk).
         ("show_tips", SettingValue::Bool(b)) => {
             if Some(*b) == pr13_effective_default("show_tips") {
                 app.show_tips = None;
             } else {
                 set_show_tips_inner(app, *b);
-            }
-        }
-        ("auto_update", SettingValue::Bool(b)) => {
-            if Some(*b) == pr13_effective_default("auto_update") {
-                app.auto_update = None;
-            } else {
-                set_auto_update_inner(app, *b);
             }
         }
         // fork_secondary_model: empty rollback restores baseline default.

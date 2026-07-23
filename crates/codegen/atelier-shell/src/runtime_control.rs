@@ -40,6 +40,7 @@ pub struct RuntimeStatus {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct RuntimeTask {
+    #[serde(rename = "taskId", alias = "id")]
     pub id: String,
     pub session_id: String,
     pub turn_id: Option<String>,
@@ -54,6 +55,8 @@ pub struct RuntimeTask {
     /// session turn and must not be attached or cancelled as if they did.
     #[serde(default = "default_task_attachable")]
     pub attachable: bool,
+    #[serde(default)]
+    pub diagnostic_message: Option<String>,
 }
 
 fn default_task_attachable() -> bool {
@@ -146,6 +149,7 @@ pub struct RecoveryResult {
 pub struct RuntimeControl {
     statuses: HashMap<String, RuntimeStatus>,
     tasks: VecDeque<RuntimeTask>,
+    task_first_event_ids: HashMap<String, u64>,
     requests: VecDeque<RequestSnapshot>,
     events: VecDeque<TraceRecord>,
     pending_retry_counts: HashMap<String, u32>,
@@ -167,6 +171,7 @@ impl RuntimeControl {
         Self {
             statuses: HashMap::new(),
             tasks: VecDeque::new(),
+            task_first_event_ids: HashMap::new(),
             requests: VecDeque::new(),
             events: VecDeque::new(),
             pending_retry_counts: HashMap::new(),
@@ -223,6 +228,7 @@ impl RuntimeControl {
             started_at_ms: now_ms,
             last_event_id: 0,
             attachable: true,
+            diagnostic_message: None,
         });
         self.requests.push_back(RequestSnapshot {
             request_id: request_id.clone(),
@@ -252,13 +258,15 @@ impl RuntimeControl {
         let event_id = self.record_event_at(
             now_ms,
             Some(session_id),
-            Some(request_id),
+            Some(request_id.clone()),
             "request.started",
             Value::Null,
         );
         if let Some(task) = self.tasks.back_mut() {
             task.last_event_id = event_id;
         }
+        self.task_first_event_ids
+            .insert(request_id.clone(), event_id);
         self.trim();
     }
 
@@ -306,7 +314,96 @@ impl RuntimeControl {
         {
             task.state = state;
             task.last_event_id = event_id;
+            if diagnostic_message.is_some() {
+                task.diagnostic_message =
+                    diagnostic_message.as_deref().map(xai_acp_lib::redact_text);
+            }
         }
+        true
+    }
+
+    /// Record the first streamed token for the foreground request and move the
+    /// visible Runtime state into streaming. Repeated calls only refresh
+    /// progress; the first-token latency remains stable.
+    pub fn mark_first_token(&mut self, session_id: &str, now_ms: u64) -> bool {
+        let started_at_ms = self
+            .statuses
+            .get(session_id)
+            .map(|status| status.started_at_ms);
+        if !self.update_status(session_id, RuntimeState::StreamingResponse, now_ms, None) {
+            return false;
+        }
+        let Some(started_at_ms) = started_at_ms else {
+            return false;
+        };
+        let request_id = self
+            .statuses
+            .get(session_id)
+            .and_then(|status| status.request_id.clone());
+        if let Some(request_id) = request_id
+            && let Some(request) = self
+                .requests
+                .iter_mut()
+                .rev()
+                .find(|request| request.request_id == request_id)
+            && request.first_token_latency_ms.is_none()
+        {
+            request.first_token_latency_ms = Some(now_ms.saturating_sub(started_at_ms));
+        }
+        true
+    }
+
+    pub fn mark_retry(
+        &mut self,
+        session_id: &str,
+        retry_count: u32,
+        now_ms: u64,
+        diagnostic_message: Option<String>,
+    ) -> bool {
+        if !self.update_status(
+            session_id,
+            RuntimeState::WaitingForProvider,
+            now_ms,
+            diagnostic_message,
+        ) {
+            return false;
+        }
+        if let Some(status) = self.statuses.get_mut(session_id) {
+            status.retry_count = retry_count;
+        }
+        let request_id = self
+            .statuses
+            .get(session_id)
+            .and_then(|status| status.request_id.clone());
+        if let Some(request_id) = request_id
+            && let Some(request) = self
+                .requests
+                .iter_mut()
+                .rev()
+                .find(|request| request.request_id == request_id)
+        {
+            request.retry_count = retry_count;
+        }
+        true
+    }
+
+    pub fn mark_http_status(&mut self, session_id: &str, status_code: u16) -> bool {
+        let request_id = self
+            .statuses
+            .get(session_id)
+            .and_then(|status| status.request_id.clone());
+        let Some(request_id) = request_id else {
+            return false;
+        };
+        let Some(request) = self
+            .requests
+            .iter_mut()
+            .rev()
+            .find(|request| request.request_id == request_id)
+        else {
+            return false;
+        };
+        request.http_status = Some(status_code);
         true
     }
 
@@ -338,6 +435,7 @@ impl RuntimeControl {
             started_at_ms: now_ms,
             last_event_id: 0,
             attachable,
+            diagnostic_message: None,
         });
         let event_id = self.record_event_at(
             now_ms,
@@ -349,6 +447,7 @@ impl RuntimeControl {
         if let Some(task) = self.tasks.iter_mut().rev().find(|task| task.id == task_id) {
             task.last_event_id = event_id;
         }
+        self.task_first_event_ids.insert(task_id.clone(), event_id);
         self.trim();
     }
 
@@ -359,11 +458,13 @@ impl RuntimeControl {
         now_ms: u64,
         diagnostic_message: Option<String>,
     ) -> bool {
+        let redacted_diagnostic = diagnostic_message.as_deref().map(xai_acp_lib::redact_text);
         let session_id = {
             let Some(task) = self.tasks.iter_mut().rev().find(|task| task.id == task_id) else {
                 return false;
             };
             task.state = state;
+            task.diagnostic_message = redacted_diagnostic.clone();
             task.session_id.clone()
         };
         let event_id = self.record_event_at(
@@ -373,9 +474,7 @@ impl RuntimeControl {
             "runtime.task_state_changed",
             serde_json::json!({
                 "state": state,
-                "diagnosticMessage": diagnostic_message
-                    .as_deref()
-                    .map(xai_acp_lib::redact_text),
+                "diagnosticMessage": redacted_diagnostic,
             }),
         );
         if let Some(task) = self.tasks.iter_mut().rev().find(|task| task.id == task_id) {
@@ -394,6 +493,29 @@ impl RuntimeControl {
         self.update_task(task_id, state, now_ms, diagnostic_message)
     }
 
+    pub fn mark_task_detached(&mut self, task_id: &str, now_ms: u64) -> bool {
+        let Some(session_id) = self
+            .tasks
+            .iter()
+            .rev()
+            .find(|task| task.id == task_id)
+            .map(|task| task.session_id.clone())
+        else {
+            return false;
+        };
+        let event_id = self.record_event_at(
+            now_ms,
+            Some(session_id),
+            Some(task_id.to_owned()),
+            "runtime.task_detached",
+            Value::Null,
+        );
+        if let Some(task) = self.tasks.iter_mut().rev().find(|task| task.id == task_id) {
+            task.last_event_id = event_id;
+        }
+        true
+    }
+
     pub fn finish_request(
         &mut self,
         session_id: &str,
@@ -402,32 +524,76 @@ impl RuntimeControl {
         error_stage: Option<String>,
         diagnostic_message: Option<String>,
     ) -> bool {
-        let (request_id, started_at) = {
-            let Some(status) = self.statuses.get_mut(session_id) else {
-                return false;
-            };
-            status.state = state;
-            status.last_progress_at_ms = now_ms;
-            status.diagnostic_message =
-                diagnostic_message.map(|message| xai_acp_lib::redact_text(&message));
-            (status.request_id.clone(), status.started_at_ms)
+        let Some(request_id) = self
+            .statuses
+            .get(session_id)
+            .and_then(|status| status.request_id.clone())
+        else {
+            return false;
         };
-        if let Some(request_id_ref) = request_id.as_deref()
-            && let Some(request) = self
-                .requests
-                .iter_mut()
-                .rev()
-                .find(|request| request.request_id == request_id_ref)
+        self.finish_request_by_id(
+            session_id,
+            &request_id,
+            state,
+            now_ms,
+            error_stage,
+            diagnostic_message,
+        )
+    }
+
+    pub fn finish_request_by_id(
+        &mut self,
+        session_id: &str,
+        request_id: &str,
+        state: RuntimeState,
+        now_ms: u64,
+        error_stage: Option<String>,
+        diagnostic_message: Option<String>,
+    ) -> bool {
+        let redacted_diagnostic = diagnostic_message.as_deref().map(xai_acp_lib::redact_text);
+        let request_started_at = self
+            .requests
+            .iter()
+            .rev()
+            .find(|request| request.request_id == request_id && request.session_id == session_id)
+            .map(|request| request.started_at_ms);
+        let status_started_at = self
+            .statuses
+            .get(session_id)
+            .filter(|status| status.request_id.as_deref() == Some(request_id))
+            .map(|status| status.started_at_ms);
+        let task_started_at = self
+            .tasks
+            .iter()
+            .rev()
+            .find(|task| task.id == request_id && task.session_id == session_id)
+            .map(|task| task.started_at_ms);
+        let Some(started_at) = request_started_at.or(status_started_at).or(task_started_at) else {
+            return false;
+        };
+
+        if let Some(request) = self
+            .requests
+            .iter_mut()
+            .rev()
+            .find(|request| request.request_id == request_id)
         {
             request.state = state;
             request.error_stage = error_stage.map(|stage| xai_acp_lib::redact_text(&stage));
             request.finished_at_ms = Some(now_ms);
             request.total_duration_ms = Some(now_ms.saturating_sub(started_at));
         }
+        if let Some(status) = self.statuses.get_mut(session_id)
+            && status.request_id.as_deref() == Some(request_id)
+        {
+            status.state = state;
+            status.last_progress_at_ms = now_ms;
+            status.diagnostic_message = redacted_diagnostic.clone();
+        }
         let event_id = self.record_event_at(
             now_ms,
             Some(session_id.to_owned()),
-            request_id.clone(),
+            Some(request_id.to_owned()),
             if state == RuntimeState::Completed {
                 "request.completed"
             } else {
@@ -435,15 +601,15 @@ impl RuntimeControl {
             },
             Value::Null,
         );
-        if let Some(request_id) = request_id
-            && let Some(task) = self
-                .tasks
-                .iter_mut()
-                .rev()
-                .find(|task| task.id == request_id)
+        if let Some(task) = self
+            .tasks
+            .iter_mut()
+            .rev()
+            .find(|task| task.id == request_id)
         {
             task.state = state;
             task.last_event_id = event_id;
+            task.diagnostic_message = redacted_diagnostic;
         }
         true
     }
@@ -613,6 +779,48 @@ impl RuntimeControl {
             .collect()
     }
 
+    pub fn events_after_task(
+        &self,
+        task_id: &str,
+        after_event_id: u64,
+        limit: usize,
+    ) -> Vec<TraceRecord> {
+        self.events
+            .iter()
+            .filter(|event| event.event_id > after_event_id)
+            .filter(|event| event.request_id.as_deref() == Some(task_id))
+            .take(limit.max(1))
+            .cloned()
+            .collect()
+    }
+
+    pub fn task_event_bounds(&self, task_id: &str) -> (Option<u64>, Option<u64>) {
+        let mut event_ids = self
+            .events
+            .iter()
+            .filter(|event| event.request_id.as_deref() == Some(task_id))
+            .map(|event| event.event_id);
+        let oldest = event_ids.next();
+        let latest = event_ids.last().or(oldest);
+        (oldest, latest)
+    }
+
+    pub fn task_replay_truncated(&self, task_id: &str, after_event_id: u64) -> bool {
+        let Some(task) = self.tasks.iter().rev().find(|task| task.id == task_id) else {
+            return false;
+        };
+        if task.last_event_id <= after_event_id {
+            return false;
+        }
+        let Some(first_event_id) = self.task_first_event_ids.get(task_id).copied() else {
+            return false;
+        };
+        match self.task_event_bounds(task_id).0 {
+            Some(oldest) => oldest > first_event_id && after_event_id < oldest,
+            None => true,
+        }
+    }
+
     pub fn oldest_event_id(&self) -> Option<u64> {
         self.events.front().map(|event| event.event_id)
     }
@@ -714,7 +922,9 @@ impl RuntimeControl {
             self.requests.pop_front();
         }
         while self.tasks.len() > self.request_limit {
-            self.tasks.pop_front();
+            if let Some(task) = self.tasks.pop_front() {
+                self.task_first_event_ids.remove(&task.id);
+            }
         }
         while self.events.len() > self.event_limit {
             self.events.pop_front();
@@ -817,6 +1027,243 @@ mod tests {
         assert_eq!(control.events_after(None, 1, 100)[0].event_id, 2);
         assert_eq!(control.oldest_event_id(), Some(1));
         assert_eq!(control.latest_event_id(), Some(2));
+    }
+
+    #[test]
+    fn runtime_task_wire_uses_pager_field_names() {
+        let mut control = RuntimeControl::new(8, 8);
+        control.begin_auxiliary_task(
+            "task-1",
+            "session-1",
+            None,
+            "agent-1",
+            "main",
+            RuntimeState::RunningTool,
+            true,
+            1,
+        );
+        control.finish_task(
+            "task-1",
+            RuntimeState::Failed,
+            2,
+            Some("provider timeout".to_owned()),
+        );
+
+        let value = serde_json::to_value(control.task("task-1")).expect("serialize runtime task");
+        assert_eq!(value["taskId"], "task-1");
+        assert_eq!(value["diagnosticMessage"], "provider timeout");
+        assert!(value.get("id").is_none());
+    }
+
+    #[test]
+    fn task_replay_filters_other_tasks_in_the_same_session() {
+        let mut control = RuntimeControl::new(8, 16);
+        control.record_event_at(
+            1,
+            Some("session-1".to_owned()),
+            Some("task-1".to_owned()),
+            "task.one",
+            Value::Null,
+        );
+        control.record_event_at(
+            2,
+            Some("session-1".to_owned()),
+            Some("task-2".to_owned()),
+            "task.two",
+            Value::Null,
+        );
+
+        let events = control.events_after_task("task-1", 0, 16);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].request_id.as_deref(), Some("task-1"));
+    }
+
+    #[test]
+    fn task_replay_gap_ignores_interleaved_ids_but_detects_eviction() {
+        let mut retained = RuntimeControl::new(8, 8);
+        retained.begin_auxiliary_task(
+            "task-1",
+            "session-1",
+            None,
+            "agent-1",
+            "main",
+            RuntimeState::RunningTool,
+            true,
+            1,
+        );
+        retained.begin_auxiliary_task(
+            "task-2",
+            "session-1",
+            None,
+            "agent-1",
+            "main",
+            RuntimeState::RunningTool,
+            true,
+            2,
+        );
+        retained.update_task("task-1", RuntimeState::StreamingResponse, 3, None);
+        assert!(!retained.task_replay_truncated("task-1", 0));
+
+        let mut evicted = RuntimeControl::new(8, 2);
+        evicted.begin_auxiliary_task(
+            "task-1",
+            "session-1",
+            None,
+            "agent-1",
+            "main",
+            RuntimeState::RunningTool,
+            true,
+            1,
+        );
+        evicted.begin_auxiliary_task(
+            "task-2",
+            "session-1",
+            None,
+            "agent-1",
+            "main",
+            RuntimeState::RunningTool,
+            true,
+            2,
+        );
+        evicted.update_task("task-1", RuntimeState::StreamingResponse, 3, None);
+        assert!(evicted.task_replay_truncated("task-1", 0));
+    }
+
+    #[test]
+    fn detach_marker_preserves_the_live_execution_state() {
+        let mut control = RuntimeControl::new(8, 16);
+        control.begin_request("session-1", "request-1", None, "main", None, None, 1);
+        control.update_status(
+            "session-1",
+            RuntimeState::WaitingForPermission,
+            2,
+            Some("Waiting for permission: bash".to_owned()),
+        );
+
+        assert!(control.mark_task_detached("request-1", 3));
+
+        assert_eq!(
+            control.status("session-1").unwrap().state,
+            RuntimeState::WaitingForPermission
+        );
+        assert_eq!(
+            control.task("request-1").unwrap().state,
+            RuntimeState::WaitingForPermission
+        );
+        let events = control.events_after_task("request-1", 0, 16);
+        assert_eq!(events.last().unwrap().kind, "runtime.task_detached");
+    }
+
+    #[test]
+    fn detached_request_completion_does_not_finish_a_newer_session_request() {
+        let mut control = RuntimeControl::new(8, 32);
+        control.begin_request("session-1", "request-old", None, "main", None, None, 1);
+        control.begin_request("session-1", "request-new", None, "main", None, None, 2);
+
+        assert!(control.finish_request_by_id(
+            "session-1",
+            "request-old",
+            RuntimeState::Completed,
+            3,
+            None,
+            None,
+        ));
+
+        assert_eq!(
+            control.request("request-old").unwrap().state,
+            RuntimeState::Completed
+        );
+        assert_eq!(
+            control.request("request-new").unwrap().state,
+            RuntimeState::PreparingContext
+        );
+        let status = control.status("session-1").unwrap();
+        assert_eq!(status.request_id.as_deref(), Some("request-new"));
+        assert_eq!(status.state, RuntimeState::PreparingContext);
+    }
+
+    #[test]
+    fn request_can_finish_after_its_inspector_snapshot_is_evicted() {
+        let mut control = RuntimeControl::new(8, 32);
+        control.begin_request("session-1", "request-1", None, "main", None, None, 1);
+        control.requests.clear();
+
+        assert!(control.finish_request_by_id(
+            "session-1",
+            "request-1",
+            RuntimeState::Completed,
+            2,
+            None,
+            None,
+        ));
+
+        assert_eq!(
+            control.status("session-1").unwrap().state,
+            RuntimeState::Completed
+        );
+        assert_eq!(
+            control.task("request-1").unwrap().state,
+            RuntimeState::Completed
+        );
+    }
+
+    #[test]
+    fn auxiliary_side_query_lifecycle_never_overwrites_the_parent_request() {
+        let mut control = RuntimeControl::new(8, 32);
+        control.begin_request("session-1", "main-request", None, "main", None, None, 1);
+        control.update_status("session-1", RuntimeState::StreamingResponse, 2, None);
+
+        control.begin_auxiliary_task(
+            "btw-1",
+            "session-1",
+            None,
+            "session-1",
+            "main",
+            RuntimeState::PreparingContext,
+            false,
+            3,
+        );
+        control.finish_task(
+            "btw-1",
+            RuntimeState::Failed,
+            4,
+            Some("side failure".into()),
+        );
+
+        let parent = control.status("session-1").unwrap();
+        assert_eq!(parent.request_id.as_deref(), Some("main-request"));
+        assert_eq!(parent.state, RuntimeState::StreamingResponse);
+        let side_query = control.task("btw-1").unwrap();
+        assert_eq!(side_query.state, RuntimeState::Failed);
+        assert!(!side_query.attachable);
+    }
+
+    #[test]
+    fn replay_after_cursor_is_strict_and_never_repeats_the_cursor_event() {
+        let mut control = RuntimeControl::new(8, 16);
+        control.begin_auxiliary_task(
+            "task-1",
+            "session-1",
+            None,
+            "agent-1",
+            "main",
+            RuntimeState::WaitingForProvider,
+            true,
+            1,
+        );
+        control.update_task("task-1", RuntimeState::StreamingResponse, 2, None);
+        control.update_task("task-1", RuntimeState::RunningTool, 3, None);
+        let first_page = control.events_after_task("task-1", 0, 2);
+        let cursor = first_page.last().unwrap().event_id;
+
+        let second_page = control.events_after_task("task-1", cursor, 16);
+
+        assert!(second_page.iter().all(|event| event.event_id > cursor));
+        assert!(first_page.iter().all(|first| {
+            second_page
+                .iter()
+                .all(|second| first.event_id != second.event_id)
+        }));
     }
 
     #[test]

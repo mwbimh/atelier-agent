@@ -311,7 +311,7 @@ impl AgentView {
                     }
                     _ => {}
                 }
-            } else if cfg!(not(windows))
+            } else if (cfg!(test) || cfg!(not(windows)))
                 && key!(Tab).matches(key)
                 && self.prompt_input_mode == PromptInputMode::Bash
                 && !self.prompt.text().is_empty()

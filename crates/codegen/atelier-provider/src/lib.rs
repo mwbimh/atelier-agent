@@ -1164,6 +1164,44 @@ impl Serialize for ProviderSnapshot {
     }
 }
 
+impl ProviderSnapshot {
+    pub fn resolve_wire_api(&self, key: &ModelKey) -> Result<ResolvedWireApi, ProviderError> {
+        let model = self
+            .models
+            .iter()
+            .find(|model| model.key == *key)
+            .ok_or_else(|| ProviderError::ModelNotFound(key.to_string()))?;
+        self.providers
+            .iter()
+            .find(|provider| provider.id == key.provider_id)
+            .ok_or_else(|| ProviderError::ProviderNotFound(key.provider_id.clone()))?;
+        if let Some(override_config) = self.model_provider_overrides.get(&key.to_string())
+            && let Some(wire_api) = override_config.wire_api
+        {
+            return Ok(ResolvedWireApi {
+                provider: key.provider_id.clone(),
+                model: key.model_id.clone(),
+                wire_api,
+                source: WireApiSource::ProviderModelOverride,
+            });
+        }
+        if let Some(wire_api) = model.wire_api {
+            return Ok(ResolvedWireApi {
+                provider: key.provider_id.clone(),
+                model: key.model_id.clone(),
+                wire_api,
+                source: WireApiSource::ModelSetting,
+            });
+        }
+        Ok(ResolvedWireApi {
+            provider: key.provider_id.clone(),
+            model: key.model_id.clone(),
+            wire_api: WireApi::ChatCompletions,
+            source: WireApiSource::DefaultChatCompletions,
+        })
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ProviderRegistry {
     path: Option<PathBuf>,
@@ -1417,49 +1455,7 @@ impl ProviderRegistry {
     }
 
     pub fn resolve_wire_api(&self, key: &ModelKey) -> Result<ResolvedWireApi, ProviderError> {
-        let model = self
-            .state
-            .models
-            .get(&key.to_string())
-            .ok_or_else(|| ProviderError::ModelNotFound(key.to_string()))?;
-        self.state
-            .providers
-            .get(&key.provider_id)
-            .ok_or_else(|| ProviderError::ProviderNotFound(key.provider_id.clone()))?;
-        if let Some(override_config) = self.model_provider_override(key)
-            && let Some(wire_api) = override_config.wire_api
-        {
-            return Ok(ResolvedWireApi {
-                provider: key.provider_id.clone(),
-                model: key.model_id.clone(),
-                wire_api,
-                source: WireApiSource::ProviderModelOverride,
-            });
-        }
-        if let Some(config) = self.state.model_configs.get(&key.model_id)
-            && let Some(wire_api) = config.wire_api
-        {
-            return Ok(ResolvedWireApi {
-                provider: key.provider_id.clone(),
-                model: key.model_id.clone(),
-                wire_api,
-                source: WireApiSource::ModelSetting,
-            });
-        }
-        if let Some(wire_api) = model.descriptor.wire_api {
-            return Ok(ResolvedWireApi {
-                provider: key.provider_id.clone(),
-                model: key.model_id.clone(),
-                wire_api,
-                source: WireApiSource::ModelSetting,
-            });
-        }
-        Ok(ResolvedWireApi {
-            provider: key.provider_id.clone(),
-            model: key.model_id.clone(),
-            wire_api: WireApi::ChatCompletions,
-            source: WireApiSource::DefaultChatCompletions,
-        })
+        self.snapshot().resolve_wire_api(key)
     }
 
     pub fn default_model(&self) -> Option<&ModelKey> {
@@ -1585,6 +1581,16 @@ impl ProviderRegistry {
                 ));
             }
         }
+        let discovered_keys = descriptors
+            .iter()
+            .map(|descriptor| descriptor.key.to_string())
+            .collect::<std::collections::HashSet<_>>();
+        self.state.models.retain(|key, stored| {
+            let belongs_to_provider = stored.descriptor.key.provider_id == provider_id;
+            let remote_backed = stored.descriptor.source == ModelSource::Remote
+                || stored.base_source == Some(ModelSource::Remote);
+            !belongs_to_provider || !remote_backed || discovered_keys.contains(key)
+        });
         for mut descriptor in descriptors {
             descriptor.source = ModelSource::Remote;
             self.upsert_model(descriptor)?;
@@ -1656,21 +1662,55 @@ impl ProviderRegistry {
         let mut temp = tempfile::NamedTempFile::new_in(parent)?;
         temp.write_all(content.as_bytes())?;
         temp.as_file().sync_all()?;
-        match temp.persist(path) {
-            Ok(_) => Ok(()),
-            Err(error) => {
-                // Windows cannot rename over an existing file. The fallback is
-                // intentionally explicit and still writes only the complete
-                // serialized document, never a partially written config.
-                std::fs::write(path, content).map_err(|fallback| {
-                    ProviderError::Io(std::io::Error::new(
-                        fallback.kind(),
-                        format!("atomic provider config replacement failed: {error}; fallback failed: {fallback}"),
-                    ))
-                })
-            }
-        }
+        persist_provider_temp_file(temp, path)
     }
+}
+
+#[cfg(not(windows))]
+fn persist_provider_temp_file(
+    temp: tempfile::NamedTempFile,
+    path: &Path,
+) -> Result<(), ProviderError> {
+    temp.persist(path)
+        .map(|_| ())
+        .map_err(|error| ProviderError::Io(error.error))
+}
+
+#[cfg(windows)]
+fn persist_provider_temp_file(
+    temp: tempfile::NamedTempFile,
+    path: &Path,
+) -> Result<(), ProviderError> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows::Win32::Storage::FileSystem::{
+        MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
+    };
+    use windows::core::PCWSTR;
+
+    let temp_path = temp.into_temp_path();
+    let source = temp_path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let destination = path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    unsafe {
+        MoveFileExW(
+            PCWSTR(source.as_ptr()),
+            PCWSTR(destination.as_ptr()),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    }
+    .map_err(|error| {
+        ProviderError::Io(std::io::Error::other(format!(
+            "atomic provider config replacement failed: {error}"
+        )))
+    })?;
+    Ok(())
 }
 
 pub mod rpc {

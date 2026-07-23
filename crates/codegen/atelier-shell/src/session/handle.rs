@@ -142,7 +142,6 @@ pub struct SessionHandle {
     pub attribution_callback: Option<atelier_sampler::SharedAttributionCallback>,
     /// The agent definition name for this session.
     pub agent_name: String,
-    pub managed_mcp_proxy_base_url: String,
     pub session_default_agent_profile: Option<String>,
     /// Subagent types this agent can spawn (from Agent(t1, t2) in tools).
     pub allowed_subagent_types: Option<Vec<String>>,

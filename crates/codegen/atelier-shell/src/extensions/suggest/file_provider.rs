@@ -57,11 +57,6 @@ pub(crate) struct FilePathProvider;
 
 impl FilePathProvider {
     pub async fn suggest(&self, ctx: &SuggestContext) -> Vec<RankedSuggestion> {
-        // shell_token quoting is POSIX-only: cmd/pwsh would misparse the
-        // escaped line, so Windows serves no deterministic completions.
-        if cfg!(windows) {
-            return Vec::new();
-        }
         let tok = match extract_file_context(ctx.prefix()) {
             Some(t) => t,
             None => return Vec::new(),
@@ -124,7 +119,7 @@ fn extract_file_context(prefix: &str) -> Option<CurrentToken> {
 }
 
 fn is_path_like(s: &str) -> bool {
-    s.contains('/') || s == "~"
+    s.contains('/') || (cfg!(windows) && s.contains('\\')) || s == "~"
 }
 
 // ── Directory/prefix split + `~`/`$VAR` expansion (listing only) ────────
@@ -477,6 +472,8 @@ mod tests {
         assert!(!is_path_like("."));
         assert!(!is_path_like(".."));
         assert!(!is_path_like("~user"));
+        #[cfg(windows)]
+        assert!(is_path_like(r"C:\Users\atelier"));
     }
 
     // --- split_token + expansion ---

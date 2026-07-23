@@ -139,6 +139,12 @@ impl From<&str> for RpcId {
     }
 }
 
+impl From<i64> for RpcId {
+    fn from(value: i64) -> Self {
+        Self::Number(value)
+    }
+}
+
 /// Minimal JSON-RPC request envelope for `_atelier/*` methods.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RpcRequest {
@@ -376,6 +382,7 @@ impl PartialEq<EventId> for u64 {
 
 /// An event with a sequence number and the session context needed to replay it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SequencedEvent {
     pub event_id: EventId,
     pub session_id: String,
@@ -1157,7 +1164,7 @@ mod tests {
         let wire = serde_json::to_value((&protocol, &event)).expect("serialize protocol and event");
         assert_eq!(wire[0]["version"], "2.3");
         assert_eq!(wire[0]["capabilities"], json!(["events", "diagnostics"]));
-        assert_eq!(wire[1]["event_id"], 1);
+        assert_eq!(wire[1]["eventId"], 1);
         assert_eq!(wire[1]["type"], "turn_started");
 
         let protocol_back: VersionedProtocol =

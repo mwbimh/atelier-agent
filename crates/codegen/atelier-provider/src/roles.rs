@@ -102,6 +102,10 @@ pub enum RoleError {
     EmptyProvider,
     #[error("role model must not be empty")]
     EmptyModel,
+    #[error(
+        "invalid role reasoning effort: {0} (expected one of: none, minimal, low, medium, high, xhigh, max)"
+    )]
+    InvalidEffort(String),
     #[error("role payload contains credential-like key: {0}")]
     SensitivePayloadKey(String),
     #[error("unknown role: {0}")]
@@ -148,10 +152,21 @@ impl RoleConfig {
         if self.model.trim().is_empty() {
             return Err(RoleError::EmptyModel);
         }
+        if let Some(effort) = self.effort.as_deref()
+            && !is_valid_reasoning_effort(effort)
+        {
+            return Err(RoleError::InvalidEffort(effort.into()));
+        }
         if let Some(key) = find_sensitive_payload_key(&self.payload) {
             return Err(RoleError::SensitivePayloadKey(key));
         }
         Ok(())
+    }
+
+    /// Whether this role names a real Provider/model pair rather than the
+    /// bootstrap placeholder written for a newly-created registry.
+    pub fn is_configured(&self) -> bool {
+        self.provider.trim() != "default" && self.model.trim() != "default"
     }
 
     /// Return Provider defaults overlaid by this role's payload.
@@ -170,9 +185,7 @@ impl RoleConfig {
     /// sampler remains protocol-neutral.
     pub fn effective_payload(&self) -> Map<String, Value> {
         let mut payload = self.payload.clone();
-        if self.fast_mode {
-            payload.insert("fast_mode".into(), Value::Bool(true));
-        }
+        payload.insert("fast_mode".into(), Value::Bool(self.fast_mode));
         payload
     }
 
@@ -185,6 +198,13 @@ impl RoleConfig {
             payload: Map::new(),
         }
     }
+}
+
+fn is_valid_reasoning_effort(effort: &str) -> bool {
+    matches!(
+        effort.to_ascii_lowercase().as_str(),
+        "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"
+    )
 }
 
 fn find_sensitive_payload_key(payload: &Map<String, Value>) -> Option<String> {

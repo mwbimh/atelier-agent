@@ -25,13 +25,17 @@ impl SlashCommand for TasksCommand {
         true
     }
 
+    fn offered_when_session_less(&self) -> bool {
+        true
+    }
+
     fn usage(&self) -> &str {
         "/tasks"
     }
 
-    fn run(&self, ctx: &mut CommandExecCtx, _args: &str) -> CommandResult {
-        if ctx.session_id.is_none() {
-            return CommandResult::Error("No active session".to_string());
+    fn run(&self, _ctx: &mut CommandExecCtx, args: &str) -> CommandResult {
+        if !args.trim().is_empty() {
+            return CommandResult::Error("Usage: /tasks".to_owned());
         }
         CommandResult::Action(Action::RuntimeExtension {
             method: TASK_LIST.to_owned(),
@@ -71,14 +75,6 @@ mod tests {
     }
 
     #[test]
-    fn no_session_errors() {
-        match run_with_session(None) {
-            CommandResult::Error(msg) => assert!(msg.contains("No active session")),
-            other => panic!("expected Error, got {other:?}"),
-        }
-    }
-
-    #[test]
     fn with_session_dispatches_show_tasks() {
         let sid = agent_client_protocol::SessionId::from("s1".to_string());
         assert!(matches!(
@@ -91,5 +87,31 @@ mod tests {
     #[test]
     fn available_in_minimal_by_default() {
         assert!(TasksCommand.available_in_minimal());
+    }
+
+    #[test]
+    fn available_without_a_session() {
+        assert!(TasksCommand.offered_when_session_less());
+        assert!(matches!(
+            run_with_session(None),
+            CommandResult::Action(Action::RuntimeExtension { method, .. })
+                if method == "_atelier/task/list"
+        ));
+    }
+
+    #[test]
+    fn rejects_unexpected_arguments() {
+        let models = ModelState::default();
+        let mut ctx = CommandExecCtx {
+            models: &models,
+            session_id: None,
+            bundle_state: &DEFAULT_BUNDLE_STATE,
+            screen_mode: crate::app::ScreenMode::Minimal,
+            pager_state: PagerLocalSnapshot::default(),
+        };
+        assert!(matches!(
+            TasksCommand.run(&mut ctx, "extra"),
+            CommandResult::Error(error) if error == "Usage: /tasks"
+        ));
     }
 }

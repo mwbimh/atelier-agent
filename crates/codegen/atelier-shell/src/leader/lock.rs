@@ -1,5 +1,7 @@
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Read, Write};
+#[cfg(not(windows))]
+use std::io::Write;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -175,7 +177,28 @@ impl LeaderLock {
             .write(true)
             .create(true)
             .truncate(false)
-            .open(&self.lock_path)?)
+            .open(self.os_lock_path())?)
+    }
+
+    /// Windows byte-range locks prevent a second handle from reading the
+    /// locked file (OS error 33). Keep the diagnostic PID file readable and
+    /// hold the kernel lock on a private sibling instead. Unix `flock` permits
+    /// readers, so it retains the historical single-file layout.
+    fn os_lock_path(&self) -> PathBuf {
+        #[cfg(windows)]
+        {
+            let mut name = self
+                .lock_path
+                .file_name()
+                .unwrap_or_default()
+                .to_os_string();
+            name.push(".guard");
+            self.lock_path.with_file_name(name)
+        }
+        #[cfg(not(windows))]
+        {
+            self.lock_path.clone()
+        }
     }
 
     /// Record a successful lock acquisition in our state.
@@ -248,6 +271,15 @@ impl LeaderLock {
 
     /// Write our PID to the lock file. Call after acquiring lock.
     pub fn write_pid(&mut self) -> Result<(), LockError> {
+        #[cfg(windows)]
+        {
+            if self.lock_file.is_some() {
+                fs::write(&self.lock_path, std::process::id().to_string())?;
+            }
+            return Ok(());
+        }
+
+        #[cfg(not(windows))]
         if let Some(ref mut file) = self.lock_file {
             file.set_len(0)?;
             write!(file, "{}", std::process::id())?;
@@ -320,7 +352,13 @@ impl Drop for LeaderLock {
         // - We did NOT call release() (which clears was_leader)
         // This ensures the spawner doesn't delete files when handing off to the leader.
         if self.was_leader {
+            if let Some(file) = self.lock_file.take() {
+                let _ = file.unlock();
+                drop(file);
+            }
             let _ = fs::remove_file(&self.lock_path);
+            #[cfg(windows)]
+            let _ = fs::remove_file(self.os_lock_path());
             let _ = fs::remove_file(&self.sock_path);
         }
     }
@@ -505,9 +543,11 @@ mod tests {
     #[test]
     fn drop_without_release_cleans_up_files() {
         let temp = TempDir::new().unwrap();
+        let os_lock_path;
 
         {
             let mut lock = test_lock(&temp);
+            os_lock_path = lock.os_lock_path();
 
             // Create socket file
             fs::write(&lock.sock_path, "").unwrap();
@@ -515,6 +555,7 @@ mod tests {
 
             // Acquire but do NOT release (simulating crash/normal exit)
             assert!(lock.try_acquire().unwrap());
+            assert!(os_lock_path.exists());
             // lock dropped here without release()
         }
 
@@ -522,6 +563,10 @@ mod tests {
         assert!(
             !temp.path().join("leader.sock").exists(),
             "Socket file SHOULD be deleted when dropped without release()"
+        );
+        assert!(
+            !os_lock_path.exists(),
+            "OS lock file SHOULD be deleted when dropped without release()"
         );
     }
 

@@ -6,7 +6,7 @@
 //!   `<role>-<pid>.txt` catch-all for events fired outside any session span, and
 //!   a `latest.txt` symlink pointing at the most-recently-opened session file.
 //! - SingleFile (explicit path via `ATELIER_LOG_FILE` or `ATELIER_DEBUG_LOG=<path>`):
-//!   one flat `fmt` file, routing bypassed. Disk IO stays off the tracing hot
+//!   one flat redacted file, routing bypassed. Disk IO stays off the tracing hot
 //!   path via `tracing_appender`'s non-blocking writer in both modes.
 
 use std::collections::HashMap;
@@ -91,18 +91,33 @@ fn default_file_filter() -> EnvFilter {
         )
 }
 
-// Open `path` as a non-blocking flat `fmt` layer with `filter`; ansi off, target on.
+/// A flat-file firehose that uses the same event renderer and sensitive-field
+/// redaction as the per-session routing layer.
+struct SingleFileLayer {
+    writer: Mutex<NonBlocking>,
+}
+
+impl<S> Layer<S> for SingleFileLayer
+where
+    S: Subscriber,
+{
+    fn on_event(&self, event: &tracing::Event<'_>, _ctx: Context<'_, S>) {
+        let line = format_event(event);
+        let mut writer = self.writer.lock().unwrap_or_else(|p| p.into_inner());
+        let _ = writer.write_all(line.as_bytes());
+    }
+}
+
+// Open `path` as a non-blocking redacting layer with `filter`.
 fn build_file_layer<S>(path: &Path, filter: EnvFilter) -> std::io::Result<impl Layer<S>>
 where
     S: Subscriber + for<'span> LookupSpan<'span>,
 {
-    let non_blocking = crate::appender::non_blocking_file_writer(path)?;
-    let fmt_layer = tracing_subscriber::fmt::layer()
-        .with_target(true)
-        .with_ansi(false)
-        .with_writer(non_blocking)
-        .with_filter(filter);
-    Ok(fmt_layer)
+    let writer = crate::appender::non_blocking_file_writer(path)?;
+    Ok(SingleFileLayer {
+        writer: Mutex::new(writer),
+    }
+    .with_filter(filter))
 }
 
 // ── Per-session routing layer ───────────────────────────────────────────────
@@ -140,12 +155,43 @@ struct EventVisitor {
 impl Visit for EventVisitor {
     fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
         use std::fmt::Write as _;
+        let rendered = format!("{value:?}");
         if field.name() == "message" {
-            let _ = write!(self.message, "{value:?}");
+            self.message
+                .push_str(&crate::redact_common::redact_to_owned(&rendered));
+        } else if debug_field_is_sensitive(field.name()) {
+            let _ = write!(self.fields, " {}=<redacted>", field.name());
         } else {
-            let _ = write!(self.fields, " {}={:?}", field.name(), value);
+            let rendered = crate::redact_common::redact_to_owned(&rendered);
+            let _ = write!(self.fields, " {}={rendered}", field.name());
         }
     }
+}
+
+fn debug_field_is_sensitive(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    name.contains("api_key")
+        || name.contains("authorization")
+        || name.contains("credential")
+        || name.contains("password")
+        || name.contains("secret")
+        || name.contains("cookie")
+        || name.contains("private_key")
+        || name.contains("key_prefix")
+        || name.contains("key_suffix")
+        || name.contains("token_prefix")
+        || name.contains("token_suffix")
+        || name.ends_with("_token")
+        || matches!(
+            name.as_str(),
+            "headers"
+                | "extra_headers"
+                | "payload"
+                | "request_body"
+                | "response_body"
+                | "prompt"
+                | "content"
+        )
 }
 
 // Format one compact, ANSI-free firehose line. Intentionally NOT byte-identical
@@ -361,10 +407,10 @@ where
 /// `registry`, then init the subscriber.
 ///
 /// PerSession installs the routing layer (firehose filter, RUST_LOG-immune) and
-/// prunes old session logs; SingleFile installs a flat `fmt` file picking the
-/// filter by source (ATELIER_LOG_FILE respects RUST_LOG). Open failures warn AFTER
-/// init in the single-file case; routing open failures are per-file at write
-/// time and degrade gracefully. `role` names the per-pid fallback file.
+/// prunes old session logs; SingleFile installs a flat redacting file picking
+/// the filter by source (ATELIER_LOG_FILE respects RUST_LOG). Open failures warn
+/// AFTER init in the single-file case; routing open failures are per-file at
+/// write time and degrade gracefully. `role` names the per-pid fallback file.
 pub fn install_firehose<S>(registry: S, role: &str)
 where
     S: Subscriber + for<'span> LookupSpan<'span> + Send + Sync + 'static,
@@ -551,6 +597,75 @@ mod tests {
         let layer =
             build_file_layer::<tracing_subscriber::Registry>(dir.path(), default_file_filter());
         assert!(layer.is_err());
+    }
+
+    #[test]
+    fn single_file_layer_redacts_sensitive_fields() {
+        use tracing_subscriber::layer::SubscriberExt as _;
+
+        let _lock = flush_test_lock();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("debug.log");
+        let layer = build_file_layer::<tracing_subscriber::Registry>(
+            &path,
+            EnvFilter::new("atelier_shell=debug"),
+        )
+        .unwrap();
+        let subscriber = tracing_subscriber::registry().with(layer);
+        let authorization = "Bearer authorization-canary-never-log";
+        let api_key = "api-key-canary-never-log";
+        let key_prefix = "kp7";
+        let key_suffix = "ks8";
+        let token_prefix = "tp9";
+        let token_suffix = "ts0";
+        let prompt = "private-prompt-canary-never-log";
+        let content = "private-content-canary-never-log";
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::debug!(
+                target: "atelier_shell",
+                authorization,
+                api_key,
+                key_prefix,
+                key_suffix,
+                token_prefix,
+                token_suffix,
+                prompt,
+                content,
+                "single file redaction probe"
+            );
+        });
+        crate::appender::flush_file_log_guards();
+
+        let log = std::fs::read_to_string(path).unwrap();
+        assert!(log.contains("single file redaction probe"));
+        for secret in [
+            authorization,
+            api_key,
+            key_prefix,
+            key_suffix,
+            token_prefix,
+            token_suffix,
+            prompt,
+            content,
+        ] {
+            assert!(!log.contains(secret), "sensitive value leaked: {log}");
+        }
+        for field in [
+            "authorization",
+            "api_key",
+            "key_prefix",
+            "key_suffix",
+            "token_prefix",
+            "token_suffix",
+            "prompt",
+            "content",
+        ] {
+            assert!(
+                log.contains(&format!("{field}=<redacted>")),
+                "missing redaction marker for {field}: {log}"
+            );
+        }
     }
 
     #[test]
@@ -787,6 +902,66 @@ mod tests {
             two.contains("two only") && !two.contains("one first"),
             "sid-two.txt: {two:?}"
         );
+    }
+
+    #[test]
+    fn routing_layer_redacts_credentials_and_request_content() {
+        use tracing_subscriber::layer::SubscriberExt as _;
+
+        let _lock = flush_test_lock();
+        let dir = tempfile::tempdir().unwrap();
+        let layer = RoutingLayer::new(dir.path().to_path_buf(), "agent".to_owned(), 1);
+        let subscriber = tracing_subscriber::registry().with(layer);
+        let secret = "credential-canary-never-log";
+        let key_prefix = "kp1";
+        let key_suffix = "ks2";
+        let token_prefix = "tp3";
+        let token_suffix = "ts4";
+        let private_content = "private-file-content-never-log";
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::info_span!("session", session_id = %"redaction-session").in_scope(|| {
+                tracing::debug!(
+                    target: "atelier_shell",
+                    api_key = %secret,
+                    authorization = %format!("Bearer {secret}"),
+                    key_prefix,
+                    key_suffix,
+                    token_prefix,
+                    token_suffix,
+                    payload = %private_content,
+                    "redaction probe"
+                );
+            });
+        });
+        crate::appender::flush_file_log_guards();
+
+        let log = std::fs::read_to_string(dir.path().join("redaction-session.txt")).unwrap();
+        assert!(log.contains("redaction probe"));
+        for sensitive_value in [secret, key_prefix, key_suffix, token_prefix, token_suffix] {
+            assert!(
+                !log.contains(sensitive_value),
+                "credential fragment leaked: {log}"
+            );
+        }
+        assert!(
+            !log.contains(private_content),
+            "request content leaked: {log}"
+        );
+        for field in [
+            "api_key",
+            "authorization",
+            "key_prefix",
+            "key_suffix",
+            "token_prefix",
+            "token_suffix",
+            "payload",
+        ] {
+            assert!(
+                log.contains(&format!("{field}=<redacted>")),
+                "missing redaction marker for {field}: {log}"
+            );
+        }
     }
 
     #[cfg(unix)]

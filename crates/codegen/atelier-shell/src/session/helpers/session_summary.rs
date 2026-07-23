@@ -1,9 +1,6 @@
 //! Session title generation via LLM tool call.
 
-use crate::sampling::{
-    Client as OaiCompatClient, ConversationItem, ConversationRequest, ConversationToolChoice,
-    ToolSpec,
-};
+use crate::sampling::{Client as OaiCompatClient, ConversationItem, ConversationRequest};
 use crate::session::helpers::chat::floor_char_boundary;
 use crate::session::helpers::session_compact::{
     AuxiliaryRequestLifecycle, AuxiliaryRequestState, auxiliary_provider_label,
@@ -12,11 +9,6 @@ use crate::session::helpers::session_compact::{
 /// Upper bound on the user text that feeds title generation; titles only need
 /// the opening, and this keeps the request well under the model prompt limit.
 const TITLE_SOURCE_MAX_BYTES: usize = 8_000;
-
-#[derive(serde::Deserialize)]
-struct SessionTitle {
-    session_title: String,
-}
 
 /// Remove `<system-reminder>…</system-reminder>` blocks from `text` — they are
 /// system-injected context (e.g. the `/goal` setup reminder), not the user's
@@ -70,6 +62,41 @@ pub(crate) fn title_fallback_from_user_text(user_message: &str) -> String {
     }
 }
 
+fn build_session_title_request(clean_message: &str, model: &str) -> ConversationRequest {
+    ConversationRequest::from_items(vec![
+        ConversationItem::system(
+            r#"You are tasked with generating the session title. The user is asking almost always software engineering related questions on their codebase.
+We describe the session title below
+# Session Title
+A short and distinctive 5-10 word descriptive title for the session. Super info dense, no filler.
+
+You will be given the user query below encapsulated in <user_query></user_query>.
+
+Return only the title text, with no quotes, markdown, JSON, or explanation."#,
+        ),
+        ConversationItem::user(format!(
+            r#"<user_query>
+{}
+</user_query>"#,
+            clean_message
+        )),
+    ])
+    .with_model(model)
+    // Reasoning models can consume several hundred hidden tokens before
+    // emitting the short visible title. Keep enough room for the answer.
+    .with_max_output_tokens(2048)
+    .with_temperature(1.0)
+}
+
+fn title_from_plain_text(text: &str) -> Option<String> {
+    let line = text.lines().map(str::trim).find(|line| !line.is_empty())?;
+    let title = line.trim_matches(|c| matches!(c, '"' | '\'' | '`')).trim();
+    if title.is_empty() {
+        return None;
+    }
+    Some(title.chars().take(120).collect())
+}
+
 /// Generates a title for the session by looking at the first user message
 /// We do not generate more of it on next user message unless its very important
 ///
@@ -81,68 +108,30 @@ pub async fn generate_session_summary(
 ) -> String {
     let clean_message = title_source_text(&user_message);
     let request_id = format!("xai-title-{}", uuid::Uuid::new_v4());
+    let provider = auxiliary_provider_label(client.base_url());
     let lifecycle = AuxiliaryRequestLifecycle::new(
         "title",
-        auxiliary_provider_label(model),
+        provider,
         model,
         request_id.clone(),
         AuxiliaryRequestState::GeneratingTitle,
     );
-    let request = ConversationRequest::from_items(vec![
-        ConversationItem::system(
-            r#"You are tasked with generating the session title. The user is asking almost always software engineering related questions on their codebase.
-We describe the session title below
-# Session Title
-A short and distinctive 5-10 word descriptive title for the session. Super info dense, no filler.
-
-You will be given the user query below encapsulated in <user_query></user_query>.
-
-Just generate the session_title and nothing else"#,
-        ),
-        ConversationItem::user(format!(
-            r#"<user_query>
-{}
-</user_query>"#,
-            clean_message
-        )),
-    ])
-    .with_model(model)
-    .with_tools(vec![ToolSpec {
-        name: "session_title".to_owned(),
-        description: Some("Generate the session_title which we use for the user_message".to_owned()),
-        parameters: serde_json::json!({
-            "type": "object",
-            "required": ["session_title"],
-            "properties": {
-                "session_title": {
-                    "type": "string",
-                    "description": "Final session title, just 5-10 word descriptive title for the session. Super info dense, no filler."
-                }
-            },
-            "additionalProperties": false
-        }),
-    }])
-    .with_max_output_tokens(100)
-    .with_temperature(1.0)
-    .with_tool_choice(ConversationToolChoice::Function("session_title".to_owned()))
-    .with_req_id(request_id)
-    .with_trace(lifecycle.trace_context());
+    let request = build_session_title_request(&clean_message, model)
+        .with_req_id(request_id)
+        .with_trace(lifecycle.trace_context());
 
     lifecycle.transition(AuxiliaryRequestState::WaitingForProvider);
     lifecycle.transition(AuxiliaryRequestState::StreamingResponse);
     match client.conversation_collect(request).await {
         Ok(response) => {
-            if let Some(a) = response.assistant()
-                && let Some(tool_call) = a.tool_calls.first()
-                && let Ok(result) = serde_json::from_str::<SessionTitle>(&tool_call.arguments)
-            {
+            if let Some(title) = title_from_plain_text(&response.assistant_text()) {
                 lifecycle.complete();
-                return result.session_title;
+                return title;
             }
-            lifecycle.fail("response did not contain a session_title tool call");
+            lifecycle.fail("response did not contain title text");
             tracing::debug!(
                 model = %model,
-                "session title generation: response did not contain a session_title tool call"
+                "session title generation: response did not contain title text"
             );
         }
         Err(e) => {
@@ -162,9 +151,25 @@ Just generate the session_title and nothing else"#,
 #[cfg(test)]
 mod tests {
     use super::{
-        TITLE_SOURCE_MAX_BYTES, strip_system_reminder_blocks, title_fallback_from_user_text,
-        title_source_text,
+        TITLE_SOURCE_MAX_BYTES, build_session_title_request, strip_system_reminder_blocks,
+        title_fallback_from_user_text, title_from_plain_text, title_source_text,
     };
+
+    #[test]
+    fn title_request_uses_plain_text_for_thinking_models() {
+        let request = build_session_title_request("fix the auth bug", "deepseek-v4-flash");
+        assert!(request.tools.is_empty());
+        assert!(request.tool_choice.is_none());
+        assert_eq!(request.max_output_tokens, Some(2048));
+    }
+
+    #[test]
+    fn title_from_plain_text_uses_first_non_empty_line() {
+        assert_eq!(
+            title_from_plain_text("\n  `Fix Auth Session Startup`  \nextra"),
+            Some("Fix Auth Session Startup".to_owned())
+        );
+    }
 
     #[test]
     fn title_source_text_caps_oversized_input() {

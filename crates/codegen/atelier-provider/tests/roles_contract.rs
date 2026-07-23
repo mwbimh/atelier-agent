@@ -36,6 +36,29 @@ fn role_config_rejects_empty_provider_and_model() {
 }
 
 #[test]
+fn role_config_rejects_unknown_reasoning_effort() {
+    let mut config = role_config("provider", "model");
+    config.effort = Some("nonsense".into());
+
+    assert_eq!(
+        config.validate(),
+        Err(RoleError::InvalidEffort("nonsense".into()))
+    );
+}
+
+#[test]
+fn role_config_accepts_existing_reasoning_effort_values() {
+    for effort in [
+        "none", "minimal", "low", "medium", "high", "xhigh", "max", "HIGH",
+    ] {
+        let mut config = role_config("provider", "model");
+        config.effort = Some(effort.into());
+
+        assert!(config.validate().is_ok(), "effort {effort} must be valid");
+    }
+}
+
+#[test]
 fn role_config_rejects_credential_like_payload_keys_recursively() {
     let mut config = role_config("provider", "model");
     config.payload = serde_json::from_value(serde_json::json!({
@@ -105,7 +128,7 @@ fn role_payload_overrides_provider_defaults_deterministically() {
     assert_eq!(merged.get("alpha"), Some(&Value::Bool(true)));
     assert_eq!(
         serde_json::to_string(&merged).unwrap(),
-        r#"{"alpha":true,"shared":"role","zeta":"provider"}"#
+        r#"{"alpha":true,"fast_mode":false,"shared":"role","zeta":"provider"}"#
     );
 }
 
@@ -131,6 +154,31 @@ fn merged_payload_includes_fast_mode() {
     let merged = config.merged_payload(&Map::new());
 
     assert_eq!(merged.get("fast_mode"), Some(&Value::Bool(true)));
+}
+
+#[test]
+fn role_fast_mode_false_overrides_provider_default_true() {
+    let config = role_config("provider", "model");
+    let provider_defaults = serde_json::from_value(serde_json::json!({
+        "fast_mode": true,
+        "temperature": 0.8,
+    }))
+    .unwrap();
+
+    let merged = config.merged_payload(&provider_defaults);
+
+    assert_eq!(merged.get("fast_mode"), Some(&Value::Bool(false)));
+    assert_eq!(merged.get("temperature"), Some(&Value::from(0.8)));
+}
+
+#[test]
+fn default_placeholder_roles_are_not_configured() {
+    let registry = RoleRegistry::default();
+
+    for role_id in RoleId::ALL {
+        assert!(!registry.find(role_id).unwrap().is_configured());
+    }
+    assert!(role_config("provider", "model").is_configured());
 }
 
 #[test]

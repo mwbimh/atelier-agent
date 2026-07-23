@@ -207,25 +207,7 @@ impl SessionActor {
             .prepare_role_chat_completion(atelier_provider::RoleId::Summary, false)
             .await
         {
-            Ok(Some((config, client))) => (client, config),
-            Ok(None) => {
-                let client = match self.prepare_chat_completion(false).await {
-                    Ok(client) => client,
-                    Err(error) => {
-                        tracing::warn!(
-                            error = %error,
-                            "recap: failed to prepare sampling client"
-                        );
-                        clear_in_flight();
-                        // A manual `/recap` shows a loading spinner; clear it on failure.
-                        if !auto {
-                            self.emit_recap_unavailable().await;
-                        }
-                        return;
-                    }
-                };
-                (client, self.reconstruct_full_config().await)
-            }
+            Ok((config, client)) => (client, config),
             Err(error) => {
                 tracing::warn!(
                     error = %error,

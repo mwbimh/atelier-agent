@@ -19,7 +19,7 @@ async fn persist_ack_waits_for_disk_flush_before_success() {
         .run_until(async {
             let tmp = tempfile::TempDir::new().unwrap();
             let session_dir = tmp.path().join("session");
-            let cwd = AbsPathBuf::new(std::path::PathBuf::from("/tmp")).unwrap();
+            let cwd = AbsPathBuf::new(std::env::temp_dir()).unwrap();
             let fs = Arc::new(atelier_workspace::file_system::MockFs::new(
                 cwd.to_path_buf(),
             ));
@@ -140,7 +140,7 @@ async fn persist_ack_waits_for_disk_flush_before_success() {
                 turn_start_prompt_mode: parking_lot::Mutex::new(PromptMode::Agent),
                 turn_prompt_mode: Arc::new(parking_lot::Mutex::new(PromptMode::Agent)),
                 telemetry_enabled: false,
-                role_request_payload: serde_json::Map::new(),
+                role_request_payload: std::cell::RefCell::new(serde_json::Map::new()),
                 supports_backend_search: std::cell::Cell::new(false),
                 compactions_remaining: std::cell::Cell::new(None),
                 compaction_at_tokens: std::cell::Cell::new(None),
@@ -204,6 +204,7 @@ async fn persist_ack_waits_for_disk_flush_before_success() {
                 last_reported_branch: std::sync::Arc::new(parking_lot::Mutex::new(None)),
                 git_head_enabled: false,
                 models_manager: Default::default(),
+                role_registry_override: None,
                 display_cwd: std::sync::OnceLock::new(),
                 active_agent_type: parking_lot::Mutex::new(None),
                 queue_exit_reminder_on_approved_exit: Arc::new(std::sync::atomic::AtomicBool::new(
@@ -211,17 +212,17 @@ async fn persist_ack_waits_for_disk_flush_before_success() {
                 )),
                 active_skill: parking_lot::Mutex::new(None),
                 plan_mode: Arc::new(parking_lot::Mutex::new(
-                    crate::session::plan_mode::PlanModeTracker::new(std::path::PathBuf::from(
-                        "/tmp/test-session",
-                    )),
+                    crate::session::plan_mode::PlanModeTracker::new(
+                        std::env::temp_dir().join("test-session"),
+                    ),
                 )),
                 goal_enabled: false,
                 goal_harness_enabled: std::sync::atomic::AtomicBool::new(false),
                 goal_harness_availability_reconciled: std::sync::atomic::AtomicBool::new(false),
                 goal_tracker: Arc::new(parking_lot::Mutex::new(
-                    crate::session::goal_tracker::GoalTracker::new(std::path::PathBuf::from(
-                        "/tmp/test-session",
-                    )),
+                    crate::session::goal_tracker::GoalTracker::new(
+                        std::env::temp_dir().join("test-session"),
+                    ),
                 )),
                 goal_turn_task_ids: parking_lot::Mutex::new(std::collections::HashSet::new()),
                 goal_continuation_streak: std::sync::atomic::AtomicU32::new(0),
@@ -266,7 +267,7 @@ async fn persist_ack_waits_for_disk_flush_before_success() {
                 hook_load_errors: std::cell::RefCell::new(Vec::new()),
                 plugin_registry: std::cell::RefCell::new(None),
                 plugin_registry_handle: None,
-                events: crate::session::events::EventTracker::new(std::path::Path::new("/tmp")),
+                events: crate::session::events::EventTracker::new(&std::env::temp_dir()),
                 observability_bridge: noop_observability_bridge(),
                 current_turn_number: std::cell::Cell::new(0),
                 last_recap_main_turn: std::cell::Cell::new(0),
@@ -596,7 +597,7 @@ async fn first_turn_memory_injection_disabled_does_not_persist_to_chat_history()
                 turn_start_prompt_mode: parking_lot::Mutex::new(PromptMode::Agent),
                 turn_prompt_mode: Arc::new(parking_lot::Mutex::new(PromptMode::Agent)),
                 telemetry_enabled: false,
-                role_request_payload: serde_json::Map::new(),
+                role_request_payload: std::cell::RefCell::new(serde_json::Map::new()),
                 supports_backend_search: std::cell::Cell::new(false),
                 compactions_remaining: std::cell::Cell::new(None),
                 compaction_at_tokens: std::cell::Cell::new(None),
@@ -663,6 +664,7 @@ async fn first_turn_memory_injection_disabled_does_not_persist_to_chat_history()
                 last_reported_branch: std::sync::Arc::new(parking_lot::Mutex::new(None)),
                 git_head_enabled: false,
                 models_manager: Default::default(),
+                role_registry_override: None,
                 display_cwd: std::sync::OnceLock::new(),
                 active_agent_type: parking_lot::Mutex::new(None),
                 queue_exit_reminder_on_approved_exit: Arc::new(std::sync::atomic::AtomicBool::new(
@@ -670,17 +672,17 @@ async fn first_turn_memory_injection_disabled_does_not_persist_to_chat_history()
                 )),
                 active_skill: parking_lot::Mutex::new(None),
                 plan_mode: Arc::new(parking_lot::Mutex::new(
-                    crate::session::plan_mode::PlanModeTracker::new(std::path::PathBuf::from(
-                        "/tmp/test-session",
-                    )),
+                    crate::session::plan_mode::PlanModeTracker::new(
+                        std::env::temp_dir().join("test-session"),
+                    ),
                 )),
                 goal_enabled: false,
                 goal_harness_enabled: std::sync::atomic::AtomicBool::new(false),
                 goal_harness_availability_reconciled: std::sync::atomic::AtomicBool::new(false),
                 goal_tracker: Arc::new(parking_lot::Mutex::new(
-                    crate::session::goal_tracker::GoalTracker::new(std::path::PathBuf::from(
-                        "/tmp/test-session",
-                    )),
+                    crate::session::goal_tracker::GoalTracker::new(
+                        std::env::temp_dir().join("test-session"),
+                    ),
                 )),
                 goal_turn_task_ids: parking_lot::Mutex::new(std::collections::HashSet::new()),
                 goal_continuation_streak: std::sync::atomic::AtomicU32::new(0),
@@ -725,7 +727,7 @@ async fn first_turn_memory_injection_disabled_does_not_persist_to_chat_history()
                 hook_load_errors: std::cell::RefCell::new(Vec::new()),
                 plugin_registry: std::cell::RefCell::new(None),
                 plugin_registry_handle: None,
-                events: crate::session::events::EventTracker::new(std::path::Path::new("/tmp")),
+                events: crate::session::events::EventTracker::new(&std::env::temp_dir()),
                 observability_bridge: noop_observability_bridge(),
                 current_turn_number: std::cell::Cell::new(0),
                 last_recap_main_turn: std::cell::Cell::new(0),
@@ -792,7 +794,7 @@ async fn cancel_running_task_teardown_clears_running_and_pending_work() {
             let (persistence_tx, _persistence_rx) = tokio::sync::mpsc::unbounded_channel::<
                 PersistenceMsg,
             >();
-            let cwd = AbsPathBuf::new(std::path::PathBuf::from("/tmp")).unwrap();
+            let cwd = AbsPathBuf::new(std::env::temp_dir()).unwrap();
             let fs = Arc::new(
                 atelier_workspace::file_system::MockFs::new(cwd.to_path_buf()),
             );
@@ -868,7 +870,7 @@ async fn cancel_running_task_teardown_clears_running_and_pending_work() {
                 turn_start_prompt_mode: parking_lot::Mutex::new(PromptMode::Agent),
                 turn_prompt_mode: Arc::new(parking_lot::Mutex::new(PromptMode::Agent)),
                 telemetry_enabled: false,
-                role_request_payload: serde_json::Map::new(),
+                role_request_payload: std::cell::RefCell::new(serde_json::Map::new()),
                 supports_backend_search: std::cell::Cell::new(false),
                 compactions_remaining: std::cell::Cell::new(None),
                 compaction_at_tokens: std::cell::Cell::new(None),
@@ -936,6 +938,7 @@ async fn cancel_running_task_teardown_clears_running_and_pending_work() {
                 last_reported_branch: std::sync::Arc::new(parking_lot::Mutex::new(None)),
                 git_head_enabled: false,
                 models_manager: Default::default(),
+                role_registry_override: None,
                 display_cwd: std::sync::OnceLock::new(),
                 active_agent_type: parking_lot::Mutex::new(None),
                 queue_exit_reminder_on_approved_exit: Arc::new(
@@ -945,7 +948,7 @@ async fn cancel_running_task_teardown_clears_running_and_pending_work() {
                 plan_mode: Arc::new(
                     parking_lot::Mutex::new(
                         crate::session::plan_mode::PlanModeTracker::new(
-                            std::path::PathBuf::from("/tmp/test-session"),
+                            std::env::temp_dir().join("test-session"),
                         ),
                     ),
                 ),
@@ -957,7 +960,7 @@ async fn cancel_running_task_teardown_clears_running_and_pending_work() {
                 goal_tracker: Arc::new(
                     parking_lot::Mutex::new(
                         crate::session::goal_tracker::GoalTracker::new(
-                            std::path::PathBuf::from("/tmp/test-session"),
+                            std::env::temp_dir().join("test-session"),
                         ),
                     ),
                 ),
@@ -1009,9 +1012,7 @@ async fn cancel_running_task_teardown_clears_running_and_pending_work() {
                 hook_load_errors: std::cell::RefCell::new(Vec::new()),
                 plugin_registry: std::cell::RefCell::new(None),
                 plugin_registry_handle: None,
-                events: crate::session::events::EventTracker::new(
-                    std::path::Path::new("/tmp"),
-                ),
+                events: crate::session::events::EventTracker::new(&std::env::temp_dir()),
                 observability_bridge: noop_observability_bridge(),
                 current_turn_number: std::cell::Cell::new(0),
                 last_recap_main_turn: std::cell::Cell::new(0),
@@ -1838,7 +1839,7 @@ async fn cancel_propagates_to_sampler_handle_so_no_further_emission() {
             let (persistence_tx, _persistence_rx) = tokio::sync::mpsc::unbounded_channel::<
                 PersistenceMsg,
             >();
-            let cwd = AbsPathBuf::new(std::path::PathBuf::from("/tmp")).unwrap();
+            let cwd = AbsPathBuf::new(std::env::temp_dir()).unwrap();
             let fs = Arc::new(
                 atelier_workspace::file_system::MockFs::new(cwd.to_path_buf()),
             );
@@ -1914,7 +1915,7 @@ async fn cancel_propagates_to_sampler_handle_so_no_further_emission() {
                 turn_start_prompt_mode: parking_lot::Mutex::new(PromptMode::Agent),
                 turn_prompt_mode: Arc::new(parking_lot::Mutex::new(PromptMode::Agent)),
                 telemetry_enabled: false,
-                role_request_payload: serde_json::Map::new(),
+                role_request_payload: std::cell::RefCell::new(serde_json::Map::new()),
                 supports_backend_search: std::cell::Cell::new(false),
                 compactions_remaining: std::cell::Cell::new(None),
                 compaction_at_tokens: std::cell::Cell::new(None),
@@ -1982,6 +1983,7 @@ async fn cancel_propagates_to_sampler_handle_so_no_further_emission() {
                 last_reported_branch: std::sync::Arc::new(parking_lot::Mutex::new(None)),
                 git_head_enabled: false,
                 models_manager: Default::default(),
+                role_registry_override: None,
                 display_cwd: std::sync::OnceLock::new(),
                 active_agent_type: parking_lot::Mutex::new(None),
                 queue_exit_reminder_on_approved_exit: Arc::new(
@@ -1991,7 +1993,7 @@ async fn cancel_propagates_to_sampler_handle_so_no_further_emission() {
                 plan_mode: Arc::new(
                     parking_lot::Mutex::new(
                         crate::session::plan_mode::PlanModeTracker::new(
-                            std::path::PathBuf::from("/tmp/test-session"),
+                            std::env::temp_dir().join("test-session"),
                         ),
                     ),
                 ),
@@ -2003,7 +2005,7 @@ async fn cancel_propagates_to_sampler_handle_so_no_further_emission() {
                 goal_tracker: Arc::new(
                     parking_lot::Mutex::new(
                         crate::session::goal_tracker::GoalTracker::new(
-                            std::path::PathBuf::from("/tmp/test-session"),
+                            std::env::temp_dir().join("test-session"),
                         ),
                     ),
                 ),
@@ -2055,9 +2057,7 @@ async fn cancel_propagates_to_sampler_handle_so_no_further_emission() {
                 hook_load_errors: std::cell::RefCell::new(Vec::new()),
                 plugin_registry: std::cell::RefCell::new(None),
                 plugin_registry_handle: None,
-                events: crate::session::events::EventTracker::new(
-                    std::path::Path::new("/tmp"),
-                ),
+                events: crate::session::events::EventTracker::new(&std::env::temp_dir()),
                 observability_bridge: noop_observability_bridge(),
                 current_turn_number: std::cell::Cell::new(0),
                 last_recap_main_turn: std::cell::Cell::new(0),

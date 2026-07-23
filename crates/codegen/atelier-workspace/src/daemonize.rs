@@ -16,6 +16,8 @@ use std::io::{self, Write};
 #[cfg(target_os = "linux")]
 use std::os::fd::{FromRawFd as _, OwnedFd};
 use std::path::Path;
+#[cfg(windows)]
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use std::{process, thread};
 #[cfg(windows)]
@@ -205,7 +207,16 @@ fn redirect_stdio(log_path: &Path) -> io::Result<()> {
 /// pidfile itself is left on disk for diagnostics.
 #[derive(Debug)]
 pub struct PidFile {
-    _file: File,
+    _lock_file: File,
+    #[cfg(windows)]
+    _pid_file: File,
+}
+
+#[cfg(windows)]
+fn pid_lock_path(path: &Path) -> PathBuf {
+    let mut lock_path = path.as_os_str().to_os_string();
+    lock_path.push(".lock");
+    PathBuf::from(lock_path)
 }
 
 impl PidFile {
@@ -219,26 +230,47 @@ impl PidFile {
         if let Some(parent) = path.parent() {
             let _ = fs::create_dir_all(parent);
         }
-        let mut file = daemon_file_options()
+        #[cfg(windows)]
+        let lock_path = pid_lock_path(path);
+        #[cfg(windows)]
+        let lock_target = lock_path.as_path();
+        #[cfg(not(windows))]
+        let lock_target = path;
+
+        let lock_file = daemon_file_options()
             .read(true)
             .write(true)
             .create(true)
             .truncate(false)
-            .open(path)?;
+            .open(lock_target)?;
 
-        match file.try_lock_exclusive() {
+        match lock_file.try_lock_exclusive() {
             Ok(()) => {}
             Err(e) if is_lock_contended(&e) => return Ok(None),
             Err(e) => return Err(e),
         }
 
+        #[cfg(windows)]
+        let mut pid_file = daemon_file_options()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(path)?;
+        #[cfg(not(windows))]
+        let mut pid_file = lock_file.try_clone()?;
+
         // PID contents are advisory diagnostics; the flock provides exclusion.
         // `set_len(0)` clears any stale (possibly longer) value first.
-        file.set_len(0)?;
-        file.write_all(process::id().to_string().as_bytes())?;
-        file.flush()?;
+        pid_file.set_len(0)?;
+        pid_file.write_all(process::id().to_string().as_bytes())?;
+        pid_file.flush()?;
 
-        Ok(Some(Self { _file: file }))
+        Ok(Some(Self {
+            _lock_file: lock_file,
+            #[cfg(windows)]
+            _pid_file: pid_file,
+        }))
     }
 
     /// Acquire the lock, taking over from a live predecessor workspace-server

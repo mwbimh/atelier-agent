@@ -1,61 +1,89 @@
 # Atelier
 
-Bring Atelier into your terminal. Fast, flicker-free CLI built for plans, subagents, and parallel work.
-
-**[Homepage](https://atelier/cli)** | **[Documentation](https://docs.atelier/build/overview)**
+Atelier is a local-first terminal coding agent with an interactive TUI,
+headless mode, ACP integration, sandboxed workspace operations, subagents, and
+parallel tasks.
 
 ## Install
 
 ```bash
-curl -fsSL https://atelier/cli/install.sh | bash
+npm install -g @atelier/atelier
 ```
 
-Or install with npm:
+The package installs one user-facing executable:
 
-```bash
-npm i -g @atelier/atelier
+```text
+~/.atelier/bin/atelier        # macOS/Linux
+%USERPROFILE%\.atelier\bin\atelier.exe  # Windows
 ```
 
-## Get Started
+Workspace and Windows command helpers are embedded in the main executable.
+They still run as isolated child processes, but no additional helper executable
+needs to be copied beside `atelier`.
+
+## Configure a Provider
+
+Atelier has no hosted default model and does not use browser login. Configure a
+Provider before starting a session:
 
 ```bash
-# Launch the interactive TUI
+export ALLM_API_KEY="..."
+atelier
+```
+
+Then use the TUI:
+
+```text
+/provider add allm chat https://your-provider.example/v1 env:ALLM_API_KEY
+/provider test allm
+/provider refresh allm
+/model
+```
+
+`/provider` without arguments opens the interactive command picker. Model
+discovery uses the Provider's configured `/models` endpoint. Use `/roles` to
+assign Provider/model pairs to `main`, `explore`, `implement`, `review`, `test`,
+`compact`, `summary`, and `title`.
+
+See the user guide sections on [Provider credentials](../../docs/user-guide/02-authentication.md)
+and [Providers, models, and Roles](../../docs/user-guide/11-custom-models.md).
+
+## Run
+
+```bash
+# Use the current directory as the workspace
 atelier
 
-# Run a single task
+# Use another directory as the workspace
+atelier --cwd /path/to/project
+
+# Run one headless task
 atelier -p "Explain this codebase"
 ```
 
-On first launch, Atelier opens your browser to authenticate. For CI or headless environments, use an API key from [console.x.ai](https://console.x.ai):
+## State Directory
+
+Atelier stores local configuration, Provider metadata, sessions, logs, and
+other state under `~/.atelier` by default. Set `ATELIER_HOME` before launch to
+use another directory:
 
 ```bash
-export XAI_API_KEY="xai-..."
+export ATELIER_HOME=/path/to/atelier-home
+atelier
 ```
 
 ## Update
 
-```bash
-atelier update
-```
-
-Or if installed via npm:
+Update through the package manager:
 
 ```bash
-npm i -g @atelier/atelier@latest
+npm install -g @atelier/atelier@latest
 ```
 
 ## Supported Platforms
 
 | Platform | Architecture |
 |---|---|
-| macOS | Apple Silicon (arm64) |
-| Linux | x86_64, arm64 |
-| Windows | x86_64 |
-
-## Documentation
-
-For full documentation including configuration, MCP servers, custom models, headless mode, agent mode, and more, visit [docs.atelier/build/overview](https://docs.atelier/build/overview).
-
-## Feedback
-
-Run `/feedback` inside Atelier to report issues or send feedback directly.
+| macOS | arm64, x86_64 |
+| Linux | arm64, x86_64 |
+| Windows | arm64, x86_64 |

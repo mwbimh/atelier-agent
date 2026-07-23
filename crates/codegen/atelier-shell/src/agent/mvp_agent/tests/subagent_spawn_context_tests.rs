@@ -21,8 +21,10 @@ async fn subagent_spawn_context_inherits_parent_permission_handle() {
             let sid = acp::SessionId::new("parent-permission");
             let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
             let gateway = GatewaySender::new(tx);
-            let cwd = atelier_paths::AbsPathBuf::new(std::path::PathBuf::from("/tmp"))
-                .expect("absolute cwd");
+            let cwd = atelier_paths::AbsPathBuf::new(
+                std::env::current_dir().expect("current test cwd"),
+            )
+            .expect("absolute cwd");
             let (permission_handle, _events_rx) =
                 atelier_workspace::permission::spawn_permission_manager(
                     sid.clone(),

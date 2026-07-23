@@ -189,7 +189,10 @@ atelier inspect          # Human-readable summary
 atelier inspect --json   # Machine-readable report
 ```
 
-In the human-readable output, the Skills section lists each skill's name and its source -- `project`, `user`, `bundled`, `config` (a `[skills].paths` entry), `server` (skills synced from the skill store in managed workspaces), or `plugin: <name>`. Atelier tags any skill disabled via `[skills].disabled` or from a disabled vendor surface with `[disabled]`.
+In the human-readable output, the Skills section lists each skill's name and
+its local source: `project`, `user`, `bundled`, `config` (a `[skills].paths`
+entry), or `plugin: <name>`. Atelier tags skills disabled through
+`[skills].disabled` or a disabled compatibility source with `[disabled]`.
 
 The report honors your `[skills]` config the same way a live session does: skills from `paths` are listed, skills under an `ignore` prefix are hidden, and skills named in `disabled` stay listed but tagged `[disabled]`.
 

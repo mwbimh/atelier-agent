@@ -310,9 +310,9 @@ impl SessionActor {
         }
         self.persist_announcement_state().await;
     }
-    /// Idle threshold for proactive model metadata refresh on session resume.
-    /// If the session has been idle longer than this, we fetch fresh model config
-    /// from cli-chat-proxy before the next API request to catch context_window changes.
+    /// Retained for persisted timing compatibility. Atelier's local Provider
+    /// registry owns model discovery and refresh; session resume never contacts
+    /// a vendor model-catalog endpoint.
     pub(super) const IDLE_REFRESH_THRESHOLD_SECS: i64 = 600;
     /// Record the current time as the last API request timestamp.
     pub(super) fn record_api_request_time(&self) {
@@ -320,139 +320,14 @@ impl SessionActor {
         self.last_api_request_at
             .store(now_ms, std::sync::atomic::Ordering::Relaxed);
     }
-    /// Check if the session has been idle and proactively refresh model metadata.
+    /// Session resume does not perform implicit model discovery.
     ///
-    /// Called at the start of each turn. If idle > `IDLE_REFRESH_THRESHOLD_SECS`,
-    /// fetches `/models-v2` from cli-chat-proxy and updates the cached
-    /// context_window / max_completion_tokens if remote settings changed them.
-    ///
-    /// Skipped for BYOK users (no remote settings, no `/models-v2`).
+    /// Provider catalogs are refreshed explicitly through the Provider runtime,
+    /// then applied to live sessions by the models manager. Keeping this hook as
+    /// a no-op preserves the turn call site without reintroducing a hidden vendor
+    /// network path.
     pub(super) async fn maybe_refresh_model_metadata_on_resume(&self) {
-        if !self.is_session_based_auth() {
-            return;
-        }
-        let last_request_ms = self
-            .last_api_request_at
-            .load(std::sync::atomic::Ordering::Relaxed);
-        if last_request_ms == 0 {
-            return;
-        }
-        let now_ms = chrono::Utc::now().timestamp_millis();
-        let idle_secs = (now_ms - last_request_ms) / 1000;
-        if idle_secs < Self::IDLE_REFRESH_THRESHOLD_SECS {
-            return;
-        }
-        let Some(current_config) = self.chat_state_handle.get_sampling_config().await else {
-            return;
-        };
-        let current_model = &current_config.model;
-        let base_url = &current_config.base_url;
-        if !crate::util::is_cli_chat_proxy_url(base_url) {
-            return;
-        }
-        tracing::info!(
-            idle_secs,
-            threshold_secs = Self::IDLE_REFRESH_THRESHOLD_SECS,
-            "Session resumed after idle — refreshing model metadata from cli-chat-proxy"
-        );
-        let creds = self.chat_state_handle.get_credentials().await;
-        let Some(ref am) = self.auth_manager else {
-            tracing::debug!("No auth manager available for model metadata refresh");
-            return;
-        };
-        let _ = am.auth().await;
-        let provider: Arc<dyn atelier_auth::AuthCredentialProvider> = Arc::new(
-            crate::auth::credential_provider::ShellAuthCredentialProvider::new(
-                am.clone(),
-                None,
-                None,
-            ),
-        );
-        let middleware_client =
-            crate::http::with_auth_retry(crate::http::shared_client(), provider);
-        let url = format!("{}/models-v2", base_url);
-        let parse_models_response =
-            |json: serde_json::Value| -> Option<(std::num::NonZeroU64, Option<u32>)> {
-                let data = json.get("data")?.as_array()?;
-                for entry in data {
-                    let parsed = crate::remote::client::parse_remote_model_value(entry, base_url)?;
-                    if parsed.model == *current_model {
-                        return Some((parsed.context_window, parsed.max_completion_tokens));
-                    }
-                }
-                None
-            };
-        #[allow(unused_mut)]
-        let mut request = middleware_client
-            .get(&url)
-            .header("X-XAI-Token-Auth", "atelier-cli")
-            .header("x-atelier-client-version", atelier_version::VERSION)
-            .header(
-                crate::http::CLIENT_MODE_HEADER,
-                crate::http::process_client_mode(),
-            )
-            .timeout(std::time::Duration::from_secs(5));
-        let response = match request.send().await {
-            Ok(r) => r,
-            Err(e) => {
-                tracing::warn!(error = % e, "Failed to fetch models for idle refresh");
-                return;
-            }
-        };
-        if response.status() == reqwest::StatusCode::UNAUTHORIZED {
-            crate::auth::attribution::record_consumer_401(
-                am,
-                None,
-                crate::auth::attribution::ConsumerKind::IdleResumeModelRefresh,
-                "",
-                creds.api_key.as_deref(),
-            );
-        }
-        let result = if !response.status().is_success() {
-            tracing::warn!(
-                status = response.status().as_u16(),
-                "Failed to fetch models for idle refresh"
-            );
-            None
-        } else {
-            response
-                .json::<serde_json::Value>()
-                .await
-                .ok()
-                .and_then(parse_models_response)
-        };
-        let Some((new_context_window, new_max_completion_tokens)) = result else {
-            tracing::debug!("Model metadata refresh: no update or fetch failed");
-            return;
-        };
-        let mut config_changed = false;
-        let mut updated_config = current_config.clone();
-        if current_config.context_window != new_context_window
-            && self.compaction.context_window_override.is_none()
-        {
-            tracing::info!(
-                old_context_window = current_config.context_window.get(),
-                new_context_window = new_context_window.get(),
-                "Context window updated on session resume"
-            );
-            updated_config.context_window = new_context_window;
-            config_changed = true;
-        }
-        if let Some(new_mct) = new_max_completion_tokens
-            && current_config.max_completion_tokens != Some(new_mct)
-        {
-            tracing::info!(
-                old_max_completion_tokens = current_config.max_completion_tokens,
-                new_max_completion_tokens = new_mct,
-                "Max completion tokens updated on session resume"
-            );
-            updated_config.max_completion_tokens = Some(new_mct);
-            config_changed = true;
-        }
-        if config_changed {
-            self.chat_state_handle
-                .update_sampling_config(updated_config);
-        }
+        let _ = Self::IDLE_REFRESH_THRESHOLD_SECS;
     }
     /// Update cached sampling config if model metadata changed (from response headers).
     pub(super) async fn handle_model_metadata_update(

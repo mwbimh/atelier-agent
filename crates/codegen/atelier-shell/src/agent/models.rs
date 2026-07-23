@@ -226,10 +226,12 @@ impl ModelsManager {
             .is_some_and(|a| a.is_session_auth());
         let fetch_auth = ModelFetchAuth::resolve(&cfg.endpoints, has_session);
         let prefetched_models = if auth_manager.is_local_only() {
-            // Local Provider catalogs are authoritative. Never resurrect a
-            // vendor model list from the on-disk cache when no Provider is
-            // configured.
-            prefetched_models
+            // Local Provider catalogs are authoritative. Load them once at
+            // the runtime boundary and keep the resulting snapshot in the
+            // manager. Catalog resolution below must remain a pure operation;
+            // otherwise config reloads and tests are silently contaminated by
+            // whichever providers.toml happens to be in the process HOME.
+            Some(config::load_runtime_provider_models())
         } else {
             prefetched_models.or_else(|| {
                 let cache = ModelsCacheManager::new();
@@ -367,6 +369,13 @@ impl ModelsManager {
     /// vendor model discovery.
     pub fn reload_local_provider_catalog(&self) -> Result<(), String> {
         let path = atelier_config::atelier_home().join("providers.toml");
+        self.reload_local_provider_catalog_from(&path)
+    }
+
+    pub(crate) fn reload_local_provider_catalog_from(
+        &self,
+        path: &std::path::Path,
+    ) -> Result<(), String> {
         let registry = atelier_provider::ProviderRegistry::load_or_create(path)
             .map_err(|error| error.to_string())?;
         let snapshot = registry.snapshot();
@@ -378,6 +387,7 @@ impl ModelsManager {
         if !self.apply_refresh_result(&cfg, Some(local_models), None) {
             return Err("local Provider catalog was not applied".into());
         }
+        self.notify_models_updated();
         Ok(())
     }
 
@@ -631,36 +641,10 @@ impl ModelsManager {
             return;
         }
 
-        // Never eagerly drop prefetched on auth recovery. Only fall back to
-        // bundled defaults when we have never had a real catalog. Resolved once
-        // so the fetch and the failure-vs-disabled classification below agree.
-        let remote_fetch_enabled = crate::util::config::resolve_remote_fetch_enabled();
-        self.fetch_and_apply_inner(remote_fetch_enabled).await;
-
         if !*self.inner.has_fetched_real_catalog.read() && self.inner.prefetched.read().is_none() {
-            if remote_fetch_enabled {
-                atelier_telemetry::unified_log::warn(
-                    "model catalog: falling back to bundled defaults only",
-                    None,
-                    Some(serde_json::json!({
-                        "trigger": "on_auth_changed",
-                        "had_real_catalog": false,
-                    })),
-                );
-            } else {
-                // Deliberate no-fetch state, not a failure: no warn-class log.
-                tracing::debug!("model catalog: bundled defaults in use (remote_fetch disabled)");
-            }
-            self.rebuild(&config, None); // first-time only: no fetched catalog, use bundled defaults
+            tracing::debug!("model catalog: bundled/local Provider models in use");
+            self.rebuild(&config, None);
             self.reselect_current_model_if_missing(&config);
-
-            // Schedule background retries so we recover once the network is
-            // back (e.g. after sleep/resume when the first fetch races DNS).
-            // With remote_fetch disabled a retry can never succeed, so none is
-            // scheduled.
-            if remote_fetch_enabled {
-                self.spawn_catalog_retry();
-            }
         }
 
         self.notify_models_updated();
@@ -791,154 +775,13 @@ impl ModelsManager {
         self.notify_models_updated();
     }
 
-    /// Retry model catalog fetch in the background with exponential backoff.
-    ///
-    /// Spawned when `on_auth_changed` falls back to bundled defaults. Uses the
-    /// crate-standard `execute_with_backoff` (5 attempts, 5s base, 60s cap) and
-    /// notifies clients on success so the UI recovers after sleep/resume without
-    /// requiring a manual restart.
-    fn spawn_catalog_retry(&self) {
-        // Deliberate no-fetch state: a retry loop can never succeed, so don't
-        // start one (defensive re-check; the spawn site already gates).
-        if !crate::util::config::resolve_remote_fetch_enabled() {
-            return;
-        }
-        // Prevent overlapping retry loops.
-        if self
-            .inner
-            .retry_in_flight
-            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-            .is_err()
-        {
-            tracing::debug!("model catalog retry already in flight, skipping");
-            return;
-        }
-
-        let mgr = self.clone();
-        tokio::task::spawn(async move {
-            let backoff = crate::tools::retry::BackoffConfig::new(5, 5_000, 60_000);
-
-            let result = crate::tools::retry::execute_with_backoff(
-                &backoff,
-                || {
-                    let mgr = mgr.clone();
-                    async move {
-                        // Bail out early if another code path already loaded a real catalog.
-                        if *mgr.inner.has_fetched_real_catalog.read() {
-                            return Ok(());
-                        }
-
-                        mgr.fetch_and_apply().await;
-
-                        if *mgr.inner.has_fetched_real_catalog.read() {
-                            Ok(())
-                        } else {
-                            Err("model catalog fetch returned no models")
-                        }
-                    }
-                },
-                |attempt, max_retries, delay| async move {
-                    atelier_telemetry::unified_log::warn(
-                        "model catalog: retry scheduled",
-                        None,
-                        Some(serde_json::json!({
-                            "attempt": attempt,
-                            "max_retries": max_retries,
-                            "delay_ms": delay.as_millis() as u64,
-                        })),
-                    );
-                },
-            )
-            .await;
-
-            match result {
-                Ok(()) => {
-                    let count = mgr.available().len();
-                    atelier_telemetry::unified_log::info(
-                        "model catalog: retry succeeded",
-                        None,
-                        Some(serde_json::json!({ "model_count": count })),
-                    );
-                    mgr.notify_models_updated();
-                }
-                Err(e) => {
-                    atelier_telemetry::unified_log::warn(
-                        "model catalog: all retries exhausted",
-                        None,
-                        Some(serde_json::json!({ "error": e })),
-                    );
-                }
-            }
-
-            mgr.inner.retry_in_flight.store(false, Ordering::Release);
-        });
-    }
-
-    /// Refresh the model catalog on every auth token refresh.
-    ///
-    /// Listens for [`AuthManager::refresh_notifier`] signals directly,
-    /// bypassing the FSEvents file watcher which can silently stop
-    /// delivering events on macOS after resume from sleep. On each
-    /// notification the catalog is re-fetched from the server; if the
-    /// fetch succeeds and the catalog changed, clients are notified
-    /// via `atelier/models/update`.
+    /// Reload the local model cache after credential refresh notifications.
     pub fn start_auth_refresh_watcher(&self, notify: Arc<tokio::sync::Notify>) {
         let mgr = self.clone();
-        let had_catalog_at_start = *self.inner.has_fetched_real_catalog.read();
-        atelier_telemetry::unified_log::info(
-            "model catalog: auth refresh watcher started",
-            None,
-            Some(serde_json::json!({
-                "had_real_catalog": had_catalog_at_start,
-                "model_count": self.available().len(),
-            })),
-        );
         tokio::spawn(async move {
             loop {
                 notify.notified().await;
-                // Deliberate no-fetch state: skip the refresh entirely so the
-                // failure-classifying logs below keep meaning "actually failed".
-                if !crate::util::config::resolve_remote_fetch_enabled() {
-                    tracing::debug!(
-                        "model catalog: auth refresh watcher skipped (remote_fetch disabled)"
-                    );
-                    continue;
-                }
-                let had_catalog = *mgr.inner.has_fetched_real_catalog.read();
-                let old_count = mgr.available().len();
-                atelier_telemetry::unified_log::info(
-                    "model catalog: auth refresh watcher triggered",
-                    None,
-                    Some(serde_json::json!({
-                        "had_real_catalog": had_catalog,
-                        "model_count_before": old_count,
-                    })),
-                );
-                mgr.fetch_and_apply().await;
-                let has_catalog = *mgr.inner.has_fetched_real_catalog.read();
-                let new_count = mgr.available().len();
-                if has_catalog {
-                    if !had_catalog || new_count != old_count {
-                        atelier_telemetry::unified_log::info(
-                            "model catalog: auth refresh watcher updated catalog",
-                            None,
-                            Some(serde_json::json!({
-                                "model_count_before": old_count,
-                                "model_count_after": new_count,
-                                "was_recovery": !had_catalog,
-                            })),
-                        );
-                    }
-                    mgr.notify_models_updated();
-                } else {
-                    atelier_telemetry::unified_log::warn(
-                        "model catalog: auth refresh watcher fetch failed",
-                        None,
-                        Some(serde_json::json!({
-                            "model_count": old_count,
-                        })),
-                    );
-                }
+                mgr.reload_from_disk_cache();
             }
         });
     }
@@ -1015,104 +858,15 @@ impl ModelsManager {
         true
     }
 
-    fn spawn_fetch(&self, new_etag: Option<String>) {
-        // Degrade to Offline: keep serving the current (cache/static) catalog.
-        if !crate::util::config::resolve_remote_fetch_enabled() {
-            tracing::info!("model catalog refresh skipped: remote_fetch disabled");
-            return;
-        }
-        let cfg = self.inner.cfg.read().clone();
-        let endpoints = cfg.endpoints.clone();
-        let fetch_auth = *self.inner.fetch_auth.read();
-        let auth_manager = self.inner.auth_manager.clone();
-        let mgr = self.clone();
-
-        tokio::task::spawn(async move {
-            let auth = auth_manager.auth().await.ok();
-            let new_prefetched = fetch_models_async(endpoints, auth, fetch_auth).await;
-            if !mgr.apply_refresh_result(&cfg, new_prefetched, new_etag) {
-                return;
-            }
-            tracing::info!("models manager refreshed");
-            mgr.notify_models_updated();
-        });
-    }
-
-    /// Fetch models, rebuild state, and notify clients.
-    fn do_refresh(&self, new_etag: Option<String>, strategy: RefreshStrategy) {
-        match strategy {
-            RefreshStrategy::Offline => {
-                if self.try_load_cache() {
-                    tracing::info!("models manager refreshed from cache (offline)");
-                }
-            }
-            RefreshStrategy::OnlineIfUncached => {
-                if self.try_load_cache() {
-                    tracing::info!("models manager refreshed from cache (online_if_uncached)");
-                    return;
-                }
-                self.spawn_fetch(new_etag);
-            }
-            RefreshStrategy::Online => {
-                self.spawn_fetch(new_etag);
-            }
+    fn do_refresh(&self, _new_etag: Option<String>, _strategy: RefreshStrategy) {
+        if self.try_load_cache() {
+            tracing::info!("models manager refreshed from local cache");
         }
     }
 
-    /// Resolve the model list: tries cache first, then fetches from the network.
-    pub async fn list_models(&self, strategy: RefreshStrategy) {
-        match strategy {
-            RefreshStrategy::Offline => {
-                self.try_load_cache();
-            }
-            RefreshStrategy::OnlineIfUncached => {
-                if self.try_load_cache() {
-                    return;
-                }
-                self.fetch_and_apply().await;
-            }
-            RefreshStrategy::Online => {
-                self.fetch_and_apply().await;
-            }
-        }
-    }
-
-    async fn fetch_and_apply(&self) {
-        self.fetch_and_apply_inner(crate::util::config::resolve_remote_fetch_enabled())
-            .await
-    }
-
-    /// `remote_fetch_enabled` is a parameter so tests can drive the gate
-    /// without touching on-disk config layers.
-    async fn fetch_and_apply_inner(&self, remote_fetch_enabled: bool) {
-        // Degrade to Offline: keep serving the current (cache/static) catalog.
-        if !remote_fetch_enabled {
-            tracing::info!("model catalog refresh skipped: remote_fetch disabled");
-            return;
-        }
-        let auth = self.inner.auth_manager.auth().await.ok();
-        let has_auth = auth.is_some();
-        let fetch_auth = *self.inner.fetch_auth.read();
-        let cfg = self.inner.cfg.read().clone();
-        atelier_telemetry::unified_log::info(
-            "model catalog: fetching",
-            None,
-            Some(serde_json::json!({
-                "has_auth": has_auth,
-                "fetch_auth": format!("{fetch_auth:?}"),
-            })),
-        );
-        let new_prefetched = fetch_models_async(cfg.endpoints.clone(), auth, fetch_auth).await;
-        let success = self.apply_refresh_result(&cfg, new_prefetched, None);
-        if success {
-            atelier_telemetry::unified_log::info(
-                "model catalog: fetch succeeded",
-                None,
-                Some(serde_json::json!({
-                    "model_count": self.available().len(),
-                })),
-            );
-        }
+    /// Resolve the model list from local Provider/cache state only.
+    pub async fn list_models(&self, _strategy: RefreshStrategy) {
+        self.try_load_cache();
     }
 
     fn apply_refresh_result(
@@ -1430,12 +1184,7 @@ pub(crate) fn prefetch_models_blocking(
     auth: Option<&AtelierAuth>,
     fetch_auth: ModelFetchAuth,
 ) -> Option<IndexMap<String, ModelEntry>> {
-    prefetch_models_blocking_gated(
-        endpoints,
-        auth,
-        fetch_auth,
-        crate::util::config::resolve_remote_fetch_enabled(),
-    )
+    prefetch_models_blocking_gated(endpoints, auth, fetch_auth, false)
 }
 
 /// Blocking models + `/v1/settings` prefetch pair, shared by the early
@@ -1450,21 +1199,8 @@ pub(crate) fn prefetch_models_and_settings_blocking(
     Option<IndexMap<String, ModelEntry>>,
     Option<crate::util::config::RemoteSettings>,
 ) {
-    let remote_fetch_enabled = crate::util::config::resolve_remote_fetch_enabled();
-    let models = prefetch_models_blocking_gated(endpoints, auth, fetch_auth, remote_fetch_enabled);
-    // Settings need a atelier.invalid session; skip for BYOK.
-    let settings = match auth {
-        Some(auth) if remote_fetch_enabled => {
-            let _timer = crate::instrumentation_timer!("startup.early_settings_fetch");
-            crate::remote::fetch_settings_blocking(
-                &endpoints.proxy_url(),
-                auth,
-                endpoints.alpha_test_key.as_deref(),
-            )
-        }
-        _ => None,
-    };
-    (models, settings)
+    let models = prefetch_models_blocking_gated(endpoints, auth, fetch_auth, false);
+    (models, None)
 }
 
 /// `remote_fetch_enabled` is a parameter so the pair helper above resolves the
@@ -1543,11 +1279,7 @@ fn resolve_prefetch_env_with_auth(auth: Option<AtelierAuth>) -> Option<PrefetchE
         endpoints.deployment_key = crate::managed_config::resolve_deployment_key();
     }
 
-    resolve_prefetch_env_from_parts(
-        auth,
-        endpoints,
-        crate::util::config::resolve_remote_fetch_enabled(),
-    )
+    resolve_prefetch_env_from_parts(auth, endpoints, false)
 }
 
 /// Decision core of [`resolve_prefetch_env_with_auth`], split from the config
@@ -1624,19 +1356,6 @@ fn spawn_prefetch_thread(env: PrefetchEnv) -> EarlyPrefetchHandle {
             env.auth.as_ref(),
             env.model_fetch_auth,
         );
-        if (env.endpoints.deployment_key.is_some() || crate::managed_config::has_active_team_auth())
-            && crate::config::is_managed_config_stale_for(
-                &crate::managed_config::current_serving_identity(),
-            )
-            && crate::managed_config::is_fetch_enabled()
-            && let Ok(rt) = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-        {
-            crate::managed_config::clear_orphan();
-            let _ = rt.block_on(crate::managed_config::sync());
-        }
-
         EarlyPrefetchResult { models, settings }
     })
 }
@@ -1866,8 +1585,7 @@ pub fn resolve_model_catalog(
     cfg: &config::Config,
     prefetched: Option<IndexMap<String, ModelEntry>>,
 ) -> IndexMap<String, ModelEntry> {
-    let mut catalog: IndexMap<String, ModelEntry> =
-        config::resolve_runtime_model_list(cfg, prefetched);
+    let mut catalog: IndexMap<String, ModelEntry> = config::resolve_model_list(cfg, prefetched);
 
     if let Ok(Some(disabled)) = ModelGlobSet::compile(cfg.models.disabled_models.as_ref()) {
         let before = catalog.len();
@@ -2159,7 +1877,7 @@ mod tests {
 
         let manager = test_manager();
         manager
-            .reload_local_provider_catalog()
+            .reload_local_provider_catalog_from(&path)
             .expect("local Provider catalog should reload");
 
         let model = manager
@@ -2185,7 +1903,7 @@ mod tests {
             .unwrap();
         registry.save().unwrap();
         manager
-            .reload_local_provider_catalog()
+            .reload_local_provider_catalog_from(&path)
             .expect("pair Wire API override should reload");
         assert_eq!(
             manager
@@ -2196,6 +1914,65 @@ mod tests {
                 .api_backend,
             crate::sampling::ApiBackend::ChatCompletions
         );
+    }
+
+    #[test]
+    #[serial]
+    fn reload_local_provider_catalog_notifies_connected_clients() {
+        let home = tempfile::TempDir::new().unwrap();
+        let _home = EnvGuard::set("ATELIER_HOME", home.path());
+        let path = home.path().join("providers.toml");
+        let mut registry = atelier_provider::ProviderRegistry::load_or_create(&path).unwrap();
+        registry
+            .upsert_provider(atelier_provider::ProviderConfig {
+                id: "allm".into(),
+                display_name: "AllM".into(),
+                protocol: atelier_provider::ProviderProtocol::OpenAiChatCompletions,
+                base_url: url::Url::parse("http://127.0.0.1:4317/v1").unwrap(),
+                credential: atelier_provider::CredentialRef::None,
+                discovery: atelier_provider::ProviderDiscovery::Static,
+                extra_headers: std::collections::BTreeMap::new(),
+                enabled: true,
+            })
+            .unwrap();
+        registry
+            .upsert_model(atelier_provider::ModelDescriptor {
+                key: atelier_provider::ModelKey::new("allm", "deepseek-v4-flash").unwrap(),
+                display_name: "deepseek-v4-flash".into(),
+                description: None,
+                wire_api: Some(atelier_provider::WireApi::ChatCompletions),
+                context_window: Some(128_000),
+                capabilities: atelier_provider::ModelCapabilities::default(),
+                reasoning_efforts: Vec::new(),
+                source: atelier_provider::ModelSource::Static,
+                enabled: true,
+            })
+            .unwrap();
+        registry.save().unwrap();
+
+        let manager = test_manager();
+        let (gateway, mut gateway_rx) =
+            crate::test_support::lsp_runtime::test_gateway_with_receiver();
+        manager.set_gateway(gateway);
+        manager
+            .reload_local_provider_catalog_from(&path)
+            .expect("local Provider catalog should reload");
+
+        let message = gateway_rx
+            .try_recv()
+            .expect("catalog reload must notify connected clients");
+        let xai_acp_lib::AcpClientMessage::ExtNotification(args) = message else {
+            panic!("expected model catalog ExtNotification");
+        };
+        assert_eq!(args.request.method.as_ref(), "atelier/models/update");
+        let body: serde_json::Value =
+            serde_json::from_str(args.request.params.get()).expect("valid model state");
+        assert_eq!(body["currentModelId"], "allm/deepseek-v4-flash");
+        assert!(body["availableModels"].as_array().is_some_and(|models| {
+            models
+                .iter()
+                .any(|model| model["modelId"] == "allm/deepseek-v4-flash")
+        }));
     }
 
     #[test]
@@ -3375,36 +3152,6 @@ mod tests {
             resolve_prefetch_env_from_parts(None, config::EndpointsConfig::default(), true)
                 .is_none(),
             "no credentials and no custom endpoint must stay a no-prefetch launch",
-        );
-    }
-
-    /// remote_fetch=false: an online catalog refresh is a no-op — nothing is
-    /// fetched, no real-catalog flag is set, and the static catalog keeps
-    /// resolving. Covers `list_models`/`do_refresh` online strategies too,
-    /// which funnel into `fetch_and_apply`/`spawn_fetch`.
-    #[tokio::test]
-    async fn fetch_and_apply_degrades_offline_when_remote_fetch_disabled() {
-        let mgr = test_manager();
-        mgr.insert_test_entry(
-            "static-one",
-            ModelEntry {
-                info: config::ModelInfo::fallback("static-one"),
-                api_key: None,
-                env_key: None,
-                api_base_url: None,
-                request_payload: serde_json::Map::new(),
-            },
-        );
-
-        mgr.fetch_and_apply_inner(false).await;
-
-        assert!(
-            !mgr.has_fetched_real_catalog(),
-            "no catalog fetch may be recorded when remote_fetch is disabled",
-        );
-        assert!(
-            mgr.models().contains_key("static-one"),
-            "the static catalog must keep resolving",
         );
     }
 

@@ -182,8 +182,8 @@ async fn run_user_info_enrichment(manager: &AuthManager, auth: AtelierAuth) {
             None,
             Some(serde_json::json!({
                 "reason": "sibling_rotated",
-                "written_key_prefix": crate::auth::token_suffix(&auth.key),
-                "disk_key_prefix": crate::auth::token_suffix(&disk.key),
+                "access_token_changed": disk.key != auth.key,
+                "refresh_token_changed": disk.refresh_token != auth.refresh_token,
             })),
         );
         return;

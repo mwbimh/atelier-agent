@@ -39,7 +39,7 @@ public sealed record RoleConfig(
     [property: JsonPropertyName("provider")] string Provider,
     [property: JsonPropertyName("model")] string Model,
     [property: JsonPropertyName("effort")] string? Effort,
-    [property: JsonPropertyName("fastMode")] bool FastMode,
+    [property: JsonPropertyName("fast_mode")] bool FastMode,
     [property: JsonPropertyName("payload")] Dictionary<string, JsonElement> Payload);
 
 public sealed class RpcClientException : Exception
@@ -181,4 +181,179 @@ public sealed class AtelierRpcClient
         string requestId,
         CancellationToken cancellationToken = default) =>
         CallRawAsync("_atelier/runtime/retry", new { requestId }, cancellationToken);
+
+    public Task<JsonDocument> ContextListAsync(
+        object? parameters = null,
+        CancellationToken cancellationToken = default) =>
+        CallRawAsync("_atelier/context/list", parameters, cancellationToken);
+
+    public Task<JsonDocument> ContextGetAsync(
+        object? parameters = null,
+        CancellationToken cancellationToken = default) =>
+        CallRawAsync("_atelier/context/get", parameters, cancellationToken);
+
+    public Task<JsonDocument> RequestListAsync(
+        object? parameters = null,
+        CancellationToken cancellationToken = default) =>
+        CallRawAsync("_atelier/request/list", parameters, cancellationToken);
+
+    public Task<JsonDocument> RequestGetAsync(
+        object? parameters = null,
+        CancellationToken cancellationToken = default) =>
+        CallRawAsync("_atelier/request/get", parameters, cancellationToken);
+
+    public Task<JsonDocument> RuntimeDoctorAsync(
+        object? parameters = null,
+        CancellationToken cancellationToken = default) =>
+        CallRawAsync("_atelier/runtime/doctor", parameters, cancellationToken);
+
+    public Task<JsonDocument> RuntimeCancelAsync(
+        object? parameters = null,
+        CancellationToken cancellationToken = default) =>
+        CallRawAsync("_atelier/runtime/cancel", parameters, cancellationToken);
+
+    public Task<JsonDocument> RuntimeRetryAsync(
+        object? parameters = null,
+        CancellationToken cancellationToken = default) =>
+        CallRawAsync("_atelier/runtime/retry", parameters, cancellationToken);
+
+    public Task<JsonDocument> RuntimeRecoverAsync(
+        object? parameters = null,
+        CancellationToken cancellationToken = default) =>
+        CallRawAsync("_atelier/runtime/recover", parameters, cancellationToken);
+
+    public Task<JsonDocument> RuntimeTasksAsync(
+        object? parameters = null,
+        CancellationToken cancellationToken = default) =>
+        CallRawAsync("_atelier/runtime/tasks", parameters, cancellationToken);
+
+    public Task<JsonDocument> RoleListAsync(
+        object? parameters = null,
+        CancellationToken cancellationToken = default) =>
+        CallRawAsync("_atelier/role/list", parameters, cancellationToken);
+
+    public Task<JsonDocument> RoleGetAsync(
+        object? parameters = null,
+        CancellationToken cancellationToken = default) =>
+        CallRawAsync("_atelier/role/get", parameters, cancellationToken);
+
+    public Task<JsonDocument> RoleSetAsync(
+        object? parameters = null,
+        CancellationToken cancellationToken = default) =>
+        CallRawAsync("_atelier/role/update", parameters, cancellationToken);
+
+    public Task<JsonDocument> RoleTestAsync(
+        object? parameters = null,
+        CancellationToken cancellationToken = default) =>
+        CallRawAsync("_atelier/role/test", parameters, cancellationToken);
+
+    public Task<JsonDocument> ContextSnapshotCreateAsync(
+        object? parameters = null,
+        CancellationToken cancellationToken = default) =>
+        CallRawAsync("_atelier/context_snapshot/create", parameters, cancellationToken);
+
+    public Task<JsonDocument> ContextSnapshotGetAsync(
+        object? parameters = null,
+        CancellationToken cancellationToken = default) =>
+        CallRawAsync("_atelier/context_snapshot/get", parameters, cancellationToken);
+
+    public Task<JsonDocument> ContextSnapshotDeleteAsync(
+        object? parameters = null,
+        CancellationToken cancellationToken = default) =>
+        CallRawAsync("_atelier/context_snapshot/delete", parameters, cancellationToken);
+
+    public Task<JsonDocument> AgentSpawnDerivedAsync(
+        object? parameters = null,
+        CancellationToken cancellationToken = default) =>
+        CallRawAsync("_atelier/agent/spawn_derived", parameters, cancellationToken);
+
+    public Task<JsonDocument> AgentSpawnParallelAsync(
+        object? parameters = null,
+        CancellationToken cancellationToken = default) =>
+        CallRawAsync("_atelier/agent/spawn_parallel", parameters, cancellationToken);
+
+    public Task<JsonDocument> SessionForkAsync(
+        object? parameters = null,
+        CancellationToken cancellationToken = default) =>
+        CallRawAsync("_atelier/session/fork", parameters, cancellationToken);
+
+    public Task<JsonDocument> BtwAskAsync(
+        object? parameters = null,
+        CancellationToken cancellationToken = default) =>
+        CallRawAsync("_atelier/btw/ask", parameters, cancellationToken);
+
+    public Task<JsonDocument> BtwGetAsync(
+        object? parameters = null,
+        CancellationToken cancellationToken = default) =>
+        CallRawAsync("_atelier/btw/get", parameters, cancellationToken);
+
+    public Task<JsonDocument> BtwListAsync(
+        object? parameters = null,
+        CancellationToken cancellationToken = default) =>
+        CallRawAsync("_atelier/btw/list", parameters, cancellationToken);
+
+    public Task<JsonDocument> BtwDeleteAsync(
+        object? parameters = null,
+        CancellationToken cancellationToken = default) =>
+        CallRawAsync("_atelier/btw/delete", parameters, cancellationToken);
+
+    public Task<JsonDocument> TaskListAsync(
+        object? parameters = null,
+        CancellationToken cancellationToken = default) =>
+        CallRawAsync("_atelier/task/list", parameters, cancellationToken);
+
+    public Task<JsonDocument> TaskGetAsync(
+        object? parameters = null,
+        CancellationToken cancellationToken = default) =>
+        CallRawAsync("_atelier/task/get", parameters, cancellationToken);
+
+    public Task<JsonDocument> TaskDetachAsync(
+        object? parameters = null,
+        CancellationToken cancellationToken = default) =>
+        CallRawAsync("_atelier/task/detach", parameters, cancellationToken);
+
+    public Task<JsonDocument> TaskAttachAsync(
+        object? parameters = null,
+        CancellationToken cancellationToken = default) =>
+        CallRawAsync("_atelier/task/attach", parameters, cancellationToken);
+
+    public Task<JsonDocument> TaskCancelAsync(
+        object? parameters = null,
+        CancellationToken cancellationToken = default) =>
+        CallRawAsync("_atelier/task/cancel", parameters, cancellationToken);
+
+    public Task<JsonDocument> TaskSubscribeAsync(
+        object? parameters = null,
+        CancellationToken cancellationToken = default) =>
+        CallRawAsync("_atelier/task/subscribe", parameters, cancellationToken);
+
+    public Task<JsonDocument> ModelGetAsync(
+        object? parameters = null,
+        CancellationToken cancellationToken = default) =>
+        CallRawAsync("_atelier/model/get", parameters, cancellationToken);
+
+    public Task<JsonDocument> ModelUpdateWireApiAsync(
+        object? parameters = null,
+        CancellationToken cancellationToken = default) =>
+        CallRawAsync("_atelier/model/update_wire_api", parameters, cancellationToken);
+
+    public Task<JsonDocument> ModelProviderOverrideListAsync(
+        object? parameters = null,
+        CancellationToken cancellationToken = default) =>
+        CallRawAsync("_atelier/model_provider_override/list", parameters, cancellationToken);
+
+    public Task<JsonDocument> ModelProviderOverrideSetAsync(
+        object? parameters = null,
+        CancellationToken cancellationToken = default) =>
+        CallRawAsync("_atelier/model_provider_override/set", parameters, cancellationToken);
+
+    public Task<JsonDocument> ModelProviderOverrideDeleteAsync(
+        object? parameters = null,
+        CancellationToken cancellationToken = default) =>
+        CallRawAsync("_atelier/model_provider_override/delete", parameters, cancellationToken);
+
+    public Task<JsonDocument> ModelProviderOverrideTestAsync(
+        object? parameters = null,
+        CancellationToken cancellationToken = default) =>
+        CallRawAsync("_atelier/model_provider_override/test", parameters, cancellationToken);
 }

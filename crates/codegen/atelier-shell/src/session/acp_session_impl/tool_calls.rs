@@ -496,24 +496,6 @@ impl SessionActor {
             self.signals_handle().record_tool_call(&prepared.tool_name);
             let tool_start = self.events.tool_started(prepared.tool_name.clone());
             let mut post_tool_use_result: Option<serde_json::Value> = None;
-            if let Some((server, _)) =
-                crate::session::mcp_servers::parse_mcp_tool_name(&prepared.tool_name)
-                && server.starts_with(crate::session::managed_mcp::MANAGED_MCP_PREFIX)
-            {
-                let auth_rejected = match &result {
-                    Err(err) => atelier_mcp::servers::is_auth_rejection_message(&err.to_string()),
-                    Ok(tool_result) => {
-                        tool_result.output.is_error()
-                            && atelier_mcp::servers::is_auth_rejection_message(
-                                &tool_result.prompt_text,
-                            )
-                    }
-                };
-                if auth_rejected && self.reactive_managed_reauth(&server).await.is_ok() {
-                    result = dispatch_tool(&self.workspace_ops, &prepared, &self.session_info.id.0)
-                        .await;
-                }
-            }
             let tool_result_size_bytes = match &result {
                 Ok(tool_result) => tool_result.prompt_text.len() as i64,
                 Err(_) => 0,
@@ -632,6 +614,12 @@ impl SessionActor {
                 )
                 .await;
             }
+            self.record_typed_lifecycle(
+                atelier_hooks::HookEvent::AfterToolCall,
+                &prepared.call_id,
+                None,
+                false,
+            );
             self.events.tool_finished();
             let tool_outcome = match &tool_loop {
                 _ if tool_failed => crate::session::events::ToolOutcome::Error,
@@ -787,12 +775,6 @@ impl SessionActor {
         }
         let mcp_parts = parse_mcp_tool_name(&call.function.name);
         let is_mcp_tool = mcp_parts.is_some();
-        if let Some((ref server, _)) = mcp_parts
-            && server.starts_with(crate::session::managed_mcp::MANAGED_MCP_PREFIX)
-        {
-            let _span = tracing::info_span!("tool.refresh_managed_mcp").entered();
-            self.refresh_managed_mcp_if_stale().await;
-        }
         if is_mcp_tool && !self.mcp_state.lock().await.is_initialized() {
             match self.mcp_strategy {
                 McpInitStrategy::Blocking => {
@@ -823,7 +805,7 @@ impl SessionActor {
         );
         let parse_result = serde_json::from_str::<serde_json::Value>(args_str);
         let mut concatenated_json_count: usize = 0;
-        let raw_input = match &parse_result {
+        let mut raw_input = match &parse_result {
             Ok(value) => value.clone(),
             Err(e) => {
                 if let Some(objects) = crate::session::helpers::tool_input_parsing::try_extract_concatenated_json_objects(
@@ -869,7 +851,7 @@ impl SessionActor {
                 }
             }
         };
-        let tool_input = match self
+        let mut tool_input = match self
             .agent
             .borrow()
             .tool_bridge()
@@ -890,7 +872,239 @@ impl SessionActor {
                 return Ok(Err(ToolLoop::ToolParsingError));
             }
         };
-        let access_kind = AccessKind::from(&tool_input);
+        let mut access_kind = AccessKind::from(&tool_input);
+        let initial_plan_gate =
+            plan_mode_edit_gate(&self.plan_mode.lock(), &tool_input, &access_kind);
+        if initial_plan_gate != PlanEditGate::Allow {
+            tracing::info_span!(
+                "tool.decision", tool_name = % call.function.name, tool_use_id = % call
+                .id, decision = "deny", source = "plan_mode", wait_ms = 0_i64,
+            )
+            .in_scope(|| {});
+            let msg = self.plan_mode_edit_rejected_message().await;
+            self.handle_tool_not_executed(&call.id, &tool_call_id, msg)
+                .await?;
+            return Ok(Err(ToolLoop::Continue));
+        }
+        let _recovered_raw_input = if concatenated_json_count > 0 {
+            Some(raw_input.clone())
+        } else {
+            None
+        };
+        let mut dispatch_target_name = tool_input.dispatch_target_name();
+        let mut resolved_tool_name = dispatch_target_name
+            .clone()
+            .unwrap_or_else(|| call.function.name.clone());
+        let role = self
+            .subagent_type_label()
+            .unwrap_or_else(|| "main".to_owned());
+        let mut policy_path = match &access_kind {
+            AccessKind::Read(path) => path.clone(),
+            AccessKind::Edit(path) => Some(path.clone()),
+            AccessKind::Grep { path, .. } => path.clone(),
+            _ => None,
+        };
+        let mut operation = match &access_kind {
+            AccessKind::Read(_) | AccessKind::Grep { .. } => {
+                crate::extensions::policy::PolicyOperation::FileRead
+            }
+            AccessKind::Edit(_) => crate::extensions::policy::PolicyOperation::FileWrite,
+            AccessKind::Bash(_) => crate::extensions::policy::PolicyOperation::ProcessSpawn,
+            AccessKind::MCPTool { .. } | AccessKind::WebFetch(_) | AccessKind::WebSearch(_) => {
+                crate::extensions::policy::PolicyOperation::ToolCall
+            }
+        };
+        let policy_decision = {
+            let engine = self.tool_context.runtime_policy.read();
+            crate::extensions::policy::evaluate_runtime_policy(
+                &engine,
+                crate::extensions::policy::PolicyOperation::ToolCall,
+                Some(&role),
+                None,
+                Some(&resolved_tool_name),
+                policy_path.as_deref(),
+                crate::extensions::policy::PolicyGates::default(),
+            )
+        };
+        let mut policy_mutated = false;
+        match &policy_decision {
+            atelier_hooks::PolicyDecision::Allow => {}
+            atelier_hooks::PolicyDecision::Deny { reason } => {
+                self.record_typed_lifecycle(
+                    atelier_hooks::HookEvent::BeforeToolCall,
+                    &call.id,
+                    Some(&policy_decision),
+                    false,
+                );
+                self.handle_tool_not_executed(&call.id, &tool_call_id, reason.clone())
+                    .await?;
+                return Ok(Err(ToolLoop::Continue));
+            }
+            atelier_hooks::PolicyDecision::Ask { prompt } => {
+                let approved = self
+                    .request_typed_policy_approval(
+                        atelier_hooks::HookEvent::BeforeToolCall,
+                        &call.id,
+                        tool_call_id.clone(),
+                        format!("Approve `{resolved_tool_name}`"),
+                        prompt,
+                        raw_input.clone(),
+                    )
+                    .await?;
+                if !approved {
+                    self.record_typed_lifecycle(
+                        atelier_hooks::HookEvent::BeforeToolCall,
+                        &call.id,
+                        Some(&policy_decision),
+                        false,
+                    );
+                    self.handle_tool_not_executed(
+                        &call.id,
+                        &tool_call_id,
+                        format!("Runtime policy approval rejected: {prompt}"),
+                    )
+                    .await?;
+                    return Ok(Err(ToolLoop::Continue));
+                }
+            }
+            atelier_hooks::PolicyDecision::Modify { replacement } => {
+                let replacement_value = serde_json::from_str::<serde_json::Value>(replacement)
+                    .map_err(|error| {
+                        acp::Error::invalid_params().data(format!(
+                            "runtime policy returned invalid tool arguments: {error}"
+                        ))
+                    })?;
+                tool_input = self
+                    .agent
+                    .borrow()
+                    .tool_bridge()
+                    .try_parse(&call.function.name, replacement_value.clone())
+                    .await
+                    .map_err(|error| {
+                        acp::Error::invalid_params().data(format!(
+                            "runtime policy tool arguments do not match `{}`: {error}",
+                            call.function.name
+                        ))
+                    })?;
+                raw_input = replacement_value;
+                access_kind = AccessKind::from(&tool_input);
+                dispatch_target_name = tool_input.dispatch_target_name();
+                resolved_tool_name = dispatch_target_name
+                    .clone()
+                    .unwrap_or_else(|| call.function.name.clone());
+                policy_path = match &access_kind {
+                    AccessKind::Read(path) => path.clone(),
+                    AccessKind::Edit(path) => Some(path.clone()),
+                    AccessKind::Grep { path, .. } => path.clone(),
+                    _ => None,
+                };
+                operation = match &access_kind {
+                    AccessKind::Read(_) | AccessKind::Grep { .. } => {
+                        crate::extensions::policy::PolicyOperation::FileRead
+                    }
+                    AccessKind::Edit(_) => crate::extensions::policy::PolicyOperation::FileWrite,
+                    AccessKind::Bash(_) => crate::extensions::policy::PolicyOperation::ProcessSpawn,
+                    AccessKind::MCPTool { .. }
+                    | AccessKind::WebFetch(_)
+                    | AccessKind::WebSearch(_) => {
+                        crate::extensions::policy::PolicyOperation::ToolCall
+                    }
+                };
+                policy_mutated = true;
+            }
+            atelier_hooks::PolicyDecision::AddContext { context } => {
+                deferred_followups.push(ConversationItem::system(context.clone()));
+                policy_mutated = true;
+            }
+        }
+        self.record_typed_lifecycle(
+            atelier_hooks::HookEvent::BeforeToolCall,
+            &call.id,
+            Some(&policy_decision),
+            policy_mutated,
+        );
+
+        let operation_decision =
+            if operation == crate::extensions::policy::PolicyOperation::ToolCall {
+                atelier_hooks::PolicyDecision::Allow
+            } else {
+                crate::extensions::policy::evaluate_runtime_policy(
+                    &self.tool_context.runtime_policy.read(),
+                    operation,
+                    Some(&role),
+                    None,
+                    Some(&resolved_tool_name),
+                    policy_path.as_deref(),
+                    crate::extensions::policy::PolicyGates::default(),
+                )
+            };
+        match &operation_decision {
+            atelier_hooks::PolicyDecision::Allow => {}
+            atelier_hooks::PolicyDecision::Deny { reason } => {
+                self.record_typed_lifecycle(
+                    operation.event(),
+                    &call.id,
+                    Some(&operation_decision),
+                    false,
+                );
+                self.handle_tool_not_executed(&call.id, &tool_call_id, reason.clone())
+                    .await?;
+                return Ok(Err(ToolLoop::Continue));
+            }
+            atelier_hooks::PolicyDecision::Ask { prompt } => {
+                let approved = self
+                    .request_typed_policy_approval(
+                        operation.event(),
+                        &call.id,
+                        tool_call_id.clone(),
+                        format!("Approve `{resolved_tool_name}`"),
+                        prompt,
+                        raw_input.clone(),
+                    )
+                    .await?;
+                if !approved {
+                    self.record_typed_lifecycle(
+                        operation.event(),
+                        &call.id,
+                        Some(&operation_decision),
+                        false,
+                    );
+                    self.handle_tool_not_executed(
+                        &call.id,
+                        &tool_call_id,
+                        format!("Runtime policy approval rejected: {prompt}"),
+                    )
+                    .await?;
+                    return Ok(Err(ToolLoop::Continue));
+                }
+            }
+            atelier_hooks::PolicyDecision::Modify { .. } => {
+                self.record_typed_lifecycle(
+                    operation.event(),
+                    &call.id,
+                    Some(&operation_decision),
+                    false,
+                );
+                return Err(acp::Error::invalid_params().data(
+                    "file/process policy cannot rewrite tool arguments; use a tool-scoped modify rule",
+                ));
+            }
+            atelier_hooks::PolicyDecision::AddContext { context } => {
+                deferred_followups.push(ConversationItem::system(context.clone()));
+            }
+        }
+        if operation != crate::extensions::policy::PolicyOperation::ToolCall {
+            self.record_typed_lifecycle(
+                operation.event(),
+                &call.id,
+                Some(&operation_decision),
+                matches!(
+                    operation_decision,
+                    atelier_hooks::PolicyDecision::AddContext { .. }
+                ),
+            );
+        }
+
         let plan_gate = plan_mode_edit_gate(&self.plan_mode.lock(), &tool_input, &access_kind);
         if plan_gate != PlanEditGate::Allow {
             tracing::info_span!(
@@ -908,15 +1122,6 @@ impl SessionActor {
         let tool_call_display = self
             .send_tool_call_start(&tool_call_id, &call.function.name, tool_input.clone())
             .await;
-        let _recovered_raw_input = if concatenated_json_count > 0 {
-            Some(raw_input.clone())
-        } else {
-            None
-        };
-        let dispatch_target_name = tool_input.dispatch_target_name();
-        let resolved_tool_name = dispatch_target_name
-            .clone()
-            .unwrap_or_else(|| call.function.name.clone());
         if self.hook_event_active(atelier_hooks::event::HookEventName::PreToolUse) {
             let (hook_tool_input, hook_tool_input_truncated) =
                 atelier_hooks::event::truncate_payload(raw_input.clone());
@@ -1067,6 +1272,14 @@ impl SessionActor {
                 }
             }
             let decision = {
+                if let Some(control) = &self.tool_context.runtime_control {
+                    control.lock().update_status(
+                        self.session_info.id.0.as_ref(),
+                        crate::runtime_control::RuntimeState::WaitingForPermission,
+                        crate::runtime_control::now_millis(),
+                        Some(format!("Waiting for permission: {resolved_tool_name}")),
+                    );
+                }
                 let _pending_guard =
                     crate::session::pending_interaction::PendingInteractionGuard::new(
                         self.pending_interactions.clone(),
@@ -1085,6 +1298,14 @@ impl SessionActor {
                     )
                     .await
             };
+            if let Some(control) = &self.tool_context.runtime_control {
+                control.lock().update_status(
+                    self.session_info.id.0.as_ref(),
+                    crate::runtime_control::RuntimeState::RunningTool,
+                    crate::runtime_control::now_millis(),
+                    None,
+                );
+            }
             self.events.permission_resolved(
                 &call.function.name,
                 match &decision {
@@ -1342,7 +1563,8 @@ impl SessionActor {
             call_id: call.id.clone(),
             tool_call_id,
             tool_name: call.function.name.clone(),
-            raw_arguments: call.function.arguments.clone(),
+            raw_arguments: serde_json::to_string(&raw_input)
+                .unwrap_or_else(|_| call.function.arguments.clone()),
             parsed_args: raw_input.clone(),
             model_id: model_id_str,
             concatenated_json_count,
@@ -1610,33 +1832,6 @@ impl SessionActor {
             ToolInput::WebSearch(ws) => (
                 format!("Web search: \"{}\"", ws.query),
                 acp::ToolKind::Search,
-                vec![],
-                vec![],
-            ),
-            ToolInput::ImageGen(ig) => (
-                format!("imagine: {}", ig.prompt),
-                acp::ToolKind::Other,
-                vec![],
-                vec![],
-            ),
-            ToolInput::ImageEdit(ie) => (
-                format!("imagine-edit: {}", ie.prompt),
-                acp::ToolKind::Other,
-                vec![],
-                vec![],
-            ),
-            ToolInput::ImageToVideo(i2v) => (
-                format!(
-                    "image-to-video: {}",
-                    i2v.prompt.as_deref().unwrap_or(&i2v.image)
-                ),
-                acp::ToolKind::Other,
-                vec![],
-                vec![],
-            ),
-            ToolInput::ReferenceToVideo(r2v) => (
-                format!("reference-to-video: {}", r2v.prompt),
-                acp::ToolKind::Other,
                 vec![],
                 vec![],
             ),
@@ -2324,6 +2519,12 @@ impl SessionActor {
                 self.chat_state_handle.record_stream_start(timestamp_ms);
             }
             SamplingEvent::FirstToken { .. } => {
+                if let Some(control) = &self.tool_context.runtime_control {
+                    control.lock().mark_first_token(
+                        self.session_info.id.0.as_ref(),
+                        crate::runtime_control::now_millis(),
+                    );
+                }
                 self.emit_event(crate::session::events::Event::FirstToken);
             }
             SamplingEvent::ChannelToken {
@@ -2333,6 +2534,14 @@ impl SessionActor {
                 ..
             } => match channel {
                 SamplingChannel::Text => {
+                    if let Some(control) = &self.tool_context.runtime_control {
+                        control.lock().update_status(
+                            self.session_info.id.0.as_ref(),
+                            crate::runtime_control::RuntimeState::StreamingResponse,
+                            crate::runtime_control::now_millis(),
+                            None,
+                        );
+                    }
                     {
                         let mut cap = self.streaming_turn_capture.lock();
                         if cap.prompt_id.is_none() {
@@ -2358,6 +2567,14 @@ impl SessionActor {
                     .await;
                 }
                 SamplingChannel::Reasoning => {
+                    if let Some(control) = &self.tool_context.runtime_control {
+                        control.lock().update_status(
+                            self.session_info.id.0.as_ref(),
+                            crate::runtime_control::RuntimeState::StreamingResponse,
+                            crate::runtime_control::now_millis(),
+                            None,
+                        );
+                    }
                     {
                         let mut cap = self.streaming_turn_capture.lock();
                         if cap.prompt_id.is_none() {
@@ -2447,6 +2664,14 @@ impl SessionActor {
                 doom_loop_triggers,
                 doom_loop_aborted_at_chunk,
             } => {
+                if let Some(control) = &self.tool_context.runtime_control {
+                    control.lock().mark_retry(
+                        self.session_info.id.0.as_ref(),
+                        attempt,
+                        crate::runtime_control::now_millis(),
+                        Some(reason.clone()),
+                    );
+                }
                 if kind == atelier_sampler::SamplingErrorKind::DoomLoopDetected {
                     let triggers = doom_loop_triggers.unwrap_or_default();
                     let attempt_number = {
@@ -2485,6 +2710,18 @@ impl SessionActor {
                 .await;
             }
             SamplingEvent::Failed { request_id, error } => {
+                if let Some(control) = &self.tool_context.runtime_control {
+                    let mut control = control.lock();
+                    if let Some(status_code) = error.status_code {
+                        control.mark_http_status(self.session_info.id.0.as_ref(), status_code);
+                    }
+                    control.update_status(
+                        self.session_info.id.0.as_ref(),
+                        crate::runtime_control::RuntimeState::Failed,
+                        crate::runtime_control::now_millis(),
+                        Some(error.message.clone()),
+                    );
+                }
                 atelier_telemetry::unified_log::error(
                     "shell.turn.inference_failed",
                     Some(self.session_info.id.0.as_ref()),

@@ -5,14 +5,11 @@ edition.workspace = true
 license.workspace = true
 description = "Windows restricted-token command runner for Atelier"
 publish = false
+autobins = false
 
 [lib]
 name = "atelier_windows_sandbox"
 path = "src/lib.rs"
-
-[[bin]]
-name = "atelier-command-runner"
-path = "src/bin/atelier-command-runner.rs"
 
 [dependencies]
 anyhow = { workspace = true }

@@ -24,11 +24,11 @@ const zlib = require('zlib');
 
 const brotliCompress = promisify(zlib.brotliCompress);
 
-const xaiRoot = process.env.XAI_ROOT || path.resolve(__dirname, '..', '..', '..', '..', '..');
+const atelierRoot = process.env.ATELIER_ROOT
+    || path.resolve(__dirname, '..', '..', '..', '..', '..', '..');
 const npmRoot = path.resolve(__dirname, '..', '..');
 
-const NOTICES_SOURCE = path.resolve(
-    npmRoot, '..', '..', 'xai-atelier-tools', 'THIRD_PARTY_NOTICES.md');
+const NOTICES_SOURCE = path.join(atelierRoot, 'THIRD_PARTY_NOTICES.md');
 const NOTICES_NAME = 'THIRD_PARTY_NOTICES.md';
 
 const META_PKG_JSON = path.resolve(__dirname, '..', 'package.json');
@@ -85,36 +85,36 @@ async function main() {
         {
             platform: 'darwin', arch: 'arm64', binName: 'atelier',
             envVar: 'ATELIER_DARWIN_ARM64',
-            defaultSource: path.join(xaiRoot, 'target', 'release', 'xai-atelier'),
+            defaultSource: path.join(atelierRoot, 'target', 'release', 'atelier'),
         },
         {
             platform: 'darwin', arch: 'x64', binName: 'atelier',
             envVar: 'ATELIER_DARWIN_X64',
-            defaultSource: path.join(xaiRoot, 'target', 'x86_64-apple-darwin', 'release', 'xai-atelier'),
+            defaultSource: path.join(atelierRoot, 'target', 'x86_64-apple-darwin', 'release', 'atelier'),
         },
         {
             platform: 'linux', arch: 'x64', binName: 'atelier',
             envVar: 'ATELIER_LINUX_X64',
-            defaultSource: path.join(xaiRoot, 'target',
+            defaultSource: path.join(atelierRoot, 'target',
                 'explorer_cross_x86_64-unknown-linux-gnu',
-                'x86_64-unknown-linux-gnu', 'release', 'xai-atelier'),
+                'x86_64-unknown-linux-gnu', 'release', 'atelier'),
         },
         {
             platform: 'linux', arch: 'arm64', binName: 'atelier',
             envVar: 'ATELIER_LINUX_ARM64',
-            defaultSource: path.join(xaiRoot, 'target',
+            defaultSource: path.join(atelierRoot, 'target',
                 'explorer_cross_aarch64-unknown-linux-gnu',
-                'aarch64-unknown-linux-gnu', 'release', 'xai-atelier'),
+                'aarch64-unknown-linux-gnu', 'release', 'atelier'),
         },
         {
             platform: 'win32', arch: 'x64', binName: 'atelier.exe',
             envVar: 'ATELIER_WIN32_X64',
-            defaultSource: path.join(xaiRoot, 'target', 'x86_64-pc-windows-msvc', 'release', 'xai-atelier.exe'),
+            defaultSource: path.join(atelierRoot, 'target', 'x86_64-pc-windows-msvc', 'release', 'atelier.exe'),
         },
         {
             platform: 'win32', arch: 'arm64', binName: 'atelier.exe',
             envVar: 'ATELIER_WIN32_ARM64',
-            defaultSource: path.join(xaiRoot, 'target', 'aarch64-pc-windows-msvc', 'release', 'xai-atelier.exe'),
+            defaultSource: path.join(atelierRoot, 'target', 'aarch64-pc-windows-msvc', 'release', 'atelier.exe'),
         },
     ];
 

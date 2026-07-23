@@ -2275,13 +2275,13 @@ fn discover_personas_inline_takes_precedence() {
 #[test]
 fn bundled_personas_and_roles_have_lowest_priority_in_resolve_order() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let home = tmp.path().join("home");
+    let user_root = tmp.path().join("atelier-home");
     let workspace = tmp.path().join("workspace");
-    let bundled = home.join(".atelier").join("bundled");
+    let bundled = tmp.path().join("bundled");
     std::fs::create_dir_all(workspace.join(".atelier").join("roles")).unwrap();
     std::fs::create_dir_all(workspace.join(".atelier").join("personas")).unwrap();
-    std::fs::create_dir_all(home.join(".atelier").join("roles")).unwrap();
-    std::fs::create_dir_all(home.join(".atelier").join("personas")).unwrap();
+    std::fs::create_dir_all(user_root.join("roles")).unwrap();
+    std::fs::create_dir_all(user_root.join("personas")).unwrap();
     std::fs::create_dir_all(bundled.join("roles")).unwrap();
     std::fs::create_dir_all(bundled.join("personas")).unwrap();
     std::fs::write(
@@ -2295,12 +2295,12 @@ fn bundled_personas_and_roles_have_lowest_priority_in_resolve_order() {
         )
         .unwrap();
     std::fs::write(
-            home.join(".atelier/roles/reviewer.toml"),
+            user_root.join("roles/reviewer.toml"),
             r#"description = "User reviewer""#,
         )
         .unwrap();
     std::fs::write(
-            home.join(".atelier/personas/reviewer.toml"),
+            user_root.join("personas/reviewer.toml"),
             r#"instructions = "User persona""#,
         )
         .unwrap();
@@ -2314,10 +2314,7 @@ fn bundled_personas_and_roles_have_lowest_priority_in_resolve_order() {
             r#"instructions = "Project persona""#,
         )
         .unwrap();
-    with_env_var(
-        "HOME",
-        home.to_str().unwrap(),
-        || {
+    {
             let config = toml::from_str::<
                 toml::Value,
             >(
@@ -2333,7 +2330,13 @@ fn bundled_personas_and_roles_have_lowest_priority_in_resolve_order() {
                 "#,
                 )
                 .unwrap();
-            let resolved = SubagentsConfig::resolve(true, &config, Some(&workspace));
+            let resolved = SubagentsConfig::resolve_with_roots(
+                true,
+                &config,
+                Some(&workspace),
+                &user_root,
+                &bundled,
+            );
             assert_eq!(
                 resolved.get_role("reviewer").unwrap().description, "Inline reviewer"
             );
@@ -2341,14 +2344,10 @@ fn bundled_personas_and_roles_have_lowest_priority_in_resolve_order() {
                 resolved.get_persona("reviewer").unwrap().instructions.as_deref(),
                 Some("Inline persona")
             );
-        },
-    );
+    }
     std::fs::remove_file(workspace.join(".atelier/roles/reviewer.toml")).unwrap();
     std::fs::remove_file(workspace.join(".atelier/personas/reviewer.toml")).unwrap();
-    with_env_var(
-        "HOME",
-        home.to_str().unwrap(),
-        || {
+    {
             let config = toml::from_str::<
                 toml::Value,
             >(
@@ -2358,7 +2357,13 @@ fn bundled_personas_and_roles_have_lowest_priority_in_resolve_order() {
                 "#,
                 )
                 .unwrap();
-            let resolved = SubagentsConfig::resolve(true, &config, Some(&workspace));
+            let resolved = SubagentsConfig::resolve_with_roots(
+                true,
+                &config,
+                Some(&workspace),
+                &user_root,
+                &bundled,
+            );
             assert_eq!(
                 resolved.get_role("reviewer").unwrap().description, "User reviewer"
             );
@@ -2366,14 +2371,10 @@ fn bundled_personas_and_roles_have_lowest_priority_in_resolve_order() {
                 resolved.get_persona("reviewer").unwrap().instructions.as_deref(),
                 Some("User persona")
             );
-        },
-    );
-    std::fs::remove_file(home.join(".atelier/roles/reviewer.toml")).unwrap();
-    std::fs::remove_file(home.join(".atelier/personas/reviewer.toml")).unwrap();
-    with_env_var(
-        "HOME",
-        home.to_str().unwrap(),
-        || {
+    }
+    std::fs::remove_file(user_root.join("roles/reviewer.toml")).unwrap();
+    std::fs::remove_file(user_root.join("personas/reviewer.toml")).unwrap();
+    {
             let config = toml::from_str::<
                 toml::Value,
             >(
@@ -2383,7 +2384,13 @@ fn bundled_personas_and_roles_have_lowest_priority_in_resolve_order() {
                 "#,
                 )
                 .unwrap();
-            let resolved = SubagentsConfig::resolve(true, &config, Some(&workspace));
+            let resolved = SubagentsConfig::resolve_with_roots(
+                true,
+                &config,
+                Some(&workspace),
+                &user_root,
+                &bundled,
+            );
             assert_eq!(
                 resolved.get_role("reviewer").unwrap().description, "Bundled reviewer"
             );
@@ -2391,8 +2398,7 @@ fn bundled_personas_and_roles_have_lowest_priority_in_resolve_order() {
                 resolved.get_persona("reviewer").unwrap().instructions.as_deref(),
                 Some("Bundled persona")
             );
-        },
-    );
+    }
 }
 #[test]
 fn render_io_summary_shows_bundled_for_bundled_personas() {
@@ -2581,6 +2587,7 @@ fn config_layers_user_overrides_managed() {
 /// customer's S3 trace-upload endpoint.
 #[test]
 #[serial_test::serial]
+#[cfg(any())] // Vendor managed-config proxy and trace-upload routing were removed from Atelier.
 fn enterprise_two_file_merge_routes_deployment_key_to_proxy() {
     for k in [
         "ATELIER_MANAGED_CONFIG_URL",
@@ -2632,11 +2639,6 @@ trace_upload_endpoint_url = "https://s3.acme-corp.example"
             &layers.effective_config_disk_only(),
         )
         .unwrap();
-    assert_eq!(
-        cfg.endpoints.resolve_managed_config_url(),
-        "https://cli-chat-proxy.atelier.com/v1/deployment/config"
-    );
-    assert!(! cfg.endpoints.resolve_managed_config_url().contains("acme-corp"));
     assert_eq!(
         cfg.endpoints.trace_upload_endpoint_url.as_deref(),
         Some("https://s3.acme-corp.example")
@@ -2874,7 +2876,8 @@ fn validate_hooks_path_rejects_relative_path() {
 }
 #[test]
 fn validate_hooks_path_rejects_outside_atelier_home() {
-    let result = validate_hooks_path("/tmp/evil-hooks");
+    let outside = tempfile::TempDir::new().unwrap().path().join("evil-hooks");
+    let result = validate_hooks_path(outside.to_str().unwrap());
     assert!(result.is_err());
     let msg = result.unwrap_err().to_string();
     assert!(

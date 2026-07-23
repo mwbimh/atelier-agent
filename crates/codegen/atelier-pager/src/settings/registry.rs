@@ -98,14 +98,14 @@ pub struct OwnedEnumChoice {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum DynamicEnumSource {
-    /// Models from the active session's catalog. Prepends a
-    /// `"(no override)"` sentinel so the user can clear the setting.
+    /// Models from the active session's catalog. Prepends a generic
+    /// `"(no override)"` sentinel; individual settings may customize its
+    /// presentation while keeping the empty canonical value.
     ActiveModelCatalog,
 }
 
 /// Build the owned choice list for a `DynamicEnum` at picker-open time.
-/// `ActiveModelCatalog` prepends an empty-canonical "(no override)"
-/// choice at index 0 for clearing the setting.
+/// `ActiveModelCatalog` prepends an empty-canonical choice at index 0.
 pub fn dynamic_enum_choices(
     source: DynamicEnumSource,
     snapshot: &PagerLocalSnapshot,
@@ -250,15 +250,12 @@ pub struct PagerLocalSnapshot {
     /// Whether the user has opted OUT of coding data sharing.
     /// Lives in auth metadata (no `UiConfig` field). Inverted mapping:
     /// `opt_out == false` → canonical "opt-in".
-    pub coding_data_sharing_opt_out: bool,
     /// Whether plan mode is active. Uses effective state
     /// (`pending.unwrap_or(active)`) so rapid toggles don't double-send.
     /// Refreshed on all mutation paths including ACP `CurrentModeUpdate`.
     pub plan_mode_active: bool,
     /// `[cli].show_tips` mirror. `None` = no TOML override → default `true`.
     pub show_tips: Option<bool>,
-    /// `[cli].auto_update` mirror. `None` = no TOML override → default `true`.
-    pub auto_update: Option<bool>,
     /// Process-wide vim-mode scrollback flag. Mirrors
     /// `appearance::cache::load_vim_mode()` at snapshot time.
     pub vim_mode: bool,
@@ -289,10 +286,8 @@ impl Default for PagerLocalSnapshot {
             auto_mode: false,
             current_model_name: None,
             available_models: Vec::new(),
-            coding_data_sharing_opt_out: false,
             plan_mode_active: false,
             show_tips: None,
-            auto_update: None,
             vim_mode: false,
             // Matches the registry default and
             // `appearance::cache::SCROLL_SPEED_DEFAULT`. Bare `u8::default()`
@@ -641,18 +636,12 @@ pub fn current_value_for(
         // max_thoughts_width: `u16` widened to `i64`.
         "max_thoughts_width" => Some(SettingValue::Int(ui.max_thoughts_width as i64)),
         // coding_data_sharing: inverts the `_opt_out` bool.
-        "coding_data_sharing" => Some(SettingValue::Enum(if pager.coding_data_sharing_opt_out {
-            "opt-out"
-        } else {
-            "opt-in"
-        })),
         // plan_mode: canonical via `PlanModeKind::from_bool().as_canonical()`.
         "plan_mode" => Some(SettingValue::Enum(
             crate::app::actions::PlanModeKind::from_bool(pager.plan_mode_active).as_canonical(),
         )),
         // CLI batch: snapshot mirrors; `None` → effective default `true`.
         "show_tips" => Some(SettingValue::Bool(pager.show_tips.unwrap_or(true))),
-        "auto_update" => Some(SettingValue::Bool(pager.auto_update.unwrap_or(true))),
         // fork_secondary_model: baseline value folds to empty string.
         "fork_secondary_model" => Some(SettingValue::String({
             let baseline = atelier_shell::models::default_model();
@@ -838,13 +827,13 @@ mod tests {
                     );
                 }
                 // default_model: no UiConfig mirror, resolved dynamically.
-                // Registry default is empty string ("no opinion").
+                // The empty value invokes the legacy-source cleanup action;
+                // it never asks the shell to choose another model.
                 ("default_model", SettingKind::DynamicEnum { default, .. }) => {
                     assert_eq!(
                         *default, "",
                         "default_model registry default must be empty string — \
-                         the live default is resolved dynamically from \
-                         cfg.models.default at session start",
+                         reset must retain the current model as roles.main",
                     );
                 }
                 // max_thoughts_width: `u16` widened to `i64`.
@@ -869,13 +858,6 @@ mod tests {
                 // Defaults pinned literally.
                 ("show_tips", SettingKind::Bool { default }) => {
                     assert!(*default, "show_tips registry default must be true");
-                }
-                ("auto_update", SettingKind::Bool { default }) => {
-                    assert!(
-                        *default,
-                        "auto_update registry default must be true \
-                         (matches auto_update.rs's `.unwrap_or(true)`)"
-                    );
                 }
                 // vim_mode: Option<bool>; None → false.
                 ("vim_mode", SettingKind::Bool { default }) => {
@@ -1406,6 +1388,17 @@ mod tests {
             dupes.is_empty(),
             "duplicate setting keys in default_settings(): {dupes:?}",
         );
+    }
+
+    #[test]
+    fn vendor_remote_preferences_are_not_registered() {
+        let reg = SettingsRegistry::defaults();
+        for key in ["coding_data_sharing", "auto_update"] {
+            assert!(
+                reg.find(key).is_none(),
+                "vendor remote preference `{key}` must not be registered"
+            );
+        }
     }
 
     /// `from_entries` panics on duplicate keys.

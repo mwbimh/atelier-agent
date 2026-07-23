@@ -719,24 +719,6 @@ impl AgentBuilder {
                     .tools
                     .push((&atelier_tools::implementations::atelier_build::LspTool).into());
             }
-            if self.image_gen_config.image_gen_enabled() {
-                tool_config
-                    .tools
-                    .push((&atelier_tools::implementations::atelier_build::ImageGenTool).into());
-            }
-            if self.image_gen_config.image_edit_enabled() {
-                tool_config
-                    .tools
-                    .push((&atelier_tools::implementations::atelier_build::ImageEditTool).into());
-            }
-            if self.video_gen_config.is_enabled() {
-                tool_config.tools.push(
-                    (&atelier_tools::implementations::atelier_build::ImageToVideoTool).into(),
-                );
-                tool_config.tools.push(
-                    (&atelier_tools::implementations::atelier_build::ReferenceToVideoTool).into(),
-                );
-            }
             let has_write_tool = tool_config
                 .tools
                 .iter()

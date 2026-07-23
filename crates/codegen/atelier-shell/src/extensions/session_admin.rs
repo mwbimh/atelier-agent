@@ -7,7 +7,7 @@
 //! - `atelier/session/rename`                  rename a session locally
 //! - `atelier/session/delete`                  delete a session locally
 //! - `atelier/session/update_mcp_servers`      mid-session MCP server swap
-//! - `atelier/session/fork`                    fork a session into a new one
+//! - `_atelier/session/fork`                   fork a session into a new one
 //! - `atelier/internal/reload_all_mcp_servers` config hot-reload, all sessions
 //! - `atelier/internal/reload_project_mcp_servers` config hot-reload, cwd-scoped
 //! - `atelier/internal/reload_skills`          skills file watcher fan-out
@@ -33,13 +33,16 @@ use crate::session::unified_list::SessionKind;
 use crate::session::{ExtMethodResult, SessionCommand};
 use atelier_telemetry::id::agent_id;
 
+/// Versioned Atelier RPC method for forking a session.
+pub const SESSION_FORK: &str = "_atelier/session/fork";
+
 #[tracing::instrument(skip_all, fields(method = %args.method))]
 pub async fn handle(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
     match args.method.as_ref() {
         "atelier/session/rename" => handle_session_rename(agent, args).await,
         "atelier/session/delete" => handle_session_delete(agent, args).await,
         "atelier/session/update_mcp_servers" => handle_update_mcp_servers(agent, args).await,
-        "atelier/session/fork" => handle_session_fork(agent, args).await,
+        SESSION_FORK | "atelier/session/fork" => handle_session_fork(agent, args).await,
         "atelier/internal/reload_all_mcp_servers" => handle_reload_all_mcp_servers(agent).await,
         "atelier/internal/reload_project_mcp_servers" => {
             handle_reload_project_mcp_servers(agent, args).await
@@ -281,11 +284,10 @@ async fn handle_update_mcp_servers(agent: &MvpAgent, args: &acp::ExtRequest) -> 
         (h, cwd)
     };
 
-    let managed = agent.get_managed_mcp_configs().await;
     let merged = crate::session::managed_mcp::merge_managed_mcp_servers(
         params.mcp_servers.clone(),
         &cwd,
-        &managed,
+        &[],
         agent.plugin_registry_handle().snapshot().as_deref(),
         &agent.cfg.borrow().compat_resolved,
     );
@@ -347,7 +349,6 @@ async fn handle_reload_all_mcp_servers(agent: &MvpAgent) -> ExtResult {
             .map_err(|e| acp::Error::internal_error().data(e.to_string()));
     }
 
-    let managed = agent.get_managed_mcp_configs().await;
     let mut updated = 0u32;
     for session_id in &session_ids {
         let Some(handle) = agent.sessions.borrow().get(session_id).cloned() else {
@@ -366,7 +367,7 @@ async fn handle_reload_all_mcp_servers(agent: &MvpAgent) -> ExtResult {
         let merged = crate::session::managed_mcp::merge_managed_mcp_servers(
             handle.initial_client_mcp_servers.clone(),
             &cwd,
-            &managed,
+            &[],
             agent.plugin_registry_handle().snapshot().as_deref(),
             &compat,
         );
@@ -431,7 +432,6 @@ async fn handle_reload_project_mcp_servers(agent: &MvpAgent, args: &acp::ExtRequ
             .map_err(|e| acp::Error::internal_error().data(e.to_string()));
     }
 
-    let managed = agent.get_managed_mcp_configs().await;
     let mut updated = 0u32;
     for (session_id, cwd) in &session_ids {
         let Some(handle) = agent.sessions.borrow().get(session_id).cloned() else {
@@ -444,7 +444,7 @@ async fn handle_reload_project_mcp_servers(agent: &MvpAgent, args: &acp::ExtRequ
         let merged = crate::session::managed_mcp::merge_managed_mcp_servers(
             handle.initial_client_mcp_servers.clone(),
             cwd,
-            &managed,
+            &[],
             agent.plugin_registry_handle().snapshot().as_deref(),
             &agent.cfg.borrow().compat_resolved,
         );
@@ -561,8 +561,7 @@ fn handle_reload_models_cache(agent: &MvpAgent) -> ExtResult {
         .map_err(|e| acp::Error::internal_error().data(e.to_string()))
 }
 
-fn handle_auth_cleared(agent: &MvpAgent) -> ExtResult {
-    agent.disable_managed_gateway_tools_and_refresh_sessions();
+fn handle_auth_cleared(_agent: &MvpAgent) -> ExtResult {
     ExtMethodResult::success(serde_json::json!({ "ok": true }))
         .to_ext_response()
         .map_err(|e| acp::Error::internal_error().data(e.to_string()))

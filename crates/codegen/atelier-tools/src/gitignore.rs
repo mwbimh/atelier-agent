@@ -107,15 +107,8 @@ mod tests {
         let gi = build_gitignore(Path::new("."), &["node_modules/", "*.log"]);
         let abs_path = Path::new("/Users/someone/home/AGENTS.md");
 
-        // Proves the raw crate panics with these inputs.
-        assert!(
-            std::panic::catch_unwind(|| {
-                gi.matched_path_or_any_parents(abs_path, false);
-            })
-            .is_err()
-        );
-
-        // Our wrapper guards against it.
+        // The wrapper must remain safe regardless of whether the current
+        // `ignore` crate release itself panics for this shape.
         assert!(!is_ignored(&gi, abs_path, None));
     }
 }

@@ -429,7 +429,9 @@ pub(crate) fn resolve_plan_file_path(res: &Resources) -> (Option<PathBuf>, Strin
     } else {
         PathBuf::from(PLAN_FILE_RELATIVE_PATH)
     };
-    let display = path.display().to_string();
+    // Model-visible paths use one stable separator on every host. The
+    // absolute `PathBuf` remains native for filesystem operations.
+    let display = path.display().to_string().replace('\\', "/");
     let absolute_target = path.is_absolute().then_some(path);
     (absolute_target, display)
 }
@@ -484,15 +486,23 @@ pub fn resolve_model_path(
     let input = sanitize_model_path_arg(input);
     let expanded = shellexpand::tilde(input);
     let input_path = std::path::Path::new(expanded.as_ref());
+    // Models can carry POSIX-shaped absolute paths in restored or forked
+    // conversation history even when the current host is Windows. Treat a
+    // leading slash as model-absolute instead of letting `Path::is_absolute`
+    // reinterpret it as relative on Windows.
+    let model_absolute = input_path.is_absolute() || expanded.starts_with('/');
     if let Some(display) = display_cwd
-        && input_path.is_absolute()
+        && model_absolute
     {
         if let Ok(suffix) = input_path.strip_prefix(display) {
             return cwd.join(suffix);
         }
         return input_path.to_path_buf();
     }
-    if !input_path.is_absolute() && !expanded.is_empty() {
+    if model_absolute {
+        return input_path.to_path_buf();
+    }
+    if !expanded.is_empty() {
         let as_absolute = std::path::PathBuf::from(format!("/{}", expanded.as_ref()));
         let effective_base = display_cwd.unwrap_or(cwd);
         if as_absolute.starts_with(effective_base)

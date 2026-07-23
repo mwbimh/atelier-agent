@@ -431,7 +431,10 @@ mod tests {
                 ..
             } => {
                 assert!(plan_content.contains("Do X then Y"));
-                assert_eq!(plan_file_path, &plan_file.display().to_string());
+                assert_eq!(
+                    plan_file_path,
+                    &plan_file.display().to_string().replace('\\', "/")
+                );
             }
             other => panic!("Expected PlanReady, got {:?}", other),
         }

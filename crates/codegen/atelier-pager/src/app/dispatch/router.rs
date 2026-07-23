@@ -3,7 +3,6 @@ use super::auth::{
     dispatch_cancel_login, dispatch_login, dispatch_logout, dispatch_submit_auth_code,
     dispatch_switch_account,
 };
-use super::billing::dispatch_open_superatelier_url;
 use super::ctx::{
     active_agent_session_id, get_active_agent_mut, navigate_clearing_selection,
     sync_sleep_inhibitor, with_active_agent, with_scrollback,
@@ -75,16 +74,16 @@ use super::session::modal::dispatch_rename_session;
 use super::settings::setters::{
     clear_default_model, clear_fork_secondary_model, preview_auto_dark_theme,
     preview_auto_light_theme, preview_theme, set_ask_user_question_timeout_enabled,
-    set_auto_dark_theme, set_auto_light_theme, set_auto_update, set_collapsed_edit_blocks,
-    set_compact_mode, set_contextual_hint_image_input, set_contextual_hint_plan_mode,
-    set_contextual_hint_send_now, set_contextual_hint_small_screen, set_contextual_hint_undo,
-    set_contextual_hint_word_select, set_default_model, set_default_selected_permission,
-    set_display_refresh_auto_cadence, set_fork_secondary_model, set_group_tool_verbs,
-    set_hunk_tracker_mode, set_invert_scroll, set_keep_text_selection, set_max_thoughts_width,
-    set_multiline_mode, set_prompt_suggestions, set_remember_tool_approvals, set_render_mermaid,
-    set_respect_manual_folds, set_screen_mode, set_scroll_lines, set_scroll_mode, set_scroll_speed,
-    set_show_thinking_blocks, set_show_tips, set_simple_mode, set_theme, set_timeline,
-    set_timestamps, set_vim_mode, set_voice_capture_mode, set_voice_stt_language,
+    set_auto_dark_theme, set_auto_light_theme, set_collapsed_edit_blocks, set_compact_mode,
+    set_contextual_hint_image_input, set_contextual_hint_plan_mode, set_contextual_hint_send_now,
+    set_contextual_hint_small_screen, set_contextual_hint_undo, set_contextual_hint_word_select,
+    set_default_model, set_default_selected_permission, set_display_refresh_auto_cadence,
+    set_fork_secondary_model, set_group_tool_verbs, set_hunk_tracker_mode, set_invert_scroll,
+    set_keep_text_selection, set_max_thoughts_width, set_multiline_mode, set_prompt_suggestions,
+    set_remember_tool_approvals, set_render_mermaid, set_respect_manual_folds, set_screen_mode,
+    set_scroll_lines, set_scroll_mode, set_scroll_speed, set_show_thinking_blocks, set_show_tips,
+    set_simple_mode, set_theme, set_timeline, set_timestamps, set_vim_mode, set_voice_capture_mode,
+    set_voice_stt_language,
 };
 use super::settings::ui::{
     dispatch_confirm_reset_setting, dispatch_open_command_palette, dispatch_open_howto_guides,
@@ -93,10 +92,8 @@ use super::settings::ui::{
     dispatch_toggle_vim_mode,
 };
 use super::status::{
-    dispatch_copy_session_id, dispatch_open_gboom, dispatch_share_session,
-    dispatch_show_context_info, dispatch_show_privacy_info, dispatch_show_queue,
+    dispatch_copy_session_id, dispatch_open_gboom, dispatch_show_context_info, dispatch_show_queue,
     dispatch_show_release_notes, dispatch_show_session_info, dispatch_show_tasks,
-    dispatch_show_usage, set_coding_data_sharing,
 };
 use super::task_result::{dispatch_task_result, unregister_all_active_sessions};
 use super::transcript::{
@@ -558,38 +555,7 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
             if group_toggled {
                 return vec![];
             }
-            let mut credit_card: Option<(String, atelier_telemetry::events::CreditLimitChoice)> =
-                None;
-            with_scrollback(app, |s| {
-                if let Some(idx) = s.selected()
-                    && let Some(entry) = s.entry(idx)
-                    && let crate::scrollback::block::RenderBlock::CreditLimit(ref blk) = entry.block
-                {
-                    use crate::scrollback::blocks::CreditLimitCardAction;
-                    let choice = match blk.action {
-                        CreditLimitCardAction::PurchaseCredits => {
-                            atelier_telemetry::events::CreditLimitChoice::PurchaseCredits
-                        }
-                        CreditLimitCardAction::EnablePayg
-                        | CreditLimitCardAction::IncreasePaygLimit => {
-                            atelier_telemetry::events::CreditLimitChoice::PayAsYouGo
-                        }
-                    };
-                    credit_card = Some((blk.url.clone(), choice));
-                }
-            });
-            if let Some((url, choice)) = credit_card {
-                log_event(atelier_telemetry::events::CreditLimitUpsellClicked {
-                    surface: atelier_telemetry::events::CreditLimitUpsellSurface::InlineCard,
-                    choice,
-                });
-                crate::app::link_opener::open_url_if_safe(
-                    &url,
-                    crate::terminal::hyperlinks::SchemeFilter::Standard,
-                );
-            } else {
-                dispatch_open_block_viewer(app);
-            }
+            dispatch_open_block_viewer(app);
             vec![]
         }
         Action::OpenExtensionsModal { tab, trigger } => {
@@ -873,14 +839,12 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
             vec![Effect::FetchCatalogEntry { kind, name }]
         }
         Action::CycleMode => dispatch_cycle_mode(app),
-        Action::ShareSession => dispatch_share_session(app),
         Action::ShowSessionInfo => dispatch_show_session_info(app),
         Action::ShowReleaseNotes { title, content } => {
             dispatch_show_release_notes(app, title, content)
         }
         Action::RenameSession { title } => dispatch_rename_session(app, title),
         Action::ShowContextInfo => dispatch_show_context_info(app),
-        Action::ShowUsage => dispatch_show_usage(app),
         Action::ShowQueue => dispatch_show_queue(app),
         Action::ShowTasks => dispatch_show_tasks(app),
         Action::ShowPlan => dispatch_show_plan(app),
@@ -899,8 +863,6 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
             dispatch_refresh_provider_models(app, provider_id)
         }
         Action::SendRecap { auto } => dispatch_send_recap(app, auto),
-        Action::ShowPrivacyInfo => dispatch_show_privacy_info(app),
-        Action::SetCodingDataSharing { opted_in } => set_coding_data_sharing(app, opted_in),
         Action::ToggleYolo => dispatch_toggle_yolo(app),
         Action::ToggleMultiline => dispatch_toggle_multiline(app),
         Action::ToggleCompactMode => dispatch_toggle_compact_mode(app),
@@ -949,7 +911,6 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
         Action::ClearForkSecondaryModel => clear_fork_secondary_model(app),
         Action::SetMaxThoughtsWidth(v) => set_max_thoughts_width(app, v),
         Action::SetShowTips(v) => set_show_tips(app, v),
-        Action::SetAutoUpdate(v) => set_auto_update(app, v),
         Action::SetDisplayRefreshAutoCadence(v) => set_display_refresh_auto_cadence(app, v),
         Action::PreviewTheme(v) => preview_theme(app, v),
         Action::PreviewAutoDarkTheme(v) => preview_auto_dark_theme(app, v),
@@ -969,8 +930,6 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
         Action::PermissionCancel => dispatch_permission_cancel(app),
         Action::Logout => dispatch_logout(app),
         Action::SwitchAccount => dispatch_switch_account(app),
-        Action::CheckSubscription => vec![Effect::CheckSubscription { verify: None }],
-        Action::OpenSuperatelierUrl => dispatch_open_superatelier_url(app),
         Action::OpenUrl(url) => {
             use crate::terminal::hyperlinks::SchemeFilter;
             if url.starts_with("file://") {
@@ -1295,9 +1254,19 @@ fn dispatch_open_slash_arg_picker(app: &mut AppView, command_name: String) -> Ve
     let ActiveView::Agent(id) = app.active_view else {
         return vec![];
     };
+    let global_models = app.models.clone();
     let Some(agent) = app.agents.get_mut(&id) else {
         return vec![];
     };
+    // Provider refresh updates the app-level catalog. A session can still
+    // have an empty snapshot when it was created before that refresh, so the
+    // picker must use the newly refreshed catalog as soon as it is available.
+    if agent.session.models.is_empty() && !global_models.is_empty() {
+        agent
+            .session
+            .models
+            .update_catalog(global_models.available, global_models.current);
+    }
     let Some(command) = agent
         .prompt
         .slash_controller
@@ -1308,19 +1277,62 @@ fn dispatch_open_slash_arg_picker(app: &mut AppView, command_name: String) -> Ve
         return vec![];
     };
     let ctx = agent.prompt.slash_controller.app_ctx(&agent.session.models);
-    let Some(items) = command.suggest_args(&ctx, "") else {
-        agent
-            .scrollback
-            .push_block(crate::scrollback::block::RenderBlock::system(format!(
-                "No interactive options available for /{command_name}."
-            )));
-        return vec![];
+    let (picker_command, items) = match command.suggest_args(&ctx, "") {
+        Some(items) => (command_name.clone(), items),
+        None if command_name == "model" => {
+            let Some(provider_command) = agent
+                .prompt
+                .slash_controller
+                .registry()
+                .get("provider")
+                .cloned()
+            else {
+                return vec![];
+            };
+            let has_configured_provider =
+                model_recovery_has_configured_provider(provider_command.as_ref(), &ctx);
+            let mut recovery_items = provider_command.suggest_args(&ctx, "").unwrap_or_default();
+            recovery_items.retain(|item| {
+                item.insert_text == "add "
+                    || (has_configured_provider && item.insert_text == "refresh ")
+            });
+            recovery_items.sort_by_key(|item| match item.insert_text.as_str() {
+                "refresh " => 0,
+                "add " => 1,
+                _ => 2,
+            });
+            for item in &mut recovery_items {
+                item.description = match item.insert_text.as_str() {
+                    "refresh " => "Fetch models from a configured Provider".into(),
+                    "add " => "Configure a Provider, then fetch its models".into(),
+                    _ => item.description.clone(),
+                };
+            }
+            agent
+                .scrollback
+                .push_block(crate::scrollback::block::RenderBlock::system(
+                    if has_configured_provider {
+                        "The model catalog is empty. Refresh a configured Provider or add one now."
+                    } else {
+                        "The model catalog is empty. Add a Provider to fetch models."
+                    },
+                ));
+            ("provider".to_owned(), recovery_items)
+        }
+        None => {
+            agent
+                .scrollback
+                .push_block(crate::scrollback::block::RenderBlock::system(format!(
+                    "No interactive options available for /{command_name}."
+                )));
+            return vec![];
+        }
     };
     if items.is_empty() {
         return vec![];
     }
     agent.active_modal = Some(crate::views::modal::ActiveModal::ArgPicker {
-        command: command_name,
+        command: picker_command,
         args_query: String::new(),
         items: items.clone(),
         original_items: items,
@@ -1329,6 +1341,48 @@ fn dispatch_open_slash_arg_picker(app: &mut AppView, command_name: String) -> Ve
         window: crate::views::modal_window::ModalWindowState::new(),
     });
     vec![]
+}
+
+fn model_recovery_has_configured_provider(
+    provider_command: &dyn crate::slash::command::SlashCommand,
+    ctx: &crate::slash::command::AppCtx<'_>,
+) -> bool {
+    #[cfg(test)]
+    if let Some(value) = MODEL_RECOVERY_PROVIDER_PRESENCE_OVERRIDE.with(|current| current.get()) {
+        return value;
+    }
+
+    provider_command
+        .suggest_args(ctx, "refresh ")
+        .is_some_and(|items| !items.is_empty())
+}
+
+#[cfg(test)]
+thread_local! {
+    static MODEL_RECOVERY_PROVIDER_PRESENCE_OVERRIDE: std::cell::Cell<Option<bool>> =
+        const { std::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
+pub(super) struct ModelRecoveryProviderPresenceGuard(Option<bool>);
+
+#[cfg(test)]
+impl Drop for ModelRecoveryProviderPresenceGuard {
+    fn drop(&mut self) {
+        MODEL_RECOVERY_PROVIDER_PRESENCE_OVERRIDE.with(|value| value.set(self.0));
+    }
+}
+
+#[cfg(test)]
+pub(super) fn override_model_recovery_provider_presence(
+    value: bool,
+) -> ModelRecoveryProviderPresenceGuard {
+    let previous = MODEL_RECOVERY_PROVIDER_PRESENCE_OVERRIDE.with(|current| {
+        let previous = current.get();
+        current.set(Some(value));
+        previous
+    });
+    ModelRecoveryProviderPresenceGuard(previous)
 }
 
 fn dispatch_open_slash_command_input(app: &mut AppView, command_name: String) -> Vec<Effect> {
@@ -1343,18 +1397,16 @@ fn dispatch_open_slash_command_input(app: &mut AppView, command_name: String) ->
 }
 
 fn dispatch_refresh_provider_models(app: &mut AppView, provider_id: String) -> Vec<Effect> {
-    let ActiveView::Agent(id) = app.active_view else {
-        return vec![];
-    };
-    let Some(agent) = app.agents.get(&id) else {
-        return vec![];
-    };
-    let Some(session_id) = agent.session.session_id.clone() else {
-        return vec![];
+    // Provider refresh is a control-plane operation, not a session operation.
+    // It must remain available from Welcome (and before the first session can
+    // be created), otherwise an empty local model catalog can never be
+    // populated by `/provider refresh <id>`.
+    let agent_id = match app.active_view {
+        ActiveView::Agent(id) if app.agents.contains_key(&id) => Some(id),
+        _ => None,
     };
     vec![Effect::RefreshProviderModels {
-        agent_id: id,
-        session_id,
+        agent_id,
         provider_id,
     }]
 }

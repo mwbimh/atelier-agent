@@ -1,6 +1,6 @@
 //! `/roles` fixed runtime-role management.
 
-use atelier_provider::{ProviderRegistry, RoleConfig, RoleId};
+use atelier_provider::{RoleConfig, RoleId};
 use serde_json::Value;
 use std::str::FromStr;
 
@@ -30,42 +30,10 @@ impl SlashCommand for RolesCommand {
         true
     }
 
-    fn suggest_args(&self, _ctx: &AppCtx, args_query: &str) -> Option<Vec<ArgItem>> {
-        let query = args_query.trim_end();
-        let mut parts = query.split_whitespace();
-        let command = parts.next();
-        let has_role = parts.next().is_some();
-        if command.is_some() && !has_role {
-            match command.unwrap_or_default() {
-                "get" | "set" | "payload" | "test" => {
-                    let prefix = command.unwrap_or_default();
-                    return Some(
-                        RoleId::ALL
-                            .into_iter()
-                            .map(|role| ArgItem {
-                                display: role.to_string(),
-                                match_text: role.to_string(),
-                                insert_text: if matches!(prefix, "set" | "payload") {
-                                    format!("{prefix} {role} ")
-                                } else {
-                                    format!("{prefix} {role}")
-                                },
-                                description: "fixed runtime Role".into(),
-                            })
-                            .collect(),
-                    );
-                }
-                _ => {}
-            }
-        }
-        if has_role && matches!(command, Some("set" | "payload")) {
-            // These commands have a free-form provider/model or JSON tail.
-            // Stop the picker after the role id and return the partial command
-            // to the composer for the remaining fields.
-            return None;
-        }
-
-        Some(
+    fn suggest_args(&self, ctx: &AppCtx, args_query: &str) -> Option<Vec<ArgItem>> {
+        let trailing_space = args_query.chars().last().is_some_and(char::is_whitespace);
+        let tokens = args_query.split_whitespace().collect::<Vec<_>>();
+        let subcommands = || {
             ["list", "get ", "set ", "payload ", "test "]
                 .into_iter()
                 .map(|command| ArgItem {
@@ -74,8 +42,79 @@ impl SlashCommand for RolesCommand {
                     insert_text: command.into(),
                     description: "fixed runtime Role".into(),
                 })
-                .collect(),
-        )
+                .collect::<Vec<_>>()
+        };
+        let Some(command) = tokens.first().copied() else {
+            return Some(subcommands());
+        };
+        if tokens.len() == 1 && !trailing_space {
+            return Some(subcommands());
+        }
+        if !["get", "set", "payload", "test"].contains(&command) {
+            return (command != "list").then(subcommands);
+        }
+        if tokens.len() == 1 {
+            return Some(
+                RoleId::ALL
+                    .into_iter()
+                    .map(|role| ArgItem {
+                        display: role.to_string(),
+                        match_text: role.to_string(),
+                        insert_text: if matches!(command, "set" | "payload") {
+                            format!("{command} {role} ")
+                        } else {
+                            format!("{command} {role}")
+                        },
+                        description: "fixed runtime Role".into(),
+                    })
+                    .collect(),
+            );
+        }
+        let role = tokens[1];
+        if command == "set" && tokens.len() == 2 && trailing_space {
+            return Some(
+                ctx.models
+                    .available
+                    .iter()
+                    .map(|(id, info)| ArgItem {
+                        display: info.name.clone(),
+                        match_text: format!("{} {}", info.name, id.0),
+                        insert_text: format!("set {role} {} ", id.0),
+                        description: info.description.clone().unwrap_or_default(),
+                    })
+                    .collect(),
+            );
+        }
+        if command == "set" && tokens.len() == 3 && trailing_space {
+            let model = tokens[2];
+            return Some(
+                ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
+                    .into_iter()
+                    .map(|effort| ArgItem {
+                        display: effort.to_owned(),
+                        match_text: effort.to_owned(),
+                        insert_text: format!("set {role} {model} {effort} "),
+                        description: "reasoning effort".into(),
+                    })
+                    .collect(),
+            );
+        }
+        if command == "set" && tokens.len() == 4 && trailing_space {
+            let model = tokens[2];
+            let effort = tokens[3];
+            return Some(
+                [false, true]
+                    .into_iter()
+                    .map(|fast_mode| ArgItem {
+                        display: fast_mode.to_string(),
+                        match_text: fast_mode.to_string(),
+                        insert_text: format!("set {role} {model} {effort} {fast_mode}"),
+                        description: "fast mode".into(),
+                    })
+                    .collect(),
+            );
+        }
+        None
     }
 
     fn run(&self, _ctx: &mut CommandExecCtx, args: &str) -> CommandResult {
@@ -86,14 +125,13 @@ impl SlashCommand for RolesCommand {
         }
         let mut parts = args.split_whitespace();
         let command = parts.next().unwrap_or("list");
-        let path = atelier_config::atelier_home().join("providers.toml");
-        let mut registry = match ProviderRegistry::load_or_create(path) {
-            Ok(registry) => registry,
-            Err(error) => return CommandResult::Error(error.to_string()),
-        };
-
         match command {
-            "list" => CommandResult::Message(format_roles(&registry)),
+            "list" => {
+                if parts.next().is_some() {
+                    return CommandResult::Error("Usage: /roles list".into());
+                }
+                extension("_atelier/role/list", serde_json::json!({}))
+            }
             "get" => {
                 let Some(role_name) = parts.next() else {
                     return CommandResult::Error("Usage: /roles get <role>".into());
@@ -102,70 +140,84 @@ impl SlashCommand for RolesCommand {
                     Ok(role_id) => role_id,
                     Err(error) => return CommandResult::Error(error),
                 };
-                match registry.role(role_id) {
-                    Some(config) => CommandResult::Message(format_role(role_id, config)),
-                    None => CommandResult::Error(format!("Role is not configured: {role_id}")),
+                if parts.next().is_some() {
+                    return CommandResult::Error("Usage: /roles get <role>".into());
                 }
+                extension(
+                    "_atelier/role/get",
+                    serde_json::json!({ "roleId": role_id }),
+                )
             }
             "set" => {
-                let role_name = parts.next().unwrap_or_default();
+                let Some(role_name) = parts.next() else {
+                    return CommandResult::Error(
+                        "Usage: /roles set <role> <provider> <model> [effort] [fast_mode]".into(),
+                    );
+                };
                 let fields: Vec<_> = parts.collect();
                 let role_id = match parse_role_id(role_name) {
                     Ok(role_id) => role_id,
                     Err(error) => return CommandResult::Error(error),
                 };
-                let mut config = match parse_role_set(role_name, &fields) {
+                let config = match parse_role_set(role_name, &fields) {
                     Ok(config) => config,
                     Err(error) => return CommandResult::Error(error),
                 };
-                if let Some(existing) = registry.role(role_id) {
-                    config.payload = existing.payload.clone();
-                }
-                if let Err(error) = registry.update_role(role_id, config) {
-                    return CommandResult::Error(error.to_string());
-                }
-                if let Err(error) = registry.save() {
-                    return CommandResult::Error(error.to_string());
-                }
-                CommandResult::Message(format_roles(&registry))
+                extension(
+                    "_atelier/role/update",
+                    serde_json::json!({
+                        "roleId": role_id,
+                        "config": config,
+                        "preservePayload": true,
+                    }),
+                )
             }
             "payload" => {
-                let role_name = parts.next().unwrap_or_default();
+                let Some(role_name) = parts.next() else {
+                    return CommandResult::Error(
+                        "Usage: /roles payload <role> <json-object>".into(),
+                    );
+                };
                 let payload = parts.collect::<Vec<_>>().join(" ");
                 let role_id = match parse_role_id(role_name) {
                     Ok(role_id) => role_id,
                     Err(error) => return CommandResult::Error(error),
                 };
-                let Some(mut config) = registry.role(role_id).cloned() else {
-                    return CommandResult::Error(format!("Role is not configured: {role_id}"));
+                let payload = match parse_role_payload(&payload) {
+                    Ok(payload) => payload,
+                    Err(error) => return CommandResult::Error(error),
                 };
-                if let Err(error) = set_role_payload(&mut config, &payload) {
-                    return CommandResult::Error(error);
-                }
-                if let Err(error) = registry.update_role(role_id, config) {
-                    return CommandResult::Error(error.to_string());
-                }
-                if let Err(error) = registry.save() {
-                    return CommandResult::Error(error.to_string());
-                }
-                CommandResult::Message(
-                    registry
-                        .role(role_id)
-                        .map(|config| format_role(role_id, config))
-                        .unwrap_or_else(|| format!("{role_id}: not configured\n")),
+                extension(
+                    "_atelier/role/update_payload",
+                    serde_json::json!({ "roleId": role_id, "payload": payload }),
                 )
             }
             "test" => {
-                let role_name = parts.next().unwrap_or_default();
+                let Some(role_name) = parts.next() else {
+                    return CommandResult::Error("Usage: /roles test <role>".into());
+                };
                 let role_id = match parse_role_id(role_name) {
                     Ok(role_id) => role_id,
                     Err(error) => return CommandResult::Error(error),
                 };
-                CommandResult::Message(test_role(&registry, role_id))
+                if parts.next().is_some() {
+                    return CommandResult::Error("Usage: /roles test <role>".into());
+                }
+                extension(
+                    "_atelier/role/test",
+                    serde_json::json!({ "roleId": role_id }),
+                )
             }
             _ => CommandResult::Error(format!("Usage: {}", self.usage())),
         }
     }
+}
+
+fn extension(method: &str, params: Value) -> CommandResult {
+    CommandResult::Action(Action::RuntimeExtension {
+        method: method.to_owned(),
+        params,
+    })
 }
 
 fn parse_role_id(value: &str) -> Result<RoleId, String> {
@@ -173,51 +225,55 @@ fn parse_role_id(value: &str) -> Result<RoleId, String> {
 }
 
 fn parse_role_set(_role_name: &str, fields: &[&str]) -> Result<RoleConfig, String> {
-    if fields.len() < 2 || fields.len() > 4 {
+    let (provider, model, options) = if let Some((provider, model)) = fields
+        .first()
+        .and_then(|model_key| model_key.split_once('/'))
+    {
+        (provider, model, &fields[1..])
+    } else if fields.len() >= 2 {
+        (fields[0], fields[1], &fields[2..])
+    } else {
+        return Err("Usage: /roles set <role> <provider> <model> [effort] [fast_mode]".to_owned());
+    };
+    if options.len() > 2 {
         return Err("Usage: /roles set <role> <provider> <model> [effort] [fast_mode]".to_owned());
     }
-    let effort = fields.get(2).and_then(|value| match *value {
-        "-" | "none" => None,
+    let effort = options.first().and_then(|value| match *value {
+        "-" => None,
         value => Some(value.to_owned()),
     });
-    let fast_mode = match fields.get(3) {
+    let fast_mode = match options.get(1) {
         Some(value) => value
             .parse::<bool>()
             .map_err(|_| "fast_mode must be true or false".to_owned())?,
         None => false,
     };
-    let mut config = RoleConfig::new(fields[0], fields[1]).map_err(|error| error.to_string())?;
+    let mut config = RoleConfig::new(provider, model).map_err(|error| error.to_string())?;
     config.effort = effort;
     config.fast_mode = fast_mode;
+    config.validate().map_err(|error| error.to_string())?;
     Ok(config)
 }
 
+#[cfg(test)]
 fn set_role_payload(config: &mut RoleConfig, raw: &str) -> Result<(), String> {
+    config.payload = parse_role_payload(raw)?;
+    Ok(())
+}
+
+fn parse_role_payload(raw: &str) -> Result<serde_json::Map<String, Value>, String> {
     if raw.is_empty() {
         return Err("Usage: /roles payload <role> <json-object>".to_owned());
     }
     let value: Value =
         serde_json::from_str(raw).map_err(|error| format!("invalid JSON payload: {error}"))?;
-    config.payload = value
+    value
         .as_object()
         .cloned()
-        .ok_or_else(|| "Role payload must be a JSON object".to_owned())?;
-    Ok(())
+        .ok_or_else(|| "Role payload must be a JSON object".to_owned())
 }
 
-fn format_roles(registry: &ProviderRegistry) -> String {
-    let mut output = String::from("Roles:\n");
-    for role_id in RoleId::ALL {
-        if let Some(config) = registry.role(role_id) {
-            output.push_str("  ");
-            output.push_str(&format_role(role_id, config));
-        } else {
-            output.push_str(&format!("  {role_id}: (unset)\n"));
-        }
-    }
-    output
-}
-
+#[cfg(test)]
 fn format_role(role_id: RoleId, config: &RoleConfig) -> String {
     let payload_keys = config
         .payload
@@ -233,39 +289,6 @@ fn format_role(role_id: RoleId, config: &RoleConfig) -> String {
         config.fast_mode,
         payload_keys,
     )
-}
-
-fn test_role(registry: &ProviderRegistry, role_id: RoleId) -> String {
-    let Some(config) = registry.role(role_id) else {
-        return format!("{role_id}: not configured");
-    };
-    if config.provider == "default" || config.model == "default" {
-        return format!("{role_id}: not configured");
-    }
-    let provider_exists = registry.provider(&config.provider).is_some();
-    let model_exists = atelier_provider::ModelKey::new(&config.provider, &config.model)
-        .ok()
-        .and_then(|key| registry.model(&key))
-        .is_some();
-    let credential_available = registry
-        .provider(&config.provider)
-        .is_some_and(|provider| provider.credential.is_available());
-    if !provider_exists {
-        return format!(
-            "{role_id}: provider '{}' is not configured",
-            config.provider
-        );
-    }
-    if !model_exists {
-        return format!(
-            "{role_id}: model '{}/{}' is not in the local catalog",
-            config.provider, config.model
-        );
-    }
-    if !credential_available {
-        return format!("{role_id}: provider credential is not available");
-    }
-    format!("{role_id}: ready")
 }
 
 #[cfg(test)]
@@ -302,24 +325,73 @@ mod tests {
         let mut ctx = empty_ctx();
         assert!(matches!(
             super::RolesCommand.run(&mut ctx, "list"),
-            CommandResult::Message(message) if message.starts_with("Roles:")
+            CommandResult::Action(Action::RuntimeExtension { method, .. })
+                if method == "_atelier/role/list"
         ));
     }
 
     #[test]
-    fn set_role_completion_leaves_free_form_args_in_the_composer() {
-        let models = crate::acp::model_state::ModelState::default();
+    fn role_commands_reject_trailing_arguments() {
+        let mut ctx = empty_ctx();
+        for args in ["list extra", "get main extra", "test main extra"] {
+            assert!(
+                matches!(super::RolesCommand.run(&mut ctx, args), CommandResult::Error(error) if error.starts_with("Usage:")),
+                "{args} must fail with Usage"
+            );
+        }
+    }
+
+    #[test]
+    fn role_commands_report_usage_when_required_fields_are_missing() {
+        let mut ctx = empty_ctx();
+        for args in ["get", "set", "payload", "test"] {
+            assert!(
+                matches!(super::RolesCommand.run(&mut ctx, args), CommandResult::Error(error) if error.starts_with("Usage:")),
+                "{args} must fail with Usage"
+            );
+        }
+    }
+
+    #[test]
+    fn role_set_uses_the_live_runtime_service() {
+        let mut ctx = empty_ctx();
+        let result = super::RolesCommand.run(&mut ctx, "set main allm deepseek-v4-flash high true");
+        let CommandResult::Action(Action::RuntimeExtension { method, params }) = result else {
+            panic!("role set must use the live runtime service");
+        };
+        assert_eq!(method, "_atelier/role/update");
+        assert_eq!(params["roleId"], "main");
+        assert_eq!(params["config"]["provider"], "allm");
+        assert_eq!(params["config"]["model"], "deepseek-v4-flash");
+        assert_eq!(params["preservePayload"], true);
+    }
+
+    #[test]
+    fn set_role_completion_walks_role_model_effort_and_fast_mode() {
+        let mut models = crate::acp::model_state::ModelState::default();
+        let model_id = agent_client_protocol::ModelId::new("allm/deepseek-v4-flash");
+        models.available.insert(
+            model_id.clone(),
+            agent_client_protocol::ModelInfo::new(model_id, "DeepSeek V4 Flash"),
+        );
         let ctx = crate::slash::command::AppCtx {
             models: &models,
             cwd: std::path::Path::new("."),
             has_session_announcements: false,
             screen_mode: crate::app::ScreenMode::Inline,
         };
-        assert!(
-            super::RolesCommand
-                .suggest_args(&ctx, "set main ")
-                .is_none()
-        );
+        let models = super::RolesCommand
+            .suggest_args(&ctx, "set main ")
+            .expect("model options");
+        assert_eq!(models[0].insert_text, "set main allm/deepseek-v4-flash ");
+        let efforts = super::RolesCommand
+            .suggest_args(&ctx, "set main allm/deepseek-v4-flash ")
+            .expect("effort options");
+        assert!(efforts.iter().any(|item| item.display == "high"));
+        let fast_modes = super::RolesCommand
+            .suggest_args(&ctx, "set main allm/deepseek-v4-flash high ")
+            .expect("fast mode options");
+        assert!(fast_modes.iter().any(|item| item.display == "true"));
         assert!(
             super::RolesCommand
                 .suggest_args(&ctx, "payload main ")
@@ -343,6 +415,35 @@ mod tests {
         assert_eq!(config.model, "coding-model");
         assert_eq!(config.effort.as_deref(), Some("high"));
         assert!(config.fast_mode);
+
+        let config = parse_role_set("main", &["allm/deepseek-v4-flash", "medium", "false"])
+            .expect("provider/model composite is accepted for interactive completion");
+        assert_eq!(config.provider, "allm");
+        assert_eq!(config.model, "deepseek-v4-flash");
+        assert_eq!(config.effort.as_deref(), Some("medium"));
+        assert!(!config.fast_mode);
+    }
+
+    #[test]
+    fn roles_set_rejects_unknown_reasoning_effort_before_the_rpc_call() {
+        let mut ctx = empty_ctx();
+        let result =
+            super::RolesCommand.run(&mut ctx, "set main allm/deepseek-v4-flash nonsense false");
+
+        assert!(
+            matches!(result, CommandResult::Error(error) if error.contains("invalid role reasoning effort"))
+        );
+    }
+
+    #[test]
+    fn role_set_parser_distinguishes_none_effort_from_unset() {
+        let explicit_none = parse_role_set("main", &["allm/deepseek-v4-flash", "none"])
+            .expect("none is a valid reasoning effort");
+        assert_eq!(explicit_none.effort.as_deref(), Some("none"));
+
+        let unset = parse_role_set("main", &["allm/deepseek-v4-flash", "-"])
+            .expect("dash leaves reasoning effort unset");
+        assert_eq!(unset.effort, None);
     }
 
     #[test]

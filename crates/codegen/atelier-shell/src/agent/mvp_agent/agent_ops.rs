@@ -13,7 +13,7 @@ enum SessionFilesystemMode {
 
 #[cfg(test)]
 mod filesystem_selection_tests {
-    use super::{SessionFilesystemMode, session_filesystem_mode};
+    use super::{SessionFilesystemMode, refreshed_provider_payload, session_filesystem_mode};
 
     #[test]
     fn acp_filesystem_is_selected_when_client_provides_it() {
@@ -37,6 +37,42 @@ mod filesystem_selection_tests {
             session_filesystem_mode(false, true),
             SessionFilesystemMode::InProcessTest
         );
+    }
+
+    #[test]
+    fn provider_payload_refresh_preserves_captured_role_overlay() {
+        let previous_provider = serde_json::json!({
+            "provider_only": "old",
+            "shared": "provider-old",
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let current_session = serde_json::json!({
+            "provider_only": "old",
+            "role_only": true,
+            "shared": "role",
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let refreshed_provider = serde_json::json!({
+            "provider_only": "new",
+            "shared": "provider-new",
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+
+        let refreshed = refreshed_provider_payload(
+            &current_session,
+            &previous_provider,
+            &refreshed_provider,
+        );
+
+        assert_eq!(refreshed["provider_only"], "new");
+        assert_eq!(refreshed["role_only"], true);
+        assert_eq!(refreshed["shared"], "role");
     }
 }
 
@@ -68,7 +104,232 @@ fn load_configured_role(
         })
 }
 
+const LIVE_PROVIDER_MODEL_UNAVAILABLE_PREFIX: &str = "__atelier_live_provider_unavailable__:";
+
+fn live_provider_model_unavailable_latch(model_id: &acp::ModelId) -> acp::ModelId {
+    acp::ModelId::new(format!(
+        "{LIVE_PROVIDER_MODEL_UNAVAILABLE_PREFIX}{}",
+        model_id.0
+    ))
+}
+
+fn refreshed_provider_payload(
+    current_session_payload: &serde_json::Map<String, serde_json::Value>,
+    previous_provider_payload: &serde_json::Map<String, serde_json::Value>,
+    refreshed_provider_payload: &serde_json::Map<String, serde_json::Value>,
+) -> serde_json::Map<String, serde_json::Value> {
+    let preserved_role_overlay = current_session_payload
+        .iter()
+        .filter(|(key, value)| previous_provider_payload.get(*key) != Some(*value))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    atelier_provider::merge_payloads(refreshed_provider_payload, &preserved_role_overlay)
+}
+
 impl MvpAgent {
+    /// Reload the local Provider catalog and reconcile every resident session
+    /// against the new immutable model snapshot before the extension response
+    /// is returned to the client.
+    pub(crate) async fn reload_local_provider_catalog_and_reconcile_sessions(
+        &self,
+    ) -> Result<(), String> {
+        let path = atelier_config::atelier_home().join("providers.toml");
+        self.reload_local_provider_catalog_and_reconcile_sessions_from(&path)
+            .await
+    }
+
+    pub(crate) async fn reload_local_provider_catalog_and_reconcile_sessions_from(
+        &self,
+        path: &std::path::Path,
+    ) -> Result<(), String> {
+        let previous_models = self.models_manager.models();
+        self.models_manager.reload_local_provider_catalog_from(path)?;
+        self.reconcile_live_provider_sessions_from(previous_models).await;
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn reconcile_live_provider_sessions(&self) {
+        let previous_models = self.models_manager.models();
+        self.reconcile_live_provider_sessions_from(previous_models).await;
+    }
+
+    async fn reconcile_live_provider_sessions_from(
+        &self,
+        previous_models: IndexMap<String, ModelEntry>,
+    ) {
+        let refreshed_models = self.models_manager.models();
+        let available_models = self.models_manager.available();
+        let sessions: Vec<_> = self
+            .sessions
+            .borrow()
+            .iter()
+            .map(|(session_id, handle)| (session_id.clone(), handle.clone()))
+            .collect();
+
+        for (session_id, handle) in sessions {
+            let catalog_key = resolve_catalog_key(&refreshed_models, &handle.model_id);
+            let refreshed_entry = catalog_key
+                .as_ref()
+                .filter(|key| available_models.contains_key(*key))
+                .and_then(|key| refreshed_models.get(key.0.as_ref()));
+
+            let Some(refreshed_entry) = refreshed_entry else {
+                let latch = live_provider_model_unavailable_latch(&handle.model_id);
+                let changed = self
+                    .model_unavailable_sessions
+                    .borrow_mut()
+                    .insert(session_id.0.to_string(), latch)
+                    .is_none_or(|previous| {
+                        !previous
+                            .0
+                            .starts_with(LIVE_PROVIDER_MODEL_UNAVAILABLE_PREFIX)
+                    });
+                if changed {
+                    tracing::warn!(
+                        session_id = %session_id.0,
+                        model_id = %handle.model_id.0,
+                        "Provider catalog reload made the active session model unavailable"
+                    );
+                    self.notify_live_provider_model_unavailable(&session_id, &handle.model_id);
+                }
+                continue;
+            };
+
+            if self
+                .model_unavailable_sessions
+                .borrow()
+                .contains_key(session_id.0.as_ref())
+            {
+                continue;
+            }
+
+            let previous_entry = resolve_catalog_key(&previous_models, &handle.model_id)
+                .as_ref()
+                .and_then(|key| previous_models.get(key.0.as_ref()));
+            let (payload_tx, payload_rx) = oneshot::channel();
+            let current_payload = if handle
+                .cmd_tx
+                .send(SessionCommand::GetRequestPayload {
+                    responds_to: payload_tx,
+                })
+                .is_ok()
+            {
+                payload_rx.await.unwrap_or_default()
+            } else {
+                tracing::warn!(
+                    session_id = %session_id.0,
+                    "Provider catalog reload could not query the resident session payload"
+                );
+                continue;
+            };
+
+            let mut sampling_config =
+                self.prepare_sampling_config_for_model(refreshed_entry, handle.origin_client.clone());
+            sampling_config.reasoning_effort = handle.reasoning_effort;
+            let empty_previous_payload = serde_json::Map::new();
+            sampling_config.request_payload = refreshed_provider_payload(
+                &current_payload,
+                previous_entry
+                    .map(|entry| &entry.request_payload)
+                    .unwrap_or(&empty_previous_payload),
+                &sampling_config.request_payload,
+            );
+            let auto_compact_threshold_percent = {
+                let cfg = self.cfg.borrow();
+                crate::util::config::resolve_auto_compact_threshold_percent(
+                    &cfg,
+                    catalog_key
+                        .as_ref()
+                        .map(|key| key.0.as_ref())
+                        .unwrap_or(handle.model_id.0.as_ref()),
+                    Some(&refreshed_entry.info),
+                )
+            };
+            let (responds_to, response) = oneshot::channel();
+            if handle
+                .cmd_tx
+                .send(SessionCommand::RefreshProviderModel {
+                    sampling_config,
+                    auto_compact_threshold_percent,
+                    responds_to,
+                })
+                .is_err()
+            {
+                tracing::warn!(
+                    session_id = %session_id.0,
+                    "Provider catalog reload could not refresh the resident session sampler"
+                );
+                continue;
+            }
+            match response.await {
+                Ok(Ok(_)) => {
+                    self.notify_live_provider_model_refreshed(
+                        &session_id,
+                        &handle.model_id,
+                        handle.reasoning_effort,
+                    );
+                }
+                Ok(Err(error)) => tracing::warn!(
+                    session_id = %session_id.0,
+                    error = ?error,
+                    "Provider catalog reload session sampler refresh failed"
+                ),
+                Err(_) => tracing::warn!(
+                    session_id = %session_id.0,
+                    "Provider catalog reload session sampler refresh response was dropped"
+                ),
+            }
+        }
+    }
+
+    fn notify_live_provider_model_unavailable(
+        &self,
+        session_id: &acp::SessionId,
+        model_id: &acp::ModelId,
+    ) {
+        let notification = SessionNotification {
+            session_id: session_id.clone(),
+            update: SessionUpdate::ModelAutoSwitched {
+                previous_model_id: model_id.0.to_string(),
+                new_model_id: String::new(),
+                reason: format!(
+                    "Model \"{}\" is unavailable. Select a model before sending the next prompt.",
+                    model_id.0
+                ),
+            },
+            meta: None,
+        };
+        if let Ok(params) = serde_json::value::to_raw_value(&notification) {
+            self.gateway.forward_fire_and_forget(acp::ExtNotification::new(
+                "atelier/session_notification",
+                params.into(),
+            ));
+        }
+    }
+
+    fn notify_live_provider_model_refreshed(
+        &self,
+        session_id: &acp::SessionId,
+        model_id: &acp::ModelId,
+        reasoning_effort: Option<atelier_sampling_types::ReasoningEffort>,
+    ) {
+        let notification = SessionNotification {
+            session_id: session_id.clone(),
+            update: SessionUpdate::ModelChanged {
+                model_id: model_id.0.to_string(),
+                reasoning_effort: reasoning_effort.map(|effort| effort.to_string()),
+            },
+            meta: None,
+        };
+        if let Ok(params) = serde_json::value::to_raw_value(&notification) {
+            self.gateway.forward_fire_and_forget(acp::ExtNotification::new(
+                "atelier/session_notification",
+                params.into(),
+            ));
+        }
+    }
+
     pub(super) fn resolve_image_description_model(&self) -> String {
         self.cfg
             .borrow()
@@ -77,17 +338,24 @@ impl MvpAgent {
             .unwrap_or(crate::models::default_image_description_model())
             .to_owned()
     }
-    /// Read one of the fixed Provider roles. The bootstrap placeholder values
-    /// are intentionally treated as unset so an untouched registry preserves
-    /// the existing model selection behavior. Configuration errors are
-    /// returned to the caller so a broken role cannot silently fall back to a
-    /// different model.
+    /// Read one of the fixed Provider roles. Bootstrap placeholder values are
+    /// treated as unset; callers that execute role-owned work must use
+    /// [`Self::required_role`] so no request silently inherits another model.
     pub(crate) fn configured_role(
         &self,
         role_id: atelier_provider::RoleId,
     ) -> Result<Option<atelier_provider::RoleConfig>, acp::Error> {
         let path = atelier_config::atelier_home().join("providers.toml");
         load_configured_role(&path, role_id)
+    }
+
+    pub(crate) fn required_role(
+        &self,
+        role_id: atelier_provider::RoleId,
+    ) -> Result<atelier_provider::RoleConfig, acp::Error> {
+        self.configured_role(role_id)?.ok_or_else(|| {
+            acp::Error::invalid_params().data(format!("role {role_id} is not configured"))
+        })
     }
 
     /// Apply a captured fixed Role to the session's sampler configuration.
@@ -97,14 +365,14 @@ impl MvpAgent {
     /// selection is resolved by the caller before this helper runs.
     fn apply_role_to_sampling_config(
         config: &mut SamplingConfig,
+        role_id: atelier_provider::RoleId,
         role: &atelier_provider::RoleConfig,
     ) -> Result<(), acp::Error> {
-        config.request_payload = role.effective_payload();
+        config.request_payload = role.merged_payload(&config.request_payload);
         if let Some(effort) = role.effort.as_deref() {
             config.reasoning_effort = Some(effort.parse().map_err(|_| {
                 acp::Error::invalid_params().data(format!(
-                    "unsupported {} role effort: {effort}",
-                    atelier_provider::RoleId::Main
+                    "unsupported {role_id} role effort: {effort}"
                 ))
             })?);
         }
@@ -115,18 +383,33 @@ impl MvpAgent {
         &self,
         primary: &SamplingConfig,
     ) -> Result<(OaiCompatClient, String), acp::Error> {
-        let title_role = self.configured_role(atelier_provider::RoleId::Title)?;
-        let slug = title_role
-            .as_ref()
-            .map(|role| format!("{}/{}", role.provider, role.model))
-            .unwrap_or_else(|| {
-                self.cfg
-                    .borrow()
-                    .session_summary_model
-                    .as_deref()
-                    .unwrap_or(crate::models::default_session_summary_model())
-                    .to_owned()
-            });
+        let title_role = self.required_role(atelier_provider::RoleId::Title)?;
+        let policy_decision = crate::extensions::policy::evaluate_runtime_policy(
+            &self.policy_engine.read(),
+            crate::extensions::policy::PolicyOperation::ProviderRequest,
+            Some(atelier_provider::RoleId::Title.as_str()),
+            Some(&title_role.provider),
+            None,
+            None,
+            crate::extensions::policy::PolicyGates::default(),
+        );
+        match policy_decision {
+            atelier_hooks::PolicyDecision::Allow => {}
+            atelier_hooks::PolicyDecision::Deny { reason } => {
+                return Err(acp::Error::invalid_params().data(reason));
+            }
+            atelier_hooks::PolicyDecision::Ask { prompt } => {
+                return Err(acp::Error::invalid_params()
+                    .data(format!("Provider request requires approval: {prompt}")));
+            }
+            atelier_hooks::PolicyDecision::Modify { .. }
+            | atelier_hooks::PolicyDecision::AddContext { .. } => {
+                return Err(acp::Error::invalid_params().data(
+                    "Title Provider policy requested an unsupported request mutation",
+                ));
+            }
+        }
+        let slug = format!("{}/{}", title_role.provider, title_role.model);
         let session_key = self.auth_manager.current_or_expired().map(|a| a.key.clone());
         let models = self.models_manager.models();
         let endpoints = self.models_manager.endpoints();
@@ -154,30 +437,20 @@ impl MvpAgent {
                 cfg.max_retries = primary.max_retries;
                 cfg
             }
-            None if title_role.is_some() => {
+            None => {
                 return Err(acp::Error::invalid_params().data(format!(
                     "configured title role model is unavailable: {slug}"
                 )));
             }
-            None => {
-                let mut fallback = primary.clone();
-                fallback.model = slug;
-                fallback
-            }
         };
-        if let Some(role) = title_role {
-            let mut config = config;
-            config.request_payload = role.effective_payload();
-            if let Some(raw_effort) = role.effort.as_deref() {
-                config.reasoning_effort = Some(raw_effort.parse().map_err(|_| {
-                    acp::Error::invalid_params().data(format!(
-                        "unsupported title role effort: {raw_effort}"
-                    ))
-                })?);
-            }
-            let model = config.model.clone();
-            let client = OaiCompatClient::new(config).map_err(map_sampling_err_to_acp)?;
-            return Ok((client, model));
+        let mut config = config;
+        config.request_payload = title_role.merged_payload(&config.request_payload);
+        if let Some(raw_effort) = title_role.effort.as_deref() {
+            config.reasoning_effort = Some(raw_effort.parse().map_err(|_| {
+                acp::Error::invalid_params().data(format!(
+                    "unsupported title role effort: {raw_effort}"
+                ))
+            })?);
         }
         let model = config.model.clone();
         let client = OaiCompatClient::new(config).map_err(map_sampling_err_to_acp)?;
@@ -219,54 +492,6 @@ impl MvpAgent {
                 }
             })
     }
-    fn has_managed_mcp_auth(&self) -> bool {
-        self.auth_manager
-            .current_or_expired()
-            .is_some_and(|a| a.is_managed_mcp_eligible())
-    }
-    /// Requires feature flag AND xAI authentication (OIDC or legacy WebLogin).
-    pub(super) fn can_fetch_managed_mcps(&self) -> bool {
-        false
-    }
-    fn can_fetch_managed_mcp_gateway_tools(&self) -> bool {
-        false
-    }
-    pub async fn get_managed_mcp_configs(
-        &self,
-    ) -> Vec<crate::session::managed_mcp::ManagedMcpConfig> {
-        if !self.can_fetch_managed_mcps() {
-            return vec![];
-        }
-        let proxy_url = self.cfg.borrow().endpoints.proxy_url();
-        crate::session::managed_mcp::fetch_managed_mcp_configs(
-                &self.managed_mcp_cache,
-                &proxy_url,
-                &self.auth_manager,
-            )
-            .await
-    }
-    pub async fn get_managed_mcp_gateway_tool_catalog(
-        &self,
-    ) -> Option<crate::session::managed_mcp::GatewayToolCatalog> {
-        if !self.can_fetch_managed_mcp_gateway_tools() {
-            self.managed_mcp_cache.lock().await.disable_gateway_tools();
-            return None;
-        }
-        self.managed_mcp_cache.lock().await.enable_gateway_tools();
-        let proxy_url = self.cfg.borrow().endpoints.proxy_url();
-        let auth_key = self
-            .auth_manager
-            .get_valid_token()
-            .await
-            .ok()
-            .or_else(|| self.auth_manager.current_or_expired().map(|a| a.key));
-        crate::session::managed_mcp::get_or_fetch_gateway_tool_catalog(
-                &self.managed_mcp_cache,
-                &proxy_url,
-                auth_key.as_deref(),
-            )
-            .await
-    }
     pub fn managed_mcp_cache(
         &self,
     ) -> &crate::session::managed_mcp::ManagedMcpStateHandle {
@@ -284,50 +509,6 @@ impl MvpAgent {
         let cache = self.managed_mcp_cache.clone();
         tokio::task::spawn_local(async move {
             cache.lock().await.disable_gateway_tools();
-            for tx in session_txs {
-                let _ = tx.send(SessionCommand::RefreshMcpSearchIndex);
-            }
-        });
-    }
-    pub(crate) fn spawn_managed_gateway_tool_catalog_fetch(&self) {
-        let session_txs: Vec<_> = self
-            .sessions
-            .borrow()
-            .values()
-            .map(|handle| handle.cmd_tx.clone())
-            .collect();
-        if !self.can_fetch_managed_mcp_gateway_tools() {
-            self.disable_managed_gateway_tools_and_refresh_sessions_with_txs(
-                session_txs,
-            );
-            return;
-        }
-        let cache = self.managed_mcp_cache.clone();
-        let proxy_url = self.cfg.borrow().endpoints.proxy_url();
-        let auth_manager = self.auth_manager.clone();
-        tokio::task::spawn_local(async move {
-            let auth_key = auth_manager
-                .get_valid_token()
-                .await
-                .ok()
-                .or_else(|| auth_manager.current_or_expired().map(|a| a.key));
-            if !auth_manager
-                .current_or_expired()
-                .is_some_and(|a| a.is_managed_mcp_eligible())
-            {
-                cache.lock().await.disable_gateway_tools();
-                for tx in session_txs {
-                    let _ = tx.send(SessionCommand::RefreshMcpSearchIndex);
-                }
-                return;
-            }
-            cache.lock().await.enable_gateway_tools();
-            crate::session::managed_mcp::get_or_fetch_gateway_tool_catalog(
-                    &cache,
-                    &proxy_url,
-                    auth_key.as_deref(),
-                )
-                .await;
             for tx in session_txs {
                 let _ = tx.send(SessionCommand::RefreshMcpSearchIndex);
             }
@@ -358,15 +539,12 @@ impl MvpAgent {
     /// Resolve folder trust and load launch-dir MCP configs after `initialize`
     /// returns. The walks are synchronous and expensive in large monorepos; they
     /// must not block the ACP response (atelier-desktop sends `initialize` immediately).
-    pub(super) fn spawn_initialize_launch_mcp_setup(&self, fetch_managed_mcps: bool) {
+    pub(super) fn spawn_initialize_launch_mcp_setup(&self) {
         let cwd = self.launch_cwd.clone();
         let compat = self.cfg.borrow().compat_resolved;
         let remote_settings = self.cfg.borrow().remote_settings.clone();
         let gateway = self.gateway.clone();
         let agent_mcp_state = self.agent_mcp_state.clone();
-        let managed_mcp_cache = self.managed_mcp_cache.clone();
-        let proxy_url = self.cfg.borrow().endpoints.proxy_url();
-        let auth_manager = self.auth_manager.clone();
         tokio::task::spawn_local(async move {
             let local_mcp_servers = match tokio::task::spawn_blocking(move || {
                     let local = crate::util::config::load_mcp_servers(&cwd, &compat);
@@ -394,23 +572,6 @@ impl MvpAgent {
                     &local_mcp_servers,
                 )
                 .await;
-            if !fetch_managed_mcps {
-                return;
-            }
-            let managed = crate::session::managed_mcp::fetch_managed_mcp_configs(
-                    &managed_mcp_cache,
-                    &proxy_url,
-                    &auth_manager,
-                )
-                .await;
-            if !managed.is_empty() {
-                crate::extensions::mcp::notify_servers_updated(
-                        &gateway,
-                        &managed,
-                        &local_mcp_servers,
-                    )
-                    .await;
-            }
         });
     }
     pub fn agent_mcp_state(
@@ -443,23 +604,21 @@ impl MvpAgent {
             plugin_count = count, "lazily populated plugin registry snapshot"
         );
     }
-    /// Fetch managed configs, merge with client servers, return merged list + earliest expiry.
+    /// Merge client-provided servers with trusted local and plugin MCP configs.
     pub(super) async fn resolve_mcp_servers(
         &self,
         client_servers: Vec<acp::McpServer>,
         cwd: &std::path::Path,
     ) -> (Vec<acp::McpServer>, Option<chrono::DateTime<chrono::Utc>>) {
         self.ensure_plugin_registry();
-        let managed = self.get_managed_mcp_configs().await;
-        let expires_at = managed.iter().filter_map(|c| c.token_expires_at).min();
         let merged = crate::session::managed_mcp::merge_managed_mcp_servers(
             client_servers,
             cwd,
-            &managed,
+            &[],
             self.plugin_registry_handle.snapshot().as_deref(),
             &self.cfg.borrow().compat_resolved,
         );
-        (merged, expires_at)
+        (merged, None)
     }
     /// Set the memory configuration (called from TUI after config resolution).
     pub fn set_memory_config(&mut self, config: crate::config::MemoryConfig) {
@@ -724,6 +883,49 @@ impl MvpAgent {
         *self.workspace_ops.borrow_mut() = Some(ops.clone());
         Ok(ops)
     }
+
+    pub(crate) fn resolve_session_workspace_ops(
+        &self,
+        cwd: &std::path::Path,
+    ) -> Result<atelier_workspace::WorkspaceOps, acp::Error> {
+        let key = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
+        let launch_key = std::fs::canonicalize(&self.launch_cwd)
+            .unwrap_or_else(|_| self.launch_cwd.clone());
+        if key == launch_key {
+            return self.resolve_workspace_ops();
+        }
+        if let Some(ops) = self.session_workspace_ops.borrow().get(&key).cloned() {
+            return Ok(ops);
+        }
+
+        let workspace_identity = self
+            .auth_manager
+            .current_or_expired()
+            .map(|auth| match auth.team_id.filter(|team| !team.is_empty()) {
+                Some(team) => atelier_workspace::WorkspaceIdentity::team(auth.user_id, team),
+                None => atelier_workspace::WorkspaceIdentity::new(
+                    auth.user_id,
+                    auth.principal_type,
+                    auth.principal_id,
+                ),
+            })
+            .unwrap_or_default();
+        let project_lsp_trusted = folder_trust::project_scope_allowed(&key);
+        let handle = atelier_workspace::handle::WorkspaceHandle::new_minimal(
+            key.clone(),
+            workspace_identity,
+            project_lsp_trusted,
+        )
+        .map_err(|error| {
+            tracing::error!(%error, cwd = %key.display(), "failed to create session workspace");
+            acp::Error::internal_error().data("session workspace not initialized")
+        })?;
+        let ops = atelier_workspace::WorkspaceOps::local(handle);
+        self.session_workspace_ops
+            .borrow_mut()
+            .insert(key, ops.clone());
+        Ok(ops)
+    }
     /// Resolve the workspace ops, returning `Err` if not yet initialized.
     ///
     /// Only `None` before the first lazy local build via
@@ -838,287 +1040,6 @@ impl MvpAgent {
     }
     pub(crate) fn deployment_key(&self) -> Option<String> {
         self.cfg.borrow().endpoints.deployment_key.clone()
-    }
-    /// Re-fetch remote settings and re-init the telemetry client.
-    ///
-    /// Called unconditionally from both auth handlers so that:
-    /// - First install / expired OIDC token: settings are fetched for
-    ///   the first time (the early prefetch had no auth to use).
-    /// - Reauth / account switch: settings are refreshed to reflect
-    ///   the new user's remote settings targeting attributes.
-    ///
-    /// This only refreshes `cfg.remote_settings` and re-inits the
-    /// telemetry client (the only global static). Other settings
-    /// derived from `remote_settings` (`is_trace_upload_enabled`,
-    /// `web_fetch_enabled`, etc.) are resolved lazily per-turn from
-    /// `cfg` and pick up the new values automatically.
-    /// Agent-level fields materialised at startup (`worktree_type`,
-    /// `restore_code`) are NOT re-resolved here; that requires a
-    /// broader refactor of the init path.
-    pub(super) async fn refresh_remote_settings(&self, auth: &crate::auth::AtelierAuth) {
-        if self.auth_manager.is_local_only() {
-            tracing::debug!("post-auth settings refresh skipped: local-only auth manager");
-            return;
-        }
-        if !crate::util::config::resolve_remote_fetch_enabled() {
-            tracing::debug!("post-auth settings refresh skipped: remote_fetch disabled");
-            return;
-        }
-        let is_xai = auth.is_xai_auth();
-        let user_id = auth.user_id.clone();
-        let team_id = auth.team_id.clone();
-        let Some(settings) = self.fetch_remote_settings(auth.clone()).await else {
-            tracing::warn!("post-auth settings refresh failed (HTTP or parse error)");
-            return;
-        };
-        tracing::info!("post-auth settings refreshed");
-        let (
-            telemetry_config,
-            telemetry_mode,
-            atelier_user_id,
-            atelier_team_id,
-            deployment_key,
-            subscription_tier,
-        ) = {
-            let mut cfg = self.cfg.borrow_mut();
-            cfg.remote_settings = Some(settings);
-            crate::util::config::sync_campaign_fields(&mut cfg);
-            crate::agent::config::apply_remote_settings_side_effects(
-                cfg.remote_settings.as_ref(),
-            );
-            let telemetry_mode = cfg.resolve_telemetry_mode();
-            let trace_upload = cfg.resolve_trace_upload();
-            tracing::info!(
-                telemetry = % telemetry_mode, trace_upload = % trace_upload,
-                "post-auth data capture config re-resolved",
-            );
-            let atelier_user_id = is_xai.then(|| user_id.clone());
-            let atelier_team_id = is_xai.then(|| team_id.clone()).flatten();
-            let telemetry_config = cfg.telemetry.clone();
-            let deployment_key = cfg.endpoints.deployment_key.clone();
-            let subscription_tier_display = cfg
-                .remote_settings
-                .as_ref()
-                .and_then(|rs| rs.subscription_tier_display.clone());
-            (
-                telemetry_config,
-                telemetry_mode.value,
-                atelier_user_id,
-                atelier_team_id,
-                deployment_key,
-                subscription_tier_display,
-            )
-        };
-        self.sync_collection_config_gate();
-        let subscription_tier = resolve_subscription_tier_for_telemetry(
-            subscription_tier,
-            self.auth_manager.current_or_expired().as_ref(),
-        );
-        atelier_telemetry::client::init(
-            telemetry_config,
-            telemetry_mode,
-            atelier_user_id,
-            atelier_team_id,
-            deployment_key,
-            self.origin_client_info_from_meta(None),
-            atelier_version::VERSION.to_owned(),
-            subscription_tier,
-            crate::http::shared_client(),
-        );
-        crate::auth::credential_provider::sync_external_otel_identity();
-        self.emit_announcements(AnnouncementsPushMode::IfChanged);
-        self.reconfigure_heap_profile_monitor();
-    }
-    /// Refresh remote settings settings and re-resolve eagerly-resolved config fields.
-    ///
-    /// Called on `/new` session creation so feature flags reflect the latest
-    /// remote settings state without requiring a TUI restart. Extends
-    /// [`refresh_remote_settings`] by also re-running [`resolve_runtime_fields`]
-    /// with the fresh settings.
-    ///
-    /// In-flight sessions are unaffected — they snapshot config at creation.
-    pub(super) async fn refresh_settings_and_reapply(
-        &self,
-        auth: &crate::auth::AtelierAuth,
-    ) {
-        self.refresh_remote_settings(auth).await;
-        let cwd = std::env::current_dir().ok();
-        {
-            let mut cfg = self.cfg.borrow_mut();
-            crate::util::config::sync_campaign_fields(&mut cfg);
-            let raw_config = crate::config::load_effective_config()
-                .unwrap_or_else(|e| {
-                    tracing::warn!(
-                        error = % e, "config reload failed during settings refresh"
-                    );
-                    toml::Value::Table(toml::map::Map::new())
-                });
-            cfg.re_resolve_runtime_fields(&raw_config, cwd.as_deref());
-        }
-        self.sync_collection_config_gate();
-        self.emit_settings_update_notification();
-        self.emit_announcements(AnnouncementsPushMode::Force);
-        self.reconfigure_heap_profile_monitor();
-    }
-    /// Spawn the periodic remote-settings poll that pushes mid-session
-    /// announcement changes to connected clients. Idempotent; plain loop (no
-    /// cancellation) like `ensure_session_supervisor` — the LocalSet drop at
-    /// process exit ends it. Skipped under `cfg!(test)` like the
-    /// managed-config sync (PTY e2e runs the real binary and is unaffected).
-    pub(super) fn spawn_announcements_refresh(&self) {
-        // Announcements are supplied by the removed vendor settings service.
-        // Do not start a periodic task that could later grow another network
-        // path.
-        let _ = self;
-    }
-    /// One poll cycle. With no settings baseline, first population is
-    /// delegated to the sanctioned fill-if-missing path (which emits on
-    /// success); otherwise refresh the stored announcements best-effort, then
-    /// run the emit gate — even when the fetch was skipped or failed, so a
-    /// pure expiry crossing still clears client banners on time.
-    async fn poll_announcements_refresh_once(&self) {
-        if self.cfg.borrow().remote_settings.is_none() {
-            self.maybe_fetch_post_auth_settings().await;
-            return;
-        }
-        self.fetch_and_store_polled_announcements().await;
-        self.emit_announcements(AnnouncementsPushMode::IfChanged);
-    }
-    /// Fetch half of a poll cycle: fresh settings from the proxy, then the
-    /// announcements-only apply. Every failure path is a silent skip — the
-    /// next tick retries.
-    async fn fetch_and_store_polled_announcements(&self) {
-        if self.auth_manager.is_local_only() {
-            tracing::debug!("announcements refresh skipped: local-only auth manager");
-            return;
-        }
-        let Ok(auth) = self.auth_manager.auth().await else {
-            tracing::debug!("announcements refresh skipped: not authenticated");
-            return;
-        };
-        let pre_fetch = self
-            .cfg
-            .borrow()
-            .remote_settings
-            .as_ref()
-            .and_then(|s| s.announcements.clone());
-        let Some(settings) = self.fetch_remote_settings(auth).await else {
-            tracing::debug!("announcements refresh skipped: settings fetch failed");
-            return;
-        };
-        self.apply_polled_announcements(settings, pre_fetch);
-    }
-    /// Store the polled announcements unless another writer (full refresh /
-    /// paywall unblock) landed mid-fetch — then this fetch is stale and the
-    /// next tick reconciles. Emission is `emit_announcements`'s job, not
-    /// this store's.
-    pub(super) fn apply_polled_announcements(
-        &self,
-        fresh: crate::util::config::RemoteSettings,
-        pre_fetch: Option<Vec<atelier_announcements::RemoteAnnouncement>>,
-    ) {
-        let mut cfg = self.cfg.borrow_mut();
-        let Some(stored) = cfg.remote_settings.as_mut() else {
-            return;
-        };
-        if stored.announcements != pre_fetch {
-            tracing::debug!(
-                "announcements poll apply skipped: settings changed mid-fetch"
-            );
-            return;
-        }
-        stored.announcements = fresh.announcements;
-    }
-    /// The single announcements push gate — every `remote_settings` writer
-    /// funnels through here. Emits `atelier/announcements/update` and advances
-    /// the last-emitted baseline per [`announcements_push_payload`] (`mode`
-    /// decides when an unchanged list still pushes), but only once the
-    /// gateway accepts the send — a failed enqueue leaves the baseline
-    /// untouched so the next gate call re-diffs and re-pushes.
-    ///
-    /// Synchronous by design: the decide→send→advance sequence cannot
-    /// interleave with another gate call on the LocalSet.
-    pub(super) fn emit_announcements(&self, mode: AnnouncementsPushMode) {
-        let payload_list = {
-            let cfg = self.cfg.borrow();
-            let last = self.last_emitted_announcements.borrow();
-            announcements_push_payload(
-                cfg.remote_settings.as_ref().and_then(|s| s.announcements.as_deref()),
-                &last,
-                chrono::Utc::now(),
-                mode,
-            )
-        };
-        let Some(announcements) = payload_list else {
-            return;
-        };
-        let payload = serde_json::json!(
-            { "gen" : self.next_announcements_gen(), "announcements" : announcements, }
-        );
-        let Ok(params) = serde_json::value::to_raw_value(&payload) else {
-            return;
-        };
-        let accepted = self
-            .gateway
-            .forward_fire_and_forget(
-                acp::ExtNotification::new("atelier/announcements/update", params.into()),
-            );
-        if !accepted {
-            return;
-        }
-        *self.last_emitted_announcements.borrow_mut() = announcements.clone();
-        tracing::info!(
-            count = announcements.len(), mode = ? mode,
-            "pushing announcements update to clients"
-        );
-    }
-    /// Next generation for an `atelier/announcements/update` push. Strictly
-    /// increasing within the process, and seeded from unix-epoch seconds so a
-    /// restarted leader's pushes still clear pager watermarks that survived
-    /// re-election (`AppView.announcements_last_gen` outlives the agent).
-    pub(super) fn next_announcements_gen(&self) -> u64 {
-        let now_secs = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        let next = now_secs.max(self.announcements_gen.get() + 1);
-        self.announcements_gen.set(next);
-        next
-    }
-    /// Shared fetch half of every settings refresh: endpoint fields from a
-    /// scoped `cfg` borrow, `fetch_settings_blocking` off-executor (it already
-    /// retries transient errors internally), failures normalized to `None`.
-    /// Callers own their miss logging; the apply halves deliberately stay
-    /// separate (full reapply vs announcements-only).
-    pub(super) async fn fetch_remote_settings(
-        &self,
-        auth: crate::auth::AtelierAuth,
-    ) -> Option<crate::util::config::RemoteSettings> {
-        if self.auth_manager.is_local_only() {
-            tracing::debug!("settings fetch skipped: local-only auth manager");
-            return None;
-        }
-        if !crate::util::config::resolve_remote_fetch_enabled() {
-            tracing::debug!("settings fetch skipped: remote_fetch disabled");
-            return None;
-        }
-        let (base_url, alpha_test_key) = {
-            let cfg = self.cfg.borrow();
-            (cfg.endpoints.proxy_url(), cfg.endpoints.alpha_test_key.clone())
-        };
-        match tokio::task::spawn_blocking(move || crate::remote::fetch_settings_blocking(
-                &base_url,
-                &auth,
-                alpha_test_key.as_deref(),
-            ))
-            .await
-        {
-            Ok(settings) => settings,
-            Err(e) => {
-                tracing::warn!(error = % e, "settings fetch task panicked");
-                None
-            }
-        }
     }
     pub(super) async fn send_model_auto_switched(
         &self,
@@ -1505,12 +1426,6 @@ impl MvpAgent {
         let storage_mode = cfg.storage_mode;
         let default_yolo_mode = cfg.default_yolo_mode;
         let default_auto_mode = cfg.default_auto_mode;
-        let tui_mode = cfg.mode == crate::agent::config::AgentMode::Tui;
-        let relay_config_enabled = crate::util::config::load_relay_sync_enabled_sync();
-        let has_xai_auth = auth_manager
-            .current_or_expired()
-            .is_some_and(|a| a.is_xai_auth());
-        let relay_sync_enabled = tui_mode && relay_config_enabled && has_xai_auth;
         let config_root = crate::config::load_effective_config().ok();
         let empty_config = toml::Value::Table(toml::map::Map::new());
         let raw = config_root.as_ref().unwrap_or(&empty_config);
@@ -1529,19 +1444,6 @@ impl MvpAgent {
             worktree_type = ? worktree_type, source = wt_source,
             "WORKTREE_CONFIG_SHELL: resolved worktree type at agent startup"
         );
-        if relay_sync_enabled {
-            tracing::info!("[atelier] Relay sync: ENABLED");
-        } else if tui_mode && relay_config_enabled && !has_xai_auth {
-            tracing::info!(
-                "[atelier] Relay sync: DISABLED (no auth - run 'atelier login' first)"
-            );
-        } else if tui_mode && !relay_config_enabled {
-            tracing::debug!(
-                "Relay sync: DISABLED (not configured in config.toml or env)"
-            );
-        } else {
-            tracing::debug!("Relay sync: DISABLED (not in TUI mode)");
-        }
         if cfg.telemetry.trace_upload == Some(false) {
             tracing::info!(
                 enabled = false, reason = "feature_off", "trace_upload_status"
@@ -1608,7 +1510,6 @@ impl MvpAgent {
             ),
             memory_config: None,
             config_watcher_path_tx: None,
-            relay_sync_enabled,
             buffering_settings: RefCell::new(None),
             background_copy_context: BackgroundCopyContext::new(),
             session_turn_numbers: RefCell::new(HashMap::new()),
@@ -1631,17 +1532,21 @@ impl MvpAgent {
             subagent_event_rx: RefCell::new(Some(subagent_event_rx)),
             subagent_coordinator: RefCell::new(subagent_coordinator),
             monitor_event_buffer: atelier_tools::implementations::atelier_build::task::types::MonitorEventBuffer::default(),
-            bundle_sync_in_flight: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             post_unblock_jwt_retry_in_flight: Arc::new(
                 std::sync::atomic::AtomicBool::new(false),
             ),
             workspace_ops: RefCell::new(None),
+            session_workspace_ops: RefCell::new(HashMap::new()),
             require_gateway_sessions: Rc::new(
                 RefCell::new(std::collections::HashSet::new()),
             ),
             session_live_state: RefCell::new(HashMap::new()),
-            runtime_control: RefCell::new(crate::runtime_control::RuntimeControl::default()),
-            policy_engine: RefCell::new(atelier_hooks::PolicyEngine::default()),
+            runtime_control: Arc::new(parking_lot::Mutex::new(
+                crate::runtime_control::RuntimeControl::default(),
+            )),
+            policy_engine: Arc::new(parking_lot::RwLock::new(
+                atelier_hooks::PolicyEngine::default(),
+            )),
             retryable_prompts: RefCell::new(HashMap::new()),
             detached_prompt_waiters: RefCell::new(HashMap::new()),
             runtime_subscriptions: RefCell::new(HashSet::new()),
@@ -1662,10 +1567,7 @@ impl MvpAgent {
         };
         instance
             .auth_manager
-            .configure_refresher(
-                instance.cfg.borrow().atelier_com_config.auth_provider_command.clone(),
-                instance.diagnostic_upload_config(),
-            );
+            .configure_refresher(instance.cfg.borrow().atelier_com_config.auth_provider_command.clone());
         crate::auth::credential_provider::wire_otel_auth_manager(
             instance.auth_manager.clone(),
         );
@@ -1740,7 +1642,8 @@ impl MvpAgent {
                 continue;
             }
             self.request_session_shutdown(&id);
-            if self.sessions.borrow_mut().remove(&id).is_some() {
+            if let Some(handle) = self.sessions.borrow_mut().remove(&id) {
+                handle.workspace_ops.end_local_session(&id.0);
                 self.session_index_claims.borrow_mut().remove(&id);
                 self.require_gateway_sessions.borrow_mut().remove(&id);
                 self.set_session_live_state(&id, SessionLiveState::Dormant);
@@ -2009,73 +1912,6 @@ impl MvpAgent {
             Err(_) => Err("timeout"),
         }
     }
-    /// Create a RelaySync instance if enabled and auth is available.
-    /// RelaySync is only enabled when:
-    /// 1. Running in TUI interactive mode (cfg.enable_relay_sync)
-    /// 2. Config file/env enables it ([relay] enabled or ATELIER_RELAY_SYNC_ENABLED)
-    /// 3. User is authenticated
-    ///
-    /// Returns a `RelaySync` instance whose connection state can be observed
-    /// via `connection_state()`.
-    pub(super) fn create_relay_sync(
-        &self,
-        session_id: &str,
-        session_info: &crate::session::info::Info,
-    ) -> Option<crate::relay::RelaySync> {
-        let _ = (self, session_id, session_info);
-        // Session sharing is a vendor network path and is not part of
-        // Atelier. Keep the seam for callers, but never create a WebSocket
-        // relay even if an old config enables it.
-        None
-    }
-    /// Spawn a local task that watches `ConnectionState` changes and forwards
-    /// them to the TUI as `ExtNotification`s containing `RelaySyncStatus`.
-    ///
-    /// This replaces the old `status_rx` channel that was removed when
-    /// `RelaySyncWithStatus` was eliminated.
-    pub(super) fn spawn_relay_state_forwarder(
-        mut state_rx: tokio::sync::watch::Receiver<crate::relay::ConnectionState>,
-        session_id: String,
-        gateway: GatewaySender,
-    ) {
-        use crate::extensions::notification::RelaySyncStatus;
-        let session_id = acp::SessionId::new(session_id);
-        tokio::task::spawn_local(async move {
-            while state_rx.changed().await.is_ok() {
-                let state = *state_rx.borrow_and_update();
-                let status = match state {
-                    crate::relay::ConnectionState::Connected => {
-                        let share_url = crate::relay::sync::build_share_url(
-                            &session_id.0,
-                        );
-                        RelaySyncStatus::Connected {
-                            share_url,
-                        }
-                    }
-                    crate::relay::ConnectionState::Disconnected => {
-                        RelaySyncStatus::Disconnected
-                    }
-                    crate::relay::ConnectionState::Connecting => {
-                        RelaySyncStatus::Reconnecting {
-                            attempt: 0,
-                        }
-                    }
-                };
-                let notification = SessionNotification {
-                    session_id: session_id.clone(),
-                    update: SessionUpdate::RelaySyncStatus(status),
-                    meta: None,
-                };
-                if let Ok(params) = serde_json::value::to_raw_value(&notification) {
-                    let ext_notification = acp::ExtNotification::new(
-                        "atelier/session_notification",
-                        params.into(),
-                    );
-                    let _ = gateway.ext_notification(ext_notification).await;
-                }
-            }
-        });
-    }
     /// Get a session's cwd by session_id.
     /// Returns None if the session is not found.
     pub fn get_session_cwd(&self, session_id: &acp::SessionId) -> Option<PathBuf> {
@@ -2154,12 +1990,6 @@ impl MvpAgent {
         // Trace/session artifact upload is not part of Atelier. Keep this
         // hard-disabled at the only snapshot boundary so config, env, or
         // credentials cannot re-arm the removed vendor storage pipeline.
-        let _ = self;
-        None
-    }
-    pub(super) fn diagnostic_upload_config(
-        &self,
-    ) -> Option<crate::auth::DiagnosticUploader> {
         let _ = self;
         None
     }
@@ -2854,7 +2684,7 @@ impl MvpAgent {
             managed_mcp_expires_at,
             model_agent_type,
             mut session_model_id,
-            main_role,
+            session_role,
             session_yolo_mode,
             session_auto_mode,
             prompt_display_cwd,
@@ -2900,8 +2730,18 @@ impl MvpAgent {
                 }
                 Some(ClientFsConfig { fs, mode })
             });
+        let workspace_ops = self
+            .resolve_session_workspace_ops(cwd.as_path())
+            .map_err(|_| {
+                acp::Error::internal_error()
+                    .data(
+                        "Local workspace initialization failed; cannot create session. \
+                 Check that a Tokio runtime is available.",
+                    )
+            })?;
+        let filesystem_mode = session_filesystem_mode(use_acp_fs, cfg!(test));
         let fs: Arc<dyn atelier_workspace::file_system::AsyncFileSystem> =
-            match session_filesystem_mode(use_acp_fs, cfg!(test)) {
+            match filesystem_mode {
                 SessionFilesystemMode::AcpClient => {
                     let mut acp_fs = AcpSessionFs::new(
                         cwd.to_path_buf(),
@@ -2924,20 +2764,25 @@ impl MvpAgent {
                                     "workspace worker is required for local sessions: {error}"
                                 ))
                             })?;
-                    let worker = atelier_workspace::WorkspaceWorkerClient::spawn(
-                        cwd.to_path_buf(),
-                        worker_path,
-                    )
-                    .await
-                    .map_err(|error| {
-                        acp::Error::internal_error().data(format!(
-                            "workspace worker failed to start; refusing local filesystem access: {error}"
-                        ))
-                    })?;
-                    Arc::new(atelier_workspace::WorkspaceWorkerFs::new(
-                        cwd.to_path_buf(),
-                        worker,
-                    ))
+                    let worker_cwd = cwd.to_path_buf();
+                    workspace_ops
+                        .get_or_init_local_session_filesystem(|| async move {
+                            let worker = atelier_workspace::WorkspaceWorkerClient::spawn(
+                                worker_cwd.clone(),
+                                worker_path,
+                            )
+                            .await?;
+                            Ok(Arc::new(atelier_workspace::WorkspaceWorkerFs::new(
+                                worker_cwd,
+                                worker,
+                            )) as Arc<dyn atelier_workspace::file_system::AsyncFileSystem>)
+                        })
+                        .await
+                        .map_err(|error| {
+                            acp::Error::internal_error().data(format!(
+                                "workspace worker failed to start; refusing local filesystem access: {error}"
+                            ))
+                        })?
                 }
             };
         let gateway_enabled = std::sync::Arc::new(
@@ -3083,23 +2928,18 @@ impl MvpAgent {
                 session_env,
             )
             .with_hunk_tracking_enabled(hunk_tracking_enabled);
-        let workspace_ops = self
-            .resolve_workspace_ops()
-            .map_err(|_| {
-                acp::Error::internal_error()
-                    .data(
-                        "Local workspace initialization failed; cannot create session. \
-                 Check that a Tokio runtime is available.",
-                    )
-            })?;
-        workspace_ops
-            .set_local_session_filesystem(workspace_filesystem)
-            .map_err(|error| {
-                acp::Error::internal_error().data(format!(
-                    "failed to bind workspace worker filesystem: {error}"
-                ))
-            })?;
+        if workspace_ops.local_session_filesystem().is_none() {
+            workspace_ops
+                .set_local_session_filesystem(workspace_filesystem)
+                .map_err(|error| {
+                    acp::Error::internal_error().data(format!(
+                        "failed to bind workspace worker filesystem: {error}"
+                    ))
+                })?;
+        }
         tool_ctx.subagent_event_tx = Some(self.subagent_event_tx.clone());
+        tool_ctx.runtime_policy = self.policy_engine.clone();
+        tool_ctx.runtime_control = Some(self.runtime_control.clone());
         tool_ctx.synthetic_trace_tx = self
             .subagent_coordinator
             .borrow()
@@ -3123,24 +2963,24 @@ impl MvpAgent {
         let origin_client = self.origin_client_info_from_meta(init.meta.as_ref());
         let mut sampling_config = self
             .resolve_sampling_config_for_model(&session_model_id, origin_client.clone());
-        if let Some(role) = main_role {
+        if let Some((role_id, role)) = session_role {
             let role_model = format!("{}/{}", role.provider, role.model);
             let role_entry = self
                 .resolve_model_id(&acp::ModelId::new(role_model.clone()))
                 .map_err(|_| {
                     acp::Error::invalid_params().data(format!(
-                        "configured main role model is unavailable: {role_model}"
+                        "configured {role_id} role model is unavailable: {role_model}"
                     ))
                 })?;
             if !role_entry.info.user_selectable {
                 return Err(acp::Error::invalid_params().data(format!(
-                    "configured main role model is not selectable: {role_model}"
+                    "configured {role_id} role model is not selectable: {role_model}"
                 )));
             }
             session_model_id = acp::ModelId::new(role_model);
             sampling_config = self
                 .prepare_sampling_config_for_model(&role_entry, origin_client.clone());
-            Self::apply_role_to_sampling_config(&mut sampling_config, &role)?;
+            Self::apply_role_to_sampling_config(&mut sampling_config, role_id, &role)?;
         }
         if self.auth_method_id.load().is_none() {
             return Err(acp::Error::auth_required().data("no auth method id provided"));
@@ -3411,7 +3251,6 @@ impl MvpAgent {
             let cfg = self.cfg.borrow();
             cfg.resolve_backend_tools().value
         };
-        let managed_mcp_proxy_url = self.cfg.borrow().endpoints.proxy_url();
         let init_meta = self
             .initialize_request
             .get()
@@ -3581,7 +3420,6 @@ impl MvpAgent {
                     feedback_flags,
                     self.managed_mcp_cache.clone(),
                     managed_mcp_expires_at,
-                    managed_mcp_proxy_url,
                     session_model_id,
                     session_yolo_mode,
                     session_auto_mode,
@@ -3729,7 +3567,6 @@ impl MvpAgent {
         self.notify_session_cwd_for_watch(std::path::Path::new(&session_info.cwd));
         self.activity.register_session(&session_info.id.0, &handle);
         self.sessions.borrow_mut().insert(session_info.id.clone(), handle);
-        self.spawn_managed_gateway_tool_catalog_fetch();
         let cwd_for_maintenance = session_info.cwd.clone();
         tokio::spawn(async move {
             crate::session::prompt_history::truncate_if_needed_async(cwd_for_maintenance)
@@ -3760,8 +3597,12 @@ impl MvpAgent {
 #[cfg(test)]
 mod role_sampling_tests {
     use super::{MvpAgent, load_configured_role};
-    use atelier_provider::RoleConfig;
+    use atelier_provider::{
+        CredentialRef, ModelCapabilities, ModelDescriptor, ModelKey, ModelSource, ProviderConfig,
+        ProviderDiscovery, ProviderProtocol, ProviderRegistry, RoleConfig, RoleId,
+    };
     use serde_json::json;
+    use std::collections::BTreeMap;
 
     #[test]
     fn main_role_payload_and_effort_are_kept_in_the_session_snapshot() {
@@ -3769,9 +3610,16 @@ mod role_sampling_tests {
         role.effort = Some("high".to_owned());
         role.fast_mode = true;
         role.payload.insert("temperature".to_owned(), json!(0.2));
+        role.payload.insert("shared".to_owned(), json!("role"));
 
         let mut config = atelier_sampler::SamplerConfig::default();
-        MvpAgent::apply_role_to_sampling_config(&mut config, &role).unwrap();
+        config
+            .request_payload
+            .insert("provider_only".to_owned(), json!("default"));
+        config
+            .request_payload
+            .insert("shared".to_owned(), json!("provider"));
+        MvpAgent::apply_role_to_sampling_config(&mut config, RoleId::Main, &role).unwrap();
 
         assert_eq!(
             config.reasoning_effort,
@@ -3779,6 +3627,8 @@ mod role_sampling_tests {
         );
         assert_eq!(config.request_payload["temperature"], json!(0.2));
         assert_eq!(config.request_payload["fast_mode"], json!(true));
+        assert_eq!(config.request_payload["provider_only"], json!("default"));
+        assert_eq!(config.request_payload["shared"], json!("role"));
     }
 
     #[test]
@@ -3788,10 +3638,44 @@ mod role_sampling_tests {
 
         let error = MvpAgent::apply_role_to_sampling_config(
             &mut atelier_sampler::SamplerConfig::default(),
+            RoleId::Main,
             &role,
         )
         .expect_err("invalid effort must fail closed");
         assert!(error.to_string().contains("unsupported main role effort"));
+    }
+
+    #[test]
+    fn derived_role_effort_failure_identifies_the_captured_role() {
+        let mut role = RoleConfig::new("proxy", "model").unwrap();
+        role.effort = Some("unsupported".to_owned());
+
+        let error = MvpAgent::apply_role_to_sampling_config(
+            &mut atelier_sampler::SamplerConfig::default(),
+            RoleId::Review,
+            &role,
+        )
+        .expect_err("invalid derived Role effort must fail closed");
+
+        assert!(error.to_string().contains("unsupported review role effort"));
+    }
+
+    #[test]
+    fn derived_role_snapshot_applies_effort_fast_mode_and_payload() {
+        let mut role = RoleConfig::new("allm", "review-model").unwrap();
+        role.effort = Some("low".to_owned());
+        role.fast_mode = true;
+        role.payload.insert("temperature".to_owned(), json!(0.15));
+
+        let mut config = atelier_sampler::SamplerConfig::default();
+        MvpAgent::apply_role_to_sampling_config(&mut config, RoleId::Review, &role).unwrap();
+
+        assert_eq!(
+            config.reasoning_effort,
+            Some(atelier_sampling_types::ReasoningEffort::Low)
+        );
+        assert_eq!(config.request_payload["fast_mode"], json!(true));
+        assert_eq!(config.request_payload["temperature"], json!(0.15));
     }
 
     #[test]
@@ -3808,5 +3692,45 @@ mod role_sampling_tests {
                 .to_string()
                 .contains("failed to load configured main role")
         );
+    }
+
+    #[test]
+    fn configured_main_role_ignores_legacy_provider_default_model() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("providers.toml");
+        let mut registry = ProviderRegistry::load_or_create(&path).unwrap();
+        let main = RoleConfig::new("allm", "deepseek-v4-flash").unwrap();
+        registry.update_role(RoleId::Main, main.clone()).unwrap();
+
+        let legacy_key = ModelKey::new("legacy", "fallback").unwrap();
+        registry
+            .upsert_provider(ProviderConfig {
+                id: "legacy".into(),
+                display_name: "Legacy".into(),
+                protocol: ProviderProtocol::OpenAiResponses,
+                base_url: url::Url::parse("https://legacy.example.test/v1").unwrap(),
+                credential: CredentialRef::None,
+                discovery: ProviderDiscovery::Static,
+                extra_headers: BTreeMap::new(),
+                enabled: true,
+            })
+            .unwrap();
+        registry
+            .upsert_model(ModelDescriptor {
+                key: legacy_key.clone(),
+                display_name: "Legacy fallback".into(),
+                description: None,
+                wire_api: None,
+                context_window: None,
+                capabilities: ModelCapabilities::default(),
+                reasoning_efforts: Vec::new(),
+                source: ModelSource::Static,
+                enabled: true,
+            })
+            .unwrap();
+        registry.set_default_model(Some(legacy_key)).unwrap();
+        registry.save().unwrap();
+
+        assert_eq!(load_configured_role(&path, RoleId::Main).unwrap(), Some(main));
     }
 }

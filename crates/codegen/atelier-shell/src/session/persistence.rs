@@ -5,8 +5,6 @@ use std::sync::Arc;
 
 use crate::config::StorageMode;
 
-use crate::remote::RemoteSync;
-
 use crate::sampling::Client as OaiCompatClient;
 use crate::sampling::ConversationItem;
 use crate::session::export::ExportedMetadata;
@@ -1402,10 +1400,6 @@ struct SessionPersistence {
     /// Pending ACP notification for merging consecutive text chunks
     pending_notification: Option<acp::SessionNotification>,
     rx: mpsc::UnboundedReceiver<PersistenceMsg>,
-    remote_sync: Option<RemoteSync>,
-    /// WebSocket-based relay sync for real-time session sharing.
-    /// This streams updates to the relay backend in addition to local persistence.
-    relay_sync: Option<crate::relay::RelaySync>,
     /// Session title generation lifecycle.
     summary: crate::session::summary::SummaryGenerator,
     registry_title_sync: Option<RegistryGeneratedTitleSync>,
@@ -1510,28 +1504,12 @@ impl SessionPersistence {
         }
     }
 
-    /// Flush any pending merged ACP notification to disk and remote sync.
+    /// Flush any pending merged ACP notification to disk.
     async fn flush_pending(&mut self) {
         // Write any pending merged ACP notification
         if let Some(notification) = self.pending_notification.take() {
             self.write_update(&SessionUpdate::Acp(Box::new(notification.clone())))
                 .await;
-            // HTTP-based remote sync (Writeback mode)
-            if let Some(sync) = &self.remote_sync {
-                sync.queue(notification.clone());
-            }
-            // WebSocket-based relay sync (real-time sharing)
-            if let Some(relay) = &self.relay_sync {
-                relay.queue(notification);
-            }
-        }
-        // Flush HTTP sync
-        if let Some(sync) = &self.remote_sync {
-            sync.flush();
-        }
-        // Flush WebSocket relay
-        if let Some(relay) = &self.relay_sync {
-            relay.flush();
         }
     }
 
@@ -1572,14 +1550,6 @@ impl SessionPersistence {
                             if let Some(to_write) = self.maybe_merge_notification(&notification) {
                                 self.write_update(&SessionUpdate::Acp(Box::new(to_write.clone())))
                                     .await;
-                                // HTTP-based remote sync (Writeback mode)
-                                if let Some(sync) = &self.remote_sync {
-                                    sync.queue(to_write.clone());
-                                }
-                                // WebSocket-based relay sync (real-time sharing)
-                                if let Some(relay) = &self.relay_sync {
-                                    relay.queue(to_write);
-                                }
                             }
                         }
                         SessionUpdate::Xai(_) => {
@@ -1626,9 +1596,6 @@ impl SessionPersistence {
                         .await
                     {
                         tracing::warn!(?e, "failed to update current model");
-                    }
-                    if let Some(sync) = &self.remote_sync {
-                        sync.set_model_id(model_id.0.to_string());
                     }
                 }
                 PersistenceMsg::PlanState(state) => {
@@ -1685,9 +1652,6 @@ impl SessionPersistence {
                                 &self.info,
                                 &title,
                             );
-                            if let Some(sync) = &self.remote_sync {
-                                sync.set_title(title.clone());
-                            }
                             if let Some(reg) = self.registry_title_sync.as_ref()
                                 && !reg.suppress_for_zdr
                             {
@@ -1917,23 +1881,13 @@ fn collect_session_files_recursive(base: &Path, dir: &Path, files: &mut Vec<Copi
                 }
             };
             files.push(CopiedSessionFile {
-                name: name.to_string(),
+                name: name.replace(std::path::MAIN_SEPARATOR, "/"),
                 data,
             });
         } else if path.is_dir() {
             collect_session_files_recursive(base, &path, files);
         }
     }
-}
-
-fn init_remote_sync(
-    _summary: &Summary,
-    _storage_mode: StorageMode,
-    _auth_manager: Option<Arc<crate::auth::AuthManager>>,
-) -> io::Result<Option<RemoteSync>> {
-    // Session writeback is a vendor data path. Keep the local persistence
-    // shape intact, but never construct a remote client from configuration.
-    Ok(None)
 }
 
 /// Map a persistence `io::Error` into an `acp::Error` with a human-friendly
@@ -2014,12 +1968,10 @@ const WORKTREE_TOUCH_INTERVAL: std::time::Duration = std::time::Duration::from_s
 pub(crate) async fn new(
     info: &Info,
     model_id: acp::ModelId,
-    sampling_client: OaiCompatClient,
-    storage_mode: StorageMode,
-    auth_manager: Option<Arc<crate::auth::AuthManager>>,
-    _relay_sync: Option<crate::relay::RelaySync>,
+    title_backend: crate::session::summary::TitleBackend,
+    _storage_mode: StorageMode,
+    _auth_manager: Option<Arc<crate::auth::AuthManager>>,
     gateway: Option<GatewaySender>,
-    session_summary_model: String,
     registry_title_sync: Option<RegistryGeneratedTitleSync>,
 ) -> io::Result<PersistenceHandle> {
     let root_dir = atelier_home();
@@ -2039,7 +1991,6 @@ pub(crate) async fn new(
 
     let info_clone = info.clone();
     let storage: Arc<dyn StorageAdapter> = Arc::from(storage);
-    let remote_sync = init_remote_sync(&summary, storage_mode, auth_manager)?;
     let handle = PersistenceHandle {
         tx: tx.clone(),
         noop: false,
@@ -2051,12 +2002,9 @@ pub(crate) async fn new(
             storage: storage.clone(),
             pending_notification: None,
             rx,
-            remote_sync: remote_sync.clone(),
-            relay_sync: None,
             summary: crate::session::summary::SummaryGenerator::new(
                 crate::session::summary::SummaryConfig {
-                    sampling_client,
-                    model: session_summary_model,
+                    backend: title_backend,
                     persistence_tx: tx,
                 },
             ),
@@ -2121,12 +2069,12 @@ pub async fn new_with_explicit_dir(
             storage: storage.clone(),
             pending_notification: None,
             rx,
-            remote_sync: None,
-            relay_sync: None,
             summary: crate::session::summary::SummaryGenerator::new(
                 crate::session::summary::SummaryConfig {
-                    sampling_client,
-                    model: session_summary_model,
+                    backend: crate::session::summary::TitleBackend::Enabled {
+                        sampling_client,
+                        model: session_summary_model,
+                    },
                     persistence_tx: tx,
                 },
             ),
@@ -2173,13 +2121,11 @@ pub struct PersistedInfoLight {
 #[expect(dead_code, reason = "wired when session restore flow calls load")]
 pub(crate) async fn load(
     info: &Info,
-    sampling_client: OaiCompatClient,
-    storage_mode: StorageMode,
-    auth_manager: Option<Arc<crate::auth::AuthManager>>,
+    title_backend: crate::session::summary::TitleBackend,
+    _storage_mode: StorageMode,
+    _auth_manager: Option<Arc<crate::auth::AuthManager>>,
     _backend: Option<&crate::remote::BackendClient>,
-    _relay_sync: Option<crate::relay::RelaySync>,
     gateway: Option<GatewaySender>,
-    session_summary_model: String,
     registry_title_sync: Option<RegistryGeneratedTitleSync>,
 ) -> io::Result<(PersistedInfo, PersistenceHandle)> {
     let root_dir = atelier_home();
@@ -2201,7 +2147,6 @@ pub(crate) async fn load(
     let (tx, rx) = mpsc::unbounded_channel::<PersistenceMsg>();
 
     let storage: Arc<dyn StorageAdapter> = Arc::from(storage);
-    let remote_sync = init_remote_sync(&persisted_info.summary, storage_mode, auth_manager)?;
 
     let has_title = !persisted_info.summary.display_title().is_empty();
     let handle = PersistenceHandle {
@@ -2211,8 +2156,7 @@ pub(crate) async fn load(
     tokio::task::spawn(async move {
         let mut summary_gen = crate::session::summary::SummaryGenerator::new(
             crate::session::summary::SummaryConfig {
-                sampling_client,
-                model: session_summary_model,
+                backend: title_backend,
                 persistence_tx: tx,
             },
         );
@@ -2224,8 +2168,6 @@ pub(crate) async fn load(
             storage: storage.clone(),
             pending_notification: None,
             rx,
-            remote_sync: remote_sync.clone(),
-            relay_sync: None,
             summary: summary_gen,
             registry_title_sync,
             gateway,
@@ -2241,13 +2183,11 @@ pub(crate) async fn load(
 /// Use this for memory-efficient session loading when replaying updates.
 pub(crate) async fn load_light(
     info: &Info,
-    sampling_client: OaiCompatClient,
-    storage_mode: StorageMode,
-    auth_manager: Option<Arc<crate::auth::AuthManager>>,
+    title_backend: crate::session::summary::TitleBackend,
+    _storage_mode: StorageMode,
+    _auth_manager: Option<Arc<crate::auth::AuthManager>>,
     _backend: Option<&crate::remote::BackendClient>,
-    _relay_sync: Option<crate::relay::RelaySync>,
     gateway: Option<GatewaySender>,
-    session_summary_model: String,
     registry_title_sync: Option<RegistryGeneratedTitleSync>,
 ) -> io::Result<(PersistedInfoLight, PersistenceHandle)> {
     let root_dir = atelier_home();
@@ -2279,7 +2219,6 @@ pub(crate) async fn load_light(
     let (tx, rx) = mpsc::unbounded_channel::<PersistenceMsg>();
 
     let storage: Arc<dyn StorageAdapter> = Arc::from(storage);
-    let remote_sync = init_remote_sync(&persisted_info.summary, storage_mode, auth_manager)?;
 
     let has_title = !persisted_info.summary.display_title().is_empty();
     let handle = PersistenceHandle {
@@ -2289,8 +2228,7 @@ pub(crate) async fn load_light(
     tokio::task::spawn(async move {
         let mut summary_gen = crate::session::summary::SummaryGenerator::new(
             crate::session::summary::SummaryConfig {
-                sampling_client,
-                model: session_summary_model,
+                backend: title_backend,
                 persistence_tx: tx,
             },
         );
@@ -2302,8 +2240,6 @@ pub(crate) async fn load_light(
             storage: storage.clone(),
             pending_notification: None,
             rx,
-            remote_sync: remote_sync.clone(),
-            relay_sync: None,
             summary: summary_gen,
             registry_title_sync,
             gateway,

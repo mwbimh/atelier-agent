@@ -1,6 +1,134 @@
 #![cfg_attr(rustfmt, rustfmt::skip)]
 use super::*;
-use atelier_shell::extensions::billing::{BillingConfig, Cent, UsagePeriod};
+
+#[test]
+fn preferred_model_persistence_updates_only_main_role_and_preserves_role_options() {
+    use atelier_provider::{
+        CredentialRef, ModelCapabilities, ModelDescriptor, ModelKey, ModelSource, ProviderConfig,
+        ProviderDiscovery, ProviderProtocol, ProviderRegistry, RoleConfig, RoleId,
+    };
+    use atelier_shell::sampling::types::ReasoningEffort;
+    use std::collections::BTreeMap;
+
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("providers.toml");
+    let mut registry = ProviderRegistry::load_or_create(&path).unwrap();
+    let mut main = RoleConfig::new("old-provider", "old-model").unwrap();
+    main.fast_mode = true;
+    main.payload.insert("temperature".into(), serde_json::json!(0.2));
+    registry.update_role(RoleId::Main, main).unwrap();
+    let legacy_key = ModelKey::new("legacy-provider", "legacy-model").unwrap();
+    registry
+        .upsert_provider(ProviderConfig {
+            id: "legacy-provider".into(),
+            display_name: "Legacy".into(),
+            protocol: ProviderProtocol::OpenAiResponses,
+            base_url: url::Url::parse("https://legacy.example.test/v1").unwrap(),
+            credential: CredentialRef::None,
+            discovery: ProviderDiscovery::Static,
+            extra_headers: BTreeMap::new(),
+            enabled: true,
+        })
+        .unwrap();
+    registry
+        .upsert_model(ModelDescriptor {
+            key: legacy_key.clone(),
+            display_name: "Legacy model".into(),
+            description: None,
+            wire_api: None,
+            context_window: None,
+            capabilities: ModelCapabilities::default(),
+            reasoning_efforts: Vec::new(),
+            source: ModelSource::Static,
+            enabled: true,
+        })
+        .unwrap();
+    registry.set_default_model(Some(legacy_key)).unwrap();
+    registry.save().unwrap();
+
+    persist_preferred_model_as_main_role(
+        &path,
+        "allm/deepseek-v4-flash",
+        Some(ReasoningEffort::High),
+    )
+    .unwrap();
+
+    let registry = ProviderRegistry::load_or_create(&path).unwrap();
+    let main = registry.role(RoleId::Main).unwrap();
+    assert_eq!(main.provider, "allm");
+    assert_eq!(main.model, "deepseek-v4-flash");
+    assert_eq!(main.effort.as_deref(), Some("high"));
+    assert!(main.fast_mode);
+    assert_eq!(main.payload["temperature"], serde_json::json!(0.2));
+    assert_eq!(
+        registry.default_model(),
+        None,
+        "updating roles.main must delete the legacy Provider default"
+    );
+}
+
+#[tokio::test]
+async fn legacy_default_model_setting_writer_is_disabled() {
+    let error = persist_setting(
+        "default_model",
+        crate::settings::SettingValue::String("legacy/model".into()),
+    )
+    .await
+    .expect_err("legacy models.default writes must not remain a second source of truth");
+
+    assert!(error.contains("roles.main"), "{error}");
+}
+
+#[test]
+fn model_set_then_legacy_clear_keeps_new_session_main_role_value() {
+    use atelier_provider::{ProviderRegistry, RoleId};
+
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("providers.toml");
+
+    persist_preferred_model_as_main_role(
+        &path,
+        "allm/deepseek-v4-flash",
+        None,
+    )
+    .unwrap();
+    clear_legacy_provider_default(&path).unwrap();
+
+    let registry = ProviderRegistry::load_or_create(&path).unwrap();
+    let new_session_main = registry
+        .role(RoleId::Main)
+        .filter(|role| role.is_configured())
+        .expect("new Session must resolve its model from roles.main");
+    assert_eq!(new_session_main.provider, "allm");
+    assert_eq!(new_session_main.model, "deepseek-v4-flash");
+    assert_eq!(registry.default_model(), None);
+}
+
+#[tokio::test]
+async fn session_startup_deadline_returns_instead_of_hanging_forever() {
+    let result = session_startup_deadline(
+        std::future::pending::<()>(),
+        std::time::Duration::from_millis(1),
+    )
+    .await;
+    assert!(result.is_err());
+}
+
+#[test]
+fn provider_refresh_message_reads_the_wire_response_top_level() {
+    let response = serde_json::json!({
+        "providerId": "allm",
+        "refreshed": true,
+        "models": ["deepseek-v4-flash"],
+        "message": "refreshed 1 model from the provider"
+    })
+    .to_string();
+
+    assert_eq!(
+        provider_refresh_message(&response),
+        "refreshed 1 model from the provider"
+    );
+}
 /// The invalid-params server detail survives `attach_prompt_usage`
 /// wrapping `error.data` as `{message, promptUsage}`.
 #[test]
@@ -17,14 +145,11 @@ fn format_acp_error_reads_detail_from_wrapped_data() {
     assert_eq!(format_acp_error(& wrapped, false), "model does not support tools");
 }
 #[test]
-fn format_acp_error_rate_limit_is_auth_aware() {
-    use atelier_shell::sampling::error::{
-        RATE_LIMITED_ERROR_CODE, RATE_LIMITED_USER_MESSAGE_API_KEY,
-        RATE_LIMITED_USER_MESSAGE_OAUTH,
-    };
+fn format_acp_error_rate_limit_uses_provider_detail() {
+    use atelier_shell::sampling::error::RATE_LIMITED_ERROR_CODE;
     let err = acp::Error::new(RATE_LIMITED_ERROR_CODE, "Rate limited").data("slow down");
-    assert_eq!(format_acp_error(& err, false), RATE_LIMITED_USER_MESSAGE_OAUTH);
-    assert_eq!(format_acp_error(& err, true), RATE_LIMITED_USER_MESSAGE_API_KEY);
+    assert_eq!(format_acp_error(& err, false), "slow down");
+    assert_eq!(format_acp_error(& err, true), "slow down");
 }
 /// Non-empty token ranges ride the wire block meta as `skillTokenRanges`
 /// byte pairs; the text itself is untouched.
@@ -311,251 +436,6 @@ fn interject_params_carry_content_when_blocks_present() {
     let content = params["content"].as_array().expect("content array");
     assert_eq!(content.len(), 1);
     assert_eq!(content[0] ["text"], "look at [Image #1]");
-}
-/// A billing config with every field unset, for use as a base in
-/// `credit_balance_from_config` tests via struct-update syntax.
-fn empty_billing_config() -> BillingConfig {
-    BillingConfig {
-        credit_usage_percent: None,
-        current_period: None,
-        monthly_limit: None,
-        used: None,
-        on_demand_cap: None,
-        on_demand_used: None,
-        prepaid_balance: None,
-        is_unified_billing_user: None,
-        billing_period_start: None,
-        billing_period_end: None,
-        history: vec![],
-    }
-}
-#[test]
-fn credit_balance_prefers_credit_usage_percent_over_limit_used() {
-    let c = BillingConfig {
-        credit_usage_percent: Some(42.0),
-        monthly_limit: Some(Cent { val: 10_000 }),
-        used: Some(Cent { val: 9_000 }),
-        ..empty_billing_config()
-    };
-    assert_eq!(credit_balance_from_config(c).usage_pct, 42.0);
-}
-#[test]
-fn credit_balance_forwards_is_unified_billing_user() {
-    let c = BillingConfig {
-        is_unified_billing_user: Some(true),
-        ..empty_billing_config()
-    };
-    assert_eq!(credit_balance_from_config(c).is_unified_billing_user, Some(true));
-    assert_eq!(
-        credit_balance_from_config(empty_billing_config()).is_unified_billing_user, None
-    );
-}
-#[test]
-fn credit_balance_falls_back_to_limit_used_when_percent_absent() {
-    let c = BillingConfig {
-        monthly_limit: Some(Cent { val: 10_000 }),
-        used: Some(Cent { val: 2_500 }),
-        ..empty_billing_config()
-    };
-    assert_eq!(credit_balance_from_config(c).usage_pct, 25.0);
-}
-/// Match production: RFC 3339 → user's local wall-clock (no zone label).
-fn expected_period_end_display(rfc3339: &str) -> String {
-    chrono::DateTime::parse_from_rfc3339(rfc3339)
-        .expect("test fixture is valid RFC 3339")
-        .with_timezone(&chrono::Local)
-        .format("%B %-d, %H:%M")
-        .to_string()
-}
-#[test]
-fn credit_balance_prefers_current_period_end_over_billing_period_end() {
-    let end = "2026-06-08T20:00:00Z";
-    let c = BillingConfig {
-        credit_usage_percent: Some(10.0),
-        current_period: Some(UsagePeriod {
-            period_type: Some("USAGE_PERIOD_TYPE_WEEKLY".into()),
-            start: Some("2026-06-01T00:00:00Z".into()),
-            end: Some(end.into()),
-        }),
-        billing_period_end: Some("2026-07-01T20:00:00Z".into()),
-        ..empty_billing_config()
-    };
-    assert_eq!(
-        credit_balance_from_config(c).period_end_display.as_deref(),
-        Some(expected_period_end_display(end).as_str())
-    );
-}
-#[test]
-fn credit_balance_period_end_uses_local_timezone() {
-    let winter = "2026-01-15T20:00:00Z";
-    let summer = "2026-07-15T20:00:00Z";
-    let winter_cfg = BillingConfig {
-        billing_period_end: Some(winter.into()),
-        ..empty_billing_config()
-    };
-    let summer_cfg = BillingConfig {
-        billing_period_end: Some(summer.into()),
-        ..empty_billing_config()
-    };
-    assert_eq!(
-        credit_balance_from_config(winter_cfg).period_end_display.as_deref(),
-        Some(expected_period_end_display(winter).as_str())
-    );
-    assert_eq!(
-        credit_balance_from_config(summer_cfg).period_end_display.as_deref(),
-        Some(expected_period_end_display(summer).as_str())
-    );
-    assert_ne!(expected_period_end_display(winter), expected_period_end_display(summer));
-}
-#[test]
-fn credit_balance_falls_back_to_billing_period_end() {
-    let end = "2026-07-01T20:00:00Z";
-    let c = BillingConfig {
-        billing_period_end: Some(end.into()),
-        ..empty_billing_config()
-    };
-    assert_eq!(
-        credit_balance_from_config(c).period_end_display.as_deref(),
-        Some(expected_period_end_display(end).as_str())
-    );
-}
-#[test]
-fn credit_balance_period_end_falls_back_when_current_period_has_no_end() {
-    let end = "2026-07-01T20:00:00Z";
-    let c = BillingConfig {
-        current_period: Some(UsagePeriod {
-            period_type: None,
-            start: Some("2026-06-01T00:00:00Z".into()),
-            end: None,
-        }),
-        billing_period_end: Some(end.into()),
-        ..empty_billing_config()
-    };
-    assert_eq!(
-        credit_balance_from_config(c).period_end_display.as_deref(),
-        Some(expected_period_end_display(end).as_str())
-    );
-}
-#[test]
-fn credit_balance_period_end_none_when_unavailable() {
-    assert!(
-        credit_balance_from_config(empty_billing_config()).period_end_display.is_none()
-    );
-}
-#[test]
-fn credit_balance_clamps_new_percent_above_100() {
-    let c = BillingConfig {
-        credit_usage_percent: Some(150.0),
-        ..empty_billing_config()
-    };
-    assert_eq!(credit_balance_from_config(c).usage_pct, 100.0);
-}
-#[test]
-fn credit_balance_clamps_legacy_used_above_limit() {
-    let c = BillingConfig {
-        monthly_limit: Some(Cent { val: 1_000 }),
-        used: Some(Cent { val: 2_500 }),
-        ..empty_billing_config()
-    };
-    assert_eq!(credit_balance_from_config(c).usage_pct, 100.0);
-}
-#[test]
-fn credit_balance_effective_equals_usage_when_no_on_demand() {
-    let c = BillingConfig {
-        credit_usage_percent: Some(40.0),
-        ..empty_billing_config()
-    };
-    let bal = credit_balance_from_config(c);
-    assert!(! bal.pay_as_you_go);
-    assert_eq!(bal.on_demand_cap_cents, None);
-    assert_eq!(bal.effective_usage_pct, 40.0);
-}
-#[test]
-fn credit_balance_effective_uses_on_demand_ratio_when_included_exhausted() {
-    let c = BillingConfig {
-        credit_usage_percent: Some(100.0),
-        on_demand_cap: Some(Cent { val: 5_000 }),
-        on_demand_used: Some(Cent { val: 1_000 }),
-        ..empty_billing_config()
-    };
-    let bal = credit_balance_from_config(c);
-    assert!(bal.pay_as_you_go);
-    assert_eq!(bal.usage_pct, 100.0);
-    assert_eq!(bal.effective_usage_pct, 20.0);
-    assert_eq!(bal.on_demand_cap_cents, Some(5_000));
-    assert_eq!(bal.on_demand_used_cents, Some(1_000));
-}
-#[test]
-fn parse_auto_topup_present_rule_resolves() {
-    let v = serde_json::json!(
-        { "rule" : { "enabled" : true, "topupAmount" : { "val" : 2000 },
-        "maxAmountPerMonth" : { "val" : 10000 } } }
-    );
-    match parse_auto_topup_response(&v) {
-        crate::views::credit_bar::AutoTopupFetch::Resolved(at) => {
-            assert!(at.enabled);
-            assert_eq!(at.topup_amount_cents, Some(2000));
-            assert_eq!(at.max_amount_cents, Some(10000));
-        }
-        other => panic!("expected Resolved, got {other:?}"),
-    }
-}
-#[test]
-fn parse_auto_topup_empty_body_resolves_to_disabled() {
-    for v in [serde_json::json!({}), serde_json::json!({ "rule" : null })] {
-        match parse_auto_topup_response(&v) {
-            crate::views::credit_bar::AutoTopupFetch::Resolved(at) => {
-                assert!(! at.enabled);
-            }
-            other => panic!("expected Resolved(disabled), got {other:?}"),
-        }
-    }
-}
-#[test]
-fn parse_auto_topup_rule_without_enabled_is_disabled() {
-    let v = serde_json::json!({ "rule" : { "topupAmount" : { "val" : 500 } } });
-    match parse_auto_topup_response(&v) {
-        crate::views::credit_bar::AutoTopupFetch::Resolved(at) => {
-            assert!(! at.enabled);
-            assert_eq!(at.topup_amount_cents, Some(500));
-        }
-        other => panic!("expected Resolved(disabled), got {other:?}"),
-    }
-}
-#[test]
-fn parse_auto_topup_malformed_body_is_unchanged() {
-    for v in [serde_json::json!(null), serde_json::json!(42)] {
-        match parse_auto_topup_response(&v) {
-            crate::views::credit_bar::AutoTopupFetch::Unchanged => {}
-            other => panic!("expected Unchanged, got {other:?}"),
-        }
-    }
-}
-#[test]
-fn credit_balance_effective_tracks_included_for_new_shape_under_100() {
-    let c = BillingConfig {
-        credit_usage_percent: Some(95.0),
-        on_demand_cap: Some(Cent { val: 5_000 }),
-        on_demand_used: Some(Cent { val: 0 }),
-        ..empty_billing_config()
-    };
-    let bal = credit_balance_from_config(c);
-    assert!(bal.pay_as_you_go);
-    assert_eq!(bal.effective_usage_pct, 95.0);
-}
-#[test]
-fn credit_balance_effective_blends_budget_for_legacy_shape_under_100() {
-    let c = BillingConfig {
-        monthly_limit: Some(Cent { val: 10_000 }),
-        used: Some(Cent { val: 5_000 }),
-        on_demand_cap: Some(Cent { val: 10_000 }),
-        on_demand_used: Some(Cent { val: 0 }),
-        ..empty_billing_config()
-    };
-    let bal = credit_balance_from_config(c);
-    assert!(bal.pay_as_you_go);
-    assert_eq!(bal.usage_pct, 50.0);
-    assert_eq!(bal.effective_usage_pct, 25.0);
 }
 #[test]
 fn parse_worktree_restore_payload_full() {

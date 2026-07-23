@@ -16,7 +16,6 @@ use agent_client_protocol as acp;
 use atelier_shell::agent::auth_method::AuthMethodKind;
 use atelier_shell::agent::config::Config as AgentConfig;
 use atelier_shell::extensions::task::{CancelSubagentRequest, KillTaskRequest};
-use atelier_shell::sampling::error::{RATE_LIMITED_ERROR_CODE, rate_limited_user_message};
 use atelier_shell::sampling::types::{
     REASONING_EFFORT_META_KEY, parse_canonical_effort_token, reasoning_effort_meta_value,
 };
@@ -25,7 +24,7 @@ use xai_acp_lib::{AcpAgentTx, AcpClientMessageBox, acp_send};
 
 use crate::acp::model_state::{EffortTokenError, ModelState};
 use crate::acp::spawn::spawn_atelier_shell;
-use crate::client_identity::{HEADLESS_CLIENT_TYPE, PAGER_CLIENT_VERSION};
+use crate::runtime_identity::{HEADLESS_CLIENT_TYPE, PAGER_CLIENT_VERSION};
 
 // ── Types ────────────────────────────────────────────────────────────────
 
@@ -964,20 +963,17 @@ pub async fn run_single_turn(
     // Authenticate using agent defaultAuthMethodId (preferred_method pin).
     let t_auth = Instant::now();
     let default_auth_method_id = crate::acp::parse_default_auth_method_id(init_resp.meta.as_ref());
-    let is_api_key_auth = match authenticate(
+    if let Err(e) = authenticate(
         &acp_tx,
         &init_resp.auth_methods,
         default_auth_method_id.as_ref(),
     )
     .await
     {
-        Ok(is_api_key) => is_api_key,
-        Err(e) => {
-            emitter.on_error(&e.to_string());
-            cancel.cancel();
-            return Err(e);
-        }
-    };
+        emitter.on_error(&e.to_string());
+        cancel.cancel();
+        return Err(e);
+    }
     tracing::debug!(
         elapsed_ms = t_auth.elapsed().as_millis() as u64,
         "headless: authenticate complete"
@@ -1321,17 +1317,12 @@ pub async fn run_single_turn(
             Ok(())
         }
         Some(Err(err)) => {
-            let msg = if i32::from(err.code) == RATE_LIMITED_ERROR_CODE {
-                // The -32003 data is the flattened server message; a
-                // free-usage 429 carries the well-known code inline there.
-                if crate::app::acp_error_is_free_usage_exhausted(&err) {
-                    crate::app::FREE_USAGE_USER_MESSAGE.to_string()
-                } else {
-                    rate_limited_user_message(is_api_key_auth).to_string()
-                }
-            } else {
-                err.to_string()
-            };
+            let msg = err
+                .data
+                .as_ref()
+                .and_then(atelier_shell::sampling::error::error_detail_from_data)
+                .filter(|message| !message.is_empty())
+                .unwrap_or_else(|| err.to_string());
             if let Some(usage) = atelier_shell::sampling::error::prompt_usage_from_error(&err)
                 && let Ok(v) = serde_json::to_value(&usage)
             {

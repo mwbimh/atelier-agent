@@ -153,6 +153,7 @@ mod tests {
 
     #[test]
     #[serial]
+    #[cfg(any())] // Vendor WebLogin sessions are not an Atelier authentication source.
     fn resolve_oauth_session() {
         let (_dir, _g) = isolate_auth_sources();
         let token = AtelierAuth {
@@ -245,6 +246,7 @@ mod tests {
 
     #[test]
     #[serial]
+    #[cfg(any())] // Vendor WebLogin sessions are not an Atelier authentication source.
     fn resolve_priority_session_over_byok_and_deployment() {
         let (_dir, _g) = isolate_auth_sources();
         let token = AtelierAuth {

@@ -2693,7 +2693,12 @@ mod tests {
             "/home/user/.atelier/worktrees/repo/ab-123-a",
             Path::new("src"),
         );
-        assert_eq!(result, "/home/user/.atelier/worktrees/repo/ab-123-a/src");
+        assert_eq!(
+            result,
+            PathBuf::from("/home/user/.atelier/worktrees/repo/ab-123-a")
+                .join("src")
+                .to_string_lossy()
+        );
     }
     #[test]
     fn test_effective_worktree_cwd_nested_offset() {
@@ -2703,7 +2708,9 @@ mod tests {
         );
         assert_eq!(
             result,
-            "/home/user/.atelier/worktrees/repo/ab-123-b/packages/frontend/src"
+            PathBuf::from("/home/user/.atelier/worktrees/repo/ab-123-b")
+                .join("packages/frontend/src")
+                .to_string_lossy()
         );
     }
     #[test]
@@ -2776,7 +2783,13 @@ mod tests {
         let (offset, _git_root) = compute_subdir_offset(&sub.to_string_lossy());
         let worktree_root = "/home/user/.atelier/worktrees/myrepo/ab-test-a";
         let effective = effective_worktree_cwd(worktree_root, &offset);
-        assert_eq!(effective, format!("{}/src/lib", worktree_root));
+        assert_eq!(
+            effective,
+            PathBuf::from(worktree_root)
+                .join("src")
+                .join("lib")
+                .to_string_lossy()
+        );
     }
     #[test]
     fn test_find_git_root_from_repo_root() {
@@ -4141,9 +4154,10 @@ mod restore_code_tests {
             outcome.stash_ref.is_none(),
             "the stash must be popped back, leaving nothing orphaned"
         );
+        let restored = std::fs::read_to_string(tmp.path().join("README.md")).unwrap();
         assert_eq!(
-            std::fs::read_to_string(tmp.path().join("README.md")).unwrap(),
-            "dirty edit\n",
+            restored.lines().collect::<Vec<_>>(),
+            vec!["dirty edit"],
             "dirty work must be restored to the working tree"
         );
         let stash_list = git_cli(tmp.path(), &["stash", "list"]).await.unwrap();

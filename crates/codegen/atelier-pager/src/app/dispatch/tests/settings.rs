@@ -260,10 +260,12 @@ fn set_default_model_allowed_when_agent_chat_kind() {
     );
     assert!(app.agents[&id].session.model_switch_pending);
 }
-/// `/model <name>` dispatches `SetDefaultModel` which routes
-/// through both `PersistSetting` and `SwitchModel`.
+/// `/model <name>` dispatches `SetDefaultModel`, but the old
+/// `[models].default` setting is no longer a second source of truth. The
+/// active session switches first; successful completion persists
+/// `roles.main` through `PersistPreferredModel`.
 #[test]
-fn slash_model_valid_dispatches_set_default_model_with_switch_and_persist() {
+fn slash_model_valid_dispatches_switch_without_legacy_default_persist() {
     let mut app = test_app_with_agent();
     let id = AgentId(0);
     let model_id = acp::ModelId::new(std::sync::Arc::from("atelier-4.5"));
@@ -280,25 +282,14 @@ fn slash_model_valid_dispatches_set_default_model_with_switch_and_persist() {
     let effects = dispatch(Action::SendPrompt("/model Atelier 4.5".into()), &mut app);
     assert_eq!(
         effects.len(),
-        2,
-        "expected PersistSetting + SwitchModel effects, got {effects:?}",
+        1,
+        "expected only SwitchModel, got {effects:?}"
     );
     assert!(
-        matches!(
-            &effects[0],
-            Effect::PersistSetting {
-                key: "default_model",
-                ..
-            }
-        ),
-        "first effect must be PersistSetting(default_model), got {:?}",
-        effects[0],
-    );
-    assert!(
-        matches!(& effects[1], Effect::SwitchModel { model_id : mid, .. } if mid == &
+        matches!(& effects[0], Effect::SwitchModel { model_id : mid, .. } if mid == &
         model_id),
-        "second effect must be SwitchModel(<resolved id>), got {:?}",
-        effects[1],
+        "effect must be SwitchModel(<resolved id>), got {:?}",
+        effects[0],
     );
     assert!(app.agents[&id].session.model_switch_pending);
 }
@@ -933,13 +924,11 @@ fn every_persisting_setting_has_rollback_arm() {
         }
     }
 }
-/// Pin the
-/// asymmetric clear-default semantics. `Action::ClearDefaultModel`
-/// persists `cfg.models.default = None` AND emits the
-/// "cleared" toast, but deliberately does NOT mutate
-/// `agent.session.models.current`.
+/// Clearing the old "default model override" must not unconfigure the required
+/// main Role. It canonicalizes the currently active model into `roles.main`,
+/// so the active Session and the next Session resolve the same model.
 #[test]
-fn clear_default_model_persists_but_keeps_live_current() {
+fn clear_default_model_canonicalizes_current_as_main_role() {
     use agent_client_protocol as acp;
     use std::sync::Arc;
     let mut app = test_app_with_agent();
@@ -960,28 +949,41 @@ fn clear_default_model_persists_but_keeps_live_current() {
         .models
         .set_current(id.clone(), None);
     let effects = dispatch(Action::ClearDefaultModel, &mut app);
-    assert_eq!(
-        effects.len(),
-        1,
-        "expected exactly one PersistSetting effect"
-    );
     assert!(
-        matches!(& effects[0], Effect::PersistSetting { key : "default_model", value :
-        crate ::settings::SettingValue::String(s), .. } if s.is_empty()),
-        "expected PersistSetting(default_model, ''), got {:?}",
-        effects[0],
+        matches!(effects.as_slice(), [Effect::PersistPreferredModel { model_id, .. }] if model_id == &id),
+        "clear must keep the current model as the explicit roles.main value: {effects:?}",
     );
     assert_eq!(
         app.agents[&agent_id].session.models.current,
         Some(id),
-        "clear_default_model must NOT mutate live agent.session.models.current",
+        "clear must not diverge the live Session from roles.main",
     );
 }
+
+#[test]
+fn clear_default_model_without_current_only_deletes_legacy_sources() {
+    let mut app = test_app_with_agent();
+    let agent_id = AgentId(0);
+    app.agents
+        .get_mut(&agent_id)
+        .unwrap()
+        .session
+        .models
+        .current = None;
+
+    let effects = dispatch(Action::ClearDefaultModel, &mut app);
+
+    assert!(matches!(
+        effects.as_slice(),
+        [Effect::ClearLegacyModelDefaults]
+    ));
+}
 /// `Action::SetDefaultModel(<known id>)` resolves the
-/// id against the live catalog, mutates current, and emits both
-/// PersistSetting + SwitchModel effects. This is the
+/// id against the live catalog and emits only a live `SwitchModel`. The
+/// successful switch result owns Role persistence, so the old
+/// `[models].default` path cannot diverge from `roles.main`. This is the
 /// dispatch-level analog of the slash-command's
-/// `slash_model_valid_dispatches_set_default_model_with_switch_and_persist`
+/// `slash_model_valid_dispatches_switch_without_legacy_default_persist`
 /// test.
 #[test]
 fn set_default_model_resolves_known_name() {
@@ -999,17 +1001,16 @@ fn set_default_model_resolves_known_name() {
         .available
         .insert(id.clone(), info);
     let effects = dispatch(Action::SetDefaultModel(id.clone()), &mut app);
-    assert_eq!(effects.len(), 2);
-    assert!(
-        matches!(& effects[0], Effect::PersistSetting { key : "default_model", value :
-        crate ::settings::SettingValue::String(s), .. } if s == "atelier-4.5")
+    assert_eq!(effects.len(), 1);
+    assert!(matches!(& effects[0], Effect::SwitchModel { model_id : mid, .. } if mid == & id));
+    assert_ne!(
+        app.agents[&agent_id].session.models.current,
+        Some(id),
+        "the visible model must not change before the ACP switch succeeds"
     );
-    assert!(matches!(& effects[1], Effect::SwitchModel { model_id : mid, .. } if mid == & id));
-    assert_eq!(app.agents[&agent_id].session.models.current, Some(id));
 }
-/// Re-dispatching the same model
-/// id is idempotent — no PersistSetting, no SwitchModel, no
-/// reasoning_effort reset.
+/// Re-dispatching the same live model repairs/persists `roles.main` without a
+/// redundant ACP switch or reasoning-effort reset.
 #[test]
 fn set_default_model_idempotent_when_already_current() {
     use agent_client_protocol as acp;
@@ -1032,10 +1033,11 @@ fn set_default_model_idempotent_when_already_current() {
         .models
         .set_current(id.clone(), None);
     let effects = dispatch(Action::SetDefaultModel(id), &mut app);
-    assert!(
-        effects.is_empty(),
-        "re-dispatching same model must be idempotent (no effects), got {effects:?}",
-    );
+    assert!(matches!(
+        effects.as_slice(),
+        [Effect::PersistPreferredModel { model_id, .. }]
+            if model_id.0.as_ref() == "atelier-already"
+    ));
 }
 /// `clamp_max_thoughts_width` clamps
 /// out-of-range values to the registered `[40, 500]` bounds.
@@ -1248,9 +1250,6 @@ fn move_setting_away_from_default(app: &mut AppView, key: crate::settings::Setti
         "max_thoughts_width" => {
             let _ = dispatch(Action::SetMaxThoughtsWidth(200), app);
         }
-        "coding_data_sharing" => {
-            let _ = dispatch(Action::SetCodingDataSharing { opted_in: false }, app);
-        }
         "plan_mode" => {
             let _ = dispatch(
                 Action::SetPlanMode(crate::app::actions::PlanModeKind::On),
@@ -1259,9 +1258,6 @@ fn move_setting_away_from_default(app: &mut AppView, key: crate::settings::Setti
         }
         "show_tips" => {
             let _ = dispatch(Action::SetShowTips(false), app);
-        }
-        "auto_update" => {
-            let _ = dispatch(Action::SetAutoUpdate(false), app);
         }
         "vim_mode" => {
             let _ = dispatch(Action::SetVimMode(true), app);

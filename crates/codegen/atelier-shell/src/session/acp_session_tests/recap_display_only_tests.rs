@@ -9,6 +9,49 @@ use super::support::*;
 use super::*;
 use atelier_sampling_types::ConversationItem;
 
+const SUMMARY_TEST_MODEL_ID: &str = "recap-test-provider/recap-test-model";
+
+async fn configure_summary_test_model(
+    actor: &mut SessionActor,
+    context_window: u64,
+) -> atelier_test_support::MockInferenceServer {
+    actor.max_retries = 0;
+    let server = atelier_test_support::MockInferenceServer::start()
+        .await
+        .unwrap();
+    server.enqueue_response(
+        "/v1/chat/completions",
+        atelier_test_support::ScriptedResponse::json(
+            400,
+            serde_json::json!({ "error": { "message": "recap test failure" } }),
+        ),
+    );
+
+    let mut registry = atelier_provider::ProviderRegistry::in_memory();
+    registry
+        .update_role(
+            atelier_provider::RoleId::Summary,
+            atelier_provider::RoleConfig::new("recap-test-provider", "recap-test-model").unwrap(),
+        )
+        .unwrap();
+    actor.role_registry_override = Some(registry);
+
+    let mut info = crate::agent::config::ModelInfo::fallback("recap-test-model");
+    info.base_url = server.url();
+    info.context_window = std::num::NonZeroU64::new(context_window).unwrap();
+    actor.models_manager.insert_test_entry(
+        SUMMARY_TEST_MODEL_ID,
+        crate::agent::config::ModelEntry {
+            info,
+            api_key: Some("test-key".to_owned()),
+            env_key: None,
+            api_base_url: None,
+            request_payload: serde_json::Map::new(),
+        },
+    );
+    server
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn new_prompt_cancels_in_flight_recap_epoch() {
     let local = tokio::task::LocalSet::new();
@@ -394,7 +437,8 @@ async fn manual_recap_generation_failure_persists_request_artifact() {
                 tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
             let (persistence_tx, mut persistence_rx) =
                 tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
-            let actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
+            let mut actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
+            let _server = configure_summary_test_model(&mut actor, 256_000).await;
 
             actor.chat_state_handle.replace_conversation(vec![
                 ConversationItem::system("you are a coding agent"),
@@ -480,7 +524,8 @@ async fn manual_recap_over_budget_trims_persisted_request_and_is_display_only() 
                 tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
             // window 8_000 => prompt_budget = 8_000 * 85 / 100 - 4_000 = 2_800.
             const PROMPT_BUDGET: u64 = 8_000 * 85 / 100 - 4_000;
-            let actor = create_test_actor(0, 8_000, 85, gateway_tx, persistence_tx).await;
+            let mut actor = create_test_actor(0, 8_000, 85, gateway_tx, persistence_tx).await;
+            let _server = configure_summary_test_model(&mut actor, 8_000).await;
 
             // An oversized real user turn (~40 KB => ~10k est tokens) forces the
             // over-budget branch regardless of the harness `total_tokens` arg.

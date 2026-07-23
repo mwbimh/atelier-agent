@@ -22,7 +22,7 @@ async fn create_test_actor(
     gateway_tx: mpsc::UnboundedSender<xai_acp_lib::AcpClientMessage>,
     persistence_tx: mpsc::UnboundedSender<PersistenceMsg>,
 ) -> SessionActor {
-    let cwd = AbsPathBuf::new(std::path::PathBuf::from("/tmp")).unwrap();
+    let cwd = AbsPathBuf::new(std::env::temp_dir()).unwrap();
     let fs = Arc::new(MockFs::new(cwd.to_path_buf()));
     let terminal = Arc::new(DummyTerminal {});
     let (hunk_tx, _hunk_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -93,7 +93,7 @@ async fn create_test_actor(
         turn_start_prompt_mode: parking_lot::Mutex::new(PromptMode::Agent),
         turn_prompt_mode: Arc::new(parking_lot::Mutex::new(PromptMode::Agent)),
         telemetry_enabled: false,
-        role_request_payload: serde_json::Map::new(),
+        role_request_payload: std::cell::RefCell::new(serde_json::Map::new()),
         supports_backend_search: std::cell::Cell::new(false),
         compactions_remaining: std::cell::Cell::new(None),
         compaction_at_tokens: std::cell::Cell::new(None),
@@ -160,22 +160,23 @@ async fn create_test_actor(
         last_reported_branch: std::sync::Arc::new(parking_lot::Mutex::new(None)),
         git_head_enabled: false,
         models_manager: Default::default(),
+        role_registry_override: None,
         display_cwd: std::sync::OnceLock::new(),
         active_agent_type: parking_lot::Mutex::new(None),
         queue_exit_reminder_on_approved_exit: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         active_skill: parking_lot::Mutex::new(None),
         plan_mode: Arc::new(parking_lot::Mutex::new(
-            crate::session::plan_mode::PlanModeTracker::new(std::path::PathBuf::from(
-                "/tmp/test-session",
-            )),
+            crate::session::plan_mode::PlanModeTracker::new(
+                std::env::temp_dir().join("test-session"),
+            ),
         )),
         goal_enabled: false,
         goal_harness_enabled: std::sync::atomic::AtomicBool::new(false),
         goal_harness_availability_reconciled: std::sync::atomic::AtomicBool::new(false),
         goal_tracker: Arc::new(parking_lot::Mutex::new(
-            crate::session::goal_tracker::GoalTracker::new(std::path::PathBuf::from(
-                "/tmp/test-session",
-            )),
+            crate::session::goal_tracker::GoalTracker::new(
+                std::env::temp_dir().join("test-session"),
+            ),
         )),
         goal_turn_task_ids: parking_lot::Mutex::new(std::collections::HashSet::new()),
         goal_continuation_streak: std::sync::atomic::AtomicU32::new(0),
@@ -217,7 +218,7 @@ async fn create_test_actor(
         hook_load_errors: std::cell::RefCell::new(Vec::new()),
         plugin_registry: std::cell::RefCell::new(None),
         plugin_registry_handle: None,
-        events: crate::session::events::EventTracker::new(std::path::Path::new("/tmp")),
+        events: crate::session::events::EventTracker::new(&std::env::temp_dir()),
         observability_bridge: noop_observability_bridge(),
         current_turn_number: std::cell::Cell::new(0),
         last_recap_main_turn: std::cell::Cell::new(0),
@@ -526,7 +527,7 @@ async fn create_test_actor_with_memory(
             std::collections::HashMap::new(),
         )),
         telemetry_enabled: false,
-        role_request_payload: serde_json::Map::new(),
+        role_request_payload: std::cell::RefCell::new(serde_json::Map::new()),
         supports_backend_search: std::cell::Cell::new(false),
         compactions_remaining: std::cell::Cell::new(None),
         compaction_at_tokens: std::cell::Cell::new(None),
@@ -603,6 +604,7 @@ async fn create_test_actor_with_memory(
         last_reported_branch: std::sync::Arc::new(parking_lot::Mutex::new(None)),
         git_head_enabled: false,
         models_manager: Default::default(),
+        role_registry_override: None,
         display_cwd: std::sync::OnceLock::new(),
         active_agent_type: parking_lot::Mutex::new(None),
         queue_exit_reminder_on_approved_exit: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -611,17 +613,17 @@ async fn create_test_actor_with_memory(
         turn_start_prompt_mode: parking_lot::Mutex::new(PromptMode::Agent),
         turn_prompt_mode: Arc::new(parking_lot::Mutex::new(PromptMode::Agent)),
         plan_mode: Arc::new(parking_lot::Mutex::new(
-            crate::session::plan_mode::PlanModeTracker::new(std::path::PathBuf::from(
-                "/tmp/test-session",
-            )),
+            crate::session::plan_mode::PlanModeTracker::new(
+                std::env::temp_dir().join("test-session"),
+            ),
         )),
         goal_enabled: false,
         goal_harness_enabled: std::sync::atomic::AtomicBool::new(false),
         goal_harness_availability_reconciled: std::sync::atomic::AtomicBool::new(false),
         goal_tracker: Arc::new(parking_lot::Mutex::new(
-            crate::session::goal_tracker::GoalTracker::new(std::path::PathBuf::from(
-                "/tmp/test-session",
-            )),
+            crate::session::goal_tracker::GoalTracker::new(
+                std::env::temp_dir().join("test-session"),
+            ),
         )),
         goal_turn_task_ids: parking_lot::Mutex::new(std::collections::HashSet::new()),
         goal_continuation_streak: std::sync::atomic::AtomicU32::new(0),
@@ -663,7 +665,7 @@ async fn create_test_actor_with_memory(
         hook_load_errors: std::cell::RefCell::new(Vec::new()),
         plugin_registry: std::cell::RefCell::new(None),
         plugin_registry_handle: None,
-        events: crate::session::events::EventTracker::new(std::path::Path::new("/tmp")),
+        events: crate::session::events::EventTracker::new(&std::env::temp_dir()),
         observability_bridge: noop_observability_bridge(),
         current_turn_number: std::cell::Cell::new(0),
         last_recap_main_turn: std::cell::Cell::new(0),
@@ -1173,13 +1175,9 @@ async fn test_compact_on_error_no_trigger_when_tokens_within_new_window() {
         })
         .await;
 }
-/// End-to-end test for `maybe_refresh_model_metadata_on_resume`.
-///
-/// Simulates a session idle for >10 minutes, then verifies the function
-/// fetches `/models-v2`, parses the response, and updates `context_window`
-/// and `max_completion_tokens` in the sampling config.
+/// Session resume must not use the removed vendor `/models-v2` endpoint.
 #[tokio::test(flavor = "current_thread")]
-async fn test_e2e_idle_resume_refreshes_model_metadata() {
+async fn test_idle_resume_does_not_fetch_vendor_model_metadata() {
     use axum::routing::get;
     let local = tokio::task::LocalSet::new();
     local
@@ -1203,7 +1201,7 @@ async fn test_e2e_idle_resume_refreshes_model_metadata() {
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
             let (gateway_tx, _) = mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
             let (persistence_tx, _) = mpsc::unbounded_channel::<PersistenceMsg>();
-            let cwd = atelier_paths::AbsPathBuf::new(std::path::PathBuf::from("/tmp")).unwrap();
+            let cwd = atelier_paths::AbsPathBuf::new(std::env::temp_dir()).unwrap();
             let fs = Arc::new(atelier_workspace::file_system::MockFs::new(
                 cwd.to_path_buf(),
             ));
@@ -1295,7 +1293,7 @@ async fn test_e2e_idle_resume_refreshes_model_metadata() {
                 turn_start_prompt_mode: parking_lot::Mutex::new(PromptMode::Agent),
                 turn_prompt_mode: Arc::new(parking_lot::Mutex::new(PromptMode::Agent)),
                 telemetry_enabled: false,
-                role_request_payload: serde_json::Map::new(),
+                role_request_payload: std::cell::RefCell::new(serde_json::Map::new()),
                 supports_backend_search: std::cell::Cell::new(false),
                 compactions_remaining: std::cell::Cell::new(None),
                 compaction_at_tokens: std::cell::Cell::new(None),
@@ -1362,6 +1360,7 @@ async fn test_e2e_idle_resume_refreshes_model_metadata() {
                 last_reported_branch: std::sync::Arc::new(parking_lot::Mutex::new(None)),
                 git_head_enabled: false,
                 models_manager: Default::default(),
+                role_registry_override: None,
                 display_cwd: std::sync::OnceLock::new(),
                 active_agent_type: parking_lot::Mutex::new(None),
                 queue_exit_reminder_on_approved_exit: Arc::new(std::sync::atomic::AtomicBool::new(
@@ -1369,17 +1368,17 @@ async fn test_e2e_idle_resume_refreshes_model_metadata() {
                 )),
                 active_skill: parking_lot::Mutex::new(None),
                 plan_mode: Arc::new(parking_lot::Mutex::new(
-                    crate::session::plan_mode::PlanModeTracker::new(std::path::PathBuf::from(
-                        "/tmp/test-session",
-                    )),
+                    crate::session::plan_mode::PlanModeTracker::new(
+                        std::env::temp_dir().join("test-session"),
+                    ),
                 )),
                 goal_enabled: false,
                 goal_harness_enabled: std::sync::atomic::AtomicBool::new(false),
                 goal_harness_availability_reconciled: std::sync::atomic::AtomicBool::new(false),
                 goal_tracker: Arc::new(parking_lot::Mutex::new(
-                    crate::session::goal_tracker::GoalTracker::new(std::path::PathBuf::from(
-                        "/tmp/test-session",
-                    )),
+                    crate::session::goal_tracker::GoalTracker::new(
+                        std::env::temp_dir().join("test-session"),
+                    ),
                 )),
                 goal_turn_task_ids: parking_lot::Mutex::new(std::collections::HashSet::new()),
                 goal_continuation_streak: std::sync::atomic::AtomicU32::new(0),
@@ -1424,7 +1423,7 @@ async fn test_e2e_idle_resume_refreshes_model_metadata() {
                 hook_load_errors: std::cell::RefCell::new(Vec::new()),
                 plugin_registry: std::cell::RefCell::new(None),
                 plugin_registry_handle: None,
-                events: crate::session::events::EventTracker::new(std::path::Path::new("/tmp")),
+                events: crate::session::events::EventTracker::new(&std::env::temp_dir()),
                 observability_bridge: noop_observability_bridge(),
                 current_turn_number: std::cell::Cell::new(0),
                 last_recap_main_turn: std::cell::Cell::new(0),
@@ -1458,14 +1457,12 @@ async fn test_e2e_idle_resume_refreshes_model_metadata() {
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             let cfg_after = actor.chat_state_handle.get_sampling_config().await.unwrap();
             assert_eq!(
-                cfg_after.context_window,
-                std::num::NonZeroU64::new(300_000).unwrap(),
-                "context_window should be updated to 300K from /models-v2"
+                cfg_after.context_window, cfg_before.context_window,
+                "session resume must leave Provider-owned model metadata unchanged"
             );
             assert_eq!(
-                cfg_after.max_completion_tokens,
-                Some(16384),
-                "max_completion_tokens should be updated to 16384 from /models-v2"
+                cfg_after.max_completion_tokens, cfg_before.max_completion_tokens,
+                "session resume must not apply vendor model metadata"
             );
         })
         .await;

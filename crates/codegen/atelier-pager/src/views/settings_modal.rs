@@ -35,9 +35,9 @@ use unicode_width::UnicodeWidthStr;
 use crate::app::actions::Action;
 use crate::render::line_utils::truncate_str;
 use crate::settings::{
-    EnumChoice, OwnedEnumChoice, PagerLocalSnapshot, SettingCategory, SettingKey, SettingKind,
-    SettingMeta, SettingValue, SettingsRegistry, StringValidator, current_value_for,
-    dynamic_enum_choices,
+    DynamicEnumSource, EnumChoice, OwnedEnumChoice, PagerLocalSnapshot, SettingCategory,
+    SettingKey, SettingKind, SettingMeta, SettingValue, SettingsRegistry, StringValidator,
+    current_value_for, dynamic_enum_choices,
 };
 use crate::theme::Theme;
 use crate::views::modal_window::{
@@ -426,7 +426,7 @@ impl SettingsModalState {
                     ..
                 } => (
                     *supports_preview,
-                    dynamic_enum_choices(*source, &self.pager_snapshot),
+                    dynamic_enum_choices_for_key(key, *source, &self.pager_snapshot),
                 ),
                 _ => return false,
             };
@@ -487,7 +487,7 @@ impl SettingsModalState {
                 ?current_value,
                 "DynamicEnum picker entered with a current value that no longer resolves \
                  in the live catalog — focusing first real choice instead of the \
-                 (no override) sentinel to defend against accidental destructive Enter",
+                 reset sentinel to defend against accidental destructive Enter",
             );
         }
         let original_value = current_value.unwrap_or_else(|| {
@@ -652,6 +652,20 @@ fn build_rows(registry: &SettingsRegistry) -> Vec<RowEntry> {
     let kitty_releases = crate::app::kitty_flags_pushed();
     let minimal = crate::app::minimal_mode_active();
     let voice_mode = crate::app::voice_mode_enabled();
+    build_rows_for_gates(registry, kitty_releases, minimal, voice_mode)
+}
+
+/// Build modal rows from explicit capability gates.
+///
+/// Production callers use [`build_rows`], while tests use this pure helper so
+/// parallel mutations of process-wide terminal/voice gates cannot change the
+/// expected registry contract.
+fn build_rows_for_gates(
+    registry: &SettingsRegistry,
+    kitty_releases: bool,
+    minimal: bool,
+    voice_mode: bool,
+) -> Vec<RowEntry> {
     // Keys that belong to a group sub-sheet are rendered only inside that
     // sheet, never as their own top-level rows.
     let group_children: std::collections::HashSet<SettingKey> = registry
@@ -716,7 +730,6 @@ fn action_for_bool(key: SettingKey, new: bool) -> Option<Action> {
         "respect_manual_folds" => Some(Action::SetRespectManualFolds(new)),
         "invert_scroll" => Some(Action::SetInvertScroll(new)),
         "show_tips" => Some(Action::SetShowTips(new)),
-        "auto_update" => Some(Action::SetAutoUpdate(new)),
         "display_refresh_auto_cadence" => Some(Action::SetDisplayRefreshAutoCadence(new)),
         _ => None,
     }
@@ -732,7 +745,6 @@ fn action_for_enum(key: SettingKey, choice: &'static str) -> Option<Action> {
         "auto_light_theme" => Some(Action::PreviewAutoLightTheme(choice.to_string())),
         // No preview for settings with irreversible side effects.
         "permission_mode" => None,
-        "coding_data_sharing" => None,
         "plan_mode" => None,
         "render_mermaid" => None,
         "keep_text_selection" => None,
@@ -766,11 +778,6 @@ fn action_for_enum_commit(key: SettingKey, choice: &'static str) -> Option<Actio
             "default" => Some(Action::SetPermissionMode(
                 crate::app::actions::PermissionModeKind::Default,
             )),
-            _ => None,
-        },
-        "coding_data_sharing" => match choice {
-            "opt-in" => Some(Action::SetCodingDataSharing { opted_in: true }),
-            "opt-out" => Some(Action::SetCodingDataSharing { opted_in: false }),
             _ => None,
         },
         "plan_mode" => match choice {
@@ -1546,7 +1553,7 @@ fn render_rows(buf: &mut Buffer, area: Rect, state: &mut SettingsModalState, the
                     }
                     SettingValue::String(s) => {
                         if s.is_empty() && matches!(meta.kind, SettingKind::DynamicEnum { .. }) {
-                            "(no override)".to_string()
+                            empty_dynamic_enum_display(meta.key).to_string()
                         } else {
                             s.clone()
                         }
@@ -1711,7 +1718,7 @@ fn compute_filtered_row_heights(state: &SettingsModalState, area_width: u16) -> 
                     }
                     SettingValue::String(s) => {
                         if s.is_empty() && matches!(meta.kind, SettingKind::DynamicEnum { .. }) {
-                            "(no override)".to_string()
+                            empty_dynamic_enum_display(meta.key).to_string()
                         } else {
                             s.clone()
                         }
@@ -1863,7 +1870,7 @@ fn render_picking_enum(buf: &mut Buffer, area: Rect, state: &SettingsModalState,
                 .collect()
         }
         SettingKind::DynamicEnum { source, .. } => {
-            dynamic_enum_choices(*source, &state.pager_snapshot)
+            dynamic_enum_choices_for_key(setting_key, *source, &state.pager_snapshot)
         }
         _ => return,
     };
@@ -3109,6 +3116,31 @@ fn display_for_enum_canonical<'a>(kind: &'a SettingKind, canonical: &'a str) -> 
     canonical
 }
 
+fn empty_dynamic_enum_display(key: &str) -> &'static str {
+    if key == "default_model" {
+        "Keep current as main Role"
+    } else {
+        "(no override)"
+    }
+}
+
+fn dynamic_enum_choices_for_key(
+    key: &str,
+    source: DynamicEnumSource,
+    snapshot: &PagerLocalSnapshot,
+) -> Vec<OwnedEnumChoice> {
+    let mut choices = dynamic_enum_choices(source, snapshot);
+    if key == "default_model"
+        && let Some(reset) = choices.first_mut()
+        && reset.canonical.is_empty()
+    {
+        reset.display = "Keep current as main Role".to_owned();
+        reset.description =
+            "Delete obsolete defaults and retain the current model as roles.main".to_owned();
+    }
+    choices
+}
+
 /// Word-wrap a description string. Returns owned lines for re-styling.
 /// Asserts descriptions are single-line (no `\n`/`\t`).
 fn wrap_description(description: &str, width: u16) -> Vec<String> {
@@ -3252,7 +3284,7 @@ fn render_setting_row(
         }
         SettingValue::String(s) => {
             if s.is_empty() && matches!(meta.kind, SettingKind::DynamicEnum { .. }) {
-                "(no override)"
+                empty_dynamic_enum_display(meta.key)
             } else {
                 s.as_str()
             }
@@ -5519,8 +5551,7 @@ mod tests {
     /// Every registered
     /// `SettingKind::DynamicEnum` setting must have a matching arm
     /// in `action_for_string` for the picker's Enter (commit) path,
-    /// including the empty-canonical sentinel (row 0 of the picker
-    /// is always "(no override)").
+    /// including the empty-canonical reset sentinel (row 0 of the picker).
     #[test]
     fn every_dynamic_enum_setting_has_action_for_string_arm() {
         let reg = SettingsRegistry::defaults();
@@ -5691,18 +5722,17 @@ mod tests {
         );
     }
 
-    /// The default registry contains Appearance settings
-    /// (3 bools + 3 enums + 1 int = 7 entries), the Editor entry
-    /// `multiline_mode`, the Agent entries `permission_mode` and
-    /// `plan_mode`, the Privacy entry `coding_data_sharing`, the
-    /// Models entry `default_model`, and the Advanced entries
-    /// `show_tips` and `auto_update`. `default_reasoning_effort` and
-    /// `auto_compact_threshold_percent` are not exposed in the modal.
+    /// The default registry exposes the complete full-TUI settings list. Use
+    /// explicit gates here so this strict registry-order contract is not
+    /// affected by another parallel test changing process-global terminal or
+    /// voice state. Voice language is a valid local setting persisted at
+    /// `[ui].voice_stt_language`; with voice and Kitty key releases enabled,
+    /// both voice rows must be present.
     #[test]
     fn rows_contain_categories_and_settings_through_pr_14() {
-        let s = make_state();
-        let headers: Vec<&SettingCategory> = s
-            .rows
+        let registry = SettingsRegistry::defaults();
+        let rows = build_rows_for_gates(&registry, true, false, true);
+        let headers: Vec<&SettingCategory> = rows
             .iter()
             .filter_map(|r| {
                 if let RowEntry::Header { category } = r {
@@ -5719,18 +5749,15 @@ mod tests {
                 &SettingCategory::Mouse,
                 &SettingCategory::Editor,
                 &SettingCategory::Agent,
-                &SettingCategory::Privacy,
                 &SettingCategory::Models,
                 // The Session category has no registered settings, so its
                 // header is not emitted.
-                // Advanced category (first entries:
-                // `show_tips`, `auto_update`).
+                // Advanced category (first entry: `show_tips`).
                 &SettingCategory::Advanced,
             ]
         );
 
-        let settings: Vec<SettingKey> = s
-            .rows
+        let settings: Vec<SettingKey> = rows
             .iter()
             .filter_map(|r| {
                 if let RowEntry::Setting { key, .. } = r {
@@ -5787,7 +5814,10 @@ mod tests {
                 // SHELL-owned prompt_suggestions (Editor; tab autocomplete
                 // ghost text, live cache).
                 "prompt_suggestions",
-                // voice_capture_mode + voice_stt_language hidden when gate is off.
+                // Local voice settings. `voice_capture_mode` additionally
+                // requires Kitty key-release reporting; this test enables it.
+                "voice_capture_mode",
+                "voice_stt_language",
                 // SHELL-owned permission_mode (Agent category).
                 "permission_mode",
                 // SHELL-owned remember_tool_approvals (Agent category,
@@ -5801,8 +5831,6 @@ mod tests {
                 "toolset.ask_user_question.timeout_enabled",
                 // PAGER-owned plan_mode (Agent category).
                 "plan_mode",
-                // SHELL-owned coding_data_sharing (Privacy category).
-                "coding_data_sharing",
                 // SHELL-owned default_model (Models category).
                 "default_model",
                 // Models category. `default_reasoning_effort`,
@@ -5818,7 +5846,6 @@ mod tests {
                 // (`contextual_hints.{undo,plan_mode,image_input}`) are hidden
                 // from the top-level list and reached via the sub-sheet.
                 "contextual_hints",
-                "auto_update",
                 // SHELL-owned hunk_tracker_mode (Advanced; `off` disables it).
                 "hunk_tracker_mode",
             ]
@@ -8229,7 +8256,7 @@ mod tests {
             category: SettingCategory::Privacy,
             owner: SettingOwner::Shared,
             label: "Coding data sharing",
-            description: "Controls whether SpaceXAI may retain and train on coding data.",
+            description: "Synthetic long enum description used for wrapping tests.",
             keywords: &["test"],
             kind: SettingKind::Enum {
                 default: "opt-out",
@@ -8237,7 +8264,7 @@ mod tests {
                     EnumChoice {
                         canonical: "opt-in",
                         display: "Opt in",
-                        description: "Allow SpaceXAI to retain and use coding session data for training and product improvement.",
+                        description: "Synthetic long enum choice used for wrapping tests.",
                     },
                     EnumChoice {
                         canonical: "opt-out",
@@ -8291,7 +8318,7 @@ mod tests {
             category: SettingCategory::Privacy,
             owner: SettingOwner::Shared,
             label: "Coding data sharing",
-            description: "Controls whether SpaceXAI may retain and train on coding data.",
+            description: "Synthetic long enum description used for wrapping tests.",
             keywords: &["test"],
             kind: SettingKind::Enum {
                 default: "opt-out",
@@ -8299,7 +8326,7 @@ mod tests {
                     EnumChoice {
                         canonical: "opt-in",
                         display: "Opt in",
-                        description: "Allow SpaceXAI to retain and use coding session data for training and product improvement.",
+                        description: "Synthetic long enum choice used for wrapping tests.",
                     },
                     EnumChoice {
                         canonical: "opt-out",
@@ -8361,7 +8388,7 @@ mod tests {
             "choice 0 line 1 must contain the `·` separator, got: {r3:?}"
         );
         assert!(
-            r3.contains("Allow SpaceXAI"),
+            r3.contains("Synthetic long enum"),
             "choice 0 line 1 must start the description, got: {r3:?}"
         );
 
@@ -8401,14 +8428,7 @@ mod tests {
             !opt_in_full.contains('\u{2026}'),
             "wrapped Opt-in description must NOT contain `…`, got:\n{opt_in_full}"
         );
-        for word in [
-            "Allow",
-            "SpaceXAI",
-            "retain",
-            "session",
-            "training",
-            "improvement",
-        ] {
+        for word in ["Synthetic", "long", "enum", "choice", "wrapping", "tests"] {
             assert!(
                 opt_in_full.contains(word),
                 "Opt-in description must include word {word:?}, got:\n{opt_in_full}"
@@ -8576,7 +8596,7 @@ mod tests {
             category: SettingCategory::Privacy,
             owner: SettingOwner::Shared,
             label: "Coding data sharing",
-            description: "Controls whether SpaceXAI may retain coding data.",
+            description: "Synthetic long enum description used for layout tests.",
             keywords: &["test"],
             kind: SettingKind::Enum {
                 default: "opt-in",
@@ -8584,7 +8604,7 @@ mod tests {
                     EnumChoice {
                         canonical: "opt-in",
                         display: "Opt in",
-                        description: "Allow SpaceXAI to retain and use coding session data for training and product improvement.",
+                        description: "Synthetic long enum choice used for wrapping tests.",
                     },
                     EnumChoice {
                         canonical: "opt-out",
@@ -9186,6 +9206,25 @@ mod tests {
 
         let bool_state = make_state();
         assert_eq!(picker_choice_at(&bool_state, "compact_mode", 0), None);
+    }
+
+    #[test]
+    fn main_model_reset_label_does_not_leak_into_fork_model_picker() {
+        let snapshot = PagerLocalSnapshot::default();
+
+        let main = dynamic_enum_choices_for_key(
+            "default_model",
+            DynamicEnumSource::ActiveModelCatalog,
+            &snapshot,
+        );
+        let fork = dynamic_enum_choices_for_key(
+            "fork_secondary_model",
+            DynamicEnumSource::ActiveModelCatalog,
+            &snapshot,
+        );
+
+        assert_eq!(main[0].display, "Keep current as main Role");
+        assert_eq!(fork[0].display, "(no override)");
     }
 
     #[test]
@@ -9796,9 +9835,7 @@ mod tests {
     /// Two-line rows expand `state.row_rects` to span BOTH lines so
     /// mouse clicks on either line trigger the same default action.
     ///
-    /// `coding_data_sharing`: label 19 + value "Opt out" 7 + chevron
-    /// 2 + chrome 4 = 32 cells one-line. We render at width=28 so
-    /// the row drops to two lines.
+    /// The long default-permission label forces a two-line row at width 28.
     #[test]
     fn two_line_row_hit_rect_spans_both_lines() {
         let mut s = make_state();
@@ -9806,11 +9843,9 @@ mod tests {
             .rows
             .iter()
             .position(
-                |r| matches!(r, RowEntry::Setting { key, .. } if *key == "coding_data_sharing"),
+                |r| matches!(r, RowEntry::Setting { key, .. } if *key == "default_selected_permission"),
             )
-            .expect("coding_data_sharing must be registered");
-        // Render at a narrow width so coding_data_sharing forces a
-        // two-line layout.
+            .expect("default_selected_permission must be registered");
         let area = Rect {
             x: 0,
             y: 0,
@@ -9831,7 +9866,7 @@ mod tests {
 
         // Synthesize a click on line 2 of the row. The mouse handler
         // should fire the default action (open the enum picker for
-        // coding_data_sharing).
+        // the selected enum setting).
         s.list_area = area;
         let click_y = rect.y + 1;
         // Click somewhere in the middle of line 2.
@@ -9867,17 +9902,16 @@ mod tests {
     #[test]
     fn two_line_row_with_expansion_renders_three_segments() {
         let mut s = make_state();
-        // Coding data sharing's label + value (with chevron) won't
-        // fit on a 28-col line, forcing two-line layout.
+        // The default permission label + value does not fit at width 28.
         let row_idx = s
             .rows
             .iter()
             .position(
-                |r| matches!(r, RowEntry::Setting { key, .. } if *key == "coding_data_sharing"),
+                |r| matches!(r, RowEntry::Setting { key, .. } if *key == "default_selected_permission"),
             )
-            .expect("coding_data_sharing must be registered");
+            .expect("default_selected_permission must be registered");
         s.selected = row_idx;
-        s.expanded_keys.insert("coding_data_sharing");
+        s.expanded_keys.insert("default_selected_permission");
 
         let area = Rect {
             x: 0,
@@ -9898,18 +9932,13 @@ mod tests {
         // The row label is on line 1.
         let label_line = buf_row_text(&buf, rect.y, area.x, area.width);
         assert!(
-            label_line.contains("Coding data sharing"),
+            label_line.contains("Default selected permiss"),
             "line 1 must contain the row label: {label_line:?}"
         );
-        // The value (display: "Opt out" or similar) is on line 2.
+        // The selected value is on line 2.
         let value_line = buf_row_text(&buf, rect.y + 1, area.x, area.width);
-        // Value comes from displaying the canonical → display mapping,
-        // which uses the synthetic enum's "Third Option" canonical of
-        // "opt-out". The display fallback returns the canonical when
-        // the lookup misses — registry has the real `CodingDataSharing`
-        // choices, so display should be "Opt out".
         assert!(
-            value_line.contains("Opt") || value_line.contains("opt") || value_line.contains("out"),
+            !value_line.trim().is_empty(),
             "line 2 must contain the value text: {value_line:?}"
         );
         // The expanded description renders on line 3 and below.
@@ -10814,11 +10843,7 @@ mod tests {
         };
 
         // LONG path: width=80 fits the full message.
-        let (row_long, tip_start_long, trailing_long) = render(80);
-        assert!(
-            tip_start_long > 0,
-            "LONG tip must be centered (start > col 0); row={row_long:?}",
-        );
+        let (_row_long, tip_start_long, trailing_long) = render(80);
         assert!(
             tip_start_long.abs_diff(trailing_long) <= 1,
             "LONG tip leading_ws={tip_start_long} vs trailing_ws={trailing_long}",

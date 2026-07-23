@@ -23,11 +23,43 @@ enum State {
 }
 
 /// Dependencies for session title generation and fan-out.
+pub(crate) enum TitleBackend {
+    Enabled {
+        sampling_client: OaiCompatClient,
+        model: String,
+    },
+    Disabled {
+        reason: String,
+    },
+}
+
 pub(crate) struct SummaryConfig {
-    pub(crate) sampling_client: OaiCompatClient,
-    pub(crate) model: String,
+    pub(crate) backend: TitleBackend,
     /// Channel back to the persistence actor for sequential storage writes.
     pub(crate) persistence_tx: mpsc::UnboundedSender<PersistenceMsg>,
+}
+
+#[cfg(test)]
+mod disabled_title_tests {
+    use super::{SummaryConfig, SummaryGenerator, TitleBackend};
+
+    #[test]
+    fn disabled_title_backend_does_not_block_or_generate_a_fallback_title() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut generator = SummaryGenerator::new(SummaryConfig {
+            backend: TitleBackend::Disabled {
+                reason: "title role is not configured".to_owned(),
+            },
+            persistence_tx: tx,
+        });
+
+        generator.update("main session still starts".to_owned());
+
+        assert!(
+            rx.try_recv().is_err(),
+            "disabled Title must not synthesize a title"
+        );
+    }
 }
 
 /// Manages session title generation with explicit lifecycle state.
@@ -68,9 +100,23 @@ impl SummaryGenerator {
                 // Transition to Done so subsequent ContentChunk messages
                 // don't spawn duplicate title generation tasks.
                 self.state = State::Done;
-
-                let sampling_client = self.config.sampling_client.clone();
-                let model = self.config.model.clone();
+                let (sampling_client, model) = match &self.config.backend {
+                    TitleBackend::Enabled {
+                        sampling_client,
+                        model,
+                    } => (sampling_client.clone(), model.clone()),
+                    TitleBackend::Disabled { reason } => {
+                        let lifecycle = crate::session::helpers::session_compact::AuxiliaryRequestLifecycle::new(
+                            "title",
+                            "disabled",
+                            "disabled",
+                            format!("title-disabled-{}", uuid::Uuid::new_v4()),
+                            crate::session::helpers::session_compact::AuxiliaryRequestState::GeneratingTitle,
+                        );
+                        lifecycle.disable(reason.clone());
+                        return;
+                    }
+                };
                 let persistence_tx = self.config.persistence_tx.clone();
 
                 // Spawn title generation as a background task so the

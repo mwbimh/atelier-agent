@@ -17,7 +17,7 @@ Agents and personas both customize behavior, but they operate at different level
 | **How you set them** | At startup, or with agent definitions (`.md` files in `.atelier/agents/` or `~/.atelier/agents/`) | In `config.toml` (`[subagents.personas]`) or `.toml` files under `.atelier/personas/`; applied during subagent resolution |
 | **What they control** | Model, tool availability, prompt body, skills | Tone, output format, task focus, and input/output contracts |
 | **Who edits them** | You -- create, delete, or toggle them in the agents modal or by editing files | You -- define custom personas in config or files; bundled personas are read-only |
-| **Examples** | `atelier-build`, `explore`, `plan` | `researcher`, `concise` |
+| **Examples** | `general-purpose`, `explore`, `implement` | `researcher`, `concise` |
 
 An agent defines the session itself. A persona shapes how a subagent behaves within a session. A subagent always runs as an agent type (for example, `general-purpose`), and resolution can layer a persona on top.
 
@@ -199,30 +199,38 @@ Atelier manages worktrees through the `atelier/git/worktree/*` extension methods
 
 ## Configuration
 
-### Per-Type Toggles and Model Overrides
+### Per-Type Toggles and Fixed Roles
 
-Disable specific agent types, or route them to a different model:
+Disable specific agent types in `config.toml`:
 
 ```toml
 [subagents.toggle]
 explore = true                       # default -- omit to keep enabled
 plan = false                         # disable the plan subagent
-
-[subagents.models]
-explore = "atelier-build"               # route explore to a specific model
 ```
 
-Per-type model overrides apply for any parent. Without an override, a subagent inherits the parent's model.
+Built-in subagent types use fixed Runtime Roles:
+
+| Subagent work | Role |
+|---|---|
+| Codebase exploration | `explore` |
+| Code implementation | `implement` |
+| Code review | `review` |
+| Test execution and diagnosis | `test` |
+
+Configure the Provider/model pair with `/roles`. Built-in subagents do not
+silently inherit the parent session model.
 
 ### Custom Roles and Personas
 
-Define custom roles with their own capability and model defaults:
+Custom subagent role definitions can still describe capability and prompt
+defaults. Model assignment for the fixed built-in work types belongs to the
+eight Runtime Roles:
 
 ```toml
 [subagents.roles.researcher]
 description = "Deep research agent"
 default_capability_mode = "read-only"
-model = "atelier-build"
 prompt_file = ".atelier/prompts/researcher.md"
 ```
 

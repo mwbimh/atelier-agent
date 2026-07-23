@@ -89,7 +89,7 @@ impl StorageConfig for TraceExportConfigWithAuth {
         )))
     }
     fn proxy_http_client(&self) -> Option<reqwest::Client> {
-        Some(crate::http::shared_upload_client())
+        None
     }
 }
 /// Convenience trait for wrapping a `TraceExportConfig` at upload call
@@ -115,8 +115,7 @@ impl WithAuth for TraceExportConfig {
 /// Default GCS bucket for session trace uploads. Override at runtime with
 /// `ATELIER_TELEMETRY_GCS_BUCKET`; `None` disables trace uploads until a bucket
 /// is configured.
-pub(crate) const SESSION_TRACES_BUCKET: Option<&str> =
-    option_env!("ATELIER_SESSION_TRACES_BUCKET_DEFAULT");
+pub(crate) const SESSION_TRACES_BUCKET: Option<&str> = None;
 /// Build the GCS console browse URL for the per-turn unified log.
 ///
 /// The log is already uploaded by `complete_prompt_trace` at
@@ -127,17 +126,11 @@ pub(crate) const SESSION_TRACES_BUCKET: Option<&str> =
 /// runtime overrides; falls back to the compiled-in default. `None` when
 /// neither yields a GCS bucket.
 pub(crate) fn unified_log_url(
-    bucket_url: Option<&str>,
-    session_id: &str,
-    turn_number: i64,
+    _bucket_url: Option<&str>,
+    _session_id: &str,
+    _turn_number: i64,
 ) -> Option<String> {
-    let bucket = match bucket_url {
-        Some(url) => url.strip_prefix("gs://")?.trim_end_matches('/'),
-        None => SESSION_TRACES_BUCKET?,
-    };
-    Some(format!(
-        "https://console.cloud.google.com/storage/browser/_details/{bucket}/{session_id}/turn_{turn_number}/unified_log.jsonl"
-    ))
+    None
 }
 /// Upload bytes to the `auth-diagnostics/{version}/{user_id}/{ts}.jsonl` path
 /// for easy aggregation across users. Used by both the auth refresh failure
@@ -148,37 +141,5 @@ pub(crate) async fn upload_to_auth_diagnostics(
     upload_method: &crate::session::repo_changes::UploadMethod,
     auth_manager: Arc<crate::auth::AuthManager>,
 ) {
-    let user_id = user_id.replace('/', "_");
-    let ts = chrono::Utc::now().timestamp_millis();
-    let version = atelier_version::VERSION;
-    let object_path = format!("auth-diagnostics/{version}/{user_id}/{ts}.jsonl");
-    let config = crate::session::repo_changes::TraceExportConfig {
-        bucket_url: None,
-        service_account_key: None,
-        upload_method: upload_method.clone(),
-        prefix_dir: None,
-        gcs_prefix: None,
-        absolute_paths: false,
-        archive_name_override: None,
-    };
-    match xai_file_utils::gcs::upload_bytes(
-        &config.with_auth(Some(auth_manager)),
-        &object_path,
-        log_bytes,
-        "application/x-ndjson",
-    )
-    .await
-    {
-        Ok(_) => {
-            tracing::info!(
-                version = version,
-                "uploaded diagnostic log to auth-diagnostics"
-            );
-        }
-        Err(e) => {
-            tracing::warn!(
-                error = % e, "failed to upload diagnostic log to auth-diagnostics"
-            );
-        }
-    }
+    let _ = (log_bytes, user_id, upload_method, auth_manager);
 }

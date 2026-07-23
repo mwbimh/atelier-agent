@@ -584,8 +584,11 @@ async fn resolve_existing_session(
             title: None,
         });
     }
-    let _ = (ctx.has_worktree, ctx.allow_remote_restore, cwd);
-    anyhow::bail!("remote session restore is disabled in Atelier");
+    let _ = (ctx.has_worktree, cwd);
+    if ctx.allow_remote_restore {
+        anyhow::bail!("remote session restore is disabled in Atelier");
+    }
+    anyhow::bail!("session `{session_id}` does not exist locally");
 }
 #[cfg(test)]
 mod tests {

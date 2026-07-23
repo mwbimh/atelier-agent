@@ -18,44 +18,8 @@
 pub use atelier_shell_session_support::managed_mcp::*;
 
 use std::collections::HashMap;
-use std::sync::Arc;
 
 use agent_client_protocol as acp;
-
-/// Build a [`RefreshContext`] whose token provider resolves fresh tokens from
-/// `auth_manager`; the extracted refresh task never sees the auth manager
-/// itself, only the closure.
-fn refresh_context(
-    proxy_base_url: String,
-    auth_manager: Arc<crate::auth::AuthManager>,
-) -> RefreshContext {
-    RefreshContext {
-        proxy_base_url,
-        token_provider: Arc::new(move || -> TokenFuture {
-            let auth_manager = auth_manager.clone();
-            Box::pin(async move { auth_manager.get_valid_token().await.ok() })
-        }),
-    }
-}
-
-/// Resolve an auth key from `auth_manager` then [`get_or_fetch`] the managed MCP
-/// configs (with a [`RefreshContext`] for proactive refresh). Single source for
-/// the auth-key dance across every managed-config fetch —
-/// [`crate::agent::MvpAgent::get_managed_mcp_configs`], the interactive
-/// folder-trust grant reload, agent-init MCP setup, and the reactive re-auth
-/// re-fetch — so the copies can't drift.
-/// Callers gate on `can_fetch_managed_mcps`/auth before calling.
-pub(crate) async fn fetch_managed_mcp_configs(
-    handle: &ManagedMcpStateHandle,
-    proxy_url: &str,
-    auth_manager: &Arc<crate::auth::AuthManager>,
-) -> Vec<ManagedMcpConfig> {
-    let _ = (handle, proxy_url, auth_manager);
-    // Managed MCP is a vendor-hosted configuration path.  User-configured
-    // local/project MCP servers still flow through the normal merge code, but
-    // this function must never contact a remote catalog.
-    Vec::new()
-}
 
 /// Dedup key for the merge map: normalized URL for Http/Sse, name for Stdio.
 fn mcp_server_key(s: &acp::McpServer) -> String {

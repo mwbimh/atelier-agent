@@ -41,21 +41,25 @@ export type RoleId =
 export interface RoleConfig {
   provider: string;
   model: string;
-  effort?: string;
-  fastMode?: boolean;
+  effort: string | null;
+  fast_mode: boolean;
   payload: Record<string, unknown>;
 }
 
 export interface RuntimeStatus {
   sessionId: string;
   state: string;
-  requestId?: string;
-  turnId?: string;
+  startedAtMs: number;
+  lastProgressAtMs: number;
+  requestId: string | null;
+  turnId: string | null;
   role: RoleId | string;
-  provider?: string;
-  model?: string;
+  provider: string | null;
+  model: string | null;
+  timeoutMs: number | null;
   retryCount: number;
-  diagnosticMessage?: string;
+  cancelSupported: boolean;
+  diagnosticMessage: string | null;
 }
 
 export interface RpcTransport {
@@ -64,7 +68,7 @@ export interface RpcTransport {
 
 export class RpcClientError extends Error {
   readonly kind: "transport" | "invalid_response" | "remote" | "decode" | "incompatible_protocol";
-  readonly remote?: RpcError;
+  readonly remote: RpcError | undefined;
 
   constructor(
     kind: RpcClientError["kind"],
@@ -161,5 +165,141 @@ export class AtelierRpcClient {
 
   retry(requestId: string): Promise<unknown> {
     return this.call("_atelier/runtime/retry", { requestId });
+  }
+
+  contextList(params?: unknown): Promise<unknown> {
+    return this.call("_atelier/context/list", params);
+  }
+
+  contextGet(params?: unknown): Promise<unknown> {
+    return this.call("_atelier/context/get", params);
+  }
+
+  requestGet(params?: unknown): Promise<unknown> {
+    return this.call("_atelier/request/get", params);
+  }
+
+  runtimeDoctor(params?: unknown): Promise<unknown> {
+    return this.call("_atelier/runtime/doctor", params);
+  }
+
+  runtimeCancel(params?: unknown): Promise<unknown> {
+    return this.call("_atelier/runtime/cancel", params);
+  }
+
+  runtimeRetry(params?: unknown): Promise<unknown> {
+    return this.call("_atelier/runtime/retry", params);
+  }
+
+  runtimeRecover(params?: unknown): Promise<unknown> {
+    return this.call("_atelier/runtime/recover", params);
+  }
+
+  runtimeTasks(params?: unknown): Promise<unknown> {
+    return this.call("_atelier/runtime/tasks", params);
+  }
+
+  roleList(params?: unknown): Promise<unknown> {
+    return this.call("_atelier/role/list", params);
+  }
+
+  roleGet(params?: unknown): Promise<unknown> {
+    return this.call("_atelier/role/get", params);
+  }
+
+  roleSet(params?: unknown): Promise<unknown> {
+    return this.call("_atelier/role/update", params);
+  }
+
+  roleTest(params?: unknown): Promise<unknown> {
+    return this.call("_atelier/role/test", params);
+  }
+
+  contextSnapshotCreate(params?: unknown): Promise<unknown> {
+    return this.call("_atelier/context_snapshot/create", params);
+  }
+
+  contextSnapshotGet(params?: unknown): Promise<unknown> {
+    return this.call("_atelier/context_snapshot/get", params);
+  }
+
+  contextSnapshotDelete(params?: unknown): Promise<unknown> {
+    return this.call("_atelier/context_snapshot/delete", params);
+  }
+
+  agentSpawnDerived(params?: unknown): Promise<unknown> {
+    return this.call("_atelier/agent/spawn_derived", params);
+  }
+
+  agentSpawnParallel(params?: unknown): Promise<unknown> {
+    return this.call("_atelier/agent/spawn_parallel", params);
+  }
+
+  sessionFork(params?: unknown): Promise<unknown> {
+    return this.call("_atelier/session/fork", params);
+  }
+
+  btwAsk(params?: unknown): Promise<unknown> {
+    return this.call("_atelier/btw/ask", params);
+  }
+
+  btwGet(params?: unknown): Promise<unknown> {
+    return this.call("_atelier/btw/get", params);
+  }
+
+  btwList(params?: unknown): Promise<unknown> {
+    return this.call("_atelier/btw/list", params);
+  }
+
+  btwDelete(params?: unknown): Promise<unknown> {
+    return this.call("_atelier/btw/delete", params);
+  }
+
+  taskList(params?: unknown): Promise<unknown> {
+    return this.call("_atelier/task/list", params);
+  }
+
+  taskGet(params?: unknown): Promise<unknown> {
+    return this.call("_atelier/task/get", params);
+  }
+
+  taskDetach(params?: unknown): Promise<unknown> {
+    return this.call("_atelier/task/detach", params);
+  }
+
+  taskAttach(params?: unknown): Promise<unknown> {
+    return this.call("_atelier/task/attach", params);
+  }
+
+  taskCancel(params?: unknown): Promise<unknown> {
+    return this.call("_atelier/task/cancel", params);
+  }
+
+  taskSubscribe(params?: unknown): Promise<unknown> {
+    return this.call("_atelier/task/subscribe", params);
+  }
+
+  modelGet(params?: unknown): Promise<unknown> {
+    return this.call("_atelier/model/get", params);
+  }
+
+  modelUpdateWireApi(params?: unknown): Promise<unknown> {
+    return this.call("_atelier/model/update_wire_api", params);
+  }
+
+  modelProviderOverrideList(params?: unknown): Promise<unknown> {
+    return this.call("_atelier/model_provider_override/list", params);
+  }
+
+  modelProviderOverrideSet(params?: unknown): Promise<unknown> {
+    return this.call("_atelier/model_provider_override/set", params);
+  }
+
+  modelProviderOverrideDelete(params?: unknown): Promise<unknown> {
+    return this.call("_atelier/model_provider_override/delete", params);
+  }
+
+  modelProviderOverrideTest(params?: unknown): Promise<unknown> {
+    return this.call("_atelier/model_provider_override/test", params);
   }
 }

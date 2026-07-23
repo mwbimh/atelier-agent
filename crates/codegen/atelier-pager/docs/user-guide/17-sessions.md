@@ -15,7 +15,7 @@ A session is a persistent conversation with full history. It includes:
 - Token usage and turn counts
 - Subagent sessions (when enabled)
 
-Sessions are identified by a unique session ID (a UUIDv7 when Atelier generates it; a client may supply its own ID with `-s`) and stored on disk under `~/.atelier/sessions/`. Set `ATELIER_HOME` to override the base directory; when it is unset, Atelier uses `~/.atelier`.
+Sessions are identified by a unique session ID (a UUIDv7 when Atelier generates it; a client may supply its own ID with `-s`) and stored under `$ATELIER_HOME/sessions/` (default: `~/.atelier/sessions/`).
 
 ---
 
@@ -24,14 +24,13 @@ Sessions are identified by a unique session ID (a UUIDv7 when Atelier generates 
 Atelier stores each session in its own directory, grouped by working directory. It URL-encodes the working directory to name the group. When the encoded name exceeds 255 bytes, it instead uses a slug plus a hash and records the original path in a `.cwd` file inside the group.
 
 ```
-~/.atelier/sessions/<encoded-cwd>/<session-id>/
+$ATELIER_HOME/sessions/<encoded-cwd>/<session-id>/
   summary.json            # metadata: summary/title, timestamps, model ID, message counts
   updates.jsonl           # ACP session update stream (conversation + tool calls)
   chat_history.jsonl      # raw chat messages sent to the model
   plan.json               # TODO/task list state
   rewind_points.jsonl     # file snapshots for /rewind undo
   signals.json            # session signals (token usage, tool/turn counters)
-  feedback.jsonl          # user feedback and ratings
   compaction_checkpoints/ # saved state from compaction (manual or auto)
   subagents/              # per-subagent metadata (meta.json); the child sessions live in the normal sessions tree
 ```
@@ -243,7 +242,10 @@ atelier sessions list --limit 50
 atelier sessions search "rate limit"
 ```
 
-`atelier sessions list` shows sessions for the current working directory, grouped by worktree label. Each row lists the session ID, the creation and update dates, the source status, and the summary. `atelier sessions search` combines a local SQLite index with remote results.
+`atelier sessions list` shows sessions for the current working directory,
+grouped by worktree label. Each row lists the session ID, creation and update
+dates, source status, and summary. `atelier sessions search` uses the local
+session index; it does not query a hosted session service.
 
 ---
 

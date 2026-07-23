@@ -201,7 +201,7 @@ pub(in crate::app::dispatch) fn dispatch_fork_resolved(
                 .push_block(RenderBlock::system(parent_marker));
         }
         return vec![Effect::RuntimeExtension {
-            agent_id: parent_id,
+            agent_id: Some(parent_id),
             method: "_atelier/agent/spawn_derived".to_owned(),
             params: serde_json::json!({
                 "sessionId": parent_session_id.to_string(),
@@ -237,14 +237,11 @@ pub(in crate::app::dispatch) fn dispatch_fork_resolved(
         agent.set_voice_mode_available(app.voice_mode_enabled);
         agent.apply_app_scoped_gates(
             app.sharing_enabled,
-            app.usage_visible,
             app.chat_mode,
             app.screen_mode,
             &app.active_announcements,
-            &app.tier_restricted_commands,
         );
         agent.chat_kind = parent_chat_kind;
-        agent.apply_credit_balance(app.credit_balance.clone(), app.auto_topup.clone());
         agent
             .prompt
             .slash_controller
@@ -383,7 +380,6 @@ pub(in crate::app::dispatch) fn dispatch_project_selected(
     let chat_kind = consume_chat_kind(app);
     if let Some(agent) = app.agents.get_mut(&id) {
         agent.chat_kind = chat_kind;
-        agent.apply_credit_balance(app.credit_balance.clone(), app.auto_topup.clone());
     }
     effects.push(Effect::CreateSession {
         agent_id: id,
@@ -573,7 +569,6 @@ pub(in crate::app::dispatch) fn handle_worktree_forked(
         }
         let effective_chat = conversation_entry || app.chat_mode;
         agent.chat_kind = effective_chat;
-        agent.apply_credit_balance(app.credit_balance.clone(), app.auto_topup.clone());
         return vec![Effect::LoadSession {
             agent_id,
             session_id: session_id_str,

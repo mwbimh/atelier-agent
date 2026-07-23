@@ -679,10 +679,6 @@ impl ToolRegistryBuilder {
         b.register::<atelier_build::WebSearchTool>();
         b.register_with_params::<atelier_build::WebFetchTool, atelier_build::web_fetch::WebFetchParams>();
         b.register::<atelier_build::LspTool>();
-        b.register::<atelier_build::ImageGenTool>();
-        b.register::<atelier_build::ImageEditTool>();
-        b.register::<atelier_build::ImageToVideoTool>();
-        b.register::<atelier_build::ReferenceToVideoTool>();
         b.register::<atelier_build::EnterPlanModeTool>();
         b.register::<atelier_build::ExitPlanModeTool>();
         b.register_with_params::<
@@ -1002,34 +998,6 @@ impl ToolRegistryBuilder {
         }
         if let Some(lsp) = ctx.lsp {
             resources.insert(lsp);
-        }
-        if ctx.image_gen_config.has_credentials() {
-            match crate::implementations::atelier_build::image_gen::ImageGenClient::new(
-                &ctx.image_gen_config,
-                ctx.api_key_provider.clone(),
-            ) {
-                Ok(client) => {
-                    let client = client.with_attribution_callback(ctx.attribution_callback.clone());
-                    resources.insert(client);
-                }
-                Err(e) => {
-                    tracing::warn!("Failed to create ImageGenClient: {e}");
-                }
-            }
-        }
-        if ctx.video_gen_config.is_enabled() {
-            match crate::implementations::atelier_build::video_gen::VideoGenClient::new(
-                &ctx.video_gen_config,
-                ctx.api_key_provider.clone(),
-            ) {
-                Ok(client) => {
-                    let client = client.with_attribution_callback(ctx.attribution_callback.clone());
-                    resources.insert(client);
-                }
-                Err(e) => {
-                    tracing::warn!("Failed to create VideoGenClient: {e}");
-                }
-            }
         }
         if let crate::implementations::atelier_build::web_fetch::WebFetchConfig::Enabled {
             params,
@@ -2160,8 +2128,7 @@ mod tests {
     #[tokio::test]
     async fn full_toolset_descriptions_render_cleanly() {
         use crate::implementations::atelier_build::{
-            DEPLOY_APP_TOOL_NAME, IMAGE_GEN_TOOL_NAME, IMAGE_TO_VIDEO_TOOL_NAME,
-            REFERENCE_TO_VIDEO_TOOL_NAME, SCHEDULER_CREATE_TOOL_NAME, SCHEDULER_DELETE_TOOL_NAME,
+            SCHEDULER_CREATE_TOOL_NAME, SCHEDULER_DELETE_TOOL_NAME,
         };
         let builder = ToolRegistryBuilder::new();
         let config = ToolServerConfig {
@@ -2181,10 +2148,6 @@ mod tests {
                 "web_search",
                 "web_fetch",
                 "lsp",
-                IMAGE_GEN_TOOL_NAME,
-                DEPLOY_APP_TOOL_NAME,
-                IMAGE_TO_VIDEO_TOOL_NAME,
-                REFERENCE_TO_VIDEO_TOOL_NAME,
                 "monitor",
                 SCHEDULER_CREATE_TOOL_NAME,
                 SCHEDULER_DELETE_TOOL_NAME,

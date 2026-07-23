@@ -2606,9 +2606,11 @@ async fn read_parent_sampling_config_fallback_resolves_compactions_remaining_fro
 /// Drive the REAL precedence path
 /// (`resolve_effective_model_config`, which `handle_subagent_request`
 /// calls) with BOTH an explicit `runtime_override_model` AND a
-/// `[subagents.models]` pin for the same agent present, asserting the
+/// `[subagents.models]` pin for the same custom agent present, asserting the
 /// runtime override wins; with `None` (inherit) the pin wins (precedence
-/// handed back); and an unknown override falls through to the pin.
+/// handed back); and an unknown override fails closed. Built-in names such as
+/// `explore` are intentionally excluded because they are owned by the fixed
+/// Role registry and must not use the legacy pin path.
 #[tokio::test]
 async fn runtime_override_wins_over_subagents_models_pin_in_precedence_path() {
     use atelier_agent::config::ModelOverride;
@@ -2619,18 +2621,19 @@ async fn runtime_override_wins_over_subagents_models_pin_in_precedence_path() {
         let mut ctx = ctx_with_toggle(HashMap::new());
         ctx.available_models = models;
         ctx.subagent_model_overrides = HashMap::from([
-            ("explore".to_string(), "pinned-model".to_string()),
+            ("custom-explore".to_string(), "pinned-model".to_string()),
         ]);
         ctx
     };
     let ctx = build_ctx();
     let (config, model_id) = resolve_effective_model_config(
             Some("goal-model"),
-            "explore",
+            "custom-explore",
             &ModelOverride::Inherit,
             &ctx,
         )
-        .await;
+        .await
+        .expect("runtime override must resolve");
     assert_eq!(
         config.model, "goal-model",
         "the goal runtime override must win over the `[subagents.models]` pin",
@@ -2639,27 +2642,27 @@ async fn runtime_override_wins_over_subagents_models_pin_in_precedence_path() {
     let ctx = build_ctx();
     let (config, model_id) = resolve_effective_model_config(
             None,
-            "explore",
+            "custom-explore",
             &ModelOverride::Inherit,
             &ctx,
         )
-        .await;
+        .await
+        .expect("configured model pin must resolve");
     assert_eq!(
         config.model, "pinned-model",
         "with no runtime override, the `[subagents.models]` pin wins",
     );
     assert_eq!(model_id.0.as_ref(), "pinned-model");
     let ctx = build_ctx();
-    let (config, _) = resolve_effective_model_config(
-            Some("does-not-exist"),
-            "explore",
-            &ModelOverride::Inherit,
-            &ctx,
-        )
-        .await;
-    assert_eq!(
-        config.model, "pinned-model", "an unknown override falls through to the pin",
-    );
+    let error = resolve_effective_model_config(
+        Some("does-not-exist"),
+        "custom-explore",
+        &ModelOverride::Inherit,
+        &ctx,
+    )
+    .await
+    .expect_err("an explicit unknown runtime override must fail closed");
+    assert!(error.contains("does-not-exist"));
 }
 /// A `fork_context = true` spawn must infer on the parent session model
 /// (`ctx.model_id`) for per-model radix reuse, even when a
@@ -2694,11 +2697,12 @@ async fn fork_context_pins_parent_model_over_overrides() {
     }
     let (config, model_id) = resolve_effective_model_config(
             runtime_override.as_deref(),
-            "general-purpose",
+            "custom-agent",
             &agent_def,
             &ctx,
         )
-        .await;
+        .await
+        .expect("fork-context parent model must resolve");
     assert_eq!(
         config.model, "parent-model",
         "fork_context must pin the parent model over the [subagents.models] pin and agent-def override",
@@ -2707,16 +2711,17 @@ async fn fork_context_pins_parent_model_over_overrides() {
     let ctx = build_ctx();
     let (config, model_id) = resolve_effective_model_config(
             None,
-            "general-purpose",
+            "custom-agent",
             &agent_def,
             &ctx,
         )
-        .await;
+        .await
+        .expect("configured subagent model pin must resolve");
     assert_eq!(
-        config.model, "pinned-model",
-        "without the fork pin the [subagents.models] override wins",
+        config.model, "agentdef-model",
+        "without the fork pin the explicit AgentDefinition override wins",
     );
-    assert_eq!(model_id.0.as_ref(), "pinned-model");
+    assert_eq!(model_id.0.as_ref(), "agentdef-model");
 }
 /// With no explicit pin, the subagent inherits the parent model for any
 /// parent model, with no special-casing (a "heavy"/custom parent
@@ -2848,25 +2853,6 @@ async fn resolve_subagent_agent_definition_unknown_model_falls_through_to_inheri
         .await;
     assert_eq!(config.model, "atelier-4.5");
     assert_eq!(model_id.0.as_ref(), "atelier-4.5");
-}
-#[test]
-fn key_prefix_truncates_to_8_chars() {
-    let key = Some("eyJ0eXAiOiJhbGciOiJSUzI1NiJ9".to_string());
-    assert_eq!(key_prefix(& key), "eyJ0eXAi");
-}
-#[test]
-fn key_prefix_short_key_not_truncated() {
-    let key = Some("abc".to_string());
-    assert_eq!(key_prefix(& key), "abc");
-}
-#[test]
-fn key_prefix_none_returns_placeholder() {
-    assert_eq!(key_prefix(& None), "<none>");
-}
-#[test]
-fn key_prefix_empty_string() {
-    let key = Some(String::new());
-    assert_eq!(key_prefix(& key), "");
 }
 #[test]
 fn non_cursor_persona_injected_as_system_reminder() {

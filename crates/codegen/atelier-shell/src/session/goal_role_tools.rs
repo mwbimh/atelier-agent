@@ -178,7 +178,7 @@ impl RoleToolNames {
         let mut out = String::with_capacity(template.len() + 64);
         let mut rest = template;
         while let Some(open) = rest.find('{') {
-            out.push_str(&rest[..open]);
+            push_lf_normalized(&mut out, &rest[..open]);
             let after = &rest[open + 1..];
             if let Some(close) = after.find('}')
                 && let Some(value) = resolve(&after[..close])
@@ -192,9 +192,23 @@ impl RoleToolNames {
             out.push('{');
             rest = after;
         }
-        out.push_str(rest);
+        push_lf_normalized(&mut out, rest);
         out
     }
+}
+
+/// Append template text with platform-dependent line endings normalized to LF.
+fn push_lf_normalized(out: &mut String, text: &str) {
+    let mut rest = text;
+    while let Some(index) = rest.find('\r') {
+        out.push_str(&rest[..index]);
+        out.push('\n');
+        rest = &rest[index + 1..];
+        if let Some(after_lf) = rest.strip_prefix('\n') {
+            rest = after_lf;
+        }
+    }
+    out.push_str(rest);
 }
 
 /// `true` when `name` is safe to splice verbatim into an LLM prompt: a
@@ -590,6 +604,14 @@ pub(crate) mod tests {
         let out = RoleToolNames::inherit_defaults()
             .apply("{READ_TOOL} {KIND_LENS} {SCRATCH} {PLAN_FILE} {UNKNOWN}");
         assert_eq!(out, "read_file {KIND_LENS} {SCRATCH} {PLAN_FILE} {UNKNOWN}");
+    }
+
+    #[test]
+    fn apply_normalizes_template_newlines_to_lf() {
+        let out =
+            RoleToolNames::inherit_defaults().apply("first\r\n{READ_TOOL}\rthird\nfourth\r\n");
+        assert_eq!(out, "first\nread_file\nthird\nfourth\n");
+        assert!(!out.contains('\r'));
     }
 
     #[test]

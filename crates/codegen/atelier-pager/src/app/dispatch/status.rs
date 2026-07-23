@@ -19,28 +19,6 @@ use crate::scrollback::block::RenderBlock;
 ///
 /// Produces Effect::ShareSession which spawns an async ACP ext request.
 /// On completion, TaskResult::ShareSessionComplete shows the URL in scrollback.
-pub(super) fn dispatch_share_session(app: &mut AppView) -> Vec<Effect> {
-    if !app.sharing_enabled {
-        app.show_toast("Sharing is disabled");
-        return vec![];
-    }
-    let ActiveView::Agent(id) = app.active_view else {
-        return vec![];
-    };
-    let Some(agent) = app.agents.get_mut(&id) else {
-        return vec![];
-    };
-    let Some(session_id) = agent.session.session_id.clone() else {
-        // No active session — error should have been caught by slash command,
-        // but guard here just in case.
-        return vec![];
-    };
-
-    vec![Effect::ShareSession {
-        agent_id: id,
-        session_id,
-    }]
-}
 
 /// Show session info: fetch via atelier/session/info and display in scrollback.
 ///
@@ -71,6 +49,7 @@ pub(super) fn dispatch_show_session_info(app: &mut AppView) -> Vec<Effect> {
 /// Three-state display: Enterprise ZDR, coding data sharing opted out,
 /// or opted in. Labels align with `CODING_DATA_SHARING_CHOICES` in
 /// `settings/defs.rs` and the `coding_data_sharing_toast` format.
+#[cfg(any())]
 pub(super) fn dispatch_show_privacy_info(app: &mut AppView) -> Vec<Effect> {
     let mut lines = Vec::new();
 
@@ -100,12 +79,14 @@ pub(super) fn dispatch_show_privacy_info(app: &mut AppView) -> Vec<Effect> {
 }
 
 /// State-only mutation for `coding_data_sharing`. SHELL-owned.
+#[cfg(any())]
 pub(super) fn set_coding_data_sharing_inner(app: &mut AppView, opted_in: bool) {
     app.coding_data_retention_opt_out = !opted_in;
 }
 
 /// Set coding-data-sharing preference. SHELL-owned, auth-metadata-backed
 /// (persists via ACP ext-request, NOT `~/.atelier/config.toml`).
+#[cfg(any())]
 pub(super) fn set_coding_data_sharing(app: &mut AppView, opted_in: bool) -> Vec<Effect> {
     // ── Guard 1: Enterprise ZDR ──────────────────────────────────────
     if app.is_zdr {
@@ -171,6 +152,7 @@ pub(super) fn set_coding_data_sharing(app: &mut AppView, opted_in: bool) -> Vec<
 /// Format the `Coding data sharing` toast. Asymmetric: opt-in
 /// (privacy-degrading) uses ⚠ + consequence text; opt-out (safe
 /// default) uses ✓. Uses display names from the registry catalog.
+#[cfg(any())]
 pub(super) fn coding_data_sharing_toast(opted_in: bool) -> String {
     let display = display_for_coding_data_sharing_canonical(opted_in);
     if opted_in {
@@ -187,6 +169,7 @@ pub(super) fn coding_data_sharing_toast(opted_in: bool) -> String {
 
 /// Display string for the canonical bool. Keep aligned with
 /// `CODING_DATA_SHARING_CHOICES` in `settings/defs.rs`.
+#[cfg(any())]
 fn display_for_coding_data_sharing_canonical(opted_in: bool) -> &'static str {
     if opted_in { "Opt in" } else { "Opt out" }
 }
@@ -244,47 +227,10 @@ pub(super) fn dispatch_show_context_info(app: &mut AppView) -> Vec<Effect> {
     }]
 }
 
-/// Show credit usage: fetch billing data and display inline.
-///
-/// When the remote settings `atelier_build_usage_redirect_url` flag is set (delivered via
-/// RemoteSettings, targeted at personal-team users), skip the backend fetch and
-/// just point the user at that URL instead. This is a kill switch for the
-/// personal-team billing path while it is unreliable.
-pub(super) fn dispatch_show_usage(app: &mut AppView) -> Vec<Effect> {
-    let ActiveView::Agent(id) = app.active_view else {
-        return vec![];
-    };
-    if let Some(url) = app.usage_billing_redirect_url.clone() {
-        if let Some(agent) = app.agents.get_mut(&id) {
-            agent.scrollback.push_block(RenderBlock::System(
-                crate::scrollback::blocks::SystemMessageBlock::new(format!(
-                    "Please check your usage on {url}"
-                )),
-            ));
-        }
-        return vec![];
-    }
-    // Non-silent fetch: the effect also pulls the auto top-up rule so the
-    // summary can render usage, prepaid credits, and auto top-up together.
-    vec![Effect::FetchBilling {
-        agent_id: id,
-        silent: false,
-    }]
-}
-
 /// Commit a one-line "update available" notice into the active agent's
 /// scrollback. Minimal mode has no welcome screen (the full TUI's update
 /// surface), so the background update check's result is shown here instead
 /// No-op when there is no active agent.
-pub(crate) fn commit_minimal_update_notice(app: &mut AppView, latest_version: &str) {
-    if let ActiveView::Agent(id) = app.active_view
-        && let Some(agent) = app.agents.get_mut(&id)
-    {
-        agent.scrollback.push_block(RenderBlock::system(format!(
-            "Update available: v{latest_version} — restart to apply."
-        )));
-    }
-}
 
 /// `/queue` — commit a read-only list of the queued prompts as a system block.
 /// The text is built by [`crate::app::status_blocks::queue_block_text`]; this
@@ -366,6 +312,7 @@ pub(super) fn notify_session_ready(
 
 // TaskResult handlers.
 
+#[cfg(any())]
 pub(super) fn handle_coding_data_sharing_updated(
     app: &mut AppView,
     agent_id: AgentId,
@@ -391,6 +338,7 @@ pub(super) fn handle_coding_data_sharing_updated(
     vec![]
 }
 
+#[cfg(any())]
 pub(super) fn handle_coding_data_sharing_failed(
     app: &mut AppView,
     agent_id: AgentId,

@@ -2185,30 +2185,6 @@ mod tests {
         assert_eq!(ghost.full_name, "privacy");
     }
 
-    /// Tier-restricted commands stay in the dropdown (discoverability) even
-    /// though `get()` blocks execution — invoking one shows the SuperAtelier
-    /// upsell (covered by the dispatch-level tests).
-    #[test]
-    fn restricted_commands_stay_visible_in_dropdown() {
-        let mut ctrl = SlashController::with_builtins(std::path::PathBuf::from("."));
-        ctrl.registry_mut()
-            .set_restricted_commands(&["usage".to_string()]);
-        assert!(
-            ctrl.registry().get("usage").is_none(),
-            "execution stays blocked"
-        );
-
-        let state = SlashState::default();
-        let models = ModelState::default();
-        ctrl.refresh(&state, "/usa", 4, &models);
-        let snapshot = state.snapshot();
-        let top = snapshot.selection().expect("dropdown open").display.clone();
-        assert_eq!(
-            top, "/usage",
-            "restricted command stays discoverable in the dropdown"
-        );
-    }
-
     /// Gate open → both `/always-approve` and `/auto` offered + dispatchable.
     /// Gate closed → `/auto` hard-hidden; `/always-approve` still offered.
     #[test]

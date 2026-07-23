@@ -565,6 +565,10 @@ pub struct WorkspaceShared {
     /// Local agent sessions install the Worker-backed implementation before
     /// creating their first session; tests retain the LocalFs default.
     pub(crate) session_filesystem: parking_lot::RwLock<Option<Arc<dyn AsyncFileSystem>>>,
+    /// Serializes the asynchronous Worker/filesystem constructor. Callers must
+    /// re-check `session_filesystem` after acquiring this lock so concurrent
+    /// sessions for the same workspace cannot launch duplicate Workers.
+    pub(crate) session_filesystem_init: tokio::sync::Mutex<()>,
 }
 impl WorkspaceShared {
     /// Workspace root directory.
@@ -587,6 +591,10 @@ impl WorkspaceShared {
 
     pub(crate) fn session_filesystem(&self) -> Option<Arc<dyn AsyncFileSystem>> {
         self.session_filesystem.read().clone()
+    }
+
+    pub(crate) fn clear_session_filesystem(&self) {
+        *self.session_filesystem.write() = None;
     }
     /// Resolved `$ATELIER_WORKSPACE_HOME` — the workspace-owned on-disk state root.
     pub fn workspace_home(&self) -> &std::path::Path {

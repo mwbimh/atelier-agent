@@ -1232,6 +1232,40 @@ impl WorkspaceOps {
         };
         handle.set_session_filesystem(filesystem)
     }
+
+    pub fn local_session_filesystem(
+        &self,
+    ) -> Option<std::sync::Arc<dyn crate::file_system::AsyncFileSystem>> {
+        let Self::Local { handle } = self else {
+            return None;
+        };
+        handle.session_filesystem()
+    }
+
+    pub async fn get_or_init_local_session_filesystem<F, Fut>(
+        &self,
+        initialize: F,
+    ) -> WorkspaceResult<std::sync::Arc<dyn crate::file_system::AsyncFileSystem>>
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<
+                Output = WorkspaceResult<std::sync::Arc<dyn crate::file_system::AsyncFileSystem>>,
+            >,
+    {
+        let Self::Local { handle } = self else {
+            return Err(WorkspaceError::HubError(
+                "local session filesystem is unavailable in proxy mode".into(),
+            ));
+        };
+        handle.get_or_init_session_filesystem(initialize).await
+    }
+
+    pub fn local_root_cwd(&self) -> Option<std::path::PathBuf> {
+        let Self::Local { handle } = self else {
+            return None;
+        };
+        handle.root_cwd().ok()
+    }
     /// Construct a proxy-mode ops handle.
     pub fn proxy(harness: Arc<ToolHarness>) -> Self {
         Self::Proxy {
@@ -1635,6 +1669,70 @@ mod tests {
         assert!(
             weak.upgrade().is_none(),
             "end_local_session must drop the toolset (no leaked holder)"
+        );
+    }
+
+    #[tokio::test]
+    async fn concurrent_session_filesystem_initialization_runs_once() {
+        let ops = WorkspaceOps::for_test();
+        let root = ops.local_root_cwd().expect("local root");
+        let starts = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+        let initialize = || {
+            let starts = starts.clone();
+            let root = root.clone();
+            async move {
+                starts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                tokio::task::yield_now().await;
+                Ok(std::sync::Arc::new(crate::file_system::MockFs::new(root))
+                    as std::sync::Arc<dyn crate::file_system::AsyncFileSystem>)
+            }
+        };
+
+        let (first, second) = tokio::join!(
+            ops.get_or_init_local_session_filesystem(initialize),
+            ops.get_or_init_local_session_filesystem(initialize),
+        );
+        let first = first.expect("first filesystem");
+        let second = second.expect("second filesystem");
+
+        assert_eq!(starts.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(std::sync::Arc::ptr_eq(&first, &second));
+    }
+
+    #[tokio::test]
+    async fn last_local_session_releases_the_session_filesystem() {
+        let ops = WorkspaceOps::for_test();
+        let root = ops.local_root_cwd().expect("local root");
+        let filesystem: std::sync::Arc<dyn crate::file_system::AsyncFileSystem> =
+            std::sync::Arc::new(crate::file_system::MockFs::new(root.clone()));
+        ops.set_local_session_filesystem(filesystem.clone())
+            .expect("configure filesystem");
+
+        for session_id in ["first", "second"] {
+            ops.bind_local_session(
+                session_id,
+                root.clone(),
+                xai_hunk_tracker::HunkTrackerHandle::noop(),
+                std::sync::Arc::new(
+                    atelier_tools::registry::types::FinalizedToolset::empty_for_test(),
+                ),
+                None,
+            )
+            .expect("bind session");
+        }
+
+        ops.end_local_session("first");
+        assert!(ops.local_session_filesystem().is_some());
+        ops.end_local_session("second");
+        assert!(
+            ops.local_session_filesystem().is_none(),
+            "the last session must release the Worker-backed filesystem"
+        );
+        assert_eq!(
+            std::sync::Arc::strong_count(&filesystem),
+            1,
+            "WorkspaceOps must not retain the Worker after the last session"
         );
     }
     /// Round-trip serde for HunkActionResponse.

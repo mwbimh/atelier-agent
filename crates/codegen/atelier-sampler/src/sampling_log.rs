@@ -27,7 +27,6 @@ pub fn request_span(
         api_backend = api_backend,
         base_url = base_url,
         auth_type = auth.auth_type,
-        auth_prefix = auth.auth_prefix.as_deref().unwrap_or(""),
         // Recorded from `SamplerConfig` / response usage as the request
         // progresses; `field::Empty` lets callers `record()` them later.
         reasoning_effort = tracing::field::Empty,

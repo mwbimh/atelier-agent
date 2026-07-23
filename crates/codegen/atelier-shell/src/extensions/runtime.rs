@@ -176,9 +176,11 @@ fn protocol_info_document() -> xai_acp_lib::ProtocolInfo {
             crate::extensions::context_snapshot::SNAPSHOT_DELETE,
             crate::extensions::context_snapshot::AGENT_SPAWN_DERIVED,
             crate::extensions::context_snapshot::AGENT_SPAWN_PARALLEL,
+            crate::extensions::session_admin::SESSION_FORK,
             crate::extensions::roles::ROLE_LIST,
             crate::extensions::roles::ROLE_GET,
             crate::extensions::roles::ROLE_UPDATE,
+            crate::extensions::roles::ROLE_UPDATE_PAYLOAD,
             crate::extensions::roles::ROLE_TEST,
             crate::extensions::policy::POLICY_INFO,
             crate::extensions::policy::POLICY_EVALUATE,
@@ -475,17 +477,60 @@ fn trace_get(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
     }))
 }
 
-fn task_value(task: &RuntimeTask, status: Option<RuntimeStatus>) -> serde_json::Value {
+fn pending_interaction_values(
+    pending: &crate::session::pending_interaction::PendingInteractions,
+) -> Vec<serde_json::Value> {
+    let pending = pending.lock().unwrap_or_else(|error| error.into_inner());
+    let mut values = pending
+        .iter()
+        .map(|(tool_call_id, kind)| {
+            serde_json::json!({
+                "toolCallId": tool_call_id,
+                "kind": kind,
+            })
+        })
+        .collect::<Vec<_>>();
+    values.sort_by(|left, right| {
+        left["toolCallId"]
+            .as_str()
+            .cmp(&right["toolCallId"].as_str())
+    });
+    values
+}
+
+fn task_pending_interactions(agent: &MvpAgent, task: &RuntimeTask) -> Vec<serde_json::Value> {
+    agent
+        .session_handle_now(&task.session_id)
+        .map(|handle| pending_interaction_values(&handle.pending_interactions))
+        .unwrap_or_default()
+}
+
+fn effective_task_state(task: &RuntimeTask, has_pending_interactions: bool) -> RuntimeState {
+    if has_pending_interactions {
+        RuntimeState::WaitingForPermission
+    } else {
+        task.state
+    }
+}
+
+fn task_value(
+    agent: &MvpAgent,
+    task: &RuntimeTask,
+    status: Option<RuntimeStatus>,
+) -> serde_json::Value {
     let status = status
         .as_ref()
         .filter(|status| status.request_id.as_deref() == Some(task.id.as_str()));
+    let pending_interactions = task_pending_interactions(agent, task);
+    let needs_input = !pending_interactions.is_empty();
+    let state = effective_task_state(task, needs_input);
     serde_json::json!({
         "taskId": task.id,
         "sessionId": task.session_id,
         "turnId": task.turn_id,
         "agentId": task.agent_id,
         "role": task.role,
-        "state": task.state,
+        "state": state,
         "startedAt": task.started_at_ms,
         "lastEventId": task.last_event_id,
         "attachable": task.attachable,
@@ -495,7 +540,11 @@ fn task_value(task: &RuntimeTask, status: Option<RuntimeStatus>) -> serde_json::
         "timeoutMs": status.and_then(|status| status.timeout_ms),
         "retryCount": status.map(|status| status.retry_count).unwrap_or_default(),
         "cancelSupported": status.is_some_and(|status| status.cancel_supported),
-        "diagnosticMessage": status.and_then(|status| status.diagnostic_message.clone()),
+        "diagnosticMessage": status
+            .and_then(|status| status.diagnostic_message.clone())
+            .or_else(|| task.diagnostic_message.clone()),
+        "needsInput": needs_input,
+        "pendingInteractions": pending_interactions,
     })
 }
 
@@ -513,6 +562,7 @@ fn task_records(agent: &MvpAgent, session_id: Option<&str>) -> Vec<RuntimeTask> 
             continue;
         }
         if let Some(request_id) = status.request_id {
+            let last_event_id = agent.runtime_task_event_bounds(&request_id).1;
             tasks.push(RuntimeTask {
                 id: request_id,
                 session_id: status.session_id.clone(),
@@ -521,8 +571,9 @@ fn task_records(agent: &MvpAgent, session_id: Option<&str>) -> Vec<RuntimeTask> 
                 role: status.role,
                 state: status.state,
                 started_at_ms: status.started_at_ms,
-                last_event_id: 0,
+                last_event_id: last_event_id.unwrap_or_default(),
                 attachable: true,
+                diagnostic_message: status.diagnostic_message.clone(),
             });
         }
     }
@@ -557,7 +608,7 @@ fn task_list(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
     let params: TaskParams = parse_params(args)?;
     let tasks: Vec<_> = task_statuses(agent, params.session_id.as_deref())
         .iter()
-        .map(|task| task_value(task, task_status(agent, task)))
+        .map(|task| task_value(agent, task, task_status(agent, task)))
         .collect();
     to_raw_response(&serde_json::json!({ "tasks": tasks }))
 }
@@ -569,7 +620,7 @@ fn task_get(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
         .ok_or_else(|| acp::Error::invalid_params().data("taskId is required"))?;
     let task = find_task(agent, &task_id);
     to_raw_response(
-        &serde_json::json!({ "taskId": task_id, "task": task.as_ref().map(|task| task_value(task, task_status(agent, task))) }),
+        &serde_json::json!({ "taskId": task_id, "task": task.as_ref().map(|task| task_value(agent, task, task_status(agent, task))) }),
     )
 }
 
@@ -605,8 +656,8 @@ fn task_attach(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
         return Err(acp::Error::invalid_params()
             .data("task does not support attach; inspect its result directly"));
     }
-    let events = agent.runtime_events(
-        Some(&task.session_id),
+    let events = agent.runtime_task_events(
+        &task.id,
         params.after_event_id.unwrap_or_default(),
         params.limit.unwrap_or(256),
     );
@@ -619,15 +670,18 @@ fn task_attach(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
             subscription_cursor,
             params.limit.unwrap_or(256),
         );
-    let (oldest_event_id, latest_event_id) = agent.runtime_event_bounds();
-    let truncated = oldest_event_id.is_some_and(|oldest| after_event_id.saturating_add(1) < oldest);
+    let (oldest_event_id, retained_latest_event_id) = agent.runtime_task_event_bounds(&task.id);
+    let latest_event_id = retained_latest_event_id
+        .or_else(|| (task.last_event_id != 0).then_some(task.last_event_id));
+    let truncated = agent.runtime_task_replay_truncated(&task.id, after_event_id);
     to_raw_response(&serde_json::json!({
-        "task": task_value(&task, task_status(agent, &task)),
+        "task": task_value(agent, &task, task_status(agent, &task)),
         "events": events,
         "attached": true,
         "subscribed": subscribed,
         "subscriptionId": task.id,
         "afterEventId": after_event_id,
+        "cursor": subscription_cursor,
         "subscriptionCursor": subscription_cursor,
         "oldestEventId": oldest_event_id,
         "latestEventId": latest_event_id,
@@ -656,16 +710,17 @@ fn task_cancel(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
             "message": "session not found",
         }));
     };
-    let accepted = handle
-        .cmd_tx
-        .send(SessionCommand::Cancel {
-            cancel_subagents: true,
-            kill_background_tasks: true,
-            rewind_if_pristine: false,
-            trigger: Some("runtime_task_cancel".to_owned()),
-        })
-        .is_ok();
+    let accepted = handle.cmd_tx.send(runtime_task_cancel_command()).is_ok();
     to_raw_response(&serde_json::json!({ "sessionId": session_id, "cancelled": accepted }))
+}
+
+fn runtime_task_cancel_command() -> SessionCommand {
+    SessionCommand::Cancel {
+        cancel_subagents: true,
+        kill_background_tasks: true,
+        rewind_if_pristine: false,
+        trigger: Some("runtime_task_cancel".to_owned()),
+    }
 }
 
 fn task_subscribe(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
@@ -683,13 +738,12 @@ fn task_subscribe(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
         return Err(acp::Error::invalid_params().data("task does not support a live subscription"));
     }
     let after_event_id = params.after_event_id.unwrap_or_default();
-    let events = agent.runtime_events(
-        Some(&session_id),
-        after_event_id,
-        params.limit.unwrap_or(256),
-    );
+    let events = agent.runtime_task_events(&task.id, after_event_id, params.limit.unwrap_or(256));
     let subscription_cursor = replay_cursor(after_event_id, &events);
-    let latest_event_id = agent.runtime_event_bounds().1;
+    let latest_event_id = agent
+        .runtime_task_event_bounds(&task.id)
+        .1
+        .or_else(|| (task.last_event_id != 0).then_some(task.last_event_id));
     let subscribed = !task.state.is_terminal()
         && agent.start_runtime_task_subscription(
             task.id.clone(),
@@ -699,12 +753,13 @@ fn task_subscribe(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
         );
     to_raw_response(&serde_json::json!({
         "sessionId": session_id,
-        "task": task_value(&task, task_status(agent, &task)),
+        "task": task_value(agent, &task, task_status(agent, &task)),
         "subscribed": subscribed,
         "subscriptionId": task.id,
         "afterEventId": after_event_id,
         "events": events,
         "latestEventId": latest_event_id,
+        "cursor": subscription_cursor,
         "subscriptionCursor": subscription_cursor,
         "replayRequired": latest_event_id.is_some_and(|latest| latest > after_event_id),
     }))
@@ -780,6 +835,7 @@ fn session_ids(agent: &MvpAgent) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::session::pending_interaction::PendingKind;
 
     fn task(id: &str, state: RuntimeState, attachable: bool, started_at_ms: u64) -> RuntimeTask {
         RuntimeTask {
@@ -792,6 +848,7 @@ mod tests {
             started_at_ms,
             last_event_id: 0,
             attachable,
+            diagnostic_message: None,
         }
     }
 
@@ -838,6 +895,55 @@ mod tests {
     }
 
     #[test]
+    fn pending_permission_snapshot_is_stable_for_task_attach() {
+        let pending =
+            std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::from([
+                ("tool-b".to_owned(), PendingKind::Question),
+                ("tool-a".to_owned(), PendingKind::Permission),
+            ])));
+
+        let snapshot = pending_interaction_values(&pending);
+
+        assert_eq!(snapshot.len(), 2);
+        assert_eq!(snapshot[0]["toolCallId"], "tool-a");
+        assert_eq!(snapshot[0]["kind"], "permission");
+        assert_eq!(snapshot[1]["toolCallId"], "tool-b");
+        assert_eq!(snapshot[1]["kind"], "question");
+    }
+
+    #[test]
+    fn pending_interaction_restores_waiting_for_permission_after_detach() {
+        let detached = task("task-1", RuntimeState::RunningTool, true, 1);
+
+        assert_eq!(
+            effective_task_state(&detached, true),
+            RuntimeState::WaitingForPermission
+        );
+        assert_eq!(
+            effective_task_state(&detached, false),
+            RuntimeState::RunningTool
+        );
+    }
+
+    #[test]
+    fn runtime_task_cancel_requests_model_subagent_and_tool_tree_shutdown() {
+        let SessionCommand::Cancel {
+            cancel_subagents,
+            kill_background_tasks,
+            rewind_if_pristine,
+            trigger,
+        } = runtime_task_cancel_command()
+        else {
+            panic!("runtime task cancel must dispatch SessionCommand::Cancel");
+        };
+
+        assert!(cancel_subagents);
+        assert!(kill_background_tasks);
+        assert!(!rewind_if_pristine);
+        assert_eq!(trigger.as_deref(), Some("runtime_task_cancel"));
+    }
+
+    #[test]
     fn protocol_info_advertises_version_capabilities_and_methods() {
         let info = protocol_info_document();
 
@@ -860,10 +966,12 @@ mod tests {
             CONTEXT_CURRENT,
             TRACE_GET,
             crate::extensions::roles::ROLE_UPDATE,
+            crate::extensions::roles::ROLE_UPDATE_PAYLOAD,
             crate::extensions::policy::POLICY_EVALUATE,
             crate::extensions::policy::POLICY_CONFIGURE,
             crate::extensions::sandbox::SANDBOX_STATUS,
             crate::extensions::provider::PROVIDER_REFRESH_MODELS,
+            crate::extensions::session_admin::SESSION_FORK,
         ] {
             assert!(
                 info.methods.iter().any(|advertised| advertised == method),

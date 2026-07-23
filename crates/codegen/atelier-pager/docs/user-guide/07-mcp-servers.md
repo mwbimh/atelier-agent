@@ -55,9 +55,9 @@ tool_timeouts = { slow_op = 120 }     # Per-tool timeout overrides, seconds
 > max_output_bytes = 40000
 > ```
 >
-> Precedence: requirements.toml > env > repo `.atelier/config.toml` >
-> user/managed config > default. Repo edits apply to running sessions in that
-> directory via config hot-reload.
+> Precedence: environment variables > repo `.atelier/config.toml` >
+> `$ATELIER_HOME/config.toml` > default. Repo edits apply to running sessions
+> in that directory via config hot-reload.
 
 ### HTTP/SSE Transport (Remote Server)
 

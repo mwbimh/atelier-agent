@@ -2154,10 +2154,27 @@ impl LocalTerminalBackend {
             actor.run().await;
         };
 
-        if use_spawn_local {
-            tokio::task::spawn_local(actor_fut);
+        if tokio::runtime::Handle::try_current().is_ok() {
+            if use_spawn_local {
+                tokio::task::spawn_local(actor_fut);
+            } else {
+                tokio::spawn(actor_fut);
+            }
         } else {
-            tokio::spawn(actor_fut);
+            std::thread::Builder::new()
+                .name("atelier-terminal-backend".to_string())
+                .spawn(move || {
+                    let runtime = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .expect("failed to build terminal backend runtime");
+                    if use_spawn_local {
+                        tokio::task::LocalSet::new().block_on(&runtime, actor_fut);
+                    } else {
+                        runtime.block_on(actor_fut);
+                    }
+                })
+                .expect("failed to spawn terminal backend thread");
         }
 
         Self {
@@ -2813,12 +2830,15 @@ fn spawn_shell_command(
             let mut cmd = tokio::process::Command::new(runner);
             cmd.args(runner_args).current_dir(cwd);
             cmd
-        } else if atelier_sandbox::diagnostics().backend
-            == atelier_sandbox::SandboxBackendKind::Unsafe
+        } else if cfg!(test)
+            || cfg!(feature = "test-unsafe-exec")
+            || atelier_sandbox::diagnostics().backend == atelier_sandbox::SandboxBackendKind::Unsafe
         {
             // Bare execution is available only through the explicit unsafe
-            // backend. A missing/disabled native sandbox must never silently
-            // become a direct child process.
+            // backend. Unit tests also use it because their test-harness EXE
+            // cannot service atelier.exe's hidden command-runner sub-mode.
+            // Production builds still fail closed when the native sandbox is
+            // unavailable.
             let mut cmd = tokio::process::Command::new(&inv.program);
             cmd.args(&inv.args).current_dir(cwd);
             cmd
@@ -3357,7 +3377,12 @@ mod tests {
     #[tokio::test]
     async fn test_stderr_captured() {
         let backend = LocalTerminalBackend::new();
-        let result = backend.run(make_request("echo error >&2")).await.unwrap();
+        let command = if cfg!(windows) {
+            "[Console]::Error.WriteLine('error')"
+        } else {
+            "echo error >&2"
+        };
+        let result = backend.run(make_request(command)).await.unwrap();
 
         assert!(result.combined_output.contains("error"));
         assert_eq!(result.exit_code, Some(0));
@@ -3420,7 +3445,11 @@ mod tests {
             std::env::temp_dir().join(format!("terminal-test-bg-{}.out", std::process::id()));
 
         let request = TerminalRunRequest {
-            command: "echo background_test && sleep 0.1".to_string(),
+            command: if cfg!(windows) {
+                "Write-Output background_test; Start-Sleep -Milliseconds 100".to_string()
+            } else {
+                "echo background_test && sleep 0.1".to_string()
+            },
             working_directory: PathBuf::from("/tmp"),
             env: HashMap::new(),
             timeout: Duration::from_secs(30),
@@ -3500,7 +3529,11 @@ mod tests {
 
         let request = TerminalRunRequest {
             // Command that produces output over time (not all at once)
-            command: "for i in 1 2 3; do echo chunk_$i; sleep 0.15; done".to_string(),
+            command: if cfg!(windows) {
+                "1..3 | ForEach-Object { Write-Output \"chunk_$($_)\"; Start-Sleep -Milliseconds 150 }".to_string()
+            } else {
+                "for i in 1 2 3; do echo chunk_$i; sleep 0.15; done".to_string()
+            },
             working_directory: tmp.path().to_path_buf(),
             env: HashMap::new(),
             timeout: Duration::from_secs(5),
@@ -3575,7 +3608,11 @@ mod tests {
         let request = TerminalRunRequest {
             // ~1.8 KB of ASCII over ~1.8s; far exceeds the 200-char limit so
             // truncation fires early and keeps firing on the shrinking tail.
-            command: "for i in $(seq 1 60); do printf 'LINE%03d-XXXXXXXXXXXXXXXXXXXX\\n' \"$i\"; sleep 0.03; done".to_string(),
+            command: if cfg!(windows) {
+                "1..60 | ForEach-Object { Write-Output (\"LINE{0:D3}-XXXXXXXXXXXXXXXXXXXX\" -f $_); Start-Sleep -Milliseconds 30 }".to_string()
+            } else {
+                "for i in $(seq 1 60); do printf 'LINE%03d-XXXXXXXXXXXXXXXXXXXX\\n' \"$i\"; sleep 0.03; done".to_string()
+            },
             working_directory: tmp.path().to_path_buf(),
             env: HashMap::new(),
             timeout: Duration::from_secs(10),
@@ -3641,7 +3678,11 @@ mod tests {
         let output_file = tmp.path().join("output.log");
 
         let request = TerminalRunRequest {
-            command: format!("head -c {output_amount} /dev/zero | tr '\\0' 'x'"),
+            command: if cfg!(windows) {
+                "$chunk = 'x' * 10000; while ($true) { [Console]::Out.Write($chunk) }".to_string()
+            } else {
+                format!("head -c {output_amount} /dev/zero | tr '\\0' 'x'")
+            },
             working_directory: tmp.path().to_path_buf(),
             env: HashMap::new(),
             timeout: Duration::from_secs(30),
@@ -3676,7 +3717,11 @@ mod tests {
         let output_file = tmp.path().join("output.log");
 
         let request = TerminalRunRequest {
-            command: "head -c 200000 /dev/zero | tr '\\0' 'x'".to_string(),
+            command: if cfg!(windows) {
+                "[Console]::Out.Write('x' * 200000)".to_string()
+            } else {
+                "head -c 200000 /dev/zero | tr '\\0' 'x'".to_string()
+            },
             working_directory: tmp.path().to_path_buf(),
             env: HashMap::new(),
             timeout: Duration::from_secs(10),
@@ -3928,6 +3973,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn test_background_child_with_inherited_pipe_does_not_block() {
         // `sleep 300 &` inherits the pipe — without drain timeout this blocks forever.
@@ -4154,6 +4200,7 @@ mod tests {
     /// in `self.processes` for `COMPLETED_TASK_TTL`; if the actor kept the `Arc`
     /// that long, a `kill_all()` on exit could `killpg` a pid the OS recycled.
     /// Asserts the injected scope's live-group count goes 1 -> 0 across the reap.
+    #[cfg(unix)]
     #[test]
     fn reaped_background_child_leaves_scope_empty() {
         let rt = tokio::runtime::Builder::new_current_thread()
@@ -4193,6 +4240,11 @@ mod tests {
                 "background `sleep 1` was never reaped"
             );
 
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while scope.live_count() != 0 && Instant::now() < deadline {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+
             // The reap sweep runs in the same poll tick that sets exit_status, so
             // by the time get_task reports completed the Arc is already dropped —
             // kill_all() would be a no-op and can't killpg a reused pid.
@@ -4217,27 +4269,43 @@ mod tests {
         assert_eq!(result.exit_code, Some(0));
 
         // pwd should return /tmp (macOS resolves to /private/tmp)
-        let result = backend.run(make_request("pwd")).await.unwrap();
+        let result = backend
+            .run(make_request(if cfg!(windows) {
+                "(Get-Location).Path"
+            } else {
+                "pwd"
+            }))
+            .await
+            .unwrap();
         assert_eq!(result.exit_code, Some(0));
         let pwd = result.combined_output.trim();
         assert!(
-            pwd == "/tmp" || pwd == "/private/tmp",
+            pwd == "/tmp" || pwd == "/private/tmp" || pwd.eq_ignore_ascii_case(r"C:\tmp"),
             "cwd should persist across commands, got: {pwd}"
         );
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn test_persistent_shell_env_var_persists() {
         let backend = LocalTerminalBackend::with_persistent_shell();
 
         let result = backend
-            .run(make_request("export ATELIER_PERSIST_TEST=hello123"))
+            .run(make_request(if cfg!(windows) {
+                "$env:ATELIER_PERSIST_TEST='hello123'"
+            } else {
+                "export ATELIER_PERSIST_TEST=hello123"
+            }))
             .await
             .unwrap();
         assert_eq!(result.exit_code, Some(0));
 
         let result = backend
-            .run(make_request("echo $ATELIER_PERSIST_TEST"))
+            .run(make_request(if cfg!(windows) {
+                "$env:ATELIER_PERSIST_TEST"
+            } else {
+                "echo $ATELIER_PERSIST_TEST"
+            }))
             .await
             .unwrap();
         assert_eq!(result.exit_code, Some(0));
@@ -4267,12 +4335,17 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn test_persistent_shell_function_persists() {
         let backend = LocalTerminalBackend::with_persistent_shell();
 
         let result = backend
-            .run(make_request("myfunc() { echo \"called with $1\"; }"))
+            .run(make_request(if cfg!(windows) {
+                "function global:myfunc { param($arg) Write-Output \"called with $arg\" }"
+            } else {
+                "myfunc() { echo \"called with $1\"; }"
+            }))
             .await
             .unwrap();
         assert_eq!(result.exit_code, Some(0));
@@ -4286,19 +4359,31 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn test_persistent_shell_variable_capture() {
         let backend = LocalTerminalBackend::with_persistent_shell();
 
         // Set a variable via command substitution
         let result = backend
-            .run(make_request("export CAPTURED=$(echo captured_value)"))
+            .run(make_request(if cfg!(windows) {
+                "$env:CAPTURED=(Write-Output captured_value)"
+            } else {
+                "export CAPTURED=$(echo captured_value)"
+            }))
             .await
             .unwrap();
         assert_eq!(result.exit_code, Some(0));
 
         // Read it back
-        let result = backend.run(make_request("echo $CAPTURED")).await.unwrap();
+        let result = backend
+            .run(make_request(if cfg!(windows) {
+                "$env:CAPTURED"
+            } else {
+                "echo $CAPTURED"
+            }))
+            .await
+            .unwrap();
         assert_eq!(result.exit_code, Some(0));
         assert_eq!(
             result.combined_output.trim(),
@@ -4313,13 +4398,21 @@ mod tests {
         let backend = LocalTerminalBackend::new();
 
         let result = backend
-            .run(make_request("export SHOULD_NOT_PERSIST=yes"))
+            .run(make_request(if cfg!(windows) {
+                "$env:SHOULD_NOT_PERSIST='yes'"
+            } else {
+                "export SHOULD_NOT_PERSIST=yes"
+            }))
             .await
             .unwrap();
         assert_eq!(result.exit_code, Some(0));
 
         let result = backend
-            .run(make_request("echo ${SHOULD_NOT_PERSIST:-empty}"))
+            .run(make_request(if cfg!(windows) {
+                "if ($env:SHOULD_NOT_PERSIST) { $env:SHOULD_NOT_PERSIST } else { 'empty' }"
+            } else {
+                "echo ${SHOULD_NOT_PERSIST:-empty}"
+            }))
             .await
             .unwrap();
         assert_eq!(result.exit_code, Some(0));

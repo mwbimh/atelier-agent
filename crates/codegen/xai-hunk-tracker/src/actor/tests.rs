@@ -11,6 +11,23 @@ use crate::events::HunkEvent;
 use crate::types::{FileContentStatus, Hunk, HunkAction, TrackingMode};
 use xai_test_utils::env::env_usize;
 
+#[test]
+fn spawn_is_safe_before_a_tokio_runtime_exists() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let (event_tx, _event_rx) = mpsc::unbounded_channel();
+    let cancellation_token = tokio_util::sync::CancellationToken::new();
+
+    let _handle = HunkTrackerActor::spawn(
+        "sync-session".to_string(),
+        temp_dir.path().to_path_buf(),
+        event_tx,
+        TrackingMode::AgentOnly,
+        cancellation_token.clone(),
+    );
+
+    cancellation_token.cancel();
+}
+
 /// Run a git command in the given directory with deterministic author/committer.
 fn git(dir: &Path, args: &[&str]) -> String {
     xai_test_utils::git::run_git(dir, args)

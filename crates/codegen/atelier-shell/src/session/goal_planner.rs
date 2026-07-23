@@ -1103,10 +1103,9 @@ mod tests {
     /// no mandated capture ritual/oracle, only artifact-exists + shipped units.
     #[test]
     fn planner_prompt_pins_minimal_honest_path_for_unobservable_behavior() {
-        assert!(GOAL_PLANNER_PROMPT_TEMPLATE.contains("MINIMAL honest path"));
-        assert!(
-            GOAL_PLANNER_PROMPT_TEMPLATE.contains("verifier will then\n  rightly call theater")
-        );
+        let rendered = RoleToolNames::inherit_defaults().apply(GOAL_PLANNER_PROMPT_TEMPLATE);
+        assert!(rendered.contains("MINIMAL honest path"));
+        assert!(rendered.contains("verifier will then\n  rightly call theater"));
     }
 
     /// Pin the testable-structure guidance (separate logic from I/O so

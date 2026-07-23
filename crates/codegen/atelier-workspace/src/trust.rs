@@ -414,10 +414,25 @@ fn git_derived_workspace_key(cwd: &Path) -> PathBuf {
 
 /// Whether `path` resolves to the user's home directory.
 pub fn is_home_dir(path: &Path) -> bool {
-    let Some(home) = dirs::home_dir() else {
+    let Some(home) = home_dir() else {
         return false;
     };
     canonicalize_or_owned(path) == canonicalize_or_owned(&home)
+}
+
+/// Resolve the user home used by workspace policy code.
+///
+/// Windows' `dirs::home_dir()` uses the Known Folder API and intentionally
+/// ignores process `HOME`/`USERPROFILE` overrides. Unit tests need a safe,
+/// isolated home without touching the real profile, so test builds accept one
+/// explicit override. Production builds always delegate directly to `dirs`.
+pub(crate) fn home_dir() -> Option<PathBuf> {
+    #[cfg(test)]
+    if let Some(path) = std::env::var_os("ATELIER_TEST_HOME") {
+        return Some(PathBuf::from(path));
+    }
+
+    dirs::home_dir()
 }
 
 /// Whether `key` is too broad to ever be a safe trust root — refused on write
@@ -994,7 +1009,7 @@ mod tests {
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         let home = tempfile::tempdir().unwrap();
-        let _home_guard = crate::TestEnvGuard::set("HOME", home.path());
+        let _home_guard = crate::TestEnvGuard::set("ATELIER_TEST_HOME", home.path());
         git2::Repository::init(home.path()).unwrap();
         let civ = home.path().join("Documents").join("civ");
         std::fs::create_dir_all(&civ).unwrap();

@@ -8,6 +8,76 @@ const STRUCTURED_OUTPUT_TOOL: &str = "StructuredOutput";
 /// Max times the model may re-call `StructuredOutput` with non-conforming args
 /// before the turn ends with the last validation error.
 const STRUCTURED_OUTPUT_MAX_RETRIES: u32 = 3;
+
+fn runtime_context_blocks(
+    request: &atelier_sampling_types::ConversationRequest,
+) -> (Vec<crate::runtime_control::ContextBlock>, u64) {
+    use atelier_sampling_types::{ConversationItem, SyntheticReason};
+
+    let last_user = request.items.iter().rposition(
+        |item| matches!(item, ConversationItem::User(user) if user.synthetic_reason.is_none()),
+    );
+    let mut system = Vec::new();
+    let mut project = Vec::new();
+    let mut runtime = Vec::new();
+    let mut history = Vec::new();
+    let mut tool_results = Vec::new();
+    let mut current_input = Vec::new();
+    for (index, item) in request.items.iter().cloned().enumerate() {
+        match &item {
+            ConversationItem::System(_) => system.push(item),
+            ConversationItem::User(user)
+                if matches!(
+                    user.synthetic_reason,
+                    Some(SyntheticReason::ProjectInstructions)
+                ) =>
+            {
+                project.push(item)
+            }
+            ConversationItem::User(user) if user.synthetic_reason.is_some() => runtime.push(item),
+            ConversationItem::User(_) if Some(index) == last_user => current_input.push(item),
+            ConversationItem::ToolResult(_) => tool_results.push(item),
+            _ => history.push(item),
+        }
+    }
+    let mut blocks = Vec::new();
+    let mut add = |name: &str, source: &str, items: Vec<ConversationItem>| {
+        if items.is_empty() {
+            return;
+        }
+        blocks.push(crate::runtime_control::ContextBlock {
+            name: name.to_owned(),
+            source: source.to_owned(),
+            tokens: xai_chat_state::estimate_conversation_tokens(&items),
+            redacted: true,
+        });
+    };
+    add("System Prompt", "conversation.system", system);
+    add("Project Instructions", "conversation.project", project);
+    add("Runtime Context", "conversation.synthetic", runtime);
+    add("Conversation History", "conversation.history", history);
+    add("Tool Results", "conversation.tool_results", tool_results);
+    add(
+        "Current User Input",
+        "conversation.current_user",
+        current_input,
+    );
+
+    let tool_tokens = serde_json::to_vec(&request.tools)
+        .map(|bytes| (bytes.len() as u64).div_ceil(4))
+        .unwrap_or_default();
+    if tool_tokens > 0 {
+        blocks.push(crate::runtime_control::ContextBlock {
+            name: "Tool Definitions".to_owned(),
+            source: "request.tools".to_owned(),
+            tokens: tool_tokens,
+            redacted: true,
+        });
+    }
+    let input_tokens =
+        xai_chat_state::estimate_conversation_tokens(&request.items).saturating_add(tool_tokens);
+    (blocks, input_tokens)
+}
 /// What a `StructuredOutput` tool call means for the turn (see
 /// `handle_structured_output_tool_call`).
 enum StructuredOutputStep {
@@ -1863,6 +1933,12 @@ impl SessionActor {
                     parameters: schema,
                 });
             }
+            self.record_typed_lifecycle(
+                atelier_hooks::HookEvent::BeforeContextBuild,
+                req_id,
+                None,
+                false,
+            );
             let build_req_start = std::time::Instant::now();
             let request = self
                 .chat_state_handle
@@ -1907,9 +1983,172 @@ impl SessionActor {
             if use_backend_search {
                 request.hosted_tools = self.agent.borrow().hosted_tools().to_vec();
             }
+            let (role, provider) = self
+                .tool_context
+                .runtime_control
+                .as_ref()
+                .and_then(|control| {
+                    control
+                        .lock()
+                        .status(self.session_info.id.0.as_ref())
+                        .map(|status| (status.role, status.provider))
+                })
+                .unwrap_or_else(|| {
+                    (
+                        self.subagent_type_label()
+                            .unwrap_or_else(|| "main".to_owned()),
+                        None,
+                    )
+                });
+            let policy_engine = self.tool_context.runtime_policy.read().clone();
+            let context_decision = crate::extensions::policy::evaluate_runtime_policy(
+                &policy_engine,
+                crate::extensions::policy::PolicyOperation::ContextBuild,
+                Some(&role),
+                provider.as_deref(),
+                None,
+                None,
+                crate::extensions::policy::PolicyGates::default(),
+            );
+            let context_mutated = match &context_decision {
+                atelier_hooks::PolicyDecision::Deny { reason } => {
+                    self.record_typed_lifecycle(
+                        atelier_hooks::HookEvent::AfterContextBuild,
+                        req_id,
+                        Some(&context_decision),
+                        false,
+                    );
+                    return Err(acp::Error::invalid_params().data(reason.clone()));
+                }
+                atelier_hooks::PolicyDecision::Ask { prompt } => {
+                    let approved = self
+                        .request_typed_policy_approval(
+                            atelier_hooks::HookEvent::AfterContextBuild,
+                            req_id,
+                            acp::ToolCallId::new(format!("policy:{req_id}:context")),
+                            "Context policy approval".to_owned(),
+                            prompt,
+                            serde_json::json!({ "role": role }),
+                        )
+                        .await?;
+                    if !approved {
+                        self.record_typed_lifecycle(
+                            atelier_hooks::HookEvent::AfterContextBuild,
+                            req_id,
+                            Some(&context_decision),
+                            false,
+                        );
+                        return Err(acp::Error::invalid_params()
+                            .data("context request rejected by policy approval"));
+                    }
+                    false
+                }
+                decision => crate::extensions::policy::apply_request_decision(
+                    &mut request,
+                    decision.clone(),
+                )
+                .map_err(|reason| acp::Error::invalid_params().data(reason))?,
+            };
+            self.record_typed_lifecycle(
+                atelier_hooks::HookEvent::AfterContextBuild,
+                req_id,
+                Some(&context_decision),
+                context_mutated,
+            );
+
+            if let Some(control) = &self.tool_context.runtime_control {
+                control.lock().update_status(
+                    self.session_info.id.0.as_ref(),
+                    crate::runtime_control::RuntimeState::CheckingPolicy,
+                    crate::runtime_control::now_millis(),
+                    None,
+                );
+            }
+            let provider_decision = crate::extensions::policy::evaluate_runtime_policy(
+                &policy_engine,
+                crate::extensions::policy::PolicyOperation::ProviderRequest,
+                Some(&role),
+                provider.as_deref(),
+                None,
+                None,
+                crate::extensions::policy::PolicyGates::default(),
+            );
+            let provider_mutated = match &provider_decision {
+                atelier_hooks::PolicyDecision::Deny { reason } => {
+                    self.record_typed_lifecycle(
+                        atelier_hooks::HookEvent::BeforeProviderRequest,
+                        req_id,
+                        Some(&provider_decision),
+                        false,
+                    );
+                    return Err(acp::Error::invalid_params().data(reason.clone()));
+                }
+                atelier_hooks::PolicyDecision::Ask { prompt } => {
+                    let approved = self
+                        .request_typed_policy_approval(
+                            atelier_hooks::HookEvent::BeforeProviderRequest,
+                            req_id,
+                            acp::ToolCallId::new(format!("policy:{req_id}:provider")),
+                            "Provider request approval".to_owned(),
+                            prompt,
+                            serde_json::json!({ "role": role, "provider": provider }),
+                        )
+                        .await?;
+                    if !approved {
+                        self.record_typed_lifecycle(
+                            atelier_hooks::HookEvent::BeforeProviderRequest,
+                            req_id,
+                            Some(&provider_decision),
+                            false,
+                        );
+                        return Err(acp::Error::invalid_params()
+                            .data("provider request rejected by policy approval"));
+                    }
+                    false
+                }
+                decision => crate::extensions::policy::apply_request_decision(
+                    &mut request,
+                    decision.clone(),
+                )
+                .map_err(|reason| acp::Error::invalid_params().data(reason))?,
+            };
+            let dlp_mutated =
+                crate::extensions::policy::redact_outbound_request(&policy_engine, &mut request)
+                    .map_err(|reason| acp::Error::invalid_params().data(reason))?;
+            self.record_typed_lifecycle(
+                atelier_hooks::HookEvent::BeforeProviderRequest,
+                req_id,
+                Some(&provider_decision),
+                provider_mutated || dlp_mutated,
+            );
+
+            if let Some(control) = &self.tool_context.runtime_control {
+                let sampling_config = self.reconstruct_full_config().await;
+                let client = atelier_sampler::SamplingClient::new(sampling_config)
+                    .map_err(|error| acp::Error::internal_error().data(error.to_string()))?;
+                let wire_body = client
+                    .preview_streaming_request_body(request.clone())
+                    .map_err(|error| acp::Error::internal_error().data(error.to_string()))?;
+                let (context_blocks, input_tokens) = runtime_context_blocks(&request);
+                control.lock().set_request_context(
+                    req_id,
+                    context_blocks,
+                    input_tokens,
+                    request.max_output_tokens.map(u64::from),
+                    wire_body,
+                );
+            }
             self.emit_event(crate::session::events::Event::PhaseChanged {
                 phase: crate::session::events::Phase::WaitingForModel,
             });
+            if let Some(control) = &self.tool_context.runtime_control {
+                control.lock().update_status(
+                    self.session_info.id.0.as_ref(),
+                    crate::runtime_control::RuntimeState::WaitingForProvider,
+                    crate::runtime_control::now_millis(),
+                    None,
+                );
+            }
             self.observability_bridge
                 .emit(
                     xai_tool_protocol::session_event::SessionEvent::PhaseChanged {
@@ -1972,6 +2211,12 @@ impl SessionActor {
                 }
             };
             auth_retry_schedule.reset();
+            self.record_typed_lifecycle(
+                atelier_hooks::HookEvent::AfterProviderResponse,
+                req_id,
+                None,
+                false,
+            );
             let model_elapsed_ms = model_timer.elapsed().as_millis() as u64;
             let usage = response.usage.as_ref();
             let prompt_tokens = usage.map(|u| u.prompt_tokens);
@@ -2264,6 +2509,14 @@ impl SessionActor {
             self.emit_event(crate::session::events::Event::PhaseChanged {
                 phase: crate::session::events::Phase::ToolExecution,
             });
+            if let Some(control) = &self.tool_context.runtime_control {
+                control.lock().update_status(
+                    self.session_info.id.0.as_ref(),
+                    crate::runtime_control::RuntimeState::RunningTool,
+                    crate::runtime_control::now_millis(),
+                    None,
+                );
+            }
             self.observability_bridge
                 .emit(
                     xai_tool_protocol::session_event::SessionEvent::PhaseChanged {

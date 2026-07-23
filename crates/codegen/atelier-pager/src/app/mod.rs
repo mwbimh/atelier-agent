@@ -41,7 +41,6 @@ pub mod session_startup;
 mod signal_handler;
 pub mod status_blocks;
 pub mod subagent;
-pub mod subscription;
 mod turn_completion;
 mod xt_filter;
 pub(crate) use crate::terminal::kitty_flags_pushed;
@@ -57,7 +56,6 @@ use crossterm::execute;
 use crossterm::terminal::{
     self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen, SetTitle,
 };
-pub(crate) use dispatch::{FREE_USAGE_USER_MESSAGE, acp_error_is_free_usage_exhausted};
 pub use foreign_sessions::ForeignScanCoordinator;
 pub(crate) use foreign_sessions::{
     badge_for_picker_source, foreign_tool_display_label, is_foreign_picker_source,
@@ -383,25 +381,6 @@ pub fn resolve_use_leader(
 ///
 /// Remote settings come from the product settings API and contain `leader_mode`,
 /// announcements, etc.  Waits up to 2 s for the background thread.
-pub fn join_early_prefetch(
-    handle: Option<atelier_shell::agent::models::EarlyPrefetchHandle>,
-) -> Option<atelier_shell::util::config::RemoteSettings> {
-    let handle = handle?;
-    if handle.is_finished() {
-        return match handle.join() {
-            Ok(r) => r.settings,
-            Err(_) => None,
-        };
-    }
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let _ = tx.send(handle.join());
-    });
-    match rx.recv_timeout(std::time::Duration::from_secs(2)) {
-        Ok(Ok(r)) => r.settings,
-        _ => None,
-    }
-}
 /// First non-blank of CLI > env > config (precedence + blank-skip). `None` →
 /// nothing set; `acp::initialize` canonicalizes and applies the default.
 fn resolve_hunk_tracker_mode(
@@ -424,25 +403,19 @@ fn resolve_hunk_tracker_mode(
 ///
 /// Returns `Ok(true)` when the user accepted a pending update. The caller
 /// should print a message telling the user to relaunch `atelier`.
-pub async fn run(
-    args: PagerArgs,
-    bg_update_rx: Option<
-        tokio::sync::oneshot::Receiver<Option<atelier_update::auto_update::UpdateAvailable>>,
-    >,
-) -> anyhow::Result<bool> {
+pub async fn run(args: PagerArgs) -> anyhow::Result<bool> {
     xai_tty_utils::redirect_native_stderr();
     let screen_mode_override = screen_mode_relaunch::take_screen_mode_env_override();
     let cancel = CancellationToken::new();
     let startup_start = std::time::Instant::now();
     // Model discovery is Provider-owned in Atelier. Do not run the removed
     // vendor auth refresh or remote model/settings prefetch during startup.
-    let early_prefetch = None;
     atelier_shell::agent::mvp_agent::warm_async_http_client();
     tokio::task::spawn_blocking(|| {});
     if let Ok(cwd) = std::env::current_dir() {
         crate::git_info::populate_from_cwd_async(cwd);
     }
-    let remote_settings = join_early_prefetch(early_prefetch);
+    let remote_settings: Option<atelier_shell::util::config::RemoteSettings> = None;
     atelier_shell::util::config::cache_remote_auto_mode(
         remote_settings.as_ref().and_then(|s| s.auto_mode.clone()),
     );
@@ -692,7 +665,6 @@ pub async fn run(
         remote_settings,
         term_state,
         materialized,
-        bg_update_rx,
     )
     .await;
     crate::unified_log::flush_blocking().await;
@@ -1722,7 +1694,7 @@ mod tests {
         assert_eq!(
             first_5,
             vec![
-                "Atelier TUI",
+                "Atelier terminal coding agent",
                 "",
                 "Usage: atelier [OPTIONS] [PROMPT] [COMMAND]",
                 "",

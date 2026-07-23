@@ -14,6 +14,180 @@ use atelier_hooks::{
 use serde::Deserialize;
 use std::str::FromStr;
 
+/// Apply configured DLP redactions to the exact conversation request that is
+/// subsequently submitted to the sampler. This deliberately runs before both
+/// Inspector serialization and `SamplerHandle::submit`, so diagnostics and the
+/// provider see the same sanitized payload.
+pub(crate) fn redact_outbound_request(
+    engine: &PolicyEngine,
+    request: &mut atelier_sampling_types::ConversationRequest,
+) -> Result<bool, String> {
+    if engine.redaction_rules().is_empty() {
+        return Ok(false);
+    }
+
+    let mut changed = false;
+    for item in &mut request.items {
+        let mut value = serde_json::to_value(&*item)
+            .map_err(|error| format!("failed to inspect outbound conversation item: {error}"))?;
+        let mut item_changed = false;
+        redact_json_value(engine, &mut value, None, &mut item_changed);
+        if item_changed {
+            *item = serde_json::from_value(value).map_err(|error| {
+                format!("DLP redaction produced an invalid conversation item: {error}")
+            })?;
+            changed = true;
+        }
+    }
+    for tool in &mut request.tools {
+        if let Some(description) = tool.description.as_mut() {
+            changed |= redact_string(engine, description);
+        }
+        redact_json_value(engine, &mut tool.parameters, None, &mut changed);
+    }
+    for hosted_tool in &mut request.hosted_tools {
+        if let atelier_sampling_types::HostedTool::WebSearch {
+            allowed_domains: Some(domains),
+        } = hosted_tool
+        {
+            for domain in domains {
+                changed |= redact_string(engine, domain);
+            }
+        }
+    }
+    if let Some(schema) = request.json_schema.as_mut() {
+        redact_json_value(engine, schema, None, &mut changed);
+    }
+    Ok(changed)
+}
+
+fn redact_string(engine: &PolicyEngine, value: &mut String) -> bool {
+    let redacted = engine.redact_text(value);
+    if redacted == *value {
+        return false;
+    }
+    *value = redacted;
+    true
+}
+
+fn redact_json_value(
+    engine: &PolicyEngine,
+    value: &mut serde_json::Value,
+    field: Option<&str>,
+    changed: &mut bool,
+) {
+    match value {
+        serde_json::Value::String(text) => {
+            if field == Some("arguments")
+                && let Ok(mut arguments) = serde_json::from_str::<serde_json::Value>(text)
+            {
+                let mut arguments_changed = false;
+                redact_json_value(engine, &mut arguments, None, &mut arguments_changed);
+                if arguments_changed && let Ok(serialized) = serde_json::to_string(&arguments) {
+                    *text = serialized;
+                    *changed = true;
+                }
+                return;
+            }
+            // Keep protocol discriminators and linkage identifiers stable.
+            // Redacting these can make an otherwise safe request impossible to
+            // deserialize or can detach a tool result from its tool call.
+            if matches!(
+                field,
+                Some(
+                    "type"
+                        | "role"
+                        | "status"
+                        | "id"
+                        | "call_id"
+                        | "tool_call_id"
+                        | "tool_type"
+                        | "name"
+                        | "model_id"
+                        | "model_fingerprint"
+                        | "encrypted_content"
+                )
+            ) {
+                return;
+            }
+            if field == Some("url") && text.starts_with("data:") {
+                return;
+            }
+            *changed |= redact_string(engine, text);
+        }
+        serde_json::Value::Array(values) => {
+            for value in values {
+                redact_json_value(engine, value, field, changed);
+            }
+        }
+        serde_json::Value::Object(values) => {
+            for (key, value) in values {
+                redact_json_value(engine, value, Some(key.as_str()), changed);
+            }
+        }
+        serde_json::Value::Null | serde_json::Value::Bool(_) | serde_json::Value::Number(_) => {}
+    }
+}
+
+/// Apply the mutable decisions supported at context/provider request
+/// boundaries. `Modify` replaces the most recent user text while preserving
+/// attached images; `AddContext` appends policy-controlled system context.
+pub(crate) fn apply_request_decision(
+    request: &mut atelier_sampling_types::ConversationRequest,
+    decision: PolicyDecision,
+) -> Result<bool, String> {
+    use atelier_sampling_types::{ContentPart, ConversationItem};
+
+    match decision {
+        PolicyDecision::Allow => Ok(false),
+        PolicyDecision::Modify { replacement } => {
+            let replacement = std::sync::Arc::<str>::from(replacement);
+            let user_index = request
+                .items
+                .iter()
+                .rposition(|item| {
+                    matches!(item, ConversationItem::User(user) if user.synthetic_reason.is_none())
+                })
+                .or_else(|| {
+                    request
+                        .items
+                        .iter()
+                        .rposition(|item| matches!(item, ConversationItem::User(_)))
+                });
+            if let Some(user) = user_index.and_then(|index| match &mut request.items[index] {
+                ConversationItem::User(user) => Some(user),
+                _ => None,
+            }) {
+                let mut replaced = false;
+                user.content.retain_mut(|part| match part {
+                    ContentPart::Text { text } if !replaced => {
+                        *text = replacement.clone();
+                        replaced = true;
+                        true
+                    }
+                    ContentPart::Text { .. } => false,
+                    ContentPart::Image { .. } => true,
+                });
+                if !replaced {
+                    user.content
+                        .insert(0, ContentPart::Text { text: replacement });
+                }
+            } else {
+                request
+                    .items
+                    .push(ConversationItem::user(replacement.to_string()));
+            }
+            Ok(true)
+        }
+        PolicyDecision::AddContext { context } => {
+            request.items.push(ConversationItem::system(context));
+            Ok(true)
+        }
+        PolicyDecision::Deny { reason } => Err(reason),
+        PolicyDecision::Ask { prompt } => Err(format!("approval required: {prompt}")),
+    }
+}
+
 pub const POLICY_INFO: &str = "_atelier/policy/info";
 pub const POLICY_EVALUATE: &str = "_atelier/policy/evaluate";
 pub const POLICY_REDACT: &str = "_atelier/policy/redact";
@@ -21,6 +195,7 @@ pub const POLICY_CONFIGURE: &str = "_atelier/policy/configure";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PolicyOperation {
+    ContextBuild,
     ProviderRequest,
     ToolCall,
     FileRead,
@@ -31,6 +206,7 @@ pub(crate) enum PolicyOperation {
 impl PolicyOperation {
     pub(crate) const fn event(self) -> HookEvent {
         match self {
+            Self::ContextBuild => HookEvent::AfterContextBuild,
             Self::ProviderRequest => HookEvent::BeforeProviderRequest,
             Self::ToolCall => HookEvent::BeforeToolCall,
             Self::FileRead => HookEvent::BeforeFileRead,
@@ -110,6 +286,7 @@ fn is_plan_mode_write_tool(tool: &str) -> bool {
 mod tests {
     use super::*;
     use atelier_hooks::PolicyDecision;
+    use atelier_sampling_types::{ConversationItem, ConversationRequest};
 
     #[test]
     fn plan_mode_hard_gate_wins_over_a_matching_non_deny_rule() {
@@ -177,6 +354,95 @@ mod tests {
                 reason: "Plan Mode forbids file writes".to_owned(),
             }
         );
+    }
+
+    #[test]
+    fn outbound_redaction_mutates_the_request_that_will_be_sent() {
+        let engine = PolicyEngine::default()
+            .with_redaction_rule(RedactionRule::literal("secret-value", "[REDACTED]"));
+        let mut request = ConversationRequest::from_items(vec![
+            ConversationItem::system("system secret-value"),
+            ConversationItem::user("user secret-value"),
+            ConversationItem::Assistant(atelier_sampling_types::AssistantItem {
+                content: std::sync::Arc::from("assistant secret-value"),
+                tool_calls: vec![atelier_sampling_types::ToolCall {
+                    id: std::sync::Arc::from("call-1"),
+                    name: "read_file".to_owned(),
+                    arguments: std::sync::Arc::from(r#"{"path":"secret-value"}"#),
+                }],
+                model_id: None,
+                model_fingerprint: None,
+                reasoning_effort: None,
+            }),
+            ConversationItem::tool_result("call-1", "tool secret-value"),
+        ]);
+
+        assert!(redact_outbound_request(&engine, &mut request).unwrap());
+
+        let serialized = request
+            .items
+            .iter()
+            .map(|item| serde_json::to_string(item).unwrap())
+            .collect::<String>();
+        assert!(!serialized.contains("secret-value"), "{serialized}");
+        assert!(serialized.contains("[REDACTED]"), "{serialized}");
+    }
+
+    #[test]
+    fn modify_and_add_context_change_the_real_provider_request() {
+        let mut modified = ConversationRequest::from_items(vec![
+            ConversationItem::system("system"),
+            ConversationItem::user("original user prompt"),
+        ]);
+        apply_request_decision(
+            &mut modified,
+            PolicyDecision::Modify {
+                replacement: "sanitized prompt".to_owned(),
+            },
+        )
+        .unwrap();
+        let modified_json = serde_json::to_string(&modified.items).unwrap();
+        assert!(!modified_json.contains("original user prompt"));
+        assert!(modified_json.contains("sanitized prompt"));
+
+        apply_request_decision(
+            &mut modified,
+            PolicyDecision::AddContext {
+                context: "policy supplied context".to_owned(),
+            },
+        )
+        .unwrap();
+        let modified_json = serde_json::to_string(&modified.items).unwrap();
+        assert!(modified_json.contains("policy supplied context"));
+    }
+
+    #[tokio::test]
+    async fn dlp_redaction_reaches_the_actual_http_request_body() {
+        let server = atelier_test_support::MockInferenceServer::start()
+            .await
+            .expect("mock inference server");
+        let client = atelier_sampler::SamplingClient::new(atelier_sampler::SamplerConfig {
+            base_url: server.url(),
+            model: "test-model".to_owned(),
+            api_backend: atelier_sampling_types::ApiBackend::ChatCompletions,
+            ..Default::default()
+        })
+        .expect("sampling client");
+        let engine = PolicyEngine::default()
+            .with_redaction_rule(RedactionRule::literal("live-secret", "[REDACTED]"));
+        let mut request = ConversationRequest::from_items(vec![ConversationItem::user(
+            "send live-secret to the provider",
+        )]);
+
+        redact_outbound_request(&engine, &mut request).unwrap();
+        client
+            .conversation_collect(request)
+            .await
+            .expect("mock response");
+
+        let body = serde_json::to_string(&server.request_bodies()).unwrap();
+        assert!(!body.contains("live-secret"), "{body}");
+        assert!(body.contains("[REDACTED]"), "{body}");
     }
 }
 
@@ -332,7 +598,7 @@ impl MvpAgent {
     }
 
     pub(crate) fn replace_runtime_policy(&self, engine: PolicyEngine) {
-        *self.policy_engine.borrow_mut() = engine;
+        *self.policy_engine.write() = engine;
     }
 
     pub(crate) fn runtime_policy_decision(
@@ -345,7 +611,7 @@ impl MvpAgent {
         gates: PolicyGates,
     ) -> PolicyDecision {
         evaluate_runtime_policy(
-            &self.policy_engine.borrow(),
+            &self.policy_engine.read(),
             operation,
             role,
             provider,
@@ -376,7 +642,7 @@ impl MvpAgent {
             "path": safe_path,
             "decision": decision.clone(),
         });
-        self.runtime_control.borrow_mut().record_event(
+        self.runtime_control.lock().record_event(
             session_id.map(str::to_owned),
             request_id.map(str::to_owned),
             "policy.evaluated",

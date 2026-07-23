@@ -115,3 +115,4 @@ default-bazel = [
     ]
 default = ["serde"]
 serde = []
+test-unsafe-exec = []

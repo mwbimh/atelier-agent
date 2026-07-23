@@ -809,7 +809,7 @@ const GOAL_TASK_DISCIPLINE_TEMPLATE_LEN: usize = 2142;
 #[test]
 fn goal_task_discipline_template_len_pinned() {
     assert_eq!(
-        GOAL_TASK_DISCIPLINE_TEMPLATE.len(),
+        GOAL_TASK_DISCIPLINE_TEMPLATE.replace("\r\n", "\n").len(),
         GOAL_TASK_DISCIPLINE_TEMPLATE_LEN,
     );
 }
@@ -1453,11 +1453,15 @@ fn render_goal_continuation_directive_substitutes_all_placeholders() {
         "Run targeted tests after every change you make, not\njust at the end.";
     const VERIFICATION_PLAN_LINE: &str = "Before calling `{goal_tool}(completed: true)`, run the\nplan's `## Verification plan` steps yourself";
     assert!(
-        GOAL_CONTINUATION_DIRECTIVE_TEMPLATE.contains(PROACTIVE_LINE),
+        GOAL_CONTINUATION_DIRECTIVE_TEMPLATE
+            .replace("\r\n", "\n")
+            .contains(PROACTIVE_LINE),
         "directive template must carry the proactive-testing line",
     );
     assert!(
-        GOAL_CONTINUATION_DIRECTIVE_TEMPLATE.contains(VERIFICATION_PLAN_LINE),
+        GOAL_CONTINUATION_DIRECTIVE_TEMPLATE
+            .replace("\r\n", "\n")
+            .contains(VERIFICATION_PLAN_LINE),
         "directive template must point the pre-completion check at the Verification plan",
     );
     assert!(

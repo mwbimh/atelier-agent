@@ -309,6 +309,13 @@ pub(super) async fn run_session(
             .handle_set_session_model(sampling_config, use_concise,
             apply_prompt_override, skip_prompt_rewrite, auto_compact_threshold_percent).
             await; let _ = responds_to.send(updated_model_id); }
+            SessionCommand::RefreshProviderModel { sampling_config,
+            auto_compact_threshold_percent, responds_to } => { let updated_model_id =
+            session.handle_refresh_provider_model(sampling_config,
+            auto_compact_threshold_percent). await; let _ = responds_to
+            .send(updated_model_id); }
+            SessionCommand::GetRequestPayload { responds_to } => { let _ = responds_to
+            .send(session.role_request_payload.borrow().clone()); }
             SessionCommand::RebuildAgentForDefinition { definition, responds_to } => {
             let outcome = session.handle_rebuild_agent_for_definition(definition). await;
             let _ = responds_to.send(outcome); } SessionCommand::OverrideModelName {
@@ -718,9 +725,9 @@ pub(super) async fn run_session(
             tokio::task::spawn_local(async move { let result = s
              .handle_side_question_snapshot(&question, persist).await; let _ = respond_to.send(result); }); }
              SessionCommand::SideQuestionDetailed {
-             snapshot_id, question, append_context, persist, respond_to } => { let s = session.clone();
+             side_query_id, snapshot_id, question, append_context, persist, respond_to } => { let s = session.clone();
              tokio::task::spawn_local(async move { let result = s
-             .handle_side_question_snapshot_detailed_from(snapshot_id.as_deref(), &question,
+             .handle_side_question_snapshot_detailed_from(Some(&side_query_id), snapshot_id.as_deref(), &question,
              append_context.as_deref(), persist)
              .await; let _ = respond_to.send(result); }); }
              SessionCommand::Recap { auto } => { let s = session.clone();

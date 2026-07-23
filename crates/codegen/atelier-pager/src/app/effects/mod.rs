@@ -16,7 +16,9 @@ pub(crate) use helpers::{
     persist_setting, sanitize_user_error,
 };
 use helpers::*;
+use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 use agent_client_protocol as acp;
 use tokio::task::JoinSet;
 use xai_acp_lib::{AcpAgentTx, acp_send};
@@ -31,6 +33,16 @@ use agent::AgentId;
 use crate::unified_log as ulog;
 use atelier_shell::sampling::error::http_status_from_error;
 use atelier_shell::session::{ExtMethodResult, SessionInfoResponse};
+
+const SESSION_STARTUP_TIMEOUT: Duration = Duration::from_secs(90);
+
+async fn session_startup_deadline<T>(
+    future: impl Future<Output = T>,
+    timeout: Duration,
+) -> Result<T, tokio::time::error::Elapsed> {
+    tokio::time::timeout(timeout, future).await
+}
+
 pub(crate) fn execute(
     effect: Effect,
     tasks: &mut JoinSet<TaskResult>,
@@ -79,31 +91,6 @@ pub(crate) fn execute(
                 .spawn(async move {
                     send_logout(&tx).await;
                     TaskResult::LogoutComplete
-                });
-        }
-        Effect::CheckSubscription { verify } => {
-            let tx = acp_tx.clone();
-            tasks.spawn(async move { send_check_subscription(&tx, verify).await });
-        }
-        Effect::CreditLimitRecheck { agent_id } => {
-            let tx = acp_tx.clone();
-            tasks.spawn(async move { send_credit_limit_recheck(&tx, agent_id).await });
-        }
-        Effect::SchedulePaywallCheck => {
-            tasks
-                .spawn(async move {
-                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-                    TaskResult::PaywallCheckTick
-                });
-        }
-        Effect::ScheduleGateVerifyTimeout { generation } => {
-            tasks
-                .spawn(async move {
-                    tokio::time::sleep(crate::app::subscription::GATE_VERIFY_TIMEOUT)
-                        .await;
-                    TaskResult::GateVerifyTimeout {
-                        generation,
-                    }
                 });
         }
         Effect::SwitchAccount { request_seq, method_id, use_oauth } => {
@@ -168,16 +155,15 @@ pub(crate) fn execute(
                         Some(serde_json::json!({ "mcp_server_count" : mcp_count })),
                     );
                     let create_start = std::time::Instant::now();
-                    let result = acp_send(
+                    let result = session_startup_deadline(acp_send(
                             acp::NewSessionRequest::new(session_cwd.clone())
                                 .mcp_servers(mcp_servers)
                                 .meta(meta),
                             &tx,
-                        )
-                        .await;
+                        ), SESSION_STARTUP_TIMEOUT).await;
                     let create_elapsed_ms = create_start.elapsed().as_millis() as u64;
                     match result {
-                        Ok(resp) => {
+                        Ok(Ok(resp)) => {
                             ulog::info(
                                 "session.create.done",
                                 Some(&resp.session_id.0),
@@ -194,7 +180,7 @@ pub(crate) fn execute(
                                 models: resp.models,
                             }
                         }
-                        Err(e) => {
+                        Ok(Err(e)) => {
                             let error = e.to_string();
                             ulog::error(
                                 "session.create.failed",
@@ -210,6 +196,13 @@ pub(crate) fn execute(
                                 error: sanitize_user_error(&error),
                             }
                         }
+                        Err(_) => TaskResult::SessionFailed {
+                            agent_id,
+                            error: format!(
+                                "Session creation timed out after {} seconds. Check /doctor, Provider configuration, MCP startup, and Workspace Worker logs, then retry.",
+                                SESSION_STARTUP_TIMEOUT.as_secs(),
+                            ),
+                        },
                     }
                 });
         }
@@ -460,15 +453,14 @@ pub(crate) fn execute(
                         &session_cwd,
                         &atelier_tools::types::compat::CompatConfig::default(),
                     );
-                    let result = acp_send(
+                    let result = session_startup_deadline(acp_send(
                             acp::NewSessionRequest::new(session_cwd.clone())
                                 .mcp_servers(mcp_servers)
                                 .meta(meta),
                             &tx,
-                        )
-                        .await;
+                        ), SESSION_STARTUP_TIMEOUT).await;
                     match result {
-                        Ok(resp) => {
+                        Ok(Ok(resp)) => {
                             TaskResult::WorktreeSessionCreated {
                                 agent_id,
                                 session_id: resp.session_id,
@@ -477,7 +469,7 @@ pub(crate) fn execute(
                                 models: resp.models,
                             }
                         }
-                        Err(e) => {
+                        Ok(Err(e)) => {
                             TaskResult::WorktreeSessionFailed {
                                 agent_id,
                                 error: sanitize_user_error(
@@ -485,6 +477,13 @@ pub(crate) fn execute(
                                 ),
                             }
                         }
+                        Err(_) => TaskResult::WorktreeSessionFailed {
+                            agent_id,
+                            error: format!(
+                                "Worktree session creation timed out after {} seconds. Check /doctor and retry.",
+                                SESSION_STARTUP_TIMEOUT.as_secs(),
+                            ),
+                        },
                     }
                 });
         }
@@ -515,7 +514,7 @@ pub(crate) fn execute(
                 .spawn(async move {
                     ulog::info("session.load.start", Some(&acp_session_id.0), None);
                     let load_started = std::time::Instant::now();
-                    let result = acp_send(
+                    let result = session_startup_deadline(acp_send(
                             acp::LoadSessionRequest::new(
                                     acp_session_id.clone(),
                                     cwd.clone(),
@@ -523,15 +522,14 @@ pub(crate) fn execute(
                                 .mcp_servers(mcp_servers.clone())
                                 .meta(meta.clone()),
                             &tx,
-                        )
-                        .await;
+                        ), SESSION_STARTUP_TIMEOUT).await;
                     let load_elapsed_ms = load_started.elapsed().as_millis() as u64;
                     tracing::info!(
                         session_id = % acp_session_id.0, elapsed_ms = load_elapsed_ms, ok
-                        = result.is_ok(), "load_session: acp load_session completed"
+                        = matches!(&result, Ok(Ok(_))), "load_session: acp load_session completed"
                     );
                     match result {
-                        Ok(resp) => {
+                        Ok(Ok(resp)) => {
                             ulog::info(
                                 "session.load.done",
                                 Some(&acp_session_id.0),
@@ -553,7 +551,7 @@ pub(crate) fn execute(
                                 running_prompt_id,
                             }
                         }
-                        Err(e) => {
+                        Ok(Err(e)) => {
                             let error = e.to_string();
                             ulog::error(
                                 "session.load.failed",
@@ -570,6 +568,14 @@ pub(crate) fn execute(
                                 error: sanitize_user_error(&error),
                             }
                         }
+                        Err(_) => TaskResult::SessionLoadFailed {
+                            agent_id,
+                            session_id: acp_session_id,
+                            error: format!(
+                                "Session load timed out after {} seconds. Check /doctor and retry.",
+                                SESSION_STARTUP_TIMEOUT.as_secs(),
+                            ),
+                        },
                     }
                 });
         }
@@ -1690,19 +1696,50 @@ pub(crate) fn execute(
             let model_id_str = model_id.0.to_string();
             tasks
                 .spawn(async move {
-                    let result = atelier_shell::util::config::persist_models_default(
-                            Some(model_id_str),
-                            reasoning_effort,
-                        )
+                    let path = atelier_config::atelier_home().join("providers.toml");
+                    let result = match atelier_shell::util::config::set_default_model(String::new())
                         .await
-                        .map_err(|e| e.to_string());
+                    {
+                        Ok(()) => tokio::task::spawn_blocking(move || {
+                                persist_preferred_model_as_main_role(
+                                    &path,
+                                    &model_id_str,
+                                    reasoning_effort,
+                                )
+                            })
+                            .await
+                            .map_err(|e| e.to_string())
+                            .and_then(|result| result),
+                        Err(error) => Err(format!(
+                            "failed to delete legacy models.default before saving roles.main: {error}"
+                        )),
+                    };
                     if let Err(ref e) = result {
-                        tracing::warn!("failed to save default model preference: {e}");
+                        tracing::warn!("failed to save roles.main model preference: {e}");
                     }
                     TaskResult::PreferredModelPersisted {
                         result,
                     }
                 });
+        }
+        Effect::ClearLegacyModelDefaults => {
+            tasks.spawn(async move {
+                let path = atelier_config::atelier_home().join("providers.toml");
+                let result = match atelier_shell::util::config::set_default_model(String::new())
+                    .await
+                {
+                    Ok(()) => tokio::task::spawn_blocking(move || {
+                            clear_legacy_provider_default(&path)
+                        })
+                        .await
+                        .map_err(|error| error.to_string())
+                        .and_then(|result| result),
+                    Err(error) => Err(format!(
+                        "failed to delete legacy models.default: {error}"
+                    )),
+                };
+                TaskResult::PreferredModelPersisted { result }
+            });
         }
         Effect::PersistPermissionMode { canonical, session_id, persist } => {
             let tx = acp_tx.clone();
@@ -2659,66 +2696,6 @@ pub(crate) fn execute(
                     }
                 });
         }
-        Effect::ShareSession { agent_id, session_id } => {
-            use atelier_shell::session::{ShareSessionRequest, ShareSessionResponse};
-            let tx = acp_tx.clone();
-            tasks
-                .spawn(async move {
-                    let request = acp::ExtRequest::new(
-                        "atelier/share_session",
-                        serde_json::value::to_raw_value(
-                                &ShareSessionRequest {
-                                    session_id: session_id.0.to_string(),
-                                },
-                            )
-                            .expect("serialize share session params")
-                            .into(),
-                    );
-                    match acp_send(request, &tx).await {
-                        Ok(resp) => {
-                            let wrapper: serde_json::Value = serde_json::from_str(
-                                    resp.0.get(),
-                                )
-                                .unwrap_or_default();
-                            if let Some(err) = wrapper.get("error") {
-                                let msg = err
-                                    .as_str()
-                                    .map(String::from)
-                                    .unwrap_or_else(|| "unknown error".to_string());
-                                return TaskResult::ShareSessionFailed {
-                                    agent_id,
-                                    error: msg,
-                                };
-                            }
-                            let inner = wrapper.get("result").unwrap_or(&wrapper);
-                            match serde_json::from_value::<
-                                ShareSessionResponse,
-                            >(inner.clone()) {
-                                Ok(share_resp) => {
-                                    TaskResult::ShareSessionComplete {
-                                        agent_id,
-                                        share_url: share_resp.share_url,
-                                    }
-                                }
-                                Err(_) => {
-                                    TaskResult::ShareSessionFailed {
-                                        agent_id,
-                                        error: "couldn't share session".to_string(),
-                                    }
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            TaskResult::ShareSessionFailed {
-                                agent_id,
-                                error: sanitize_user_error(
-                                    &format!("couldn't share session: {e}"),
-                                ),
-                            }
-                        }
-                    }
-                });
-        }
         Effect::FetchSessionAgentName { agent_id, session_id } => {
             let tx = acp_tx.clone();
             tasks
@@ -2883,68 +2860,6 @@ pub(crate) fn execute(
                     }
                 });
         }
-        Effect::SetCodingDataSharing { agent_id, opted_in, rollback_to_opted_in } => {
-            let tx = acp_tx.clone();
-            tasks
-                .spawn(async move {
-                    let request = acp::ExtRequest::new(
-                        "atelier/privacy/setCodingDataRetention",
-                        serde_json::value::to_raw_value(
-                                &serde_json::json!(
-                                    { "codingDataRetentionOptOut" : ! opted_in }
-                                ),
-                            )
-                            .expect("serialize params")
-                            .into(),
-                    );
-                    match acp_send(request, &tx).await {
-                        Ok(resp) => {
-                            let wrapper: serde_json::Value = match serde_json::from_str(
-                                resp.0.get(),
-                            ) {
-                                Ok(v) => v,
-                                Err(e) => {
-                                    return TaskResult::CodingDataSharingFailed {
-                                        agent_id,
-                                        error: format!("malformed response: {e}"),
-                                        rollback_to_opted_in,
-                                    };
-                                }
-                            };
-                            if let Some(err) = wrapper
-                                .get("error")
-                                .filter(|v| !v.is_null())
-                            {
-                                let msg = err
-                                    .as_str()
-                                    .map(String::from)
-                                    .unwrap_or_else(|| err.to_string());
-                                return TaskResult::CodingDataSharingFailed {
-                                    agent_id,
-                                    error: msg,
-                                    rollback_to_opted_in,
-                                };
-                            }
-                            let confirmed_opted_in = wrapper
-                                .get("codingDataRetentionOptOut")
-                                .and_then(|v| v.as_bool())
-                                .map(|opt_out| !opt_out)
-                                .unwrap_or(opted_in);
-                            TaskResult::CodingDataSharingUpdated {
-                                agent_id,
-                                opted_in: confirmed_opted_in,
-                            }
-                        }
-                        Err(e) => {
-                            TaskResult::CodingDataSharingFailed {
-                                agent_id,
-                                error: format!("{e}"),
-                                rollback_to_opted_in,
-                            }
-                        }
-                    }
-                });
-        }
         Effect::ShowContextInfo { agent_id, session_id } => {
             let tx = acp_tx.clone();
             tasks
@@ -3093,7 +3008,11 @@ pub(crate) fn execute(
                     }
                 });
         }
-        Effect::SendBtw { agent_id, session_id, question } => {
+        Effect::SendBtw {
+            agent_id,
+            session_id,
+            request: btw_request,
+        } => {
             let tx = acp_tx.clone();
             tasks
                 .spawn(async move {
@@ -3102,7 +3021,7 @@ pub(crate) fn execute(
                         serde_json::value::to_raw_value(
                                 &serde_json::json!(
                                     { "sessionId" : session_id.0.to_string(), "question" :
-                                    question, "persist": false }
+                                    &btw_request.question, "persist": false }
                                 ),
                             )
                             .expect("serialize btw params")
@@ -3123,9 +3042,12 @@ pub(crate) fn execute(
                                     .unwrap_or_else(|| error.to_string());
                                 return TaskResult::BtwResponse {
                                     agent_id,
-                                    result: Err(sanitize_user_error(&format!(
-                                        "side question failed: {message}"
-                                    ))),
+                                    result: crate::app::actions::BtwTaskResult::Answer {
+                                        request: btw_request,
+                                        result: Err(sanitize_user_error(&format!(
+                                            "side question failed: {message}"
+                                        ))),
+                                    },
                                 };
                             }
                             let answer = result
@@ -3147,47 +3069,99 @@ pub(crate) fn execute(
                             if btw_id.is_empty() || model.is_empty() {
                                 return TaskResult::BtwResponse {
                                     agent_id,
-                                    result: Err(
-                                        "side question response was missing btwId or model"
-                                            .to_owned(),
-                                    ),
+                                    result: crate::app::actions::BtwTaskResult::Answer {
+                                        request: btw_request,
+                                        result: Err(
+                                            "side question response was missing btwId or model"
+                                                .to_owned(),
+                                        ),
+                                    },
                                 };
                             }
                             TaskResult::BtwResponse {
                                 agent_id,
-                                result: Ok(crate::app::actions::BtwResponseData {
-                                    btw_id,
-                                    snapshot_id: result
-                                        .get("snapshotId")
-                                        .and_then(|value| value.as_str())
-                                        .map(str::to_owned),
-                                    answer,
-                                    provider: result
-                                        .get("provider")
-                                        .and_then(|value| value.as_str())
-                                        .map(str::to_owned),
-                                    model,
-                                    wire_api: result
-                                        .get("wireApi")
-                                        .and_then(|value| value.as_str())
-                                        .map(str::to_owned),
-                                    wire_api_source: result
-                                        .get("wireApiSource")
-                                        .and_then(|value| value.as_str())
-                                        .map(str::to_owned),
-                                }),
+                                result: crate::app::actions::BtwTaskResult::Answer {
+                                    request: btw_request,
+                                    result: Ok(crate::app::actions::BtwResponseData {
+                                        btw_id,
+                                        snapshot_id: result
+                                            .get("snapshotId")
+                                            .and_then(|value| value.as_str())
+                                            .map(str::to_owned),
+                                        answer,
+                                        provider: result
+                                            .get("provider")
+                                            .and_then(|value| value.as_str())
+                                            .map(str::to_owned),
+                                        model,
+                                        wire_api: result
+                                            .get("wireApi")
+                                            .and_then(|value| value.as_str())
+                                            .map(str::to_owned),
+                                        wire_api_source: result
+                                            .get("wireApiSource")
+                                            .and_then(|value| value.as_str())
+                                            .map(str::to_owned),
+                                    }),
+                                },
                             }
                         }
                         Err(e) => {
                             TaskResult::BtwResponse {
                                 agent_id,
-                                result: Err(
-                                    sanitize_user_error(&format!("side question failed: {e}")),
-                                ),
+                                result: crate::app::actions::BtwTaskResult::Answer {
+                                    request: btw_request,
+                                    result: Err(sanitize_user_error(&format!(
+                                        "side question failed: {e}"
+                                    ))),
+                                },
                             }
                         }
                     }
                 });
+        }
+        Effect::PersistBtw {
+            agent_id,
+            request: btw_request,
+            params,
+        } => {
+            let tx = acp_tx.clone();
+            tasks.spawn(async move {
+                let request = acp::ExtRequest::new(
+                    "_atelier/btw/persist",
+                    serde_json::value::to_raw_value(&params)
+                        .expect("serialize BTW persist params")
+                        .into(),
+                );
+                let result = match acp_send(request, &tx).await {
+                    Ok(response) => {
+                        let parsed = serde_json::from_str::<serde_json::Value>(response.0.get())
+                            .unwrap_or_default();
+                        if let Some(error) = parsed.get("error") {
+                            let message = error
+                                .get("message")
+                                .and_then(serde_json::Value::as_str)
+                                .map(str::to_owned)
+                                .unwrap_or_else(|| error.to_string());
+                            Err(sanitize_user_error(&message))
+                        } else {
+                            let result = parsed.get("result").unwrap_or(&parsed);
+                            Ok(result
+                                .get("persisted")
+                                .and_then(serde_json::Value::as_bool)
+                                .unwrap_or(false))
+                        }
+                    }
+                    Err(error) => Err(sanitize_user_error(&error.to_string())),
+                };
+                TaskResult::BtwResponse {
+                    agent_id,
+                    result: crate::app::actions::BtwTaskResult::Persist {
+                        request: btw_request,
+                        result,
+                    },
+                }
+            });
         }
         Effect::RuntimeExtension {
             agent_id,
@@ -3221,7 +3195,6 @@ pub(crate) fn execute(
         }
         Effect::RefreshProviderModels {
             agent_id,
-            session_id: _session_id,
             provider_id,
         } => {
             let tx = acp_tx.clone();
@@ -3236,17 +3209,7 @@ pub(crate) fn execute(
                 );
                 let provider_id_for_result = provider_id.clone();
                 let result = match acp_send(request, &tx).await {
-                    Ok(resp) => {
-                        let parsed: serde_json::Value =
-                            serde_json::from_str(resp.0.get()).unwrap_or_default();
-                        let message = parsed
-                            .get("result")
-                            .and_then(|value| value.get("message"))
-                            .and_then(serde_json::Value::as_str)
-                            .unwrap_or("Provider model catalog refreshed")
-                            .to_owned();
-                        Ok(message)
-                    }
+                    Ok(resp) => Ok(provider_refresh_message(resp.0.get())),
                     Err(error) => Err(sanitize_user_error(&format!(
                         "provider model refresh failed: {error}"
                     ))),
@@ -3820,156 +3783,6 @@ pub(crate) fn execute(
                     }
                 });
         }
-        Effect::FetchBilling { agent_id, silent } => {
-            let tx = acp_tx.clone();
-            tasks
-                .spawn(async move {
-                    use atelier_shell::extensions::billing::BillingConfigResponse;
-                    let req = acp::ExtRequest::new(
-                        "atelier/billing",
-                        serde_json::value::to_raw_value(&serde_json::json!({}))
-                            .expect("serialize billing params")
-                            .into(),
-                    );
-                    let parsed = match acp_send(req, &tx).await {
-                        Ok(resp) => {
-                            let wrapper: serde_json::Value = serde_json::from_str(
-                                    resp.0.get(),
-                                )
-                                .unwrap_or_default();
-                            let result = wrapper.get("result").unwrap_or(&wrapper);
-                            serde_json::from_value::<
-                                BillingConfigResponse,
-                            >(result.clone())
-                        }
-                        Err(e) => {
-                            return TaskResult::BillingError {
-                                agent_id,
-                                error: sanitize_user_error(&format!("{e}")),
-                                silent,
-                            };
-                        }
-                    };
-                    let billing = match parsed {
-                        Ok(billing) => billing,
-                        Err(e) => {
-                            return TaskResult::BillingError {
-                                agent_id,
-                                error: format!("Parse error: {e}"),
-                                silent,
-                            };
-                        }
-                    };
-                    let subscription_tier = billing.subscription_tier;
-                    let balance = billing.config.map(credit_balance_from_config);
-                    let autotopup = if has_prepaid_credits(balance.as_ref()) {
-                        fetch_auto_topup_info(&tx).await
-                    } else {
-                        crate::views::credit_bar::AutoTopupFetch::Cleared
-                    };
-                    TaskResult::BillingFetched {
-                        agent_id,
-                        balance,
-                        silent,
-                        subscription_tier,
-                        autotopup,
-                    }
-                });
-        }
-        Effect::RefreshGate => {
-            tasks
-                .spawn(async move {
-                    let settings = tokio::task::spawn_blocking(|| {
-                            if !atelier_shell::util::config::resolve_remote_fetch_enabled() {
-                                return None;
-                            }
-                            let atelier_home = atelier_shell::util::atelier_home::atelier_home();
-                            let store = atelier_shell::auth::read_auth_json(
-                                    &atelier_home.join("auth.json"),
-                                )
-                                .ok()?;
-                            let scope = atelier_shell::auth::AtelierComConfig::default()
-                                .auth_scope();
-                            let auth = atelier_shell::auth::lookup_auth(
-                                &store,
-                                &scope,
-                            )?;
-                            let proxy_base = std::env::var(
-                                    "ATELIER_CLI_CHAT_PROXY_BASE_URL",
-                                )
-                                .unwrap_or_else(|_| {
-                                    atelier_shell::agent::config::CLI_CHAT_PROXY_BASE_URL_DEFAULT
-                                        .to_owned()
-                                });
-                            atelier_shell::remote::fetch_settings_blocking(
-                                &proxy_base,
-                                &auth,
-                                None,
-                            )
-                        })
-                        .await
-                        .ok()
-                        .flatten();
-                    TaskResult::GateRefreshed {
-                        settings,
-                    }
-                });
-        }
-        Effect::FetchAppBilling => {
-            let tx = acp_tx.clone();
-            tasks
-                .spawn(async move {
-                    use atelier_shell::extensions::billing::BillingConfigResponse;
-                    let req = acp::ExtRequest::new(
-                        "atelier/billing",
-                        serde_json::value::to_raw_value(&serde_json::json!({}))
-                            .expect("serialize billing params")
-                            .into(),
-                    );
-                    match acp_send(req, &tx).await {
-                        Ok(resp) => {
-                            let wrapper: serde_json::Value = serde_json::from_str(
-                                    resp.0.get(),
-                                )
-                                .unwrap_or_default();
-                            let result = wrapper.get("result").unwrap_or(&wrapper);
-                            match serde_json::from_value::<
-                                BillingConfigResponse,
-                            >(result.clone()) {
-                                Ok(billing) => {
-                                    let balance = billing
-                                        .config
-                                        .map(|c| crate::views::credit_bar::CreditBalance {
-                                            period_end_display: None,
-                                            ..credit_balance_from_config(c)
-                                        });
-                                    let autotopup = if has_prepaid_credits(balance.as_ref()) {
-                                        fetch_auto_topup_info(&tx).await
-                                    } else {
-                                        crate::views::credit_bar::AutoTopupFetch::Cleared
-                                    };
-                                    TaskResult::AppBillingFetched {
-                                        balance,
-                                        autotopup,
-                                    }
-                                }
-                                Err(_) => {
-                                    TaskResult::AppBillingFetched {
-                                        balance: None,
-                                        autotopup: crate::views::credit_bar::AutoTopupFetch::Unchanged,
-                                    }
-                                }
-                            }
-                        }
-                        Err(_) => {
-                            TaskResult::AppBillingFetched {
-                                balance: None,
-                                autotopup: crate::views::credit_bar::AutoTopupFetch::Unchanged,
-                            }
-                        }
-                    }
-                });
-        }
         Effect::DebounceSuggestions { agent_id, generation } => {
             tasks
                 .spawn(async move {
@@ -4179,9 +3992,7 @@ fn format_session_info(
         .filter(|id| !id.is_empty())
         .map(|id| format!("\n  Conversation ID: {id}"))
         .unwrap_or_default();
-    let version_display = atelier_version::display_version(
-        atelier_update::channel_label(),
-    );
+    let version_display = atelier_version::display_version("");
     format!(
         "{title_line}  Shell version: {version_display}\n  Session ID: {session_id}{conversation_line}\n  Working directory: {cwd}\n  Model: {model_display}{model_hash_line}{backend_line}{sandbox_line}{turn_line}\n  Context: {used} / {total} tokens ({pct}%)"
     )
@@ -4234,6 +4045,14 @@ fn prompt_request_meta(
     }
     serde_json::Value::Object(map)
 }
+
+fn provider_refresh_message(response: &str) -> String {
+    serde_json::from_str::<serde_json::Value>(response)
+        .ok()
+        .and_then(|value| value.get("message").and_then(serde_json::Value::as_str).map(str::to_owned))
+        .unwrap_or_else(|| "Provider model catalog refreshed".to_owned())
+}
+
 /// Build the `atelier/interject` params. The optional structured `content`
 /// (text + images) is omitted ENTIRELY when `None` so the legacy wire
 /// shape stays byte-identical. Extracted from the spawn for testability.

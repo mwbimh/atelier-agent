@@ -89,18 +89,18 @@ In headless runs (`-p`), a tool call that would prompt is cancelled and reported
 
 ### Disabling Always-Approve Mode
 
-Administrators can turn always-approve (`bypassPermissions` / `--always-approve`) off so it cannot be enabled from the CLI, the TUI toggle, or the `/always-approve` command. Set the dedicated key in `requirements.toml`:
+For a machine-local policy, always-approve (`bypassPermissions` /
+`--always-approve`) can be disabled through a local `requirements.toml`:
 
 ```toml
 [ui]
 disable_bypass_permissions_mode = true   # default: false. true = locked off.
 ```
 
-Do not use `permission_mode` for this; it is a user-switchable default, not a lock. The legacy `[ui] yolo = false` key in `requirements.toml` also disables the mode, for backward compatibility; in `config.toml` the same key remains a togglable preference.
-
-The user-level `~/.atelier/requirements.toml` is under the user's control, so a developer can remove the lock by editing that file. For enforcement that users cannot override, deploy the setting in the root-owned system file `/etc/atelier/requirements.toml`.
-
-> **Note:** Atelier honors the permission rules in Claude Code's `managed-settings.json`, but not its `disableBypassPermissionsMode` lock. To disable always-approve in Atelier, use `requirements.toml` as shown above.
+Do not use `permission_mode` for this; it is a user-switchable default, not a
+lock. `$ATELIER_HOME/requirements.toml` is writable by that user. On Unix, a
+root-owned `/etc/atelier/requirements.toml` can provide a machine-level local
+policy. Atelier does not download or refresh these files from a remote service.
 
 ---
 
@@ -179,9 +179,8 @@ Because `deny` always wins, you cannot combine these `allow` rules with a catch-
 
 Rules from the global `~/.atelier/config.toml` and every project `.atelier/config.toml` (from the repo root down to your working directory) are merged into one rule set, alongside any `.claude/settings.json` rules.
 
-Managed configuration deployed by your organization also contributes `[permission]` rules: the system `/etc/atelier/managed_config.toml`, and a user-level copy that Atelier maintains automatically at `~/.atelier/managed_config.toml`. Managed rules merge like rules from any other source, with two properties specific to managed `allow` rules: your own `deny` and `ask` rules win over a managed `allow` (severity ordering), and a catch-all managed `allow` is ignored when always-approve is locked off. For rules that users cannot edit away, use the root-owned system `/etc/atelier/requirements.toml`.
-
-Permission rules from every source are read once, when a session starts. Changes apply to the next session.
+Permission rules from local sources are read when a session starts. Changes
+apply to the next session.
 
 The native `[permission]` section also accepts the compact `allow` / `deny` / `ask` string-array form, using the same rule strings as the `--allow` / `--deny` flags and `.claude/settings.json`:
 

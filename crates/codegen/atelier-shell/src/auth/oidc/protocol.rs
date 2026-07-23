@@ -527,9 +527,9 @@ async fn refresh_tokens_once(
             .ok()
             .and_then(|v| v.get("error")?.as_str().map(str::to_owned));
         tracing::warn!(
-            http_status = status, oauth2_error = ? error_code, rt_prefix = crate
-            ::auth::token_suffix(refresh_token), client_id = % client_id, principal_type
-            = ? principal_type, "OIDC: token refresh HTTP error"
+            http_status = status, oauth2_error = ? error_code,
+            has_refresh_token = !refresh_token.is_empty(), client_id = % client_id,
+            principal_type = ? principal_type, "OIDC: token refresh HTTP error"
         );
         return Err(anyhow::Error::new(OidcError::TokenRefreshHttp {
             status,

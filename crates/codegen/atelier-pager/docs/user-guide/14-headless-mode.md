@@ -21,7 +21,7 @@ Atelier processes the prompt, runs any necessary tools, and prints the result to
 | Flag                    | Description                                           |
 | ----------------------- | ----------------------------------------------------- |
 | `-p, --single <PROMPT>` | The prompt to send (or use `--prompt-json` / `--prompt-file`) |
-| `-m, --model <MODEL>`   | Model to use (e.g., `atelier-build`)              |
+| `-m, --model <MODEL>`   | Configured model key (for example `allm/deepseek-v4-flash`) |
 | `-s, --session-id <ID>` | Create a **new** session with this **UUID** (errors if invalid UUID or already in use under the target session directory; does not resume — use `-r`/`-c`) |
 | `--fork-session`        | With `-r`/`-c`, fork into a new session ID instead of appending to the original |
 | `-r, --resume <ID>`     | Resume an existing session (errors if not found)      |
@@ -40,7 +40,6 @@ Atelier processes the prompt, runs any necessary tools, and prints the result to
 | `--prompt-json <JSON>`  | Prompt as JSON content blocks                         |
 | `--prompt-file <PATH>`  | Prompt from a file                                    |
 | `--verbatim`            | Send prompt exactly as given                          |
-| `--no-auto-update`      | Disable update checks for this session                |
 | `--sandbox <PROFILE>`   | Sandbox profile for filesystem/network access         |
 
 > **Note:** `--tools`, `--disallowed-tools`, `--max-turns`, and `--agents` are headless-only flags. If used in the interactive TUI, a warning is printed and the flag is ignored. `--reasoning-effort`/`--effort`, `--permission-mode`, `--allow`, and `--deny` work in both modes. For more flags (agents, verification, worktrees), see [Additional Headless Flags](#additional-headless-flags).
@@ -147,7 +146,7 @@ When the prompt reached the model, the same object also carries spend fields
     "total_tokens": 50103
   },
   "modelUsage": {
-    "atelier-build": {
+    "allm/deepseek-v4-flash": {
       "inputTokens": 7210,
       "outputTokens": 1893,
       "cacheReadInputTokens": 41000,
@@ -178,10 +177,9 @@ Usage notes:
   increase it. Per-model call counts (including subagents) stay on
   `modelUsage.*.modelCalls`. This is the same counter family as `--max-turns`,
   not a guarantee of exact equality when rounds lack usage or hit gates.
-- `total_cost_usd` appears only when the server reported a **complete** cost.
-  Absence means unreported or incomplete, never free. Cost is stamped for
-  API-key traffic today; pool/OAuth paths often omit it until the server
-  stamps cost. When some calls lacked cost, `cost_is_partial` is true and
+- `total_cost_usd` appears only when the configured Provider reported a
+  **complete** cost. Absence means unreported or incomplete, never free. When
+  some calls lacked cost, `cost_is_partial` is true and
   **all** cost floats are omitted (`total_cost_usd` and every
   `modelUsage.*.costUSD`) so consumers cannot sum model rows into a fake
   complete bill.
@@ -364,7 +362,7 @@ class AtelierChat:
                 "--output-format", "streaming-json" if stream else "json",
                 "--yolo"]
 
-    async def create(self, messages, model="atelier-build", stream=False):
+    async def create(self, messages, model="allm/deepseek-v4-flash", stream=False):
         prompt = messages[-1]["content"] if len(messages) == 1 else "\n".join(
             f"{m['role']}: {m['content']}" for m in messages
         )
@@ -453,15 +451,17 @@ Key environment variables that affect headless mode:
 
 | Variable                        | Description                                                   |
 | ------------------------------- | ------------------------------------------------------------- |
-| `XAI_API_KEY`        | API key for authentication (required when no browser login)   |
 | `ATELIER_HOME`                    | Override config directory (default: `~/.atelier`)                |
 | `ATELIER_LOG_FILE`                | Path to a log file (used verbatim as the path; works in headless and TUI, honors `RUST_LOG`) |
 | `RUST_LOG`                     | Log level filter (e.g. `debug`). Headless logs to stderr.     |
 
-For CI environments without browser access, set `XAI_API_KEY` with an API key from [console.x.ai](https://console.x.ai):
+Provider credentials use the environment variable named in the Provider's
+`env:NAME` credential reference. For example, after configuring Provider
+`allm` with `env:ALLM_API_KEY`:
 
 ```bash
-export XAI_API_KEY="xai-..."
+export ALLM_API_KEY="..."
+export ATELIER_HOME=/srv/atelier-ci
 atelier -p "Run the test suite" --yolo
 ```
 
@@ -472,22 +472,26 @@ atelier -p "Run the test suite" --yolo
 | Code | Meaning                              |
 | ---- | ------------------------------------ |
 | `0`  | Success -- prompt completed normally |
-| `1`  | Error -- authentication failure, network error, or runtime error |
+| `1`  | Error -- Provider, configuration, network, or Runtime failure |
 | `130` | Interrupted by SIGINT (Ctrl+C)                                   |
 | `143` | Terminated by SIGTERM                                            |
 
 ---
 
-## Authentication for Headless Environments
+## Provider Setup for Headless Environments
 
-For headless use, authenticate with one of:
+Headless mode uses the same `$ATELIER_HOME/providers.toml` registry as the TUI.
+Configure and test Providers and Roles once, then make the referenced
+credential environment variables available to the headless process:
 
-- **`XAI_API_KEY`** — simplest for CI. See [Environment Variables](#environment-variables-for-headless) above.
-- **`atelier login --device-auth`** (or `--device-code`) — no browser needed on the target machine.
-  See [Authentication > Device Code Flow](02-authentication.md#device-code-flow).
-- **`atelier login`** — browser-based OAuth2 on machines with a GUI.
+```text
+/provider test allm
+/provider refresh allm
+/roles test main
+```
 
-If you've previously logged in, cached credentials are used automatically.
+There is no product login or cached account token. See
+[Provider Credentials](02-authentication.md).
 
 ---
 
@@ -519,8 +523,8 @@ Atelier stores data in `~/.atelier` (override with `ATELIER_HOME`; see [Environm
 | Path                     | Contents                              |
 | ------------------------ | ------------------------------------- |
 | `config.toml`            | User configuration                    |
-| `auth.json`              | Cached OAuth2/API credentials         |
-| `version.json`           | Version cache for update checks       |
+| `providers.toml`         | Providers, discovered models, model settings, and Roles |
+| `mcp_credentials.json`   | OAuth tokens for user-configured MCP servers |
 | `sessions/`              | Session transcripts (SQLite)          |
 | `memory/`                | Cross-session memory store            |
 | `logs/`                  | Internal log files (for example `unified.jsonl`) |
@@ -533,36 +537,20 @@ Atelier stores data in `~/.atelier` (override with `ATELIER_HOME`; see [Environm
 
 ### Read-Only `~/.atelier`
 
-For containers or CI, mount `~/.atelier` read-only:
-
-- Pre-populate `auth.json` or use `XAI_API_KEY`
-- Session persistence fails silently (ephemeral)
-- Update checks log a warning and skip
+For containers or CI, use a dedicated writable `ATELIER_HOME` so Provider
+state, logs, and sessions remain isolated from the host profile:
 
 ```bash
-export XAI_API_KEY="xai-..."
-export ATELIER_DISABLE_AUTOUPDATER=1
-atelier -p "..." --no-auto-update
+export ATELIER_HOME=/tmp/atelier-ci
+export ALLM_API_KEY="..."
+atelier -p "..."
 ```
-
----
-
-## Update Check Suppression
-
-| Method                          | Scope     |
-| ------------------------------- | --------- |
-| `--no-auto-update`              | Session   |
-| `ATELIER_DISABLE_AUTOUPDATER=1`    | Process   |
-| Non-TTY stderr (auto-detected)  | Automatic |
-| `[cli] auto_update = false`     | Persistent|
-
-Update messages go to **stderr**. Stdout stays clean for `--output-format json`. See also [Environment Variables for Headless](#environment-variables-for-headless).
 
 ---
 
 ## Additional Headless Flags
 
-These flags supplement the [Command-Line Options](#command-line-options) table above. Flags already listed there (`--prompt-json`, `--prompt-file`, `--verbatim`, `--sandbox`, `--no-auto-update`) are not repeated here.
+These flags supplement the [Command-Line Options](#command-line-options) table above. Flags already listed there (`--prompt-json`, `--prompt-file`, `--verbatim`, `--sandbox`) are not repeated here.
 
 | Flag                          | Description                                       |
 | ----------------------------- | ------------------------------------------------- |

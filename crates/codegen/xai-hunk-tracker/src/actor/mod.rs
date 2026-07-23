@@ -206,8 +206,23 @@ impl HunkTrackerActor {
             cancellation_token,
         );
 
-        // Spawn the actor task
-        tokio::spawn(actor.run());
+        // Most callers already run inside Tokio, but workspace construction is a
+        // synchronous API and is also used before a runtime exists. Keep that API
+        // safe by giving the actor a small dedicated runtime in that case.
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn(actor.run());
+        } else {
+            std::thread::Builder::new()
+                .name("atelier-hunk-tracker".to_string())
+                .spawn(move || {
+                    let runtime = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .expect("failed to build hunk tracker runtime");
+                    runtime.block_on(actor.run());
+                })
+                .expect("failed to spawn hunk tracker thread");
+        }
 
         HunkTrackerHandle::new(cmd_tx)
     }

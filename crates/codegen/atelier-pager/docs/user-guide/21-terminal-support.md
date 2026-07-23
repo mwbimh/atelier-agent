@@ -207,4 +207,5 @@ Byobu on screen has best-effort support only. Prefer Byobu on tmux.
 
 ## Still Stuck?
 
-Run `/feedback` to report it.
+Run `/terminal-setup`, then inspect `$ATELIER_HOME/logs/` with `RUST_LOG=debug`
+enabled for the next launch.

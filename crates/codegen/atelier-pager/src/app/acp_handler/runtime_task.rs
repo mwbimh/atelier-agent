@@ -26,18 +26,27 @@ pub(super) fn handle_task_update(notif: &acp::ExtNotification, app: &mut AppView
         return false;
     };
 
-    let session_id = acp::SessionId::new(session_id.to_owned());
-    let Some(matched) = find_session_match(app, &session_id) else {
-        return false;
-    };
-    let agent_id = matched.agent_id();
-    let is_active = is_matched_agent_active(app, agent_id);
     let message = task_update_message(
         task_id,
         state,
         task.get("diagnosticMessage")
             .and_then(serde_json::Value::as_str),
     );
+    let session_id = acp::SessionId::new(session_id.to_owned());
+    let Some(matched) = find_session_match(app, &session_id) else {
+        let Some(message) = message else {
+            return false;
+        };
+        let affected = match app.active_view {
+            ActiveView::Agent(agent_id) => app.agents.contains_key(&agent_id),
+            ActiveView::AgentDashboard => app.dashboard.is_some(),
+            ActiveView::Welcome => false,
+        };
+        app.show_toast(&message);
+        return affected;
+    };
+    let agent_id = matched.agent_id();
+    let is_active = is_matched_agent_active(app, agent_id);
     if let Some(message) = message
         && let Some(agent) = app.agents.get_mut(&agent_id)
     {

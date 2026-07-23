@@ -5,6 +5,292 @@ use super::super::task_result::{
 };
 use super::*;
 
+#[test]
+fn runtime_attach_replay_is_shown_and_cursor_is_saved() {
+    let mut app = test_app_with_agent();
+    let agent_id = AgentId(0);
+
+    let effects = dispatch(
+        Action::TaskComplete(TaskResult::RuntimeExtensionComplete {
+            agent_id: Some(agent_id),
+            method: "_atelier/task/attach".into(),
+            response: r#"{"task":{"taskId":"task-1","sessionId":"test-session"},"events":[{"eventId":4,"kind":"runtime.task_started","details":{"state":"running_tool"}}],"subscriptionCursor":4,"gap":false,"truncated":false}"#.into(),
+        }),
+        &mut app,
+    );
+
+    assert!(effects.is_empty());
+    let replay = app.agents[&agent_id]
+        .scrollback
+        .iter_entries()
+        .filter_map(|(_, entry)| match &entry.block {
+            RenderBlock::System(block) => Some(block.text.as_str()),
+            _ => None,
+        })
+        .last()
+        .expect("runtime attach replay block");
+    assert!(replay.contains("runtime.task_started"));
+    assert_eq!(
+        super::super::task_result::remembered_task_cursor(agent_id, "task-1"),
+        Some(4)
+    );
+}
+
+#[test]
+fn next_attach_request_uses_the_saved_cursor() {
+    use crate::slash::command::{CommandExecCtx, CommandResult, SlashCommand};
+    use crate::slash::commands::attach::AttachCommand;
+
+    let mut app = test_app_with_agent();
+    let agent_id = AgentId(0);
+    dispatch(
+        Action::TaskComplete(TaskResult::RuntimeExtensionComplete {
+            agent_id: Some(agent_id),
+            method: "_atelier/task/attach".into(),
+            response: r#"{"task":{"taskId":"cursor-task","sessionId":"test-session"},"events":[{"eventId":9,"kind":"runtime.task_started"}],"subscriptionCursor":9}"#.into(),
+        }),
+        &mut app,
+    );
+
+    let models = crate::acp::model_state::ModelState::default();
+    let bundle = crate::app::bundle::BundleState::default();
+    let session_id = agent_client_protocol::SessionId::new("test-session");
+    let mut ctx = CommandExecCtx {
+        models: &models,
+        session_id: Some(&session_id),
+        bundle_state: &bundle,
+        screen_mode: crate::app::ScreenMode::Inline,
+        pager_state: crate::settings::PagerLocalSnapshot::default(),
+    };
+    let CommandResult::Action(Action::RuntimeExtension { params, .. }) =
+        AttachCommand.run(&mut ctx, "cursor-task")
+    else {
+        panic!("expected runtime attach action");
+    };
+
+    assert_eq!(params["afterEventId"], 9);
+}
+
+#[test]
+fn cross_session_attach_replay_is_written_to_the_target_session() {
+    let mut app = test_app_with_agent();
+    let source_id = AgentId(0);
+
+    let effects = dispatch(
+        Action::TaskComplete(TaskResult::RuntimeExtensionComplete {
+            agent_id: Some(source_id),
+            method: "_atelier/task/attach".into(),
+            response: r#"{"task":{"taskId":"remote-task","sessionId":"remote-session"},"events":[{"eventId":4,"kind":"runtime.remote_replay"}],"subscriptionCursor":4}"#.into(),
+        }),
+        &mut app,
+    );
+
+    assert!(matches!(
+        effects.as_slice(),
+        [Effect::LoadSession { session_id, .. }] if session_id == "remote-session"
+    ));
+    let source_has_replay = app.agents[&source_id]
+        .scrollback
+        .iter_entries()
+        .any(|(_, entry)| matches!(&entry.block, RenderBlock::System(block) if block.text.contains("runtime.remote_replay")));
+    assert!(
+        !source_has_replay,
+        "replay must not be written to the source session"
+    );
+
+    let target = app
+        .agents
+        .values()
+        .find(|agent| {
+            agent
+                .session
+                .session_id
+                .as_ref()
+                .is_some_and(|session_id| session_id.0.as_ref() == "remote-session")
+        })
+        .expect("target session view");
+    assert!(target
+        .scrollback
+        .iter_entries()
+        .any(|(_, entry)| matches!(&entry.block, RenderBlock::System(block) if block.text.contains("runtime.remote_replay"))));
+}
+
+#[test]
+fn detach_rejection_does_not_render_success() {
+    let mut app = test_app_with_agent();
+    let agent_id = AgentId(0);
+
+    let effects = dispatch(
+        Action::TaskComplete(TaskResult::RuntimeExtensionComplete {
+            agent_id: Some(agent_id),
+            method: "_atelier/task/detach".into(),
+            response: r#"{"detached":false,"message":"task is already finished"}"#.into(),
+        }),
+        &mut app,
+    );
+
+    assert!(effects.is_empty());
+    let message = app.agents[&agent_id]
+        .scrollback
+        .iter_entries()
+        .filter_map(|(_, entry)| match &entry.block {
+            RenderBlock::System(block) => Some(block.text.as_str()),
+            _ => None,
+        })
+        .last()
+        .expect("detach result block");
+    assert!(message.contains("task is already finished"));
+    assert!(!message.contains("execution continues in the background"));
+}
+
+#[test]
+fn provider_models_refresh_result_without_active_agent_is_safe() {
+    let mut app = test_app();
+
+    let effects = dispatch(
+        Action::TaskComplete(TaskResult::ProviderModelsRefreshed {
+            agent_id: None,
+            provider_id: "allm".into(),
+            result: Ok("Provider model catalog refreshed".into()),
+        }),
+        &mut app,
+    );
+
+    assert!(effects.is_empty());
+}
+
+#[test]
+fn dashboard_runtime_task_results_are_kept_in_the_copyable_composer() {
+    let mut app = test_app();
+    app.active_view = ActiveView::AgentDashboard;
+    app.dashboard = Some(crate::views::dashboard::DashboardState::new());
+    let task_id = "task-019f95b4-2ef1-7c9a-a14f-9c21f5a0f817";
+
+    let effects = dispatch(
+        Action::TaskComplete(TaskResult::RuntimeExtensionComplete {
+            agent_id: None,
+            method: "_atelier/task/list".into(),
+            response: serde_json::json!({
+                "tasks": [{
+                    "taskId": task_id,
+                    "sessionId": "session-1",
+                    "role": "main",
+                    "state": "running_model",
+                    "attachable": true,
+                }]
+            })
+            .to_string(),
+        }),
+        &mut app,
+    );
+
+    assert!(effects.is_empty());
+    let dashboard = app.dashboard.as_ref().expect("dashboard");
+    assert!(dashboard.dispatch.text().contains(task_id));
+    assert!(dashboard.error_toast.is_none());
+}
+
+#[test]
+fn dashboard_runtime_extension_errors_are_kept_in_the_copyable_composer() {
+    let mut app = test_app();
+    app.active_view = ActiveView::AgentDashboard;
+    app.dashboard = Some(crate::views::dashboard::DashboardState::new());
+
+    let effects = dispatch(
+        Action::TaskComplete(TaskResult::RuntimeExtensionFailed {
+            agent_id: None,
+            method: "_atelier/provider/test".into(),
+            error: "provider probe returned HTTP 401 Unauthorized".into(),
+        }),
+        &mut app,
+    );
+
+    assert!(effects.is_empty());
+    let dashboard = app.dashboard.as_ref().expect("dashboard");
+    assert!(dashboard.dispatch.text().contains("HTTP 401 Unauthorized"));
+}
+
+#[test]
+fn foreground_derived_waits_for_child_view_load_before_sending_directive() {
+    let mut app = test_app_with_agent();
+    let parent_id = AgentId(0);
+
+    let effects = dispatch(
+        Action::TaskComplete(TaskResult::RuntimeExtensionComplete {
+            agent_id: Some(parent_id),
+            method: "_atelier/agent/spawn_derived".into(),
+            response: serde_json::json!({
+                "sessionId": "derived-session",
+                "background": false,
+                "pendingFirstPrompt": "inspect permission handling",
+            })
+            .to_string(),
+        }),
+        &mut app,
+    );
+
+    let child_id = AgentId(1);
+    assert!(matches!(
+        app.active_view,
+        ActiveView::Agent(id) if id == child_id
+    ));
+    assert_eq!(
+        app.agents[&child_id]
+            .session
+            .session_id
+            .as_ref()
+            .map(ToString::to_string),
+        Some("derived-session".to_owned())
+    );
+    assert_eq!(
+        app.agents[&child_id].pending_first_prompt.as_deref(),
+        Some("inspect permission handling")
+    );
+    assert!(matches!(
+        effects.as_slice(),
+        [Effect::LoadSession {
+            agent_id,
+            session_id,
+            ..
+        }] if *agent_id == child_id && session_id == "derived-session"
+    ));
+    assert!(
+        effects
+            .iter()
+            .all(|effect| !matches!(effect, Effect::SendPrompt { .. })),
+        "the directive must not run before the child view loads"
+    );
+
+    let loaded_effects = dispatch(
+        Action::TaskComplete(TaskResult::SessionLoaded {
+            agent_id: child_id,
+            session_id: acp::SessionId::new("derived-session"),
+            models: None,
+            code_restored: false,
+            restore_summary: None,
+            restore_degree: None,
+            running_prompt_id: None,
+        }),
+        &mut app,
+    );
+
+    assert!(
+        loaded_effects.iter().any(|effect| matches!(
+            effect,
+            Effect::SendPrompt {
+                agent_id,
+                session_id,
+                text,
+                ..
+            } if *agent_id == child_id
+                && session_id.0.as_ref() == "derived-session"
+                && text == "inspect permission handling"
+        )),
+        "the directive must be sent only after SessionLoaded established the child view"
+    );
+    assert!(app.agents[&child_id].pending_first_prompt.is_none());
+}
+
 fn foreign_resume_hint(
     tool: atelier_workspace::foreign_sessions::ForeignSessionTool,
 ) -> atelier_workspace::foreign_sessions::RecentForeignSession {
@@ -1541,468 +1827,6 @@ fn rename_session_failed_keeps_local_display_name_and_pushes_system_block() {
     );
 }
 
-// ── GateRefreshed subscription flow ─────────────────────────────
-
-/// Regression: when the 30s gate poll detects the subscription gate has
-/// been lifted, it must emit `CheckSubscription` so the shell refreshes
-/// the JWT. Without this the auth token still lacks the subscription
-/// claim and all API calls return 403.
-#[test]
-fn gate_refreshed_emits_check_subscription_on_gate_lift() {
-    let mut app = test_app();
-    // User starts gated (no subscription).
-    app.gate = Some(atelier_shell::auth::GateInfo {
-        message: "SuperAtelier subscription required".into(),
-        url: Some("https://atelier.invalid/superatelier".into()),
-        label: Some("Subscribe".into()),
-    });
-    assert!(!app.has_access());
-
-    // Server-side settings now show no gate (user purchased subscription).
-    let settings = atelier_shell::util::config::RemoteSettings::default();
-    let effects = dispatch_task_result(
-        TaskResult::GateRefreshed {
-            settings: Some(settings),
-        },
-        &mut app,
-    );
-
-    // Gate must be lifted.
-    assert!(app.has_access(), "gate should be lifted");
-    assert!(app.welcome_prompt_focused, "prompt should be focused");
-
-    // Must emit CheckSubscription to trigger shell-side JWT refresh.
-    assert!(
-        effects
-            .iter()
-            .any(|e| matches!(e, Effect::CheckSubscription { verify: None })),
-        "must emit CheckSubscription to refresh JWT; got: {effects:?}"
-    );
-}
-
-/// When the gate poll returns settings that still have a gate, no
-/// effects should be emitted and the user stays blocked.
-#[test]
-fn gate_refreshed_no_effect_when_still_gated() {
-    let mut app = test_app();
-    app.gate = Some(atelier_shell::auth::GateInfo {
-        message: "Subscribe".into(),
-        url: None,
-        label: None,
-    });
-
-    let settings = atelier_shell::util::config::RemoteSettings {
-        gate_message: Some("Subscribe".into()),
-        ..Default::default()
-    };
-    let effects = dispatch_task_result(
-        TaskResult::GateRefreshed {
-            settings: Some(settings),
-        },
-        &mut app,
-    );
-
-    assert!(!app.has_access(), "gate should remain");
-    assert!(effects.is_empty(), "no effects when still gated");
-}
-
-/// When the user was never gated, GateRefreshed is a no-op.
-#[test]
-fn gate_refreshed_no_effect_when_already_unblocked() {
-    let mut app = test_app();
-    assert!(app.has_access()); // no gate
-
-    let settings = atelier_shell::util::config::RemoteSettings::default();
-    let effects = dispatch_task_result(
-        TaskResult::GateRefreshed {
-            settings: Some(settings),
-        },
-        &mut app,
-    );
-
-    assert!(effects.is_empty(), "no effects when already unblocked");
-}
-
-/// A gate newly imposed by the 30s settings poll (possibly stale) must be
-/// deferred for live verification instead of painting the paywall directly:
-/// the gate is held out of `app.gate` and a `CheckSubscription` +
-/// verify-timeout pair is emitted.
-#[test]
-fn gate_refreshed_newly_blocked_defers_gate_for_verification() {
-    let mut app = test_app();
-    assert!(app.has_access()); // ungated
-
-    let settings = atelier_shell::util::config::RemoteSettings {
-        gate_message: Some("Subscribe".into()),
-        ..Default::default()
-    };
-    let effects = dispatch_task_result(
-        TaskResult::GateRefreshed {
-            settings: Some(settings),
-        },
-        &mut app,
-    );
-
-    assert!(
-        app.has_access(),
-        "deferred gate must not show as paywall before verification"
-    );
-    assert!(app.pending_gate_verification.is_some());
-    assert!(
-        effects
-            .iter()
-            .any(|e| matches!(e, Effect::CheckSubscription { verify: Some(_) })),
-        "must live-check before showing the paywall; got: {effects:?}"
-    );
-    assert!(
-        effects
-            .iter()
-            .any(|e| matches!(e, Effect::ScheduleGateVerifyTimeout { .. })),
-        "must arm the verification timeout; got: {effects:?}"
-    );
-}
-
-// ── Stale-gate verification resolution ──────────────────────────
-
-fn test_gate() -> atelier_shell::auth::GateInfo {
-    atelier_shell::auth::GateInfo {
-        message: "Subscribe".into(),
-        url: None,
-        label: None,
-    }
-}
-
-/// The live check confirmed access (meta without a gate): the deferred
-/// stale gate is dropped and the paywall never shows.
-#[test]
-fn verify_check_with_meta_resolves_pending_gate() {
-    let mut app = test_app();
-    let _effs = app.impose_gate(test_gate());
-    assert!(app.has_access());
-
-    let meta = serde_json::to_value(atelier_shell::auth::AuthMeta::default()).unwrap();
-    dispatch_task_result(
-        TaskResult::CheckSubscriptionComplete {
-            verify: Some(app.gate_verify_gen),
-            meta: Some(meta),
-        },
-        &mut app,
-    );
-
-    assert!(app.has_access(), "live check says subscribed — no paywall");
-    assert!(app.pending_gate_verification.is_none());
-}
-
-/// The live check confirmed the block (meta WITH a gate): the paywall
-/// shows with the authoritative gate.
-#[test]
-fn verify_check_with_gated_meta_shows_gate() {
-    let mut app = test_app();
-    let _effs = app.impose_gate(test_gate());
-
-    let meta = serde_json::to_value(atelier_shell::auth::AuthMeta {
-        gate: Some(test_gate()),
-        ..Default::default()
-    })
-    .unwrap();
-    dispatch_task_result(
-        TaskResult::CheckSubscriptionComplete {
-            verify: Some(app.gate_verify_gen),
-            meta: Some(meta),
-        },
-        &mut app,
-    );
-
-    assert!(!app.has_access(), "verified gate must show");
-    assert!(app.pending_gate_verification.is_none());
-}
-
-/// The verification's own check failed (meta None) while its stale gate
-/// was deferred: err on blocking — the deferred gate is promoted.
-#[test]
-fn verify_check_failure_promotes_pending_gate() {
-    let mut app = test_app();
-    let _effs = app.impose_gate(test_gate());
-
-    let effects = dispatch_task_result(
-        TaskResult::CheckSubscriptionComplete {
-            verify: Some(app.gate_verify_gen),
-            meta: None,
-        },
-        &mut app,
-    );
-
-    assert!(!app.has_access(), "check failed — deferred gate must show");
-    assert!(app.pending_gate_verification.is_none());
-    assert!(
-        effects
-            .iter()
-            .any(|e| matches!(e, Effect::SchedulePaywallCheck)),
-        "freshly shown gate must arm the 5s auto-lift chain; got: {effects:?}"
-    );
-}
-
-/// A failed GENERIC check (watch / focus / paywall chain — no generation)
-/// must never promote a deferred gate: only the deferral's own
-/// generation-scoped check or timeout may (a superseded or unrelated check
-/// failing is not evidence about the current verification).
-#[test]
-fn check_subscription_complete_failure_leaves_pending_gate_untouched() {
-    let mut app = test_app();
-    let _effs = app.impose_gate(test_gate());
-
-    let effects = dispatch_task_result(
-        TaskResult::CheckSubscriptionComplete {
-            verify: None,
-            meta: None,
-        },
-        &mut app,
-    );
-
-    assert!(effects.is_empty());
-    assert!(
-        app.has_access(),
-        "generic check failure must not promote the deferred gate"
-    );
-    assert!(
-        app.pending_gate_verification.is_some(),
-        "verification must stay in flight"
-    );
-}
-
-/// A failed verification check from a SUPERSEDED deferral (older
-/// generation) must not promote the newer pending gate.
-#[test]
-fn verify_check_stale_generation_failure_is_ignored() {
-    let mut app = test_app();
-    let _effs = app.impose_gate(test_gate());
-    let stale_gen = app.gate_verify_gen;
-    // Second deferral supersedes the first (its check is in flight).
-    let _effs = app.impose_gate(test_gate());
-
-    let effects = dispatch_task_result(
-        TaskResult::CheckSubscriptionComplete {
-            verify: Some(stale_gen),
-            meta: None,
-        },
-        &mut app,
-    );
-
-    assert!(effects.is_empty());
-    assert!(
-        app.has_access(),
-        "superseded verification failure must not promote the newer gate"
-    );
-    assert!(app.pending_gate_verification.is_some());
-}
-
-/// A check failure with no deferred gate (the plain paywall-poller path)
-/// must not invent a gate.
-#[test]
-fn check_subscription_complete_failure_without_pending_gate_is_noop() {
-    let mut app = test_app();
-    dispatch_task_result(
-        TaskResult::CheckSubscriptionComplete {
-            verify: None,
-            meta: None,
-        },
-        &mut app,
-    );
-    assert!(app.has_access());
-}
-
-/// The verification window expired before the live check resolved:
-/// err on blocking — the deferred gate is promoted, and the freshly shown
-/// paywall gets the 5s auto-lift chain.
-#[test]
-fn gate_verify_timeout_promotes_pending_gate() {
-    let mut app = test_app();
-    let _effs = app.impose_gate(test_gate());
-    assert!(app.has_access());
-
-    let effects = dispatch_task_result(
-        TaskResult::GateVerifyTimeout {
-            generation: app.gate_verify_gen,
-        },
-        &mut app,
-    );
-
-    assert!(!app.has_access(), "timeout — deferred gate must show");
-    assert!(app.pending_gate_verification.is_none());
-    assert!(
-        app.paywall_check_started.is_some(),
-        "promoted gate must arm the paywall auto-check chain"
-    );
-    assert!(
-        effects
-            .iter()
-            .any(|e| matches!(e, Effect::SchedulePaywallCheck)),
-        "promoted gate must schedule the 5s chain; got: {effects:?}"
-    );
-}
-
-/// The timeout fires after the check already resolved the gate: no-op.
-#[test]
-fn gate_verify_timeout_noop_when_already_resolved() {
-    let mut app = test_app();
-    let _effs = app.impose_gate(test_gate());
-    let generation = app.gate_verify_gen;
-    // Live check resolved first (access confirmed).
-    let meta = serde_json::to_value(atelier_shell::auth::AuthMeta::default()).unwrap();
-    dispatch_task_result(
-        TaskResult::CheckSubscriptionComplete {
-            verify: None,
-            meta: Some(meta),
-        },
-        &mut app,
-    );
-
-    dispatch_task_result(TaskResult::GateVerifyTimeout { generation }, &mut app);
-    assert!(
-        app.has_access(),
-        "stale timeout must not re-impose the gate"
-    );
-}
-
-/// A timeout from a SUPERSEDED verification (older generation) must not
-/// promote a newer deferred gate whose own live check is still in flight.
-#[test]
-fn gate_verify_timeout_stale_generation_is_ignored() {
-    let mut app = test_app();
-    // First deferral resolves (access confirmed) ...
-    let _effs = app.impose_gate(test_gate());
-    let stale_gen = app.gate_verify_gen;
-    let meta = serde_json::to_value(atelier_shell::auth::AuthMeta::default()).unwrap();
-    dispatch_task_result(
-        TaskResult::CheckSubscriptionComplete {
-            verify: None,
-            meta: Some(meta),
-        },
-        &mut app,
-    );
-    // ... then a SECOND gate is deferred (check in flight).
-    let _effs = app.impose_gate(test_gate());
-    assert!(app.has_access());
-
-    // The FIRST deferral's timer fires now — it must not promote the
-    // second deferral's pending gate.
-    let effects = dispatch_task_result(
-        TaskResult::GateVerifyTimeout {
-            generation: stale_gen,
-        },
-        &mut app,
-    );
-
-    assert!(effects.is_empty());
-    assert!(
-        app.has_access(),
-        "stale-generation timer must not promote the newer pending gate"
-    );
-    assert!(
-        app.pending_gate_verification.is_some(),
-        "the newer verification must stay in flight"
-    );
-}
-
-/// A verified gate landing via `CheckSubscriptionComplete` (gated meta while
-/// ungated) must arm the 5s paywall auto-check chain — verify-before-paywall
-/// paths never went through the login-path chain start.
-#[test]
-fn verified_gate_via_check_complete_starts_paywall_chain() {
-    let mut app = test_app();
-    let _effs = app.impose_gate(test_gate());
-
-    let meta = serde_json::to_value(atelier_shell::auth::AuthMeta {
-        gate: Some(test_gate()),
-        ..Default::default()
-    })
-    .unwrap();
-    let effects = dispatch_task_result(
-        TaskResult::CheckSubscriptionComplete {
-            verify: None,
-            meta: Some(meta),
-        },
-        &mut app,
-    );
-
-    assert!(!app.has_access());
-    assert!(
-        app.paywall_check_started.is_some(),
-        "verified gate must arm the paywall auto-check chain"
-    );
-    assert!(
-        effects
-            .iter()
-            .any(|e| matches!(e, Effect::SchedulePaywallCheck)),
-        "verified gate must schedule the 5s chain; got: {effects:?}"
-    );
-
-    // Steady-state paywall-poller responses (already gated) must NOT fan
-    // out extra timers.
-    let meta = serde_json::to_value(atelier_shell::auth::AuthMeta {
-        gate: Some(test_gate()),
-        ..Default::default()
-    })
-    .unwrap();
-    let effects = dispatch_task_result(
-        TaskResult::CheckSubscriptionComplete {
-            verify: None,
-            meta: Some(meta),
-        },
-        &mut app,
-    );
-    assert!(
-        effects.is_empty(),
-        "already-gated check responses must not schedule more timers; got: {effects:?}"
-    );
-}
-
-/// `GateRefreshed` with gate-free settings while a deferred gate awaits
-/// verification must drop the pending copy — the fresh settings are newer
-/// than the stale snapshot that produced it — and still run the lift
-/// bookkeeping (`CheckSubscription` for the JWT refresh), since the pending
-/// deferral means the user was conceptually blocked.
-#[test]
-fn gate_refreshed_without_gate_clears_pending_verification() {
-    let mut app = test_app();
-    let _effs = app.impose_gate(test_gate());
-    let generation = app.gate_verify_gen;
-
-    let settings = atelier_shell::util::config::RemoteSettings::default();
-    let effects = dispatch_task_result(
-        TaskResult::GateRefreshed {
-            settings: Some(settings),
-        },
-        &mut app,
-    );
-
-    assert!(app.pending_gate_verification.is_none());
-    assert!(
-        effects
-            .iter()
-            .any(|e| matches!(e, Effect::CheckSubscription { verify: None })),
-        "settings-confirmed lift of a pending gate must refresh the JWT; got: {effects:?}"
-    );
-    // The still-armed timer must find nothing to promote.
-    dispatch_task_result(TaskResult::GateVerifyTimeout { generation }, &mut app);
-    assert!(
-        app.has_access(),
-        "cleared pending gate must not resurface via the timer"
-    );
-}
-
-/// Logout clears any deferred gate and the check debounce.
-#[test]
-fn logout_clears_pending_gate_verification() {
-    let mut app = test_app();
-    let _effs = app.impose_gate(test_gate());
-
-    dispatch_task_result(TaskResult::LogoutComplete, &mut app);
-
-    assert!(app.pending_gate_verification.is_none());
-    assert!(app.last_subscription_check_at.is_none());
-}
-
 /// `apply_setting_rollback` on a known key reverts the in-memory
 /// cache without emitting any new effects.
 #[test]
@@ -2063,7 +1887,8 @@ fn persist_failed_toast_contains_key_and_error() {
     let toast = read_toast(&app);
     assert!(toast.contains("compact_mode"));
     assert!(toast.contains("permission denied"));
-    assert!(toast.contains('\u{2717}'));
+    let expected_marker = crate::glyphs::legacy_glyph_fallback("\u{2717}");
+    assert!(toast.contains(expected_marker.as_ref()));
 }
 
 /// Rollback path must revert BOTH `app.current_ui` AND the

@@ -1717,6 +1717,10 @@ mod tests {
     /// but load returns None for each.
     #[test]
     fn discovery_with_no_settings_files() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let home = tempfile::tempdir().unwrap();
+        let _atelier_home = EnvVarGuard::set("ATELIER_HOME", home.path());
+        let _home = EnvVarGuard::set("ATELIER_TEST_HOME", home.path());
         let tmp = tempfile::tempdir().unwrap();
         let cwd = tmp.path();
 
@@ -1744,7 +1748,7 @@ mod tests {
         // the guard reads dirs::home_dir()).
         let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let home = tempfile::tempdir().unwrap();
-        let _home_guard = EnvVarGuard::set("HOME", home.path());
+        let _home_guard = EnvVarGuard::set("ATELIER_TEST_HOME", home.path());
         git2::Repository::init(home.path()).unwrap();
         let claude_dir = home.path().join(".claude");
         std::fs::create_dir_all(&claude_dir).unwrap();
@@ -1973,7 +1977,7 @@ mod tests {
         let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let home = tempfile::tempdir().unwrap();
         let _home_guard = EnvVarGuard::set("ATELIER_HOME", home.path());
-        let _real_home_guard = EnvVarGuard::set("HOME", home.path());
+        let _real_home_guard = EnvVarGuard::set("ATELIER_TEST_HOME", home.path());
         let _marker_guard = EnvVarGuard::unset("_ATELIER_CLAUDE_MARKER_OVERRIDE");
         let tmp = tempfile::tempdir().unwrap();
         let env = load_claude_env_with_project(tmp.path(), true);

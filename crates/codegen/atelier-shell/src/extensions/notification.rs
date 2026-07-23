@@ -431,8 +431,6 @@ pub enum SessionUpdate {
     },
     /// Request for user feedback based on session heuristics
     FeedbackRequest(FeedbackRequestNotification),
-    /// Relay sync status update (connected, disconnected, etc.)
-    RelaySyncStatus(RelaySyncStatus),
     /// Auto-recovery is starting after a prompt failure (e.g. remote/workspace recovery)
     AutoRecoveryStarted {
         /// Current recovery attempt number (1-indexed)
@@ -989,24 +987,6 @@ pub fn is_reauthable_failure(error_type: Option<&str>, message: &str) -> bool {
         return false;
     }
     error_type == Some("auth") || message.contains("Unauthorized (401)")
-}
-
-/// Status updates for relay sync (session sharing) feature.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase", tag = "status")]
-pub enum RelaySyncStatus {
-    /// Successfully connected to relay, session is now shareable
-    Connected {
-        /// The URL where this session can be viewed
-        share_url: String,
-    },
-    /// Disconnected from relay (will auto-reconnect)
-    Disconnected,
-    /// Reconnecting to relay
-    Reconnecting {
-        /// Current attempt number
-        attempt: u32,
-    },
 }
 
 /// A diff content item that serializes compatibly with `acp::ToolCallContent::Diff`.

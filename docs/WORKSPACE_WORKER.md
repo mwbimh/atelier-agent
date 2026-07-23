@@ -1,66 +1,79 @@
 # Atelier Workspace Worker
 
-`atelier-workspace-worker` is the local process boundary for workspace file
-operations. It is intentionally a separate child process from the Agent so a
-Worker failure cannot silently turn into host-side file access. In release
-artifacts, the Worker implementation is embedded in `atelier.exe`; the child
-still runs as a separate process, but the package no longer needs to ship a
-second `atelier-workspace-worker.exe` beside it.
+The Workspace Worker is a local process boundary for workspace file
+operations. Release packages expose only the main `atelier` executable. The
+Worker implementation is embedded in that executable and is started
+automatically in a hidden internal mode.
 
-## Binary and startup
-
-The standalone binary is built from the `atelier-workspace` crate:
+Users do not need either of these files beside a release build:
 
 ```text
-cargo build -p atelier-workspace --bin atelier-workspace-worker
+atelier-workspace-worker.exe
+atelier-command-runner.exe
 ```
 
-Packaged release builds normally use the main executable in hidden internal
-mode:
+On Windows, a normal release directory can contain only:
+
+```text
+atelier.exe
+```
+
+The process boundary still exists. Atelier starts another instance of the main
+executable with an internal argument so a Worker failure does not silently turn
+into unrestricted host-side file access.
+
+## Normal Startup
+
+Run Atelier from the workspace directory:
+
+```bash
+cd /path/to/project
+atelier
+```
+
+Or select another workspace explicitly:
+
+```bash
+atelier --cwd /path/to/project
+```
+
+The Runtime creates a Worker bound to the canonical workspace root. Separate
+workspace roots receive separate Worker Runtime instances.
+
+## Internal Modes
+
+Packaged builds start embedded helpers automatically:
 
 ```text
 atelier.exe --internal-workspace-worker --root <workspace-root>
+atelier.exe --internal-command-runner ...
 ```
 
-The runtime selects this mode automatically when `current_exe()` is
-`atelier.exe`. `ATELIER_WORKSPACE_WORKER` remains an explicit override for
-development, tests, or a package that intentionally ships the standalone
-worker.
+These modes are implementation details, not user commands. Do not launch them
+manually during normal use.
 
-The Worker accepts one required argument:
+For development and tests only, the Runtime still accepts explicit helper
+overrides through `ATELIER_WORKSPACE_WORKER` and `ATELIER_COMMAND_RUNNER`.
+Those overrides are not required by a release installation.
+
+## Worker Protocol
+
+The Worker uses newline-delimited JSON over the child process's stdin/stdout.
+`WORKER_PROTOCOL_VERSION` is currently `1`, and each frame is limited to
+`8 MiB` including the newline.
+
+The handshake binds the Worker to one canonical root:
 
 ```text
-atelier-workspace-worker --root <workspace-root>
+client -> hello(protocol_version, nonce, workspace_root)
+worker -> ready(protocol_version, workspace_root)
 ```
 
-The standalone binary and the hidden `atelier.exe` mode speak the same
-protocol and accept the same `--root` argument.
+Each request includes the protocol version, nonce, and a monotonically
+increasing request ID. The Worker rejects mismatched roots, protocol versions,
+nonces, response IDs, and methods outside its namespace.
 
-On Windows, the client starts it through the Codex-derived command runner when
-the native sandbox is active. An explicit
-`ATELIER_SANDBOX_BACKEND=unsafe` is the only mode that permits direct
-unsandboxed startup. A missing helper or an unavailable native sandbox returns
-an error before the Worker is started.
-
-## Protocol
-
-The transport is newline-delimited JSON (NDJSON) over the child process's
-stdin/stdout. `WORKER_PROTOCOL_VERSION` is currently `1`, and each frame is
-limited to `8 MiB` including the newline.
-
-The handshake is:
-
-```text
-client → hello(protocol_version, nonce, workspace_root)
-worker → ready(protocol_version, workspace_root)
-```
-
-Every call repeats the protocol version and nonce and contains a monotonically
-increasing request ID. The Worker canonicalizes its startup root and rejects a
-hello whose canonical root differs from it. It also rejects methods outside
-the `workspace.*` and `atelier.worker.*` namespaces.
-
-The current binary-safe file methods are:
+Binary file methods use base64 data:
 
 ```text
 atelier.worker.read_file
@@ -68,51 +81,35 @@ atelier.worker.write_file
 atelier.worker.delete_file
 ```
 
-File bytes are base64-encoded. All paths are resolved through the Worker's
-workspace-root confinement checks, including reparse/symlink escape checks
-where the platform supports them.
+Path resolution is confined to the bound workspace root, including supported
+reparse-point and symlink escape checks.
 
-## Failure and shutdown
+## Failure and Shutdown
 
-The client serializes calls on one connection and treats EOF, a malformed
-frame, a mismatched response ID, a protocol mismatch, a nonce mismatch, or a
-Worker exit as an error. The caller never falls back to `LocalFs` after one of
-these failures.
+EOF, malformed frames, identity mismatches, protocol mismatches, and Worker
+exit are surfaced as workspace errors. The caller does not silently fall back
+to unrestricted local filesystem access.
 
-Normal shutdown uses a `shutdown` frame and expects a matching `bye` response.
-The child process also has `kill_on_drop` enabled as a last-resort cleanup;
-runtime owners should call `WorkspaceWorkerClient::shutdown` when they have a
-graceful shutdown path.
+Normal shutdown uses a `shutdown` frame and matching `bye` response. The child
+also uses process cleanup on drop as a last resort.
 
-## Current integration boundary
+## Current Isolation Boundary
 
-The first integration pass installs `WorkspaceWorkerFs` in the production
-`WorkspaceSessionContextFactory` used by `connect_local_workspace`. This
-routes the built-in binary file read/write/delete interface through the Worker.
+The embedded packaging change does not by itself make every workspace action
+fully sandboxed. Diagnostics report the effective backend. The current preview
+Worker boundary covers the integrated workspace file path; some Git, search,
+patch, terminal, PTY, checkpoint, and hunk-tracker paths still use their
+existing Runtime implementations.
 
-The following paths still use the existing host-side or sandbox-preview
-implementations and are not yet the full Worker boundary:
-
-- `WorkspaceOps` local-mode Git and filesystem RPCs;
-- search and patch helpers that access the workspace directly;
-- the terminal, background task, and PTY backend;
-- some session checkpoint and hunk-tracker filesystem paths.
-
-Therefore the current status is `sandbox-preview`, not `full`. The full
-release gate requires routing every file, search, patch, Git, shell, and PTY
-operation through a Worker with cancellation, streaming/backpressure, and
+The full release gate remains routing all workspace-affecting operations
+through an isolated Worker with cancellation, streaming/backpressure, and
 per-session lifecycle management.
 
-The embedded mode only changes how the Worker code is packaged. It does not
-remove the process boundary or expand the current `sandbox-preview` scope.
+## Security Invariants
 
-## Security invariants
-
-1. The Worker root is bound during the handshake and cannot be changed by a
-   later request.
-2. A Worker crash is surfaced as a workspace error and never triggers an
-   unsandboxed retry.
-3. A Worker binary that is absent is a startup error for production workspace
-   construction.
-4. The `unsafe` backend is opt-in and must remain visible in diagnostics.
-5. The NDJSON stream is machine-readable; diagnostics go to stderr.
+1. The Worker root is fixed during the handshake.
+2. A Worker crash is reported and never triggers an unsandboxed retry.
+3. Release packaging resolves the embedded helper through the running
+   `atelier` executable.
+4. Preview path confinement is not described as complete OS sandboxing.
+5. Protocol output remains machine-readable; diagnostics go to stderr.

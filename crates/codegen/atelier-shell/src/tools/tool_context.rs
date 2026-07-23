@@ -112,6 +112,13 @@ pub struct ToolContext {
     /// [`BlockingWaitGuard`]). `queue_input` reads it: a prompt arriving while
     /// non-zero takes the send-now path.
     pub blocking_wait_depth: Arc<std::sync::atomic::AtomicUsize>,
+    /// Live typed Runtime policy shared by the agent and every session actor.
+    /// Keeping the shared engine here makes policy updates immediately apply
+    /// to ordinary model-driven tool calls, not only ACP extension methods.
+    pub runtime_policy: Arc<parking_lot::RwLock<atelier_hooks::PolicyEngine>>,
+    /// Agent-scoped Runtime control plane. Sessions publish real phase,
+    /// request, tool, and progress transitions through this shared handle.
+    pub runtime_control: Option<Arc<parking_lot::Mutex<crate::runtime_control::RuntimeControl>>>,
 }
 impl ToolContext {
     pub fn new(
@@ -151,6 +158,10 @@ impl ToolContext {
             auto_wake_enabled: true,
             goal_loop_active_gate: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             blocking_wait_depth: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            runtime_policy: Arc::new(parking_lot::RwLock::new(
+                atelier_hooks::PolicyEngine::default(),
+            )),
+            runtime_control: None,
         }
     }
     pub fn with_preloaded_env(
@@ -187,6 +198,10 @@ impl ToolContext {
             auto_wake_enabled: true,
             goal_loop_active_gate: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             blocking_wait_depth: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            runtime_policy: Arc::new(parking_lot::RwLock::new(
+                atelier_hooks::PolicyEngine::default(),
+            )),
+            runtime_control: None,
         }
     }
     pub fn with_file_state_handle(mut self, handle: FileStateHandle) -> Self {
@@ -243,6 +258,10 @@ mod tests {
                 auto_wake_enabled: true,
                 goal_loop_active_gate: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 blocking_wait_depth: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                runtime_policy: Arc::new(parking_lot::RwLock::new(
+                    atelier_hooks::PolicyEngine::default(),
+                )),
+                runtime_control: None,
             }
         }
     }

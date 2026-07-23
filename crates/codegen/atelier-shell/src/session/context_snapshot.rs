@@ -1,11 +1,12 @@
 //! Immutable, completed-conversation snapshots used by derived agents and
 //! side queries.
 
-use crate::sampling::ConversationItem;
+use crate::sampling::{ConversationItem, SyntheticReason};
 use crate::session::info::Info;
 use atelier_provider::{ProviderRegistry, WireApi, WireApiSource};
 use chrono::{DateTime, Utc};
 use std::io;
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 pub type ContextSnapshotId = String;
@@ -36,6 +37,33 @@ pub struct ContextSnapshot {
     #[serde(default)]
     pub source_revision: u64,
     pub items: Vec<ConversationItem>,
+}
+
+fn build_side_query_request(
+    snapshot: &ContextSnapshot,
+    append_context: Option<&str>,
+    question: &str,
+    model: &str,
+    side_query_id: &str,
+    parent_session_id: &str,
+) -> crate::sampling::ConversationRequest {
+    let mut items = snapshot.append_context(append_context);
+    items = xai_chat_state::compaction_utils::strip_reasoning_blocks(items);
+    items.retain(|item| !matches!(item, ConversationItem::System(_)));
+    items.push(ConversationItem::user(format!(
+        "Answer this side question directly in one response. You have no tools and must not propose actions:\n\n{question}"
+    )));
+    crate::sampling::ConversationRequest {
+        items,
+        tools: Vec::new(),
+        model: Some(model.to_owned()),
+        temperature: None,
+        x_atelier_conv_id: Some(side_query_id.to_owned()),
+        x_atelier_req_id: Some(format!("xai-btw-{}", uuid::Uuid::now_v7())),
+        x_atelier_session_id: Some(parent_session_id.to_owned()),
+        x_atelier_agent_id: Some(atelier_telemetry::id::agent_id()),
+        ..Default::default()
+    }
 }
 
 impl ContextSnapshot {
@@ -83,35 +111,52 @@ impl ContextSnapshot {
         self.source_session_id == session_id
     }
 
-    pub fn path_for(info: &Info, snapshot_id: &str) -> PathBuf {
-        crate::session::persistence::session_dir(info)
-            .join("context_snapshots")
-            .join(format!("{snapshot_id}.json"))
+    pub fn path_for(info: &Info, snapshot_id: &str) -> io::Result<PathBuf> {
+        let parsed_id = uuid::Uuid::parse_str(snapshot_id).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "context snapshot id must be a canonical UUID",
+            )
+        })?;
+        if parsed_id.to_string() != snapshot_id {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "context snapshot id must be a canonical UUID",
+            ));
+        }
+
+        let directory = crate::session::persistence::session_dir(info).join("context_snapshots");
+        let path = directory.join(format!("{parsed_id}.json"));
+        if path.parent() != Some(directory.as_path()) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "context snapshot path must remain inside context_snapshots",
+            ));
+        }
+        Ok(path)
     }
 
     pub fn save(&self, info: &Info) -> io::Result<PathBuf> {
-        let path = Self::path_for(info, &self.id);
+        let path = Self::path_for(info, &self.id)?;
         let parent = path
             .parent()
             .ok_or_else(|| io::Error::other("context snapshot has no parent directory"))?;
         std::fs::create_dir_all(parent)?;
         let bytes = serde_json::to_vec_pretty(self)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-        let temp = path.with_extension("json.tmp");
-        std::fs::write(&temp, bytes)?;
-        std::fs::rename(&temp, &path)?;
+        write_snapshot_once(&path, &bytes)?;
         Ok(path)
     }
 
     pub fn load(info: &Info, snapshot_id: &str) -> io::Result<Self> {
-        let path = Self::path_for(info, snapshot_id);
+        let path = Self::path_for(info, snapshot_id)?;
         let bytes = std::fs::read(path)?;
         serde_json::from_slice(&bytes)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
     }
 
     pub fn delete(info: &Info, snapshot_id: &str) -> io::Result<bool> {
-        let path = Self::path_for(info, snapshot_id);
+        let path = Self::path_for(info, snapshot_id)?;
         match std::fs::remove_file(path) {
             Ok(()) => Ok(true),
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
@@ -143,17 +188,99 @@ impl ContextSnapshot {
     }
 }
 
+fn write_snapshot_once(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)?;
+    if let Err(error) = file.write_all(bytes).and_then(|()| file.sync_all()) {
+        drop(file);
+        let _ = std::fs::remove_file(path);
+        return Err(error);
+    }
+    Ok(())
+}
+
+pub(crate) fn compose_derived_conversation(
+    child_conversation: Vec<ConversationItem>,
+    snapshot: &ContextSnapshot,
+    append_context: Option<&str>,
+) -> Vec<ConversationItem> {
+    let mut conversation = child_conversation
+        .into_iter()
+        .filter(is_derived_runtime_prefix)
+        .collect::<Vec<_>>();
+    conversation.extend(
+        snapshot
+            .append_context(append_context)
+            .into_iter()
+            .filter(|item| !is_derived_runtime_prefix(item)),
+    );
+    conversation
+}
+
+fn is_derived_runtime_prefix(item: &ConversationItem) -> bool {
+    matches!(item, ConversationItem::System(_))
+        || matches!(
+            item,
+            ConversationItem::User(user)
+                if user.synthetic_reason == Some(SyntheticReason::ProjectInstructions)
+        )
+}
+
+fn is_snapshot_inheritable(item: &ConversationItem) -> bool {
+    match item {
+        ConversationItem::System(_) => false,
+        ConversationItem::User(user) => match user.synthetic_reason.as_ref() {
+            None | Some(SyntheticReason::CompactionMeta | SyntheticReason::Interjection) => true,
+            Some(
+                SyntheticReason::SystemReminder
+                | SyntheticReason::ProjectInstructions
+                | SyntheticReason::AutoContinue
+                | SyntheticReason::AutoRecovery
+                | SyntheticReason::TaskCompleted
+                | SyntheticReason::SubagentCompleted
+                | SyntheticReason::NotificationDrain
+                | SyntheticReason::GoalSummary
+                | SyntheticReason::GoalClassifierNudge
+                | SyntheticReason::SchedulerFired
+                | SyntheticReason::Unknown,
+            ) => false,
+        },
+        _ => true,
+    }
+}
+
 /// Keep only completed, model-visible conversation content.  A derived agent
-/// builds its own system prompt, tools, permissions, and sandbox; carrying a
-/// parent system item or an in-flight reasoning block would duplicate runtime
-/// state and can produce malformed tool exchanges.
+/// builds its own system prompt, project instructions, tools, permissions, and
+/// sandbox; carrying a parent runtime prefix or an in-flight reasoning block
+/// would duplicate runtime state and can produce malformed tool exchanges.
 fn snapshot_conversation(items: Vec<ConversationItem>) -> Vec<ConversationItem> {
     let items = xai_chat_state::compaction_utils::strip_reasoning_blocks(items);
-    let items = items
-        .into_iter()
-        .filter(|item| !matches!(item, ConversationItem::System(_)))
-        .collect();
+    let items = items.into_iter().filter(is_snapshot_inheritable).collect();
     completed_conversation(items)
+}
+
+pub(crate) fn snapshot_items_at_completed_boundary(
+    mut items: Vec<ConversationItem>,
+    has_in_flight_turn: bool,
+) -> Vec<ConversationItem> {
+    if has_in_flight_turn
+        && let Some(turn_start) = items.iter().rposition(|item| {
+            matches!(
+                item,
+                ConversationItem::User(user)
+                    if user.synthetic_reason.is_none()
+                        || user
+                            .synthetic_reason
+                            .as_ref()
+                            .is_some_and(SyntheticReason::starts_prompt_turn)
+            )
+        })
+    {
+        items.truncate(turn_start);
+    }
+    items
 }
 
 /// Remove a trailing incomplete assistant/tool exchange from a conversation.
@@ -161,67 +288,62 @@ fn snapshot_conversation(items: Vec<ConversationItem>) -> Vec<ConversationItem> 
 /// A snapshot is only allowed to end at a completed boundary. This is the
 /// same invariant required by Anthropic Messages and prevents a side query or
 /// derived agent from inheriting a half-emitted tool call.
-pub fn completed_conversation(mut items: Vec<ConversationItem>) -> Vec<ConversationItem> {
-    let Some(last) = items.last() else {
-        return items;
-    };
+pub fn completed_conversation(items: Vec<ConversationItem>) -> Vec<ConversationItem> {
+    let mut completed = Vec::with_capacity(items.len());
+    let mut index = 0;
+    while index < items.len() {
+        match &items[index] {
+            ConversationItem::Assistant(assistant) if !assistant.tool_calls.is_empty() => {
+                let result_start = index + 1;
+                let mut result_end = result_start;
+                while matches!(items.get(result_end), Some(ConversationItem::ToolResult(_))) {
+                    result_end += 1;
+                }
 
-    if !matches!(last, ConversationItem::ToolResult(_)) {
-        if matches!(
-            last,
-            ConversationItem::Assistant(assistant) if !assistant.tool_calls.is_empty()
-        ) {
-            items.pop();
+                let expected = assistant
+                    .tool_calls
+                    .iter()
+                    .map(|call| call.id.as_ref())
+                    .collect::<std::collections::HashSet<_>>();
+                let answered = items[result_start..result_end]
+                    .iter()
+                    .filter_map(|item| match item {
+                        ConversationItem::ToolResult(result) => Some(result.tool_call_id.as_str()),
+                        _ => None,
+                    })
+                    .collect::<std::collections::HashSet<_>>();
+
+                if !expected.is_empty() && expected == answered {
+                    completed.extend(items[index..result_end].iter().cloned());
+                }
+                index = result_end;
+            }
+            ConversationItem::ToolResult(_) => {
+                // Orphaned results cannot be sent to any supported Provider.
+                index += 1;
+            }
+            item => {
+                completed.push(item.clone());
+                index += 1;
+            }
         }
-        return items;
     }
-
-    // A tool-result run is complete only when it immediately follows an
-    // assistant tool-call item and answers every call made by that item.
-    // Otherwise the tail is an orphan/in-flight exchange and must not be
-    // injected into a new Messages/Responses request.
-    let result_start = items
-        .iter()
-        .rposition(|item| !matches!(item, ConversationItem::ToolResult(_)))
-        .unwrap_or(0);
-    let Some(ConversationItem::Assistant(assistant)) = items.get(result_start) else {
-        // Preserve the completed non-tool item immediately before an orphan
-        // result run (for example a normal user message followed by a stale
-        // ToolResult from a cancelled turn).
-        if !items.is_empty() {
-            items.truncate(result_start + 1);
-        }
-        return items;
-    };
-    if assistant.tool_calls.is_empty() {
-        items.truncate(result_start + 1);
-        return items;
-    }
-
-    let answered: std::collections::HashSet<&str> = items[result_start + 1..]
-        .iter()
-        .filter_map(|item| match item {
-            ConversationItem::ToolResult(result) => Some(result.tool_call_id.as_str()),
-            _ => None,
-        })
-        .collect();
-    if assistant
-        .tool_calls
-        .iter()
-        .any(|call| !answered.contains(call.id.as_ref()))
-    {
-        items.truncate(result_start);
-    }
-    items
+    completed
 }
 
 pub fn snapshot_path_exists(info: &Info, snapshot_id: &str) -> bool {
-    Path::new(&ContextSnapshot::path_for(info, snapshot_id)).exists()
+    ContextSnapshot::path_for(info, snapshot_id)
+        .map(|path| path.exists())
+        .unwrap_or(false)
 }
 
 impl super::SessionActor {
     pub(crate) async fn completed_context_snapshot(&self) -> ContextSnapshot {
-        let items = self.chat_state_handle.get_conversation().await;
+        let items = snapshot_items_at_completed_boundary(
+            self.chat_state_handle.get_conversation().await,
+            self.session_turn_active
+                .load(std::sync::atomic::Ordering::Acquire),
+        );
         ContextSnapshot::from_items(
             self.session_info.id.to_string(),
             self.session_info.cwd.clone(),
@@ -245,12 +367,19 @@ impl super::SessionActor {
         append_context: Option<&str>,
         persist: bool,
     ) -> Result<SideQueryResponse, String> {
-        self.handle_side_question_snapshot_detailed_from(None, question, append_context, persist)
-            .await
+        self.handle_side_question_snapshot_detailed_from(
+            None,
+            None,
+            question,
+            append_context,
+            persist,
+        )
+        .await
     }
 
     pub(crate) async fn handle_side_question_snapshot_detailed_from(
         &self,
+        side_query_id: Option<&str>,
         snapshot_id: Option<&str>,
         question: &str,
         append_context: Option<&str>,
@@ -266,13 +395,6 @@ impl super::SessionActor {
         } else {
             self.completed_context_snapshot().await
         };
-        let mut items = snapshot.append_context(append_context);
-        items = xai_chat_state::compaction_utils::strip_reasoning_blocks(items);
-        items.retain(|item| !matches!(item, ConversationItem::System(_)));
-        items.push(ConversationItem::user(format!(
-            "Answer this side question directly in one response. You have no tools and must not propose actions:\n\n{question}"
-        )));
-
         let configured_main_provider =
             ProviderRegistry::load_or_create(atelier_config::atelier_home().join("providers.toml"))
                 .ok()
@@ -281,30 +403,15 @@ impl super::SessionActor {
                         .role(atelier_provider::RoleId::Main)
                         .map(|role| role.provider.clone())
                 });
-        let (sampling_client, provider, model) = if let Some((config, client)) = self
+        let (config, sampling_client) = self
             .prepare_role_chat_completion(atelier_provider::RoleId::Main, false)
             .await
-            .map_err(|error| format!("failed to prepare main-role side-query client: {error}"))?
-        {
-            (client, configured_main_provider.clone(), config.model)
-        } else {
-            let client = self
-                .prepare_chat_completion(false)
-                .await
-                .map_err(|error| format!("failed to prepare side-query client: {error}"))?;
-            let model = self
-                .chat_state_handle
-                .get_sampling_config()
-                .await
-                .map(|config| config.model)
-                .unwrap_or_default();
-            let (provider, model) = model
-                .split_once('/')
-                .map(|(provider, model)| (Some(provider.to_owned()), model.to_owned()))
-                .unwrap_or((None, model));
-            (client, provider, model)
-        };
-        let side_query_id = format!("btw-{}", uuid::Uuid::now_v7());
+            .map_err(|error| format!("failed to prepare main-role side-query client: {error}"))?;
+        let provider = configured_main_provider;
+        let model = config.model;
+        let side_query_id = side_query_id
+            .map(str::to_owned)
+            .unwrap_or_else(|| format!("btw-{}", uuid::Uuid::now_v7()));
         let parent_session_id = self.session_info.id.to_string();
         let wire_resolution = provider.as_deref().and_then(|provider| {
             let key = atelier_provider::ModelKey::new(provider.to_owned(), model.clone()).ok()?;
@@ -337,17 +444,14 @@ impl super::SessionActor {
                 ),
             );
         };
-        let request = crate::sampling::ConversationRequest {
-            items,
-            tools: Vec::new(),
-            model: Some(model.clone()),
-            temperature: None,
-            x_atelier_conv_id: Some(side_query_id.clone()),
-            x_atelier_req_id: Some(format!("xai-btw-{}", uuid::Uuid::now_v7())),
-            x_atelier_session_id: Some(parent_session_id.clone()),
-            x_atelier_agent_id: Some(atelier_telemetry::id::agent_id()),
-            ..Default::default()
-        };
+        let request = build_side_query_request(
+            &snapshot,
+            append_context,
+            question,
+            &model,
+            &side_query_id,
+            &parent_session_id,
+        );
         let response = match sampling_client.conversation_collect(request).await {
             Ok(response) => response,
             Err(error) => {
@@ -380,8 +484,71 @@ impl super::SessionActor {
 
 #[cfg(test)]
 mod tests {
-    use super::completed_conversation;
-    use crate::sampling::{ConversationItem, ToolCall};
+    use super::{
+        ContextSnapshot, build_side_query_request, completed_conversation,
+        snapshot_items_at_completed_boundary, write_snapshot_once,
+    };
+    use crate::sampling::{ConversationItem, SyntheticReason, ToolCall};
+    use crate::session::info::Info;
+    use std::io::ErrorKind;
+
+    fn test_info() -> Info {
+        Info {
+            id: agent_client_protocol::SessionId::new("context-snapshot-path-test"),
+            cwd: "C:/workspace".to_owned(),
+        }
+    }
+
+    #[cfg(windows)]
+    fn absolute_snapshot_id() -> &'static str {
+        r"C:\outside\snapshot"
+    }
+
+    #[cfg(not(windows))]
+    fn absolute_snapshot_id() -> &'static str {
+        "/tmp/outside/snapshot"
+    }
+
+    fn invalid_snapshot_ids() -> [&'static str; 3] {
+        [absolute_snapshot_id(), "../outside", "not-a-uuid"]
+    }
+
+    #[test]
+    fn snapshot_get_rejects_absolute_traversal_and_invalid_uuid_ids() {
+        let info = test_info();
+
+        for snapshot_id in invalid_snapshot_ids() {
+            let error = ContextSnapshot::load(&info, snapshot_id)
+                .expect_err("get must reject an unsafe snapshot id before filesystem access");
+            assert_eq!(error.kind(), ErrorKind::InvalidInput, "{snapshot_id}");
+        }
+    }
+
+    #[test]
+    fn snapshot_delete_rejects_absolute_traversal_and_invalid_uuid_ids() {
+        let info = test_info();
+
+        for snapshot_id in invalid_snapshot_ids() {
+            let error = ContextSnapshot::delete(&info, snapshot_id)
+                .expect_err("delete must reject an unsafe snapshot id before filesystem access");
+            assert_eq!(error.kind(), ErrorKind::InvalidInput, "{snapshot_id}");
+        }
+    }
+
+    #[test]
+    fn snapshot_path_is_a_direct_child_of_context_snapshots() {
+        let info = test_info();
+        let snapshot_id = uuid::Uuid::now_v7().to_string();
+        let directory = crate::session::persistence::session_dir(&info).join("context_snapshots");
+
+        let path = ContextSnapshot::path_for(&info, &snapshot_id).unwrap();
+
+        assert_eq!(path.parent(), Some(directory.as_path()));
+        assert_eq!(
+            path.file_name().and_then(|name| name.to_str()),
+            Some(format!("{snapshot_id}.json").as_str())
+        );
+    }
 
     #[test]
     fn snapshot_drops_incomplete_tool_exchange_only_at_the_tail() {
@@ -434,6 +601,57 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_drops_an_incomplete_tool_exchange_before_a_later_user_turn() {
+        let items = vec![
+            ConversationItem::user("first turn"),
+            ConversationItem::assistant_tool_calls(vec![ToolCall {
+                id: "call-1".into(),
+                name: "read_file".to_owned(),
+                arguments: "{}".into(),
+            }]),
+            ConversationItem::user("later completed turn"),
+            ConversationItem::assistant("later answer"),
+        ];
+
+        let result = completed_conversation(items);
+
+        assert_eq!(result.len(), 3);
+        assert!(matches!(&result[0], ConversationItem::User(_)));
+        assert!(matches!(&result[1], ConversationItem::User(_)));
+        assert!(
+            matches!(&result[2], ConversationItem::Assistant(assistant) if assistant.tool_calls.is_empty())
+        );
+    }
+
+    #[test]
+    fn running_turn_is_excluded_from_a_completed_snapshot_boundary() {
+        let completed = vec![
+            ConversationItem::user("completed question"),
+            ConversationItem::assistant("completed answer"),
+            ConversationItem::user("currently running question"),
+        ];
+
+        let result = snapshot_items_at_completed_boundary(completed, true);
+
+        assert_eq!(result.len(), 2);
+        let wire = serde_json::to_string(&result).unwrap();
+        assert!(!wire.contains("currently running question"));
+        assert!(wire.contains("completed answer"));
+    }
+
+    #[test]
+    fn idle_snapshot_keeps_the_latest_completed_turn() {
+        let completed = vec![
+            ConversationItem::user("completed question"),
+            ConversationItem::assistant("completed answer"),
+        ];
+
+        let result = snapshot_items_at_completed_boundary(completed.clone(), false);
+
+        assert_eq!(result.len(), completed.len());
+    }
+
+    #[test]
     fn append_context_is_after_the_immutable_items() {
         let snapshot = super::ContextSnapshot::from_items(
             "session",
@@ -464,6 +682,95 @@ mod tests {
         assert_eq!(snapshot.source_revision, 42);
         assert_eq!(snapshot.items.len(), 1);
         assert!(matches!(snapshot.items[0], ConversationItem::User(_)));
+    }
+
+    #[test]
+    fn snapshot_serialization_excludes_parent_runtime_secrets() {
+        let runtime_only_reasons = [
+            SyntheticReason::SystemReminder,
+            SyntheticReason::ProjectInstructions,
+            SyntheticReason::AutoContinue,
+            SyntheticReason::AutoRecovery,
+            SyntheticReason::TaskCompleted,
+            SyntheticReason::SubagentCompleted,
+            SyntheticReason::NotificationDrain,
+            SyntheticReason::GoalSummary,
+            SyntheticReason::GoalClassifierNudge,
+            SyntheticReason::SchedulerFired,
+            SyntheticReason::Unknown,
+        ];
+        let mut items = vec![
+            ConversationItem::system("Authorization: Bearer parent-secret"),
+            ConversationItem::user("safe history"),
+            ConversationItem::user_meta("compaction context"),
+            ConversationItem::interjection("user steering"),
+        ];
+        for (index, reason) in runtime_only_reasons.into_iter().enumerate() {
+            let mut item = ConversationItem::user(format!("runtime-secret-{index}"));
+            let ConversationItem::User(user) = &mut item else {
+                unreachable!("ConversationItem::user must create a user item");
+            };
+            user.synthetic_reason = Some(reason);
+            items.push(item);
+        }
+        let snapshot = ContextSnapshot::from_items("session", "C:/workspace", items);
+
+        let wire = serde_json::to_string(&snapshot).unwrap();
+
+        assert!(!wire.contains("parent-secret"));
+        assert!(!wire.contains("runtime-secret"));
+        assert!(wire.contains("safe history"));
+        assert!(wire.contains("compaction context"));
+        assert!(wire.contains("user steering"));
+    }
+
+    #[test]
+    fn snapshot_file_is_create_once_and_cannot_be_overwritten() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let path = directory.path().join("snapshot.json");
+
+        write_snapshot_once(&path, b"first").unwrap();
+        let error = write_snapshot_once(&path, b"second")
+            .expect_err("an immutable snapshot must reject a second write");
+
+        assert_eq!(error.kind(), ErrorKind::AlreadyExists);
+        assert_eq!(std::fs::read(&path).unwrap(), b"first");
+    }
+
+    #[test]
+    fn side_query_request_is_one_tool_free_call_and_does_not_mutate_snapshot() {
+        let snapshot = ContextSnapshot::from_items(
+            "parent-session",
+            "C:/workspace",
+            vec![ConversationItem::user("parent history")],
+        );
+        let original_items = serde_json::to_value(&snapshot.items).unwrap();
+
+        let request = build_side_query_request(
+            &snapshot,
+            Some("temporary context"),
+            "what is happening?",
+            "test-model",
+            "btw-1",
+            "parent-session",
+        );
+
+        assert!(request.tools.is_empty());
+        assert!(request.hosted_tools.is_empty());
+        assert_eq!(request.model.as_deref(), Some("test-model"));
+        assert_eq!(request.x_atelier_conv_id.as_deref(), Some("btw-1"));
+        assert_eq!(
+            request.x_atelier_session_id.as_deref(),
+            Some("parent-session")
+        );
+        assert_eq!(
+            serde_json::to_value(&snapshot.items).unwrap(),
+            original_items
+        );
+        let wire = serde_json::to_string(&request.items).unwrap();
+        assert!(wire.contains("parent history"));
+        assert!(wire.contains("temporary context"));
+        assert!(wire.contains("what is happening?"));
     }
 
     #[test]

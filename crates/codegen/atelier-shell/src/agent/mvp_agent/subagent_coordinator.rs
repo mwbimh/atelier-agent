@@ -323,7 +323,6 @@ impl MvpAgent {
             session_env,
             parent_attribution_callback,
             parent_agent_name,
-            parent_managed_mcp_proxy_base_url,
         ) = {
             let sessions = self.sessions.borrow();
             let ps = sessions.get(&parent_sid);
@@ -358,7 +357,6 @@ impl MvpAgent {
                     .unwrap_or_else(|| std::sync::Arc::new(std::collections::HashMap::new())),
                 ps.and_then(|h| h.attribution_callback.clone()),
                 ps.map(|h| h.agent_name.clone()),
-                ps.map(|h| h.managed_mcp_proxy_base_url.clone()),
             )
         };
         let (
@@ -440,8 +438,6 @@ impl MvpAgent {
             gateway: self.gateway.clone(),
             client_hooks: Default::default(),
             sampling_config: self.sampling_config.borrow().clone(),
-            managed_mcp_proxy_base_url: parent_managed_mcp_proxy_base_url
-                .unwrap_or_else(|| self.cli_chat_proxy_base_url()),
             alpha_test_key: self.alpha_test_key(),
             auth_method_id: self
                 .auth_method_id
@@ -450,6 +446,7 @@ impl MvpAgent {
                 .cloned()
                 .unwrap_or_else(|| acp::AuthMethodId::new("default")),
             model_id: parent_model_id,
+            role_registry_path: Some(atelier_config::atelier_home().join("providers.toml")),
             storage_mode: self.storage_mode,
             auth: self.current_or_buffered_auth(),
             parent_cwd: parent_cwd.clone(),
@@ -464,6 +461,8 @@ impl MvpAgent {
             hunk_tracking_enabled,
             fs,
             terminal,
+            runtime_policy: self.policy_engine.clone(),
+            runtime_control: Some(self.runtime_control.clone()),
             session_env,
             memory_config: self.memory_config.clone(),
             web_search_sampling_config: self.prepare_web_search_sampling_config(),

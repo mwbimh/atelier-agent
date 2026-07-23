@@ -3,6 +3,121 @@
 use super::*;
 
 #[test]
+fn dashboard_bare_attach_keeps_an_interactive_command_draft() {
+    let mut app = test_app();
+    app.active_view = ActiveView::AgentDashboard;
+    ensure_dashboard_state(&mut app);
+
+    let effects = dispatch(
+        Action::DashboardDispatchSlash {
+            text: "/attach".into(),
+        },
+        &mut app,
+    );
+
+    assert!(effects.is_empty());
+    assert_eq!(app.dashboard.as_ref().unwrap().dispatch.text(), "/attach ");
+}
+
+#[test]
+fn dashboard_bare_stop_keeps_an_interactive_command_draft() {
+    let mut app = test_app();
+    app.active_view = ActiveView::AgentDashboard;
+    ensure_dashboard_state(&mut app);
+
+    let effects = dispatch(
+        Action::DashboardDispatchSlash {
+            text: "/stop".into(),
+        },
+        &mut app,
+    );
+
+    assert!(effects.is_empty());
+    assert_eq!(app.dashboard.as_ref().unwrap().dispatch.text(), "/stop ");
+}
+
+#[test]
+fn dashboard_bare_runtime_configuration_commands_keep_interactive_drafts() {
+    for command in ["provider", "roles", "model-config"] {
+        let mut app = test_app();
+        app.active_view = ActiveView::AgentDashboard;
+        ensure_dashboard_state(&mut app);
+
+        let effects = dispatch(
+            Action::DashboardDispatchSlash {
+                text: format!("/{command}"),
+            },
+            &mut app,
+        );
+
+        assert!(effects.is_empty(), "/{command} must open interactive entry");
+        assert_eq!(
+            app.dashboard.as_ref().unwrap().dispatch.text(),
+            format!("/{command} ")
+        );
+    }
+}
+
+#[test]
+fn dashboard_complete_runtime_commands_dispatch_the_expected_control_effects() {
+    let runtime_cases = [
+        (
+            "/provider add allm chat https://example.test/v1 none",
+            "_atelier/provider/create",
+        ),
+        (
+            "/provider edit allm chat https://example.test/v1 none",
+            "_atelier/provider/update",
+        ),
+        ("/provider test allm", "_atelier/provider/test"),
+        ("/roles list", "_atelier/role/list"),
+        ("/model-config list", "_atelier/model/list"),
+        ("/tasks", "_atelier/task/list"),
+        ("/attach task-1", "_atelier/task/attach"),
+        ("/stop task-1", "_atelier/task/cancel"),
+    ];
+
+    for (command, expected_method) in runtime_cases {
+        let mut app = test_app();
+        app.active_view = ActiveView::AgentDashboard;
+        ensure_dashboard_state(&mut app);
+
+        let effects = dispatch(
+            Action::DashboardDispatchSlash {
+                text: command.to_owned(),
+            },
+            &mut app,
+        );
+
+        assert!(
+            matches!(
+                effects.as_slice(),
+                [Effect::RuntimeExtension { agent_id: None, method, .. }]
+                    if method == expected_method
+            ),
+            "{command} dispatched {effects:?}"
+        );
+    }
+
+    let mut app = test_app();
+    app.active_view = ActiveView::AgentDashboard;
+    ensure_dashboard_state(&mut app);
+    let effects = dispatch(
+        Action::DashboardDispatchSlash {
+            text: "/provider refresh allm".into(),
+        },
+        &mut app,
+    );
+    assert!(matches!(
+        effects.as_slice(),
+        [Effect::RefreshProviderModels {
+            agent_id: None,
+            provider_id,
+        }] if provider_id == "allm"
+    ));
+}
+
+#[test]
 fn voice_final_appends_to_dashboard_dispatch() {
     // On the session-less dashboard, dictation lands in the dispatch input.
     let mut app = test_app_with_agent();
@@ -1623,8 +1738,12 @@ fn dashboard_slash_model_stages_pending_model() {
     open_dashboard(&mut app);
     let effects = dispatch_dashboard_dispatch_slash(&mut app, "/model atelier-4.5".into());
     assert!(
-        effects.is_empty(),
-        "staging a model must not spawn a session"
+        matches!(
+            effects.as_slice(),
+            [Effect::PersistPreferredModel { model_id, reasoning_effort: None }]
+                if model_id.0.as_ref() == "atelier-4.5"
+        ),
+        "dashboard model selection must persist roles.main without spawning: {effects:?}"
     );
     assert!(app.agents.is_empty(), "no session should be created");
     let pending = app
@@ -1672,37 +1791,6 @@ fn dashboard_bare_model_opens_interactive_argument_entry() {
     assert_eq!(dashboard.dispatch.text(), "/model ");
     assert!(dashboard.error_toast.is_none());
     assert!(!dashboard.dispatch.slash_snapshot().matches.is_empty());
-}
-
-/// A tier-restricted command typed into the dashboard dispatch input must
-/// upsell via the feedback toast — not execute, and (crucially) not fall
-/// through the unknown-command path, which would spawn a session whose
-/// first prompt is the raw slash text.
-#[serial_test::serial(ATELIER_AGENT_DASHBOARD)]
-#[test]
-fn dashboard_slash_restricted_command_upsells_via_toast() {
-    let mut app = test_app();
-    app.tier_restricted_commands = vec!["imagine".to_string()];
-    open_dashboard(&mut app);
-
-    let effects = dispatch_dashboard_dispatch_slash(&mut app, "/imagine a sunset".into());
-
-    assert!(effects.is_empty(), "restricted command must not dispatch");
-    assert!(
-        app.agents.is_empty(),
-        "no session may be spawned for the raw slash text"
-    );
-    let toast = app
-        .dashboard
-        .as_ref()
-        .unwrap()
-        .error_toast
-        .as_deref()
-        .expect("restricted command must set the upsell toast");
-    assert!(
-        toast.contains("/imagine") && toast.contains("SuperAtelier"),
-        "toast must carry the upsell: {toast}"
-    );
 }
 
 /// A slash command that fails (`CommandResult::Error`) surfaces on

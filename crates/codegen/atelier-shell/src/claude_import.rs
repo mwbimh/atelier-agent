@@ -553,6 +553,18 @@ pub fn is_claude_import_marked() -> bool {
 /// waiting for restart.
 pub fn refresh_marker_cache(value: bool) {
     *MARKER_CACHE.write().expect("MARKER_CACHE poisoned") = Some(value);
+
+    // Workspace-resident compatibility gates cannot access this crate's cache.
+    // Keep their test-only override in sync so cross-crate tests exercise the
+    // same marker value instead of reading the user's real config.toml.
+    #[cfg(test)]
+    unsafe {
+        if value {
+            std::env::set_var("_ATELIER_CLAUDE_MARKER_OVERRIDE", "1");
+        } else {
+            std::env::remove_var("_ATELIER_CLAUDE_MARKER_OVERRIDE");
+        }
+    }
 }
 
 /// Reset the marker cache to uninitialised. Test-only.

@@ -17,6 +17,17 @@ use xai_acp_lib::AcpAgentTx;
 /// Unique local identifier for an agent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct AgentId(pub usize);
+/// Client-side identity for one `/btw` request.
+///
+/// The shell response does not need to echo this value: the pager carries it
+/// through the async effect so a late answer cannot populate a dismissed or
+/// newer overlay. `question` is retained as an additional association check
+/// and for error rendering without consulting mutable UI state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BtwRequest {
+    pub request_id: u64,
+    pub question: String,
+}
 /// Whether a queue entry is a regular prompt or a slash command.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum QueueEntryKind {

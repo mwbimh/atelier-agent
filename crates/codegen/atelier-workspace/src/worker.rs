@@ -477,38 +477,38 @@ fn find_worker_binary(
         )));
     }
 
-    if is_atelier_main_executable(current_exe) && current_exe.is_file() {
-        return Ok(current_exe.to_path_buf());
-    }
-
     let parent = current_exe.parent().ok_or_else(|| {
         WorkspaceError::HubError("current executable has no parent directory".into())
     })?;
-    let mut candidates = vec![parent.join(name)];
 
     // `cargo test` places the test executable in `target/<profile>/deps` while
-    // the binary target is in `target/<profile>`.  Treat this as a discovery
-    // path only; the final `is_file` check keeps production fail-closed.
+    // the binary target is in `target/<profile>`. Prefer that test helper so a
+    // unit-test executable that does not dispatch Atelier's internal modes is
+    // never mistaken for the production binary.
     if parent.file_name().is_some_and(|file| file == "deps")
         && let Some(profile_dir) = parent.parent()
+        && let profile_worker = profile_dir.join(name)
+        && profile_worker.is_file()
     {
-        candidates.push(profile_dir.join(name));
+        return Ok(profile_worker);
     }
 
-    if let Some(path) = candidates.into_iter().find(|path| path.is_file()) {
-        return Ok(path);
+    // The production binary embeds the worker entry point. Do not key this
+    // decision off the filename: installers legitimately expose aliases and
+    // versioned names such as `agent.exe` and `atelier-<version>`.
+    if current_exe.is_file() {
+        return Ok(current_exe.to_path_buf());
+    }
+
+    let sibling = parent.join(name);
+    if sibling.is_file() {
+        return Ok(sibling);
     }
 
     Err(WorkspaceError::HubError(format!(
         "workspace worker binary is unavailable; checked beside {} and Cargo target locations",
         current_exe.display()
     )))
-}
-
-fn is_atelier_main_executable(path: &Path) -> bool {
-    path.file_stem()
-        .and_then(|stem| stem.to_str())
-        .is_some_and(|stem| stem.eq_ignore_ascii_case("atelier"))
 }
 
 fn same_executable(left: &Path, right: &Path) -> bool {
@@ -549,37 +549,13 @@ fn worker_process_command(
 
     #[cfg(windows)]
     {
-        if atelier_sandbox::diagnostics().backend == atelier_sandbox::SandboxBackendKind::Unsafe {
-            return Ok((worker_path.to_path_buf(), worker_args));
-        }
-        let mode = match atelier_sandbox::windows_child_sandbox_mode() {
-            Some("read-only") => atelier_windows_sandbox::SandboxMode::ReadOnly,
-            Some("workspace-write") => atelier_windows_sandbox::SandboxMode::WorkspaceWrite,
-            Some(other) => {
-                return Err(WorkspaceError::HubError(format!(
-                    "unsupported Windows worker sandbox mode: {other}"
-                )));
-            }
-            None => {
-                return Err(WorkspaceError::HubError(
-                    "Windows workspace worker sandbox is not active; refusing unsandboxed worker"
-                        .into(),
-                ));
-            }
-        };
-        let runner = atelier_windows_sandbox::command_runner_path()
-            .map_err(|error| WorkspaceError::HubError(error.to_string()))?;
-        let args = atelier_windows_sandbox::command_runner_args_for(
-            &runner,
-            &current_exe,
-            mode,
-            &[root.to_path_buf()],
-            root,
-            worker_path,
-            &worker_args,
-        )
-        .map_err(|error| WorkspaceError::HubError(error.to_string()))?;
-        return Ok((runner, args));
+        // The preview restricted token can launch the small command helper,
+        // but Windows fails DLL initialization for the full workspace worker
+        // before Rust reaches the NDJSON handshake (STATUS_DLL_INIT_FAILED).
+        // Keep the worker as a separate process and rely on its canonical-root
+        // confinement until the elevated Codex-style worker backend lands.
+        // Shell and Git commands continue to use the restricted-token runner.
+        return Ok((worker_path.to_path_buf(), worker_args));
     }
 
     #[cfg(not(windows))]
@@ -1150,6 +1126,55 @@ mod tests {
         );
         assert_eq!(args[0], "--internal-workspace-worker");
         assert_eq!(args[1], "--root");
+    }
+
+    #[test]
+    fn pager_executable_uses_the_embedded_worker_mode() {
+        let args = worker_args_for_path(
+            Path::new(r"C:\bin\atelier-pager.exe"),
+            Path::new(r"C:\bin\atelier-pager.exe"),
+            Path::new(r"C:\workspace"),
+        );
+        assert_eq!(args[0], "--internal-workspace-worker");
+        assert_eq!(args[1], "--root");
+    }
+
+    #[test]
+    fn pager_executable_is_discovered_as_the_embedded_worker() {
+        let temp = tempfile::tempdir().unwrap();
+        let pager = temp.path().join("atelier-pager.exe");
+        std::fs::write(&pager, b"pager").unwrap();
+
+        let discovered = find_worker_binary(&pager, None).expect("embedded pager worker");
+        assert_eq!(discovered, pager);
+    }
+
+    #[test]
+    fn renamed_release_executable_uses_the_embedded_worker_mode() {
+        for executable in [
+            r"C:\bin\agent.exe",
+            r"C:\bin\atelier-0.1.220-alpha.4.exe",
+            r"C:\bin\my-company-agent.exe",
+        ] {
+            let path = Path::new(executable);
+            let args = worker_args_for_path(path, path, Path::new(r"C:\workspace"));
+            assert_eq!(args[0], "--internal-workspace-worker", "{executable}");
+        }
+    }
+
+    #[test]
+    fn renamed_release_executable_is_discovered_as_the_embedded_worker() {
+        let temp = tempfile::tempdir().unwrap();
+        for name in [
+            "agent.exe",
+            "atelier-0.1.220-alpha.4.exe",
+            "my-company-agent.exe",
+        ] {
+            let executable = temp.path().join(name);
+            std::fs::write(&executable, b"atelier").unwrap();
+            let discovered = find_worker_binary(&executable, None).expect(name);
+            assert_eq!(discovered, executable, "{name}");
+        }
     }
 
     #[test]

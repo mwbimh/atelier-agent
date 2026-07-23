@@ -14,11 +14,6 @@ pub(crate) struct PathProvider;
 
 impl PathProvider {
     pub async fn suggest(&self, ctx: &SuggestContext) -> Vec<RankedSuggestion> {
-        // shell_token quoting is POSIX-only: cmd/pwsh would misparse the
-        // escaped line, so Windows serves no deterministic completions.
-        if cfg!(windows) {
-            return Vec::new();
-        }
         let tok = match extract_command_token(ctx.prefix()) {
             Some(t) => t,
             None => return Vec::new(),
@@ -170,7 +165,7 @@ fn scan_path_from(path_var: &str) -> Vec<String> {
                 }
             }
 
-            if let Ok(name) = entry.file_name().into_string() {
+            if let Some(name) = executable_name(&entry.path()) {
                 executables.push(name);
             }
         }
@@ -179,6 +174,25 @@ fn scan_path_from(path_var: &str) -> Vec<String> {
     executables.sort_unstable();
     executables.dedup();
     executables
+}
+
+#[cfg(unix)]
+fn executable_name(path: &std::path::Path) -> Option<String> {
+    path.file_name()?.to_str().map(str::to_owned)
+}
+
+#[cfg(windows)]
+fn executable_name(path: &std::path::Path) -> Option<String> {
+    let extension = path.extension()?.to_str()?;
+    let pathext = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string());
+    let extension = format!(".{extension}");
+    if !pathext
+        .split(';')
+        .any(|candidate| candidate.eq_ignore_ascii_case(&extension))
+    {
+        return None;
+    }
+    path.file_stem()?.to_str().map(str::to_owned)
 }
 
 #[cfg(test)]
@@ -333,6 +347,19 @@ mod tests {
         assert!(scan_path_from("/nonexistent/path/that/doesnt/exist").is_empty());
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn windows_executable_name_honors_pathext_and_strips_extension() {
+        assert_eq!(
+            executable_name(std::path::Path::new(r"C:\bin\atelier.EXE")),
+            Some("atelier".to_string())
+        );
+        assert_eq!(
+            executable_name(std::path::Path::new(r"C:\bin\notes.txt")),
+            None
+        );
+    }
+
     #[test]
     fn scan_creates_sorted_deduped_list() {
         use std::fs;
@@ -343,7 +370,7 @@ mod tests {
         fs::create_dir(&bin).unwrap();
 
         for name in &["zzz_cmd", "aaa_cmd", "mmm_cmd"] {
-            let path = bin.join(name);
+            let path = bin.join(test_executable_name(name));
             fs::write(&path, "").unwrap();
             #[cfg(unix)]
             {
@@ -391,7 +418,7 @@ mod tests {
         fs::create_dir(&bin2).unwrap();
 
         for bin in [&bin1, &bin2] {
-            let path = bin.join("shared_cmd");
+            let path = bin.join(test_executable_name("shared_cmd"));
             fs::write(&path, "").unwrap();
             #[cfg(unix)]
             {
@@ -400,8 +427,19 @@ mod tests {
             }
         }
 
-        let path_var = format!("{}:{}", bin1.to_str().unwrap(), bin2.to_str().unwrap());
+        let path_var = std::env::join_paths([&bin1, &bin2])
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
         let result = scan_path_from(&path_var);
         assert_eq!(result, vec!["shared_cmd"]);
+    }
+
+    fn test_executable_name(stem: &str) -> String {
+        if cfg!(windows) {
+            format!("{stem}.exe")
+        } else {
+            stem.to_string()
+        }
     }
 }

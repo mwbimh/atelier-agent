@@ -150,13 +150,16 @@ pub(crate) struct SubagentSpawnContext {
     /// context is built (an async snapshot from the parent session actor).
     pub client_hooks: crate::extensions::hooks::ClientHooks,
     pub sampling_config: atelier_sampler::SamplerConfig,
-    pub managed_mcp_proxy_base_url: String,
     /// The staging auth header value propagated from the parent. Used
     /// when materialising subagent `SamplerConfig`s for auth-flow tracking
     /// and for `inject_url_derived_headers` in the construction helpers.
     pub alpha_test_key: Option<String>,
     pub auth_method_id: acp::AuthMethodId,
     pub model_id: acp::ModelId,
+    /// Immutable Provider/Role registry selected when the parent spawn context
+    /// is built. Keeping this explicit prevents subagents from re-reading a
+    /// different process-global ATELIER_HOME during resolution.
+    pub role_registry_path: Option<PathBuf>,
     #[expect(
         dead_code,
         reason = "unused in production; remove expect when wired or delete the item"
@@ -192,6 +195,9 @@ pub(crate) struct SubagentSpawnContext {
     /// Parent's terminal runner — shared so bash commands run in the
     /// same terminal environment (env vars, cwd, color settings).
     pub terminal: Arc<dyn AsyncTerminalRunner>,
+    /// Live Runtime policy inherited from the parent agent/session.
+    pub runtime_policy: Arc<parking_lot::RwLock<atelier_hooks::PolicyEngine>>,
+    pub runtime_control: Option<Arc<parking_lot::Mutex<crate::runtime_control::RuntimeControl>>>,
     /// Parent's terminal backend — shared so background tasks, monitors, and
     /// scheduled tasks survive subagent exit. When `Some`, the subagent session
     /// reuses this backend instead of creating a new `LocalTerminalBackend`.
@@ -832,8 +838,8 @@ async fn resolve_subagent_sampling_config(
 /// [`resolve_subagent_sampling_config`] (where the user `[subagents.models]`
 /// pin and `AgentDefinition.model` apply). So a goal/persona override WINS
 /// over a user per-agent pin. An override that does not resolve to a known
-/// model warns and falls through to the pin path; `None` (inherit) hands
-/// precedence back to the pin path entirely (pin > agent-def > inherit).
+/// model fails closed. Built-in fixed-role subagents also fail when their role
+/// is unconfigured; custom subagent names retain the legacy pin path.
 ///
 /// Extracted from `handle_subagent_request` so the precedence is unit-testable
 /// without spawning a child session.
@@ -842,17 +848,16 @@ async fn resolve_effective_model_config(
     subagent_type: &str,
     definition_model: &atelier_agent::config::ModelOverride,
     ctx: &SubagentSpawnContext,
-) -> (atelier_sampler::SamplerConfig, acp::ModelId) {
+) -> Result<(atelier_sampler::SamplerConfig, acp::ModelId), String> {
     if let Some(model_id) = runtime_override_model {
         if let Some(resolved) = resolve_model_override_to_config(model_id, ctx) {
-            return resolved;
+            return Ok(resolved);
         }
-        tracing::warn!(
-            model_id,
-            "Runtime model override references unknown model, falling through"
-        );
+        return Err(format!(
+            "Runtime model override references unavailable model '{model_id}'"
+        ));
     }
-    if let Ok(Some(resolved)) = resolve_fixed_runtime_role(subagent_type, ctx) {
+    if let Some(resolved) = resolve_fixed_runtime_role(subagent_type, ctx)? {
         log_subagent_model_resolution(
             subagent_type,
             "fixed_runtime_role",
@@ -860,9 +865,9 @@ async fn resolve_effective_model_config(
             &resolved.1,
             &ctx.sampling_config,
         );
-        return resolved;
+        return Ok(resolved);
     }
-    resolve_subagent_sampling_config(subagent_type, definition_model, ctx).await
+    Ok(resolve_subagent_sampling_config(subagent_type, definition_model, ctx).await)
 }
 
 /// Map the built-in subagent kinds to Atelier's fixed model roles.
@@ -883,8 +888,8 @@ fn fixed_role_for_subagent_type(subagent_type: &str) -> Option<atelier_provider:
 }
 
 /// Resolve a configured fixed role through the live model catalog and apply
-/// its small set of model options. An untouched default role is treated as
-/// unconfigured so existing installations keep their normal resolution path.
+/// its small set of model options. Built-in roles are mandatory and never
+/// inherit the parent model or legacy subagent pins.
 fn resolve_fixed_runtime_role(
     subagent_type: &str,
     ctx: &SubagentSpawnContext,
@@ -892,15 +897,17 @@ fn resolve_fixed_runtime_role(
     let Some(role_id) = fixed_role_for_subagent_type(subagent_type) else {
         return Ok(None);
     };
-    let registry = atelier_provider::ProviderRegistry::load_or_create(
-        atelier_config::atelier_home().join("providers.toml"),
-    )
-    .map_err(|error| format!("failed to load {role_id} role configuration: {error}"))?;
+    let registry_path = ctx
+        .role_registry_path
+        .clone()
+        .unwrap_or_else(|| atelier_config::atelier_home().join("providers.toml"));
+    let registry = atelier_provider::ProviderRegistry::load_or_create(registry_path)
+        .map_err(|error| format!("failed to load {role_id} role configuration: {error}"))?;
     let Some(role) = registry.role(role_id) else {
-        return Ok(None);
+        return Err(format!("role {role_id} is not configured"));
     };
     if role.provider == "default" || role.model == "default" {
-        return Ok(None);
+        return Err(format!("role {role_id} is not configured"));
     }
     let model_key = format!("{}/{}", role.provider, role.model);
     let Some((mut config, model_id)) = resolve_model_override_to_config(&model_key, ctx) else {
@@ -908,23 +915,13 @@ fn resolve_fixed_runtime_role(
             "configured {role_id} role model is unavailable: {model_key}"
         ));
     };
-    config.request_payload = role.effective_payload();
+    config.request_payload = role.merged_payload(&config.request_payload);
     if let Some(raw_effort) = role.effort.as_deref() {
         config.reasoning_effort = Some(raw_effort.parse().map_err(|error| {
             format!("configured {role_id} role effort is invalid ({raw_effort}): {error}")
         })?);
     }
     Ok(Some((config, model_id)))
-}
-/// Truncate an API key to a safe prefix for logging.
-fn key_prefix(key: &Option<String>) -> String {
-    match key {
-        Some(k) => {
-            let len = k.len().min(8);
-            k[..len].to_string()
-        }
-        None => "<none>".to_string(),
-    }
 }
 /// Emit a unified log entry recording which model and credentials a subagent
 /// resolved to, and how they compare to the parent's.
@@ -935,8 +932,6 @@ fn log_subagent_model_resolution(
     resolved_id: &acp::ModelId,
     parent: &atelier_sampler::SamplerConfig,
 ) {
-    let child_key = key_prefix(&resolved.api_key);
-    let parent_key = key_prefix(&parent.api_key);
     let keys_match = resolved.api_key == parent.api_key;
     atelier_telemetry::unified_log::debug(
         "subagent model resolved",
@@ -944,8 +939,8 @@ fn log_subagent_model_resolution(
         Some(serde_json::json!(
             { "agent" : agent_name, "priority" : priority, "child_model" :
             resolved_id.0.as_ref(), "child_base_url" : & resolved.base_url,
-            "child_key_prefix" : child_key, "parent_model" : & parent.model,
-            "parent_base_url" : & parent.base_url, "parent_key_prefix" : parent_key,
+            "child_has_key" : resolved.api_key.is_some(), "parent_model" : & parent.model,
+            "parent_base_url" : & parent.base_url, "parent_has_key" : parent.api_key.is_some(),
             "keys_match" : keys_match, }
         )),
     );
@@ -1014,8 +1009,8 @@ async fn read_parent_sampling_config(
                 None,
                 Some(serde_json::json!(
                     { "parent_model" : & inherited.model, "parent_base_url" : &
-                    inherited.base_url, "parent_key_prefix" : key_prefix(& inherited
-                    .api_key), "session_model_id" : model_id.0.as_ref(),
+                    inherited.base_url, "parent_has_key" : inherited.api_key.is_some(),
+                    "session_model_id" : model_id.0.as_ref(),
                     "global_model_id" : global_model_id.0.as_ref(), "source" :
                     "chat_state", }
                 )),
@@ -1032,8 +1027,8 @@ async fn read_parent_sampling_config(
         None,
         Some(serde_json::json!(
             { "parent_model" : & ctx.sampling_config.model, "parent_base_url" : & ctx
-            .sampling_config.base_url, "parent_key_prefix" : key_prefix(& ctx
-            .sampling_config.api_key), "source" : "spawn_context_baseline",
+            .sampling_config.base_url, "parent_has_key" : ctx.sampling_config.api_key.is_some(),
+            "source" : "spawn_context_baseline",
             "has_chat_state" : ctx.parent_chat_state.is_some(), }
         )),
     );
@@ -1096,7 +1091,7 @@ fn resolve_model_override_to_config(
         Some(serde_json::json!(
             { "model_id" : model_id, "canonical_model" : canonical_model_id.0
             .as_ref(), "resolved_model_raw" : & config.model, "base_url" : & config
-            .base_url, "key_prefix" : key_prefix(& config.api_key),
+            .base_url, "has_key" : config.api_key.is_some(),
             "has_own_credentials" : entry.has_own_credentials(), "has_session_key" :
             has_session_key, "auth_type" : format!("{:?}", resolved_auth_type),
             "auth_method_id" : ctx.auth_method_id.0.as_ref(), }

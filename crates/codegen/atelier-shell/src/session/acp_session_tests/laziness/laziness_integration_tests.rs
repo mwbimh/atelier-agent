@@ -546,6 +546,44 @@ async fn make_debug_actor(
     let (persistence_tx, _persistence_rx) =
         tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
     let mut actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
+    // These tests exercise debug-mode orchestration, not sampler retry
+    // backoff. The shared actor fixture defaults to three retries, which can
+    // consume more than the timing ceiling even though the 60-second idle
+    // wait was correctly bypassed.
+    actor.max_retries = 0;
+    // Use a deterministic local failure instead of `http://localhost`.
+    // The latter can spend seconds in platform-specific name resolution or
+    // connection setup. This listener accepts the classifier request once
+    // and immediately closes the socket, preserving the sampler-error path
+    // without contaminating the idle-wait timing assertion.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind debug sampler failure endpoint");
+    let endpoint = format!(
+        "http://{}",
+        listener
+            .local_addr()
+            .expect("read debug sampler failure endpoint")
+    );
+    tokio::task::spawn_local(async move {
+        if let Ok((stream, _)) = listener.accept().await {
+            drop(stream);
+        }
+    });
+    let mut sampling_config = actor
+        .chat_state_handle
+        .get_sampling_config()
+        .await
+        .expect("test actor sampling config");
+    sampling_config.base_url = endpoint;
+    actor
+        .chat_state_handle
+        .update_sampling_config(sampling_config);
+    actor
+        .chat_state_handle
+        .get_sampling_config()
+        .await
+        .expect("updated debug sampling config");
     actor.events = crate::session::events::EventTracker::new(tmp.path());
     let mut entry = detector_entry(false, 0, None);
     entry.info.laziness_detector = detector;

@@ -5,9 +5,6 @@ pub mod chat_models_client;
 pub mod client;
 pub mod conversations_client;
 pub mod pull;
-#[cfg(test)]
-mod pull_smoke_test;
-pub mod sync;
 pub mod workspaces_client;
 
 pub use agent::{
@@ -23,15 +20,11 @@ pub use agent::{
 pub use chat_models_client::{
     ChatModelsClient, ChatModelsError, ListModesResponse, Mode, ModeAvailability,
 };
-pub use client::{
-    BackendClient, BackendError, FetchModelsResult, FetchedBundle, fetch_bundle,
-    fetch_login_device_flow, fetch_settings_blocking, fetch_subagent_bundle, share_url,
-};
+pub use client::{BackendClient, BackendError, FetchModelsResult, share_url};
 pub(crate) use client::{DEFAULT_CONTEXT_WINDOW, fetch_models_blocking, models_list_url};
 pub use conversations_client::{
     ConvError, ConvQuery, Conversation, ConversationsClient, ListConversationsPage,
     UpdateConversationBody,
 };
 pub use pull::{PullResult, pull_session_to_local};
-pub use sync::RemoteSync;
 pub use workspaces_client::{ListWorkspacesPage, Workspace, WorkspacesClient, WsError, WsQuery};

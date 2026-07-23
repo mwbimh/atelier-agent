@@ -135,6 +135,17 @@ impl AsyncFileSystem for LocalFs {
     async fn read_file(&self, path: &Path) -> Result<Vec<u8>, ComputerError> {
         match fs::read(path).await {
             Ok(data) => Ok(data),
+            Err(e)
+                if e.kind() == std::io::ErrorKind::PermissionDenied
+                    && fs::metadata(path)
+                        .await
+                        .is_ok_and(|metadata| metadata.is_dir()) =>
+            {
+                Err(ComputerError::io_with_kind(
+                    format!("{} is a directory", path.display()),
+                    std::io::ErrorKind::IsADirectory,
+                ))
+            }
             Err(e) => {
                 if is_permission_error(&e) {
                     atelier_sandbox::log_violation(&path.display().to_string(), "read");

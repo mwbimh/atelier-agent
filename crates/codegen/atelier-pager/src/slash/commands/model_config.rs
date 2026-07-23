@@ -36,50 +36,81 @@ impl SlashCommand for ModelConfigCommand {
     }
 
     fn session_scoped(&self) -> bool {
-        true
+        false
     }
 
     fn suggest_args(&self, ctx: &AppCtx, args_query: &str) -> Option<Vec<ArgItem>> {
-        let query = args_query.trim_end();
-        let mut parts = query.split_whitespace();
-        let command = parts.next();
-        let model_key = parts.next().unwrap_or_default();
-        if command.is_some() && model_key.is_empty() {
-            return Some(
-                ["list", "get ", "wire ", "override ", "delete ", "test "]
-                    .into_iter()
-                    .map(|value| ArgItem {
-                        display: value.trim().to_owned(),
-                        match_text: value.trim().to_owned(),
-                        insert_text: value.to_owned(),
-                        description: "model Wire API management".to_owned(),
-                    })
-                    .collect(),
-            );
+        let trailing_space = args_query.chars().last().is_some_and(char::is_whitespace);
+        let tokens = args_query.split_whitespace().collect::<Vec<_>>();
+        let subcommands = || {
+            ["list", "get", "wire", "override", "delete", "test"]
+                .into_iter()
+                .map(|command| ArgItem {
+                    display: command.to_owned(),
+                    match_text: command.to_owned(),
+                    insert_text: if command == "list" {
+                        command.to_owned()
+                    } else {
+                        format!("{command} ")
+                    },
+                    description: "model Wire API management".to_owned(),
+                })
+                .collect::<Vec<_>>()
+        };
+        let Some(command) = tokens.first().copied() else {
+            return Some(subcommands());
+        };
+        if tokens.len() == 1 && !trailing_space {
+            return Some(subcommands());
         }
-        if let Some(command) = command
-            && ["get", "wire", "override", "delete", "test"].contains(&command)
-            && !model_key.is_empty()
-            && query.ends_with(char::is_whitespace)
-        {
-            let prefix = format!("{command} ");
-            if command == "wire" || command == "override" {
+        if command == "list" {
+            return None;
+        }
+        if !["get", "wire", "override", "delete", "test"].contains(&command) {
+            return Some(subcommands());
+        }
+        if tokens.len() == 1 {
+            let append_space = matches!(command, "wire" | "override" | "test");
+            return Some(model_items(ctx, command, append_space));
+        }
+        if tokens.len() == 2 && !trailing_space {
+            let append_space = matches!(command, "wire" | "override" | "test");
+            return Some(model_items(ctx, command, append_space));
+        }
+        let model_key = tokens[1];
+        if tokens.len() == 2 && trailing_space {
+            if matches!(command, "wire" | "override") {
                 return Some(
                     ["chat_completions", "responses", "messages", "default"]
                         .into_iter()
                         .map(|wire_api| ArgItem {
                             display: wire_api.to_owned(),
                             match_text: wire_api.to_owned(),
-                            insert_text: format!("{prefix}{model_key} {wire_api}"),
+                            insert_text: format!(
+                                "{command} {model_key} {wire_api}{}",
+                                if command == "override" { " " } else { "" }
+                            ),
                             description: "Wire API".to_owned(),
                         })
                         .collect(),
                 );
             }
-            return None;
-        }
-        if command.is_none() || (command.is_some() && model_key.is_empty()) {
-            return Some(model_items(ctx));
+            if command == "test" {
+                return Some(vec![
+                    ArgItem {
+                        display: "preview".to_owned(),
+                        match_text: "preview".to_owned(),
+                        insert_text: format!("test {model_key}"),
+                        description: "Preview the resolved request without sending it".to_owned(),
+                    },
+                    ArgItem {
+                        display: "execute".to_owned(),
+                        match_text: "execute".to_owned(),
+                        insert_text: format!("test {model_key} execute"),
+                        description: "Send a real request through the runtime sampler".to_owned(),
+                    },
+                ]);
+            }
         }
         None
     }
@@ -96,9 +127,14 @@ impl SlashCommand for ModelConfigCommand {
         };
         let command = tokens.first().map(String::as_str).unwrap_or("list");
         match command {
-            "list" => extension(MODEL_LIST, json!({})),
+            "list" => {
+                if tokens.len() != 1 {
+                    return CommandResult::Error("Usage: /model-config list".to_owned());
+                }
+                extension(MODEL_LIST, json!({}))
+            }
             "get" => {
-                let Some(model_key) = tokens.get(1) else {
+                let [_, model_key] = tokens.as_slice() else {
                     return CommandResult::Error(
                         "Usage: /model-config get <provider/model>".to_owned(),
                     );
@@ -106,12 +142,7 @@ impl SlashCommand for ModelConfigCommand {
                 extension(MODEL_GET, json!({ "modelKey": model_key }))
             }
             "wire" => {
-                let Some(model_key) = tokens.get(1) else {
-                    return CommandResult::Error(
-                        "Usage: /model-config wire <provider/model> <wire-api|default>".to_owned(),
-                    );
-                };
-                let Some(wire_api) = tokens.get(2) else {
+                let [_, model_key, wire_api] = tokens.as_slice() else {
                     return CommandResult::Error(
                         "Usage: /model-config wire <provider/model> <wire-api|default>".to_owned(),
                     );
@@ -174,7 +205,7 @@ impl SlashCommand for ModelConfigCommand {
                 )
             }
             "delete" => {
-                let Some(model_key) = tokens.get(1) else {
+                let [_, model_key] = tokens.as_slice() else {
                     return CommandResult::Error(
                         "Usage: /model-config delete <provider/model>".to_owned(),
                     );
@@ -187,6 +218,15 @@ impl SlashCommand for ModelConfigCommand {
                         "Usage: /model-config test <provider/model> [execute]".to_owned(),
                     );
                 };
+                if tokens.len() > 3
+                    || tokens
+                        .get(2)
+                        .is_some_and(|value| value.as_str() != "execute")
+                {
+                    return CommandResult::Error(
+                        "Usage: /model-config test <provider/model> [execute]".to_owned(),
+                    );
+                }
                 extension(
                     OVERRIDE_TEST,
                     json!({ "modelKey": model_key, "execute": tokens.get(2).is_some_and(|value| value == "execute") }),
@@ -216,14 +256,14 @@ fn parse_wire_api(value: &str) -> Result<Option<&'static str>, String> {
     }
 }
 
-fn model_items(ctx: &AppCtx) -> Vec<ArgItem> {
+fn model_items(ctx: &AppCtx, command: &str, append_space: bool) -> Vec<ArgItem> {
     ctx.models
         .available
         .iter()
         .map(|(id, info)| ArgItem {
             display: id.0.to_string(),
             match_text: format!("{} {}", id.0, info.name),
-            insert_text: format!("get {}", id.0),
+            insert_text: format!("{command} {}{}", id.0, if append_space { " " } else { "" }),
             description: info.name.clone(),
         })
         .collect()
@@ -234,7 +274,7 @@ mod tests {
     use super::ModelConfigCommand;
     use crate::acp::model_state::ModelState;
     use crate::app::actions::Action;
-    use crate::slash::command::{CommandExecCtx, CommandResult, SlashCommand};
+    use crate::slash::command::{AppCtx, CommandExecCtx, CommandResult, SlashCommand};
     use agent_client_protocol as acp;
     use std::sync::Arc;
 
@@ -255,6 +295,28 @@ mod tests {
         }
     }
 
+    fn suggested(query: &str) -> Vec<crate::slash::command::ArgItem> {
+        let command_ctx = ctx();
+        let app_ctx = AppCtx {
+            models: command_ctx.models,
+            cwd: std::path::Path::new("."),
+            has_session_announcements: false,
+            screen_mode: crate::app::ScreenMode::Inline,
+        };
+        ModelConfigCommand
+            .suggest_args(&app_ctx, query)
+            .expect("suggestions")
+    }
+
+    fn insert_text(items: &[crate::slash::command::ArgItem], display: &str) -> String {
+        items
+            .iter()
+            .find(|item| item.display == display)
+            .unwrap_or_else(|| panic!("missing suggestion {display}"))
+            .insert_text
+            .clone()
+    }
+
     #[test]
     fn bare_model_config_opens_interactive_entry() {
         let mut command_ctx = ctx();
@@ -262,6 +324,72 @@ mod tests {
             ModelConfigCommand.run(&mut command_ctx, ""),
             CommandResult::Action(Action::OpenSlashArgPicker { command }) if command == "model-config"
         ));
+    }
+
+    #[test]
+    fn bare_model_config_suggests_subcommands_before_models() {
+        let items = suggested("");
+        assert_eq!(
+            items
+                .iter()
+                .map(|item| item.display.as_str())
+                .collect::<Vec<_>>(),
+            vec!["list", "get", "wire", "override", "delete", "test"]
+        );
+        assert_eq!(insert_text(&items, "wire"), "wire ");
+    }
+
+    #[test]
+    fn wire_suggestions_chain_subcommand_model_and_wire_api() {
+        let models = suggested("wire ");
+        assert_eq!(insert_text(&models, "proxy/gpt-5"), "wire proxy/gpt-5 ");
+
+        let wire_apis = suggested("wire proxy/gpt-5 ");
+        assert_eq!(
+            insert_text(&wire_apis, "responses"),
+            "wire proxy/gpt-5 responses"
+        );
+    }
+
+    #[test]
+    fn override_suggestions_leave_json_payload_as_free_form_tail() {
+        let models = suggested("override ");
+        assert_eq!(insert_text(&models, "proxy/gpt-5"), "override proxy/gpt-5 ");
+
+        let wire_apis = suggested("override proxy/gpt-5 ");
+        assert_eq!(
+            insert_text(&wire_apis, "chat_completions"),
+            "override proxy/gpt-5 chat_completions "
+        );
+
+        let command_ctx = ctx();
+        let app_ctx = AppCtx {
+            models: command_ctx.models,
+            cwd: std::path::Path::new("."),
+            has_session_announcements: false,
+            screen_mode: crate::app::ScreenMode::Inline,
+        };
+        assert!(
+            ModelConfigCommand
+                .suggest_args(&app_ctx, "override proxy/gpt-5 chat_completions ")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn delete_suggestions_finish_after_model_selection() {
+        let models = suggested("delete ");
+        assert_eq!(insert_text(&models, "proxy/gpt-5"), "delete proxy/gpt-5");
+    }
+
+    #[test]
+    fn test_suggestions_offer_preview_or_real_execute_after_model() {
+        let models = suggested("test ");
+        assert_eq!(insert_text(&models, "proxy/gpt-5"), "test proxy/gpt-5 ");
+
+        let modes = suggested("test proxy/gpt-5 ");
+        assert_eq!(insert_text(&modes, "preview"), "test proxy/gpt-5");
+        assert_eq!(insert_text(&modes, "execute"), "test proxy/gpt-5 execute");
     }
 
     #[test]
@@ -288,5 +416,24 @@ mod tests {
                 if method == "_atelier/model_provider_override/set"
                     && params["payload"]["temperature"] == 0.2
         ));
+    }
+
+    #[test]
+    fn model_config_commands_reject_trailing_or_unknown_arguments() {
+        let mut command_ctx = ctx();
+        for args in [
+            "list extra",
+            "get proxy/gpt-5 extra",
+            "wire proxy/gpt-5 responses extra",
+            "delete proxy/gpt-5 extra",
+            "test proxy/gpt-5 preview extra",
+            "test proxy/gpt-5 send",
+            "test proxy/gpt-5 execute extra",
+        ] {
+            assert!(
+                matches!(ModelConfigCommand.run(&mut command_ctx, args), CommandResult::Error(error) if error.starts_with("Usage:")),
+                "{args} must fail with Usage"
+            );
+        }
     }
 }

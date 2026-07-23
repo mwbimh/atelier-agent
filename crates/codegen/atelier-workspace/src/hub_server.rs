@@ -1379,6 +1379,7 @@ mod tests {
     /// both rebind shapes. The task stays listed through a `Reused` rebind
     /// AND a `Reresolved` toolset swap — reading it through each rebind's
     /// CURRENT toolset — and leaves the list only when explicitly killed.
+    #[cfg(feature = "test-support")]
     #[tokio::test]
     async fn list_background_tasks_rpc_stays_truthful_across_rebinds() {
         use crate::capability::CapabilityMode;
@@ -1470,6 +1471,7 @@ mod tests {
     /// `workspace.tasks_snapshot` (GC-614 part 3): returns the outstanding
     /// background task with kind/started_at, plus scheduled tasks (empty when
     /// no scheduler resource exists), and drops the task once killed.
+    #[cfg(feature = "test-support")]
     #[tokio::test]
     async fn tasks_snapshot_rpc_lists_outstanding_background_tasks() {
         let handle = make_handle();

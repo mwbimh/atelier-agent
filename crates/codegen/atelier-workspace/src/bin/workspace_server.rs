@@ -432,8 +432,10 @@ mod tests {
         );
         match atelier_sandbox::native_sandbox_availability() {
             atelier_sandbox::NativeSandboxAvailability::Unavailable { .. } => {
-                let error = apply_startup_sandbox(sandbox, std::path::Path::new("."))
-                    .expect_err("Windows native sandbox must not fall back to bare execution");
+                let error = match apply_startup_sandbox(sandbox, std::path::Path::new(".")) {
+                    Ok(_) => panic!("Windows native sandbox must not fall back to bare execution"),
+                    Err(error) => error,
+                };
                 assert!(error.to_string().contains("sandbox could not be applied"));
             }
             atelier_sandbox::NativeSandboxAvailability::Available => {

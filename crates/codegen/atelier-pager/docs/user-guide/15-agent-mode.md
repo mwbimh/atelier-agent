@@ -32,13 +32,12 @@ Clients that use this mode include:
 
 ### Options
 
-These options belong to the `atelier agent` command and apply to every mode. Pass them before the mode name, for example `atelier agent --model atelier-build stdio`. The `stdio` subcommand itself takes no options.
+These options belong to the `atelier agent` command and apply to every mode. Pass them before the mode name, for example `atelier agent --model allm/deepseek-v4-flash stdio`. The `stdio` subcommand itself takes no options.
 
 | Flag                       | Description                                                       |
 | -------------------------- | ---------------------------------------------------------------- |
-| `-m, --model <MODEL>`      | Set the model ID (for example, `atelier-build`).                    |
+| `-m, --model <MODEL>`      | Set a configured model key (for example, `allm/deepseek-v4-flash`). |
 | `--always-approve`         | Auto-approve every tool execution. (Alias: `--yolo`.)            |
-| `--reauth`                 | Run authentication before starting the agent.                    |
 | `--agent-profile <PATH>`   | Load an agent profile from a file.                               |
 
 ---
@@ -115,21 +114,22 @@ Each update names its type, so a client can render distinct panels for reasoning
 
 ## Extension methods
 
-Beyond the base ACP protocol, Atelier defines extension methods under the `atelier/` prefix for SpaceXAI-specific functionality. These cover:
+Beyond base ACP, Atelier defines versioned Runtime extensions under the
+`_atelier/` namespace. Representative groups include:
 
-| Category                   | Prefix               | Examples                                         |
-| -------------------------- | -------------------- | ------------------------------------------------ |
-| **Filesystem**             | `atelier/fs/*`          | `list`, `exists`, `read_file`, `write_file`      |
-| **Git**                    | `atelier/git/*`         | `status`, `stage`, `commit`, `diffs`, `discard`  |
-| **Git Worktree**           | `atelier/git/worktree/*`| `create`, `remove`, `apply`, `list`, `gc`        |
-| **Search**                 | `atelier/search/*`      | `fuzzy/open`, `fuzzy/change`, `content`          |
-| **Terminal**               | `atelier/terminal/*`    | `create`, `kill`, `output`, `wait_for_exit`      |
-| **Session Management**     | `atelier/session/*`     | `fork`, `resolve_local_for_worktree_resume`      |
-| **Conversation & History** | `atelier/*`             | `prompt_history`, `rewind/*`, `compact_conversation` |
-| **Authentication**         | `atelier/auth/*`        | `get_url`, `submit_code`                         |
-| **Feedback & Telemetry**   | `atelier/*`             | `feedback`, `telemetry/*`                        |
+| Category | Prefix | Examples |
+|---|---|---|
+| Provider registry | `_atelier/provider/*` | `list`, `create`, `update`, `enable`, `test`, `delete` |
+| Model configuration | `_atelier/model/*` | `list`, `get`, `update_wire_api` |
+| Provider/model overrides | `_atelier/model_provider_override/*` | `set`, `delete`, `test` |
+| Fixed Roles | `_atelier/role/*` | `list`, `get`, `update`, `update_payload`, `test` |
+| Context and request inspection | `_atelier/context/*`, `_atelier/request/*` | `current`, `list`, `get` |
+| Runtime diagnostics | `_atelier/runtime/*` | `status`, `doctor`, `cancel`, `retry`, `recover`, `tasks` |
+| Third-batch task control | `_atelier/task/*` | create, list, attach, stop, and replay operations |
 
-The tables here show representative methods in each category. The `atelier/*` set is SpaceXAI-specific and may expand across releases, so treat it as non-exhaustive and discover the available methods from the agent's `initialize` response.
+Use protocol version/capability negotiation instead of assuming every
+extension exists. Provider credentials remain local references; ACP clients do
+not need a product account or login flow.
 
 ### Notifications (agent to client)
 
@@ -137,13 +137,9 @@ The agent sends push notifications to clients for real-time updates:
 
 | Notification               | Description                          |
 | -------------------------- | ------------------------------------ |
-| `atelier/search/fuzzy/status` | Fuzzy search results update          |
-| `atelier/git/worktree/status` | Worktree creation progress           |
-| `atelier/fs_notify`           | Filesystem change notification       |
-| `atelier/fs/index`            | Full file index update               |
-| `atelier/fs/index/delta`      | Incremental file index update        |
-| `atelier/session_notification`| Session-specific updates (diff review, retry state, auto-compact) |
-| `atelier/session/update`      | Session update (tool calls, content) |
+| `session/update` | Standard ACP session updates (tool calls and content) |
+| `atelier/task/update` | Background task status, replay, and result updates |
+| Runtime extension notifications | Capability-specific Provider, model, Role, and diagnostic changes |
 
 ---
 

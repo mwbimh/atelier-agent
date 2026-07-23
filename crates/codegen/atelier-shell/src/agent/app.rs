@@ -372,7 +372,6 @@ pub async fn run_stdio_agent(
             auth_manager.start_system_power_listener();
 
             // Restore managed policy right before bootstrap reads it (no stale window after prefetch).
-            crate::managed_config::ensure_managed_policy_present(&auth_manager).await;
             let handle_io = spawn_agent_local(
                 agent_config,
                 auth_manager,
@@ -398,287 +397,24 @@ pub async fn run_stdio_agent(
 }
 
 pub async fn run_headless(
-    agent_config: &AgentConfig,
-    reauthenticate: bool,
-    memory_config: Option<crate::config::MemoryConfig>,
+    _agent_config: &AgentConfig,
+    _reauthenticate: bool,
+    _memory_config: Option<crate::config::MemoryConfig>,
 ) -> anyhow::Result<()> {
-    run_headless_inner(agent_config, reauthenticate, false, memory_config).await
-}
-
-/// Run the headless agent without opening any browser windows.
-/// If no cached credentials exist, returns an error instead of starting OAuth flow.
-pub async fn run_headless_no_browser(
-    agent_config: &AgentConfig,
-    memory_config: Option<crate::config::MemoryConfig>,
-) -> anyhow::Result<()> {
-    run_headless_inner(agent_config, false, true, memory_config).await
-}
-
-async fn run_headless_inner(
-    agent_config: &AgentConfig,
-    reauthenticate: bool,
-    no_browser: bool,
-    memory_config: Option<crate::config::MemoryConfig>,
-) -> anyhow::Result<()> {
-    let _ = (agent_config, reauthenticate, no_browser, memory_config);
     anyhow::bail!(
-        "Atelier headless relay mode is disabled; configure a Provider and use `agent stdio` or `agent serve`"
-    );
-
-    register_fs_watch_runtime();
-    atelier_telemetry::unified_log::set_version(atelier_version::VERSION);
-    // `atelier agent [headless]` serves non-TUI automation; stamp proxy requests
-    // as headless. IDE-facing `atelier agent stdio` stays interactive.
-    crate::http::set_process_client_mode_headless();
-
-    use crate::agent::relay::spawn_relay_connection_with_callback;
-    use tokio_util::sync::CancellationToken;
-
-    // Headless's only transport is the relay (no IPC fallback), so a session is required.
-    const HEADLESS_NO_SESSION: &str = "Headless mode requires a atelier.invalid session. \
-        Run `atelier login` to sign in, or use `atelier agent stdio` for API-key access.";
-
-    // Clean up orphaned upload queue temp files from previous sessions (best-effort).
-    // Uses DEFAULT_MAX_AGE to stay in sync with the upload queue's retry policy.
-    xai_file_utils::queue::cleanup_orphaned_uploads(
-        &atelier_home::atelier_home(),
-        xai_file_utils::queue::DEFAULT_MAX_AGE,
-    );
-
-    let mut agent_config = agent_config.clone();
-    agent_config.mode = crate::agent::config::AgentMode::Headless;
-
-    let ctx = &agent_config.atelier_com_config;
-    let (mut auth, did_browser_flow) = if no_browser {
-        // No-browser mode: only use cached credentials, skip OAuth flow
-        let auth_manager = agent_config.create_auth_manager();
-        match auth_manager.current() {
-            Some(auth) => (auth, false),
-            None if auth_manager.is_expired() => {
-                anyhow::bail!("Session expired. Please run 'atelier login' to re-authenticate.")
-            }
-            None => anyhow::bail!("No cached credentials found. Run `atelier login`."),
-        }
-    } else if reauthenticate {
-        let auth_manager = Arc::new(AuthManager::new(&atelier_home::atelier_home(), ctx.clone()));
-        run_auth_flow(
-            &auth_manager,
-            ctx,
-            true,
-            None,
-            None,
-            None,
-            crate::auth::LoginTransportOverride::None,
-        )
-        .await?
-    } else {
-        // Don't pre-resolve via try_ensure_session_noninteractive: run_auth_flow below
-        // already mints external/devbox creds, so it would run the provider twice.
-        let auth_manager = Arc::new(AuthManager::new(&atelier_home::atelier_home(), ctx.clone()));
-        if crate::agent::auth_method::has_xai_api_key_env()
-            && ctx.auth_provider_command.is_none()
-            && crate::auth::try_ensure_fresh_auth(ctx).await.is_none()
-        {
-            anyhow::bail!("{HEADLESS_NO_SESSION}");
-        }
-        run_auth_flow(
-            &auth_manager,
-            ctx,
-            false,
-            None,
-            None,
-            None,
-            crate::auth::LoginTransportOverride::None,
-        )
-        .await?
-    };
-
-    // Backfill missing user_id / email from proxy (stale cached credentials).
-    if auth.user_id.is_empty() || auth.email.is_none() {
-        auth = Arc::new(agent_config.create_auth_manager())
-            .update(auth.clone())
-            .await?;
-    }
-
-    // Prefetch models from the models API before entering the LocalSet.
-    // This must be done via spawn_blocking because reqwest::blocking creates its own runtime.
-    let auth_for_prefetch = auth.clone();
-    let endpoints_for_prefetch = agent_config.endpoints.clone();
-    // `true` — auth is always established by this point (run_auth_flow above).
-    let fetch_auth_for_prefetch = ModelFetchAuth::resolve(&endpoints_for_prefetch, true);
-    let prefetched_models = tokio::task::spawn_blocking(move || {
-        prefetch_models_blocking(
-            &endpoints_for_prefetch,
-            Some(&auth_for_prefetch),
-            fetch_auth_for_prefetch,
-        )
-    })
-    .await
-    .ok()
-    .flatten();
-
-    tracing::info!("Prefetched models: {:?}", prefetched_models);
-
-    // Create channel for websocket -> agent bridging
-    let (ws_to_agent_tx, mut ws_to_agent_rx) = mpsc::unbounded_channel::<String>();
-
-    // Create simplex streams for the ACP connection.
-    // The incoming writer is shared so both the WS bridge and the skills file
-    // watcher can inject messages into the agent's ACP stream.
-    let (acp_incoming_rx, acp_incoming_tx) = simplex(MAX_BUFFER_SIZE);
-    let (acp_outgoing_rx, acp_outgoing_tx) = simplex(MAX_BUFFER_SIZE);
-
-    let incoming = acp_incoming_rx.compat();
-    let outgoing = acp_outgoing_tx.compat_write();
-    let acp_incoming_tx = Arc::new(TokioMutex::new(acp_incoming_tx));
-
-    let shared_auth_manager = Arc::new(agent_config.create_auth_manager());
-
-    let Some(relay_config) =
-        relay_config_for_session(Some(&auth), &agent_config, &shared_auth_manager)
-    else {
-        anyhow::bail!("{HEADLESS_NO_SESSION}");
-    };
-
-    // Capture the atelier build URL for the first-connection callback
-    let atelier_code_url = format!("{}/build", ctx.atelier_ws_origin);
-
-    // Create first-connection callback for headless-specific behavior
-    let on_first_connect: Box<dyn FnOnce() + Send + 'static> = Box::new(move || {
-        if !did_browser_flow && !no_browser {
-            // Print to stderr (not logger) so user sees it
-            eprintln!();
-            eprintln!(
-                "Open Atelier: {} (press Enter to open in browser)",
-                atelier_code_url
-            );
-            eprintln!();
-            let url_for_open = atelier_code_url.clone();
-            std::thread::spawn(move || {
-                let mut input = String::new();
-                let _ = std::io::stdin().read_line(&mut input);
-                let _ = webbrowser::open(&url_for_open);
-            });
-        }
-    });
-
-    let cancel = CancellationToken::new();
-
-    let (agent_to_ws_tx, _relay_handle) = spawn_relay_connection_with_callback(
-        relay_config,
-        ws_to_agent_tx.clone(),
-        Some(cancel.clone()),
-        Some(on_first_connect),
-    );
-
-    // Spawn the agent in a LocalSet that lives for the entire process
-    let local_set = tokio::task::LocalSet::new();
-    let agent_config_clone = agent_config.clone();
-    let memory_config_for_first = memory_config;
-    let agent_cancel = cancel.clone();
-
-    local_set
-        .run_until(async move {
-            // Spawn the agent task - this runs for the lifetime of the process
-            // The agent keeps working even when websocket disconnects
-            let _agent_handle = tokio::task::spawn_local(async move {
-                let (gw_tx, gw_rx) = tokio::sync::mpsc::unbounded_channel();
-                let gateway = GatewaySender::new(gw_tx);
-                let auth_manager = shared_auth_manager;
-                // Proactive token refresh for the headless agent.
-                auth_manager.start_proactive_refresh(agent_cancel.clone());
-                // Restore managed policy right before bootstrap reads it (no stale window after relay setup).
-                crate::managed_config::ensure_managed_policy_present(&auth_manager).await;
-                let mut agent =
-                    MvpAgent::new(gateway, &agent_config_clone, auth_manager, prefetched_models)
-                        .unwrap_or_else(exit_on_config_error);
-                if let Some(mc) = memory_config_for_first {
-                    agent.set_memory_config(mc);
-                }
-                let incoming = LineBufferedRead::spawn_local(incoming);
-                let (conn, handle_io) =
-                    acp::AgentSideConnection::new(agent, outgoing, incoming, |fut| {
-                        tokio::task::spawn_local(fut);
-                    });
-                tokio::task::spawn_local(
-                    GatewayReceiver::new(gw_rx, conn)
-                        .with_on_meta(xai_file_utils::trace_context::span_from_meta_traceparent)
-                        .run(),
-                );
-
-                // Run the agent I/O handler - this processes incoming requests
-                if let Err(e) = handle_io.await {
-                    warn!(error = ?e, "Agent I/O handler error");
-                }
-                info!("Agent task completed");
-            });
-
-            // Spawn task to bridge ws_to_agent channel to acp simplex stream
-            let ws_tx = acp_incoming_tx.clone();
-            tokio::task::spawn_local(async move {
-                while let Some(msg) = ws_to_agent_rx.recv().await {
-                    let mut tx = ws_tx.lock().await;
-                    if tx.write_all(msg.as_bytes()).await.is_err() {
-                        warn!("Failed to write to agent incoming stream");
-                        break;
-                    }
-                    if tx.write_all(b"\n").await.is_err() {
-                        break;
-                    }
-                }
-                info!("WS to agent bridge task completed");
-            });
-
-            let _skills_watcher =
-                spawn_skills_file_watcher(&acp_incoming_tx, &agent_config.skills.paths);
-
-            // Spawn task to read from agent and forward to relay
-            tokio::task::spawn_local(async move {
-                let mut reader = BufReader::new(acp_outgoing_rx);
-                let mut line = String::new();
-                loop {
-                    line.clear();
-                    match reader.read_line(&mut line).await {
-                        Ok(0) => {
-                            info!("Agent outgoing stream EOF");
-                            break;
-                        }
-                        Ok(_) => {
-                            let msg = line.trim_end_matches(['\r', '\n']).to_string();
-                            if !msg.is_empty() {
-                                // Send to the relay
-                                if agent_to_ws_tx.send(msg.clone()).is_err() {
-                                    // Relay not connected - message is dropped
-                                    // This is OK because agent persists to disk
-                                    // and client will replay via session/load on reconnect
-                                    debug!("No active websocket, dropping outbound message (persisted to disk)");
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            warn!(error = ?e, "Error reading from agent outgoing stream");
-                            break;
-                        }
-                    }
-                }
-                info!("Agent to WS bridge task completed");
-            });
-
-            // Keep running until cancelled
-            cancel.cancelled().await;
-            anyhow::Ok(())
-        })
-        .await?;
-
-    // Brief grace period for the upload queue worker to finish in-flight uploads.
-    // The worker runs on the tokio runtime (not the LocalSet), so it continues
-    // after the LocalSet drops. The channel closes when all senders drop,
-    // and the worker drains remaining items before exiting.
-    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-
-    Ok(())
+        "Atelier has no vendor relay mode; use atelier agent stdio or atelier agent serve"
+    )
 }
 
+/// Browserless vendor relay mode was removed with the vendor service integration.
+pub async fn run_headless_no_browser(
+    _agent_config: &AgentConfig,
+    _memory_config: Option<crate::config::MemoryConfig>,
+) -> anyhow::Result<()> {
+    anyhow::bail!(
+        "Atelier has no vendor relay mode; use atelier agent stdio or atelier agent serve"
+    )
+}
 /// Migrate a legacy devbox WebLogin token to fresh OIDC in place (mint, persist,
 /// drop the legacy scope). No-op outside a devbox or for non-WebLogin / `None`.
 /// On mint/save failure, returns the existing token so the leader still starts.
@@ -752,139 +488,6 @@ async fn migrate_devbox_auth_if_legacy(
     }
 }
 
-/// Whether the relay's shared [`AuthManager`] should be (re)seeded with the
-/// startup-resolved `session`.
-///
-/// Seeds when the manager holds nothing, or holds a *different, staler* token
-/// (compared by `create_time`, which is always present and bumped on every
-/// mint/refresh/login). The narrow "seed only when empty" predicate was
-/// insufficient: on a read-only disk, login's `update()` falls back to
-/// in-memory-only, so the freshly constructed manager can load an *older* scope
-/// entry from disk that login could not overwrite — seeding only when empty
-/// would pin the manager (and relay 401 recovery) to that stale snapshot while
-/// `RelayConfig` carries the fresher resolved session.
-///
-/// Never clobbers an equal-or-fresher token: the same key (already in sync) or
-/// a token whose `create_time` is newer (e.g. a sibling process refreshed disk
-/// in the manager-construction→here window).
-fn should_seed_shared_session(existing: Option<&AtelierAuth>, session: &AtelierAuth) -> bool {
-    match existing {
-        None => true,
-        Some(existing) => {
-            existing.key != session.key && session.create_time >= existing.create_time
-        }
-    }
-}
-
-/// `RelayConfig` for the relay, or `None` for BYOK / no-session. The session
-/// gate is `RelayConfig::for_session` (single source of truth).
-///
-/// The relay must SHARE the agent's `AuthManager`, never own a private one:
-/// a manager without a refresher can only adopt sibling tokens from disk,
-/// so relay 401 recovery dead-ends whenever no other refresher is alive
-/// (sleep/wake, auth.json loss) — even with a valid refresh token in
-/// memory. Sharing also puts relay recovery behind the same in-process
-/// `refresh_lock` and `permanent_failure` cache as every other consumer,
-/// so concurrent recovery paths cannot double-spend a refresh token.
-fn relay_config_for_session(
-    auth: Option<&AtelierAuth>,
-    agent_config: &AgentConfig,
-    shared_auth_manager: &Arc<AuthManager>,
-) -> Option<crate::agent::relay::RelayConfig> {
-    let session = auth?;
-    // Seed the shared manager with the startup-resolved session unless it
-    // already holds an equal-or-fresher token. See `should_seed_shared_session`
-    // for why "seed only when empty" was insufficient (read-only-disk stale
-    // entry) and why a fresher sibling-refreshed token must be preserved.
-    if should_seed_shared_session(shared_auth_manager.current_or_expired().as_ref(), session) {
-        shared_auth_manager.hot_swap(session.clone());
-    }
-    crate::agent::relay::RelayConfig::for_session(
-        session,
-        &agent_config.atelier_com_config,
-        agent_config.endpoints.alpha_test_key.clone(),
-        Some(shared_auth_manager.clone()),
-    )
-}
-
-/// Start the leader's atelier.invalid relay connection according to the start policy,
-/// returning the slot where the [`RelayHandle`](crate::agent::relay::RelayHandle)
-/// is parked once the connection task is running.
-///
-/// * `relay_on_demand == false` (default — explicit `atelier agent leader`
-///   invocation: devbox / systemd / nohup): connect **eagerly**, right now.
-///   A bare leader has no local IPC clients; remote prompts arrive *through*
-///   the relay, so it must be up before any demand signal could ever exist.
-///   Gating it on headless registration is a chicken-and-egg deadlock: the
-///   agent never registers with the backend and tooling reports
-///   "No online agents".
-/// * `relay_on_demand == true` (leaders auto-spawned by interactive clients
-///   via `spawn_leader_subprocess`, which passes `--relay-on-demand`): defer
-///   the WebSocket until the IPC server flips `relay_demand_rx` on the first
-///   [`ClientMode::Headless`](crate::leader::ClientMode::Headless)
-///   registration. A leader serving only TUI-dashboard / IDE clients never
-///   opens the relay and never pays the per-message clone/parse/log/TLS
-///   duplication of mirroring every agent message to atelier.invalid.
-///
-/// Until the relay starts, `agent_to_ws_tx` stays `None`, so the outbound
-/// bridge skips the relay clone entirely. Messages produced before the relay
-/// starts are not buffered for it — same contract as the pre-first-connection
-/// window of the eager relay (agent persists to disk; remote clients replay
-/// via `session/load`).
-///
-/// Must be called within a `LocalSet` (uses `spawn_local`). The handle is
-/// parked in a slot rather than returned from the deferred task because
-/// `RelayHandle` cancels its loop on Drop; the leader shutdown path takes it
-/// out of the slot to stop the relay explicitly (the `cancel` token would stop
-/// it anyway).
-fn spawn_leader_relay(
-    relay_config: crate::agent::relay::RelayConfig,
-    relay_on_demand: bool,
-    mut relay_demand_rx: tokio::sync::watch::Receiver<bool>,
-    ws_to_agent_tx: mpsc::UnboundedSender<String>,
-    agent_to_ws_tx: Rc<Mutex<Option<mpsc::UnboundedSender<String>>>>,
-    cancel: tokio_util::sync::CancellationToken,
-) -> Rc<std::cell::RefCell<Option<crate::agent::relay::RelayHandle>>> {
-    use crate::agent::relay::spawn_relay_connection;
-
-    let slot: Rc<std::cell::RefCell<Option<crate::agent::relay::RelayHandle>>> =
-        Rc::new(std::cell::RefCell::new(None));
-
-    if !relay_on_demand {
-        info!("Starting relay connection (eager)");
-        let (tx, handle) = spawn_relay_connection(relay_config, ws_to_agent_tx, cancel);
-        *agent_to_ws_tx.lock() = Some(tx);
-        *slot.borrow_mut() = Some(handle);
-        return slot;
-    }
-
-    let slot_for_task = slot.clone();
-    tokio::task::spawn_local(async move {
-        // Wait for the first headless registration (or shutdown).
-        // Re-check `borrow()` at the top of each iteration so a
-        // registration that happened before this task started is
-        // honoured immediately.
-        while !*relay_demand_rx.borrow() {
-            tokio::select! {
-                biased;
-                _ = cancel.cancelled() => return,
-                changed = relay_demand_rx.changed() => {
-                    if changed.is_err() {
-                        // IPC server gone (sender dropped) — leader
-                        // is shutting down; never start the relay.
-                        return;
-                    }
-                }
-            }
-        }
-        info!("Headless client registered; starting relay connection");
-        let (tx, handle) = spawn_relay_connection(relay_config, ws_to_agent_tx, cancel);
-        *agent_to_ws_tx.lock() = Some(tx);
-        *slot_for_task.borrow_mut() = Some(handle);
-    });
-    slot
-}
-
 /// Run the agent in leader mode, accepting IPC connections from multiple clients.
 /// When a atelier.invalid session is present, the leader connects to the websocket relay
 /// after startup (post-auth, post-prefetch); BYOK / no-session leaders skip it and
@@ -897,27 +500,21 @@ fn spawn_leader_relay(
 /// 3. IPC server started (`tokio::spawn`) — socket bound HERE, before auth.
 /// 4. Wait for socket to appear (fast: < 100 ms).
 /// 5. Lock handoff with spawner (if launched via connect_or_spawn).
-/// 6. Auth + model prefetch (slow path, but socket already available to clients).
-///    - Auth resolves non-interactively; `None` (BYOK / no session) is not an
-///      error — the relay is gated off and login is deferred to ACP.
+/// 6. Local Provider model state is prepared while the socket remains available.
 /// 7. `ready_tx.send(true)` — unblocks ACP forwarding in the IPC server.
-/// 8. LocalSet: agent, IPC↔agent bridges, WS↔agent bridges, relay, config watcher.
+/// 8. LocalSet: agent, IPC bridges, and config watcher.
 ///
 /// # Arguments
 ///
 /// * `agent_config` - The agent configuration
 /// * `no_exit_on_disconnect` - If true, the leader will not exit when all clients disconnect
-/// * `relay_on_demand` - If true, defer the atelier.invalid relay WebSocket until the
-///   first headless IPC client registers; if false (default), connect eagerly at
-///   startup. See [`spawn_leader_relay`].
 pub async fn run_leader(
     agent_config: &AgentConfig,
     no_exit_on_disconnect: bool,
-    relay_on_demand: bool,
+    _relay_on_demand: bool,
     auto_update_check: Option<LeaderAutoUpdateConfig>,
     memory_config: Option<crate::config::MemoryConfig>,
 ) -> anyhow::Result<()> {
-    use crate::agent::relay::RelayConfig;
     use crate::leader::{
         LeaderLock, LeaderServerControlState, LeaderServerMetadata, ShutdownReason,
         compute_ws_url_suffix, run_leader_server,
@@ -992,9 +589,6 @@ pub async fn run_leader(
     let (ipc_to_agent_tx, mut ipc_to_agent_rx) = mpsc::unbounded_channel::<String>();
     let (agent_to_ipc_tx, agent_to_ipc_rx) = mpsc::unbounded_channel::<String>();
 
-    // WS ↔ agent channel
-    let (ws_to_agent_tx, mut ws_to_agent_rx) = mpsc::unbounded_channel::<String>();
-
     // ACP simplex streams for the agent connection
     let (acp_incoming_rx, acp_incoming_tx) = simplex(MAX_BUFFER_SIZE);
     let (acp_outgoing_rx, acp_outgoing_tx) = simplex(MAX_BUFFER_SIZE);
@@ -1002,7 +596,7 @@ pub async fn run_leader(
     let incoming = acp_incoming_rx.compat();
     let outgoing = acp_outgoing_tx.compat_write();
 
-    // Shared writer so both the IPC bridge and the WS bridge can send to the agent.
+    // Shared writer used by IPC and local config-watcher injections.
     let acp_incoming_tx = Arc::new(TokioMutex::new(acp_incoming_tx));
 
     // Cancellation token for the entire leader lifetime.
@@ -1019,17 +613,14 @@ pub async fn run_leader(
     // to keep the sender; `_shutdown_reason_rx` is held to keep the channel open.
     let (shutdown_tx, _shutdown_reason_rx) = watch::channel(ShutdownReason::Manual);
 
-    // Relay demand watch: the IPC server flips this to `true` when the first
-    // headless client registers. Only consulted when `relay_on_demand` is set
-    // (leaders auto-spawned by interactive clients); an eager leader connects
-    // the relay at startup and ignores it. See `spawn_leader_relay`.
-    let (relay_demand_tx, relay_demand_rx) = watch::channel(false);
+    // Retained as a local client-mode signal for the leader protocol. It has no
+    // network side effect in the vendorless runtime.
+    let (relay_demand_tx, _relay_demand_rx) = watch::channel(false);
 
     let client_count = Arc::new(AtomicUsize::new(0));
     let agent_busy = Arc::new(AtomicBool::new(false));
     // Agent-derived activity view for the auto-update checker and the IPC
-    // server's relaunch drain: `agent_busy` only sees IPC traffic, not
-    // relay-driven prompts.
+    // server's relaunch drain.
     let agent_activity = crate::agent::activity::AgentActivity::default();
     let control_state = LeaderServerControlState::new(LeaderServerMetadata {
         pid: std::process::id(),
@@ -1160,7 +751,7 @@ pub async fn run_leader(
     let _ = ready_tx.send(true);
     info!("Leader ready: auth and model prefetch complete, ACP forwarding enabled");
 
-    // ── Phase 8: LocalSet — agent, bridges, relay, config watcher ────────────
+    // ── Phase 8: LocalSet — agent, IPC bridges, config watcher ───────────────
 
     let local_set = tokio::task::LocalSet::new();
     let remote_settings_for_reloader = remote_settings.clone();
@@ -1177,19 +768,12 @@ pub async fn run_leader(
     // process so a refresh can't straddle a suspend.
     shared_auth_manager.start_system_power_listener();
 
-    // Decided once here; not (re)started if a client authenticates mid-session.
-    // The refresher lands on `shared_auth_manager` during `MvpAgent`
-    // construction below; a relay 401 in the window before that surfaces as
-    // a transient recovery failure and is retried, not a dead end.
-    let relay_config: Option<RelayConfig> =
-        relay_config_for_session(auth.as_ref(), &agent_config, &shared_auth_manager);
     // Same manager as the leader, so the exposure never writes auth.json itself.
     workspace_control.set_auth_manager(shared_auth_manager.clone());
     let auth_manager_for_agent = shared_auth_manager.clone();
     let auth_manager_for_config = shared_auth_manager;
 
     // Restore managed policy right before bootstrap reads it (no stale window after the long auth/prefetch phase).
-    crate::managed_config::ensure_managed_policy_present(&auth_manager_for_agent).await;
 
     let (agent_config_for_spawn, shared_models_manager) = bootstrap(
         &agent_config_for_spawn,
@@ -1291,25 +875,7 @@ pub async fn run_leader(
                 }
             });
 
-            // Bridge websocket messages to agent (from atelier.invalid relay)
-            let acp_incoming_tx_ws = acp_incoming_tx.clone();
-            tokio::task::spawn_local(async move {
-                while let Some(msg) = ws_to_agent_rx.recv().await {
-                    let mut tx = acp_incoming_tx_ws.lock().await;
-                    if tx.write_all(msg.as_bytes()).await.is_err()
-                        || tx.write_all(b"\n").await.is_err()
-                    {
-                        warn!("Failed to write WS message to agent");
-                        break;
-                    }
-                }
-            });
-
-            // Bridge agent responses to both WS and IPC
-            let agent_to_ws_tx: Rc<Mutex<Option<mpsc::UnboundedSender<String>>>> =
-                Rc::new(Mutex::new(None));
-            let agent_to_ws_tx_clone = agent_to_ws_tx.clone();
-
+            // Bridge agent responses to IPC clients.
             tokio::task::spawn_local(async move {
                 let mut reader = BufReader::new(acp_outgoing_rx);
                 let mut line = String::new();
@@ -1320,11 +886,6 @@ pub async fn run_leader(
                         Ok(_) => {
                             let msg = line.trim_end_matches(['\r', '\n']).to_string();
                             if !msg.is_empty() {
-                                let maybe_tx = agent_to_ws_tx_clone.lock();
-                                if let Some(ref tx) = *maybe_tx {
-                                    let _ = tx.send(msg.clone());
-                                }
-                                drop(maybe_tx);
                                 let _ = agent_to_ipc_tx_clone.send(msg);
                             }
                         }
@@ -1335,26 +896,6 @@ pub async fn run_leader(
                     }
                 }
             });
-
-            // Start (or arm) the atelier.invalid relay. Eager by default — a bare
-            // `atelier agent leader` (devbox / systemd) has no local IPC clients
-            // and receives remote prompts *through* the relay, so it must
-            // connect unconditionally. Leaders auto-spawned by interactive
-            // clients pass `relay_on_demand` and defer the WebSocket until the
-            // first headless registration. See `spawn_leader_relay`.
-            let relay_handle_slot = if let Some(relay_config) = relay_config {
-                spawn_leader_relay(
-                    relay_config,
-                    relay_on_demand,
-                    relay_demand_rx,
-                    ws_to_agent_tx.clone(),
-                    agent_to_ws_tx.clone(),
-                    cancel_clone.clone(),
-                )
-            } else {
-                info!("Relay disabled: no atelier.invalid session token (BYOK / local-only leader)");
-                Rc::new(std::cell::RefCell::new(None))
-            };
 
             // Spawn auto-update checker if configured.
             let update_cancel = cancel_clone.clone();
@@ -1645,9 +1186,6 @@ pub async fn run_leader(
                 }
             }
 
-            if let Some(relay_handle) = relay_handle_slot.borrow_mut().take() {
-                relay_handle.stop();
-            }
             anyhow::Ok(())
         })
         .await?;
@@ -1692,201 +1230,6 @@ mod tests {
                 })
             }),
         }
-    }
-
-    // ===== relay shared-manager seeding tests =====
-
-    fn oidc_session(key: &str, create_time: chrono::DateTime<chrono::Utc>) -> AtelierAuth {
-        AtelierAuth {
-            key: key.into(),
-            auth_mode: AuthMode::Oidc,
-            oidc_issuer: Some(crate::auth::XAI_OAUTH2_ISSUER.to_string()),
-            refresh_token: Some(format!("rt-{key}")),
-            create_time,
-            expires_at: Some(create_time + chrono::Duration::minutes(15)),
-            ..AtelierAuth::test_default()
-        }
-    }
-
-    #[test]
-    fn seed_when_manager_empty() {
-        let session = oidc_session("resolved", chrono::Utc::now());
-        assert!(should_seed_shared_session(None, &session));
-    }
-
-    #[test]
-    fn skip_when_same_token_already_held() {
-        let now = chrono::Utc::now();
-        let session = oidc_session("same", now);
-        let existing = oidc_session("same", now);
-        assert!(!should_seed_shared_session(Some(&existing), &session));
-    }
-
-    #[test]
-    fn seed_over_staler_disk_entry() {
-        // Regression (shared manager stale session seed): a read-only
-        // disk left an older scope entry that login could not overwrite. The
-        // resolved session is newer, so it must replace the stale snapshot.
-        let now = chrono::Utc::now();
-        let stale = oidc_session("stale-from-disk", now - chrono::Duration::hours(13));
-        let session = oidc_session("resolved-at-startup", now);
-        assert!(should_seed_shared_session(Some(&stale), &session));
-    }
-
-    #[test]
-    fn keep_fresher_sibling_refreshed_token() {
-        // A sibling refreshed disk in the construction→here window: its token is
-        // newer than the startup session, so it must NOT be clobbered.
-        let now = chrono::Utc::now();
-        let session = oidc_session("startup", now - chrono::Duration::minutes(5));
-        let sibling_fresher = oidc_session("sibling-refreshed", now);
-        assert!(!should_seed_shared_session(
-            Some(&sibling_fresher),
-            &session
-        ));
-    }
-
-    // ===== spawn_leader_relay start-policy tests =====
-
-    /// Mock relay WS server: counts accepted WebSocket connections and holds
-    /// each open so the relay loop doesn't immediately reconnect.
-    async fn spawn_mock_relay_server() -> (std::net::SocketAddr, Arc<AtomicU32>) {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        let count = Arc::new(AtomicU32::new(0));
-        let count_clone = count.clone();
-        tokio::spawn(async move {
-            loop {
-                let Ok((stream, _)) = listener.accept().await else {
-                    break;
-                };
-                let count = count_clone.clone();
-                tokio::spawn(async move {
-                    let Ok(_ws) = tokio_tungstenite::accept_async(stream).await else {
-                        return;
-                    };
-                    count.fetch_add(1, Ordering::SeqCst);
-                    // Hold the connection open until the test ends.
-                    tokio::time::sleep(Duration::from_secs(30)).await;
-                });
-            }
-        });
-        (addr, count)
-    }
-
-    /// Relay config pointing at the mock server, built through the only
-    /// constructor (`for_session`) with a relay-eligible x.ai OIDC session.
-    fn test_relay_config(addr: std::net::SocketAddr) -> crate::agent::relay::RelayConfig {
-        let auth = AtelierAuth {
-            auth_mode: AuthMode::Oidc,
-            oidc_issuer: Some(crate::auth::XAI_OAUTH2_ISSUER.to_string()),
-            ..AtelierAuth::test_default()
-        };
-        let cfg = crate::auth::AtelierComConfig {
-            atelier_ws_url: format!("ws://{addr}"),
-            atelier_ws_origin: format!("http://{addr}"),
-            ..Default::default()
-        };
-        crate::agent::relay::RelayConfig::for_session(&auth, &cfg, None, None)
-            .expect("x.ai OIDC session must be relay-eligible")
-    }
-
-    /// Wait until at least one relay connection is accepted, or panic.
-    async fn wait_for_connection(count: &Arc<AtomicU32>, context: &str) {
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-        while count.load(Ordering::SeqCst) == 0 {
-            assert!(
-                tokio::time::Instant::now() < deadline,
-                "relay never connected: {context}"
-            );
-            tokio::time::sleep(Duration::from_millis(25)).await;
-        }
-    }
-
-    /// Regression test for the bare-leader relay gating bug: a bare
-    /// `atelier agent leader` (devbox/systemd — no local IPC clients,
-    /// `relay_on_demand == false`) must connect the atelier.invalid relay eagerly.
-    /// Remote prompts arrive *through* the relay, so on such a leader no
-    /// headless-registration demand signal can ever fire; gating the relay on
-    /// it means the agent never registers with the backend ("No online
-    /// agents") even though the box is healthy.
-    #[tokio::test]
-    async fn eager_relay_connects_without_any_ipc_client() {
-        let (addr, count) = spawn_mock_relay_server().await;
-        let config = test_relay_config(addr);
-        let cancel = CancellationToken::new();
-        let (ws_to_agent_tx, _ws_to_agent_rx) = mpsc::unbounded_channel();
-        let agent_to_ws_tx: Rc<Mutex<Option<mpsc::UnboundedSender<String>>>> =
-            Rc::new(Mutex::new(None));
-        // Demand watch is never signalled — exactly like a bare leader that
-        // never sees a headless IPC registration.
-        let (_demand_tx, demand_rx) = watch::channel(false);
-
-        let local = tokio::task::LocalSet::new();
-        local
-            .run_until(async {
-                let slot = spawn_leader_relay(
-                    config,
-                    false, // eager: explicit `atelier agent leader` invocation
-                    demand_rx,
-                    ws_to_agent_tx,
-                    agent_to_ws_tx.clone(),
-                    cancel.clone(),
-                );
-                // Eager mode wires everything synchronously.
-                assert!(
-                    slot.borrow().is_some(),
-                    "eager mode must park the RelayHandle immediately"
-                );
-                assert!(
-                    agent_to_ws_tx.lock().is_some(),
-                    "eager mode must install agent_to_ws_tx immediately"
-                );
-                wait_for_connection(&count, "bare leader with no IPC clients").await;
-            })
-            .await;
-        cancel.cancel();
-    }
-
-    /// With `relay_on_demand == true` (leader auto-spawned by an interactive
-    /// client), the relay must stay off until the first headless registration
-    /// flips the demand watch, then connect.
-    #[tokio::test]
-    async fn on_demand_relay_waits_for_headless_demand_signal() {
-        let (addr, count) = spawn_mock_relay_server().await;
-        let config = test_relay_config(addr);
-        let cancel = CancellationToken::new();
-        let (ws_to_agent_tx, _ws_to_agent_rx) = mpsc::unbounded_channel();
-        let agent_to_ws_tx: Rc<Mutex<Option<mpsc::UnboundedSender<String>>>> =
-            Rc::new(Mutex::new(None));
-        let (demand_tx, demand_rx) = watch::channel(false);
-
-        let local = tokio::task::LocalSet::new();
-        local
-            .run_until(async {
-                let _slot = spawn_leader_relay(
-                    config,
-                    true, // on-demand: spawned via spawn_leader_subprocess
-                    demand_rx,
-                    ws_to_agent_tx,
-                    agent_to_ws_tx.clone(),
-                    cancel.clone(),
-                );
-                // No demand → no connection, no outbound sender installed.
-                tokio::time::sleep(Duration::from_millis(300)).await;
-                assert_eq!(
-                    count.load(Ordering::SeqCst),
-                    0,
-                    "on-demand relay must not connect before a headless client registers"
-                );
-                assert!(agent_to_ws_tx.lock().is_none());
-
-                // First headless registration → relay connects.
-                demand_tx.send(true).unwrap();
-                wait_for_connection(&count, "after headless demand signal").await;
-            })
-            .await;
-        cancel.cancel();
     }
 
     /// The watcher-injected internal reload requests must carry the ACP

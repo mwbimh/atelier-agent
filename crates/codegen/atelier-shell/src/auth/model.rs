@@ -2,7 +2,7 @@ use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-use super::is_xai_oauth2_issuer;
+use super::is_configured_oauth2_issuer;
 
 pub(crate) const TOKEN_TTL: Duration = Duration::days(30);
 const DEFAULT_EARLY_INVALIDATION_SECS: u64 = 300; // 5 minutes
@@ -100,13 +100,13 @@ pub struct AtelierAuth {
 impl std::fmt::Debug for AtelierAuth {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AtelierAuth")
-            .field("key", &token_suffix(&self.key))
+            .field("key", &"<redacted>")
             .field("auth_mode", &self.auth_mode)
             .field("user_id", &self.user_id)
             .field("expires_at", &self.expires_at)
             .field(
                 "refresh_token",
-                &self.refresh_token.as_deref().map(token_suffix),
+                &self.refresh_token.as_ref().map(|_| "<redacted>"),
             )
             .finish_non_exhaustive()
     }
@@ -136,7 +136,7 @@ impl AtelierAuth {
             AuthMode::Oidc | AuthMode::External => self
                 .oidc_issuer
                 .as_deref()
-                .is_some_and(is_xai_oauth2_issuer),
+                .is_some_and(is_configured_oauth2_issuer),
             AuthMode::ApiKey | AuthMode::WebLogin => false,
         }
     }
@@ -287,14 +287,32 @@ pub(crate) struct UserInfo {
     pub(crate) subscription_tier: Option<String>,
 }
 
-/// Last 12 chars of a token string, safe for diagnostic logging.
-/// Uses the tail because JWT access tokens all share the same base64
-/// header prefix (`eyJ0eXAiOiJh…`); the tail (signature bytes) is
-/// unique per token and makes `key_changed` / `is_stale_snapshot`
-/// diagnostics meaningful.
-pub(crate) fn token_suffix(t: &str) -> &str {
-    let len = t.len();
-    if len > 12 { &t[len - 12..] } else { t }
+#[cfg(test)]
+mod privacy_tests {
+    use super::*;
+
+    #[test]
+    fn auth_debug_never_contains_access_or_refresh_token_fragments() {
+        let auth = AtelierAuth {
+            key: "access-token-canary-TAIL12345678".into(),
+            refresh_token: Some("refresh-token-canary-TAIL87654321".into()),
+            ..AtelierAuth::test_default()
+        };
+
+        let rendered = format!("{auth:?}");
+        for forbidden in [
+            "TAIL12345678",
+            "TAIL87654321",
+            "access-token-canary",
+            "refresh-token-canary",
+        ] {
+            assert!(
+                !rendered.contains(forbidden),
+                "credential fragment leaked through Debug: {rendered}"
+            );
+        }
+        assert!(rendered.contains("<redacted>"));
+    }
 }
 
 /// Look up auth from the store by scope key.
@@ -377,6 +395,7 @@ mod tests {
         }
     }
 
+    #[cfg(any())] // xAI first-party session classification was removed with vendor authentication.
     #[test]
     fn is_xai_auth_matrix() {
         use crate::auth::XAI_OAUTH2_ISSUER;
@@ -398,6 +417,7 @@ mod tests {
         assert!(!with_issuer(AuthMode::WebLogin, Some(XAI_OAUTH2_ISSUER)).is_xai_auth());
     }
 
+    #[cfg(any())] // xAI first-party session classification was removed with vendor authentication.
     #[test]
     fn is_session_auth_requires_first_party_for_external() {
         use crate::auth::XAI_OAUTH2_ISSUER;

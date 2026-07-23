@@ -529,9 +529,9 @@ mod tests {
 
     #[test]
     fn expanded_shows_relative_when_under_cwd_preamble_absolute() {
-        let abs = "/Users/me/project/src/main.rs";
-        let cwd = std::path::PathBuf::from("/Users/me/project");
-        let block = ReadToolCallBlock::new(abs).with_content("hello".into(), 1);
+        let cwd = std::env::current_dir().unwrap().join("read-test-project");
+        let abs = cwd.join("src/main.rs");
+        let block = ReadToolCallBlock::new(abs.to_string_lossy()).with_content("hello".into(), 1);
         let mut ctx = make_ctx();
         ctx.mode = DisplayMode::Expanded;
         ctx.cwd = Some(cwd.clone());
@@ -551,7 +551,10 @@ mod tests {
             .flat_map(|l| l.spans.iter())
             .map(|s| s.content.as_ref())
             .collect();
-        assert_eq!(preamble_text, "Read /Users/me/project/src/main.rs");
+        assert_eq!(
+            preamble_text,
+            format!("Read {}", abs.to_string_lossy().replace('\\', "/"))
+        );
     }
 
     #[test]
@@ -606,20 +609,24 @@ mod tests {
     fn expanded_header_selection_matches_relative_path() {
         use crate::scrollback::types::derive_selection_text;
 
-        let block = ReadToolCallBlock::new("/Users/me/project/src/main.rs");
+        let cwd = std::env::current_dir()
+            .unwrap()
+            .join("read-selection-project");
+        let block = ReadToolCallBlock::new(cwd.join("src/main.rs").to_string_lossy());
         let mut ctx = make_ctx();
         ctx.mode = DisplayMode::Expanded;
-        ctx.cwd = Some(std::path::PathBuf::from("/Users/me/project"));
+        ctx.cwd = Some(cwd);
         let header = &block.output(&ctx).lines[0];
         assert_eq!(derive_selection_text(header), "src/main.rs");
     }
 
     #[test]
     fn header_link_url_is_absolute_for_collapsed_and_expanded() {
-        let abs = "/Users/me/project/src/main.rs";
-        let block = ReadToolCallBlock::new(abs);
+        let cwd = std::env::current_dir().unwrap().join("read-link-project");
+        let abs = cwd.join("src/main.rs");
+        let block = ReadToolCallBlock::new(abs.to_string_lossy());
         let mut ctx = make_ctx();
-        ctx.cwd = Some(std::path::PathBuf::from("/Users/me/project"));
+        ctx.cwd = Some(cwd);
 
         let collapsed = block.output(&ctx);
         let url = collapsed.lines[0].link_url.as_ref().expect("link_url");

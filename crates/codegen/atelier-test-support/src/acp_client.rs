@@ -177,7 +177,7 @@ impl AtelierStdioClient {
         }
     }
 
-    /// Initialize and authenticate (picks `api_key` auth method).
+    /// Initialize and authenticate with the vendorless Provider method.
     pub async fn initialize(&self) -> acp::InitializeResponse {
         let init_resp = self
             .conn
@@ -203,23 +203,25 @@ impl AtelierStdioClient {
                     ),
             )
             .await
-            .expect("initialize failed");
+            .unwrap_or_else(|error| {
+                panic!("initialize failed: {error:?}\nstderr:\n{}", self.stderr())
+            });
 
-        let api_key_method = init_resp
+        let provider_method = init_resp
             .auth_methods
             .iter()
-            .find(|m| &*m.id().0 == "xai.api_key")
+            .find(|m| &*m.id().0 == "atelier.provider")
             .unwrap_or_else(|| {
                 let ids: Vec<_> = init_resp.auth_methods.iter().map(|m| &m.id().0).collect();
                 panic!(
-                    "expected auth method 'xai.api_key' but got: {ids:?}\n\
+                    "expected auth method 'atelier.provider' but got: {ids:?}\n\
                      If the method ID changed, update this test."
                 )
             });
 
         self.conn
             .authenticate(
-                acp::AuthenticateRequest::new(api_key_method.id().clone())
+                acp::AuthenticateRequest::new(provider_method.id().clone())
                     .meta(serde_json::json!({"headless": true}).as_object().cloned()),
             )
             .await

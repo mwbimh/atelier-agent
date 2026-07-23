@@ -1,6 +1,5 @@
 //! Tests for the dispatch module tree: shared fixtures and per-domain test modules.
 mod auth;
-mod billing;
 mod cta_e2e;
 mod dashboard;
 mod jump;
@@ -17,10 +16,6 @@ mod task_result;
 mod transcript;
 mod turn;
 mod voice;
-use super::billing::{
-    CreditLimitUpsellMode, credit_limit_upsell_mode, is_max_tier, open_credit_limit_upsell,
-    open_free_usage_upsell,
-};
 use super::cta::{
     CTA_MCP_ABSENT_MAX_ATTEMPTS, CTA_MCP_POLL_MAX_ATTEMPTS, cta_impression_plugin_name,
     cta_install_error_category, cta_install_relative_path, plugin_cta_phase_for,
@@ -51,7 +46,6 @@ use super::session::load::{dispatch_load_session_with_restore, reanchor_grouped_
 use super::session::modal::{dispatch_rename_session, dispatch_sessions_confirm_close};
 use super::settings::setters::set_default_model_inner;
 use super::settings::ui::{action_for_reset, apply_setting_rollback};
-use super::status::scrub_error_for_toast;
 use super::task_result::dispatch_task_result;
 use super::*;
 use crate::acp::model_state::ModelState;
@@ -150,21 +144,10 @@ fn test_app() -> AppView {
         team_name: None,
         is_zdr: false,
         team_role: None,
-        coding_data_retention_opt_out: false,
         show_tips: None,
-        auto_update: None,
         ask_user_question_timeout_enabled: None,
         zdr_access_enabled: false,
-        usage_billing_redirect_url: None,
-        access_gate_shown_logged: false,
         announcement_cta_impressions_logged: Default::default(),
-        gate: None,
-        subscription_tier: None,
-        paywall_check_started: None,
-        last_subscription_check_at: None,
-        subscription_watch_interval_secs: None,
-        pending_gate_verification: None,
-        gate_verify_gen: 0,
         bundle_state: crate::app::bundle::BundleState::default(),
         scroll_debug_hud: crate::views::scroll_debug_hud::ScrollDebugHud::new(),
         fps_hud: crate::views::fps_hud::FpsHud::new(),
@@ -187,8 +170,6 @@ fn test_app() -> AppView {
         welcome_on_changelog_cta: false,
         welcome_announcement: WelcomeAnnouncementState::default(),
         welcome_auth_fallback_rect: None,
-        welcome_refresh_rect: None,
-        welcome_gate_url_rect: None,
         welcome_changelog_cta_rect: None,
         welcome_upgrade_cta_rect: None,
         welcome_on_upgrade_cta: false,
@@ -232,12 +213,7 @@ fn test_app() -> AppView {
         show_resolved_model: true,
         sharing_enabled: false,
         plugin_cta_enabled: false,
-        usage_visible: true,
-        tier_restricted_commands: Vec::new(),
         leader_mode: true,
-        credit_balance: None,
-        auto_topup: None,
-        billing_poll_wanted: false,
         leader_roster: Vec::new(),
         dashboard_local_sessions: Vec::new(),
         dashboard_sessions_loading: false,
@@ -971,18 +947,4 @@ fn reset_mouse_capture_enabled(on: bool) {
 }
 fn mouse_capture_is_enabled() -> bool {
     crate::app::MOUSE_CAPTURE_ENABLED.load(std::sync::atomic::Ordering::Acquire)
-}
-/// Build a minimal `CreditBalance` for billing dispatch tests.
-fn test_bal(usage_pct: f64) -> crate::views::credit_bar::CreditBalance {
-    crate::views::credit_bar::CreditBalance {
-        usage_pct,
-        effective_usage_pct: usage_pct,
-        period_end_display: None,
-        pay_as_you_go: false,
-        on_demand_cap_cents: None,
-        on_demand_used_cents: None,
-        prepaid_balance_cents: None,
-        period_type: None,
-        is_unified_billing_user: None,
-    }
 }

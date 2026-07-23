@@ -4036,7 +4036,9 @@ mod tests {
             .replace("{SEARCH_TOOL}", "grep")
             .replace("{WRITE_TOOL}", "write")
             .replace("{EXECUTE_TOOL}", "run_terminal_command")
-            .replace("{TOOLSET_TOOLS}", "");
+            .replace("{TOOLSET_TOOLS}", "")
+            .replace("\r\n", "\n")
+            .replace('\r', "\n");
         assert_eq!(rendered, expected, "default verifier render drifted");
         // Pin the tool-bearing inventory line so prose drift on it is caught.
         assert!(rendered.contains("standard tool inventory (read_file, grep, list_dir,\nrun a"));
@@ -5636,17 +5638,20 @@ mod tests {
         let wait_for = |target: usize| {
             let observed = observed.clone();
             async move {
-                for _ in 0..10_000 {
-                    if observed
-                        .spawn_count
-                        .load(std::sync::atomic::Ordering::SeqCst)
-                        == target
-                    {
-                        return;
+                tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                    loop {
+                        if observed
+                            .spawn_count
+                            .load(std::sync::atomic::Ordering::SeqCst)
+                            == target
+                        {
+                            return;
+                        }
+                        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
                     }
-                    tokio::task::yield_now().await;
-                }
-                panic!("timed out waiting for spawn_count == {target}");
+                })
+                .await
+                .unwrap_or_else(|_| panic!("timed out waiting for spawn_count == {target}"));
             }
         };
         let watcher = async {

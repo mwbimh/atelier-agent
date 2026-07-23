@@ -1,300 +1,198 @@
-# Authentication
+# Provider Credentials
 
-Atelier supports several authentication methods, including interactive browser login, enterprise single sign-on (SSO), and headless CI/CD runners.
+Atelier does not have a product account, browser login, or hosted default
+model. Model access is configured per Provider. A Provider defines:
 
----
+- the API protocol;
+- the base URL;
+- how credentials are resolved;
+- how the model catalog is discovered.
 
-## Browser Login (Default)
+Provider configuration is local and stored under `$ATELIER_HOME` (default:
+`~/.atelier`).
 
-On first launch, Atelier opens your browser to authenticate with atelier.invalid:
+## Interactive Setup
+
+Start Atelier and enter:
+
+```text
+/provider
+```
+
+The command picker exposes Provider list, add, edit, enable, disable, test,
+refresh, and delete operations. Commands that need more input continue through
+interactive pickers.
+
+The complete command form is:
+
+```text
+/provider add <id> <protocol> <base-url> [credential]
+```
+
+Supported protocols:
+
+| Value | Wire protocol |
+|---|---|
+| `chat` | OpenAI Chat Completions |
+| `responses` | OpenAI Responses |
+| `anthropic` | Anthropic Messages |
+
+Supported credential specifications:
+
+| Value | Behavior |
+|---|---|
+| `env:NAME` | Read the credential from environment variable `NAME` when needed |
+| `cmd:PROGRAM` | Run `PROGRAM` and use its stdout as the credential |
+| `none` | Send no Provider credential |
+
+Example:
 
 ```bash
+export ALLM_API_KEY="..."
+```
+
+```text
+/provider add allm chat https://api.example.com/v1 env:ALLM_API_KEY
+/provider test allm
+/provider refresh allm
+```
+
+Use the equivalent PowerShell environment syntax on Windows:
+
+```powershell
+$env:ALLM_API_KEY = "..."
 atelier
 ```
 
-Atelier stores credentials in `~/.atelier/auth.json` and reuses them across sessions. Atelier refreshes access tokens automatically in the background. When a token can't be refreshed, Atelier prompts you to sign in again. Credentials without a server-provided expiry fall back to a 30-day lifetime.
+Atelier does not copy an environment credential into `providers.toml` or a
+session file. Do not put credentials in a Role payload or ordinary request
+headers.
 
-### Re-authenticate
+## Provider Management
 
-To switch accounts or resolve an authentication problem, run:
+Every operation supports a complete slash command:
+
+```text
+/provider list
+/provider add <id> <protocol> <base-url> [env:NAME|cmd:PROGRAM|none]
+/provider edit <id> <protocol> <base-url> [env:NAME|cmd:PROGRAM|none]
+/provider enable <id>
+/provider disable <id>
+/provider test <id>
+/provider refresh <id>
+/provider delete <id>
+```
+
+`edit` updates the protocol, base URL, and credential while preserving the
+Provider's existing display name, discovery settings, extra headers, and
+enabled state.
+
+`test` verifies that the configured Provider can be reached with its configured
+credential. `refresh` performs model discovery and updates that Provider's
+local model catalog.
+
+## Model Discovery
+
+Providers added through `/provider add` use OpenAI-compatible model discovery
+at the Provider's `models` path. For a base URL such as
+`https://api.example.com/v1`, refresh normally requests the corresponding
+`/v1/models` endpoint.
+
+```text
+/provider refresh allm
+/model
+```
+
+`/model` shows the models currently available from enabled Providers. If the
+Provider does not expose a compatible model endpoint, configure its catalog
+through the Provider RPC/configuration surface instead of expecting refresh to
+invent model names.
+
+## Roles Are Separate from Credentials
+
+Adding a Provider does not assign it to Runtime work. Configure the eight fixed
+Roles with `/roles`; each Role stores a Provider/model pair and optional model
+parameters.
+
+```text
+/roles
+/roles set main allm/deepseek-v4-flash high false
+/roles test main
+```
+
+See [Providers, Models, and Roles](11-custom-models.md) for the full mapping.
+
+## Storage and `ATELIER_HOME`
+
+The default state directory is `~/.atelier`. Override it before launching:
 
 ```bash
-atelier login
+export ATELIER_HOME=/srv/atelier-ci
+atelier -p "Run the tests"
 ```
 
-Running `atelier login` starts the sign-in flow again, replacing your cached session. By default, it opens your browser and signs in through SpaceXAI OAuth at `auth.x.ai`. Pass a flag to select a different flow:
-
-| Flag | Description |
-|------|-------------|
-| `--oauth` | Sign in through SpaceXAI OAuth at `auth.x.ai`. This is the default, so the flag is optional. |
-| `--device-auth` (alias `--device-code`) | Sign in with the device-code flow for headless or remote environments. |
-
-To sign out, run `atelier logout`. It takes no flags and clears your cached credentials.
-
----
-
-## API Key
-
-For CI/CD, automation, or environments without browser access, use an API key from [console.x.ai](https://console.x.ai):
-
-```bash
-export XAI_API_KEY="xai-..."
-atelier
-```
-
-Atelier uses the API key as a fallback when no session token is active. If you have already signed in interactively, the stored session token takes precedence. To fall back to the API key, run `atelier logout` or delete `~/.atelier/auth.json`.
-
----
-
-## OIDC (Customer SSO)
-
-Authenticate developers through your own Identity Provider (IdP) -- such as Okta, Azure AD, or Auth0 -- instead of atelier.invalid.
-
-### 1. Register a public client in your IdP
-
-- Grant type: Authorization Code with PKCE (Proof Key for Code Exchange)
-- Redirect URI: `http://127.0.0.1/callback` -- a loopback address. Atelier binds a random port at sign-in time, and most IdPs treat the loopback redirect as port-agnostic per [RFC 8252](https://tools.ietf.org/html/rfc8252).
-- No client secret. PKCE replaces it.
-
-### 2. Configure the CLI
-
-Via config file:
-
-```toml
-# ~/.atelier/config.toml
-[atelier_com_config.oidc]
-issuer = "https://acme.okta.com"
-client_id = "0oa1b2c3d4e5f6g7h8i9"
-```
-
-Or via environment variables:
-
-```bash
-export ATELIER_OIDC_ISSUER="https://acme.okta.com"
-export ATELIER_OIDC_CLIENT_ID="0oa1b2c3d4e5f6g7h8i9"
-```
-
-You can also override the API endpoint to point at your own proxy:
-
-```bash
-export ATELIER_CLI_CHAT_PROXY_BASE_URL="https://atelier-proxy.acme.com/v1"
-```
-
-### 3. Run `atelier`
-
-The CLI discovers endpoints via `{issuer}/.well-known/openid-configuration`, opens the IdP login page, and stores tokens in `~/.atelier/auth.json`. Tokens auto-refresh silently via the stored `refresh_token`.
-
-### Optional fields
-
-| Field | Default | Notes |
-|-------|---------|-------|
-| `scopes` | `["openid", "profile", "email", "offline_access", "api:access"]` | `offline_access` enables silent token refresh |
-| `audience` | None | Required by some IdPs (e.g., Auth0) |
-
----
-
-## External Auth Provider
-
-When browser-based login isn't possible -- for example, on sandboxed VMs, CI runners, or air-gapped networks -- delegate authentication to an external binary or script.
-
-### How It Works
-
-```
-+--------------+     sh -c     +------------------------+
-|     Atelier     |-------------->|  your auth binary      |
-|              |               |                        |
-|  reads       |<-- stdout ----|  prints token          |
-|  auth.json   |               |                        |
-|              |   (stderr)    |  prints status/URLs    |--> surfaced to user
-+--------------+               +------------------------+
-```
-
-1. Atelier runs your command via `sh -c "<command>"`
-2. Your binary runs whatever auth flow it needs (SSO, device code, certificate exchange)
-3. **stderr** carries human-readable output, such as login URLs and status messages. Atelier reads stderr and surfaces it to the user; in the TUI, it turns the first `https://` URL into a clickable sign-in link.
-4. **stdout** is captured by Atelier and saved as the access token
-5. Exit 0 = success; exit non-zero = Atelier falls back to interactive login
-
-### The stdout / stderr Contract
-
-| Stream | What to print | Who sees it |
-|--------|---------------|-------------|
-| **stdout** | The token -- nothing else | Atelier (parsed and stored in auth.json) |
-| **stderr** | Login URLs, status messages, errors | The user (Atelier reads stderr and shows the sign-in URL as a clickable link in the TUI) |
-
-**Do not print anything to stdout except the token.** No progress messages, no debug output. Atelier reads stdout, trims surrounding whitespace, and parses the result as a token.
-
-### stdout Token Format
-
-**Bare string** -- just the raw token:
-
-```
-eyJhbGciOiJSUzI1NiIs...
-```
-
-**JSON** -- with optional refresh token, expiry, and issuer:
-
-```json
-{"access_token": "eyJhbGciOi...", "refresh_token": "ref-tok", "expires_in": 3600, "issuer": "https://idp.example.com"}
-```
-
-Use JSON if your tokens expire and you want Atelier to automatically re-run the binary before expiry.
-
-JSON fields:
-
-| Field | Required | Meaning |
-|-------|----------|---------|
-| `access_token` | yes | Bearer token Atelier sends to the xAI API |
-| `refresh_token` | no | Stored for reference. Atelier refreshes by re-running your binary, not with an OAuth refresh grant |
-| `expires_in` | no | Token lifetime in seconds; enables proactive refresh before expiry |
-| `issuer` | no | Identifies the token's issuer |
-
-### Configuration
-
-Via config file:
-
-```toml
-# ~/.atelier/config.toml
-[auth]
-auth_provider_command = "/usr/local/bin/my-auth-provider"
-auth_provider_label = "Acme Corp"   # optional -- customizes the TUI login button
-auth_token_ttl = 3600               # optional -- token lifetime in seconds
-```
-
-Or via environment variables:
-
-```bash
-export ATELIER_AUTH_PROVIDER_COMMAND="/usr/local/bin/my-auth-provider"
-export ATELIER_AUTH_PROVIDER_LABEL="Acme Corp"
-export ATELIER_AUTH_TOKEN_TTL=3600
-```
-
-### Token Refresh
-
-When Atelier needs to refresh an expired token, it re-runs your binary with `ATELIER_AUTH_EXPIRED=1` set in the environment. Each run fully replaces the stored credential, so emit the same JSON fields (such as `issuer`) on every invocation, including refreshes. Your binary can use this to take a faster silent-refresh path:
-
-```bash
-#!/bin/sh
-if [ "$ATELIER_AUTH_EXPIRED" = "1" ]; then
-    echo "Refreshing token..." >&2
-    TOKEN=$(my-company-auth --refresh --silent)
-else
-    echo "Authenticating via Acme Corp SSO..." >&2
-    TOKEN=$(my-company-auth --login --interactive)
-fi
-
-if [ -z "$TOKEN" ]; then
-    echo "Authentication failed" >&2
-    exit 1
-fi
-
-echo "{\"access_token\": \"$TOKEN\", \"expires_in\": 3600}"
-```
-
-### Environment Variables
-
-| Variable | Description |
-|----------|-------------|
-| `ATELIER_AUTH_PROVIDER_COMMAND` | Path to your auth binary |
-| `ATELIER_AUTH_PROVIDER_LABEL` | Display name on the TUI login screen (e.g., "Acme Corp") |
-| `ATELIER_AUTH_TOKEN_TTL` | Token lifetime in seconds (for bare-string tokens without `expires_in`) |
-| `ATELIER_AUTH_EXPIRED` | Set to `1` by Atelier when re-running the binary for token refresh |
-| `ATELIER_AUTH_EARLY_INVALIDATION_SECS` | Seconds before expiry to proactively refresh (default: 300) |
-
----
-
-## Device Code Flow
-
-For headless environments (SSH sessions, Docker containers, remote VMs) where no browser is available locally:
-
-```bash
-atelier login --device-auth    # or: atelier login --device-code
-```
-
-This prints a URL and code to the terminal. Open the URL on any device, enter the code, and complete authentication. Atelier polls until the login is confirmed.
-
-You can also implement the device-code flow through an [External Auth Provider](#external-auth-provider) for full control.
-
----
-
-## Automatic Credential Refresh
-
-Atelier automatically refreshes expired credentials:
-
-- **Before expiry:** If your auth provider returned `expires_in` (JSON output) or you set `auth_token_ttl`, Atelier re-runs the auth binary ~5 minutes before expiry.
-- **On auth error:** If the server returns 401 Unauthorized, Atelier refreshes the credentials and retries the request.
-- **OIDC:** If a `refresh_token` is available, Atelier silently refreshes via your IdP without re-opening the browser.
-
-Tune the refresh buffer:
-
-```bash
-# Refresh 5 minutes before expiry (default)
-export ATELIER_AUTH_EARLY_INVALIDATION_SECS=300
-
-# Disable the proactive buffer: refresh at expiry or on a 401 (set to 0)
-export ATELIER_AUTH_EARLY_INVALIDATION_SECS=0
-```
-
----
-
-## Hot Reload
-
-Atelier picks up changes to `~/.atelier/auth.json` automatically. If you update credentials externally (for example, with a script that writes new tokens), Atelier uses the new credentials on the next API call without a restart.
-
----
-
-## Auth Precedence
-
-Atelier resolves credentials for each request in this order, highest to lowest:
-
-1. **Per-model `api_key` or `env_key`** -- set under `[model.<name>]` in `config.toml`. Wins whenever present.
-2. **Active session token** -- obtained through browser, OIDC/OAuth2, or external-provider login and stored in `~/.atelier/auth.json`.
-3. **`XAI_API_KEY`** -- fallback when no session token is active.
-
-When more than one login flow is configured, Atelier populates the session token from the first available source, highest to lowest:
-
-1. **External auth provider** (`auth_provider_command`)
-2. **Enterprise OIDC** -- when OIDC is configured, through `[atelier_com_config.oidc]` in `config.toml` or the `ATELIER_OIDC_ISSUER` and `ATELIER_OIDC_CLIENT_ID` environment variables
-3. **SpaceXAI OAuth2 browser login** -- the default
-
-During a session, the active method handles all mid-session refreshes.
-
----
+Important files include:
+
+| Path | Purpose |
+|---|---|
+| `$ATELIER_HOME/providers.toml` | Provider registry, discovered models, model settings, and Roles |
+| `$ATELIER_HOME/config.toml` | General Runtime and TUI settings |
+| `$ATELIER_HOME/sessions/` | Session data grouped by workspace |
+| `$ATELIER_HOME/logs/` | Local diagnostic logs |
+
+## MCP OAuth
+
+Provider credentials and MCP credentials are independent. A user-configured
+remote MCP server may use its own standard OAuth flow. Atelier may open the
+MCP server's authorization page and stores those tokens in
+`$ATELIER_HOME/mcp_credentials.json`. This does not create an Atelier account
+and does not authenticate model Providers.
+
+See [MCP Servers](07-mcp-servers.md#mcp-oauth).
 
 ## Troubleshooting
 
-### Debug logging
+### Provider is missing
 
-Set `RUST_LOG` to control the verbosity of the file log and headless stderr output. (The TUI's on-screen tracing pane uses a fixed filter and ignores `RUST_LOG`.) In the TUI, file logging defaults to `DEBUG`; in headless mode (`-p`), `RUST_LOG` defaults to `off` so only the answer is printed — set `RUST_LOG=error` (or broader) to see logs on stderr.
-
-In the TUI, set `ATELIER_LOG_FILE` to an absolute path to write logs to that file:
-
-```bash
-ATELIER_LOG_FILE=/tmp/atelier.log RUST_LOG=debug atelier
-tail -f /tmp/atelier.log
+```text
+/provider list
 ```
 
-`ATELIER_LOG_FILE` is treated as a literal file path. A relative value such as `1` writes a file named `1` in the current directory.
+Confirm that the Provider is present and enabled.
 
-In headless mode, logs go to stderr. Redirect them to a file:
+### Credential is missing
+
+Check the environment in the process that launches Atelier:
 
 ```bash
-RUST_LOG=debug atelier -p "hello" 2> /tmp/atelier.log
+test -n "$ALLM_API_KEY" && echo set
 ```
 
-### Common log messages
+On Windows:
 
-| Log message | What it means |
-|-------------|---------------|
-| `auth: running external auth provider` | Atelier is running your binary |
-| `auth: external auth provider returned fresh token` | Atelier parsed and stored the token |
-| `auth: external auth provider failed` | Binary exited non-zero or stdout was empty |
-| `auth: external auth provider timed out (likely needs interactive auth), killing` | Binary did not exit before the timeout and was killed |
-| `auth: failed to start external auth provider` | Command could not be spawned (binary not found) |
+```powershell
+if ($env:ALLM_API_KEY) { "set" }
+```
 
-### Common fixes
+### Refresh returns no models
 
-- **"Authentication failed"** -- Run `atelier logout` to clear cached credentials, then `atelier login` to sign in again.
-- **Token expires too quickly** -- Set `auth_token_ttl` or return `expires_in` in your auth provider's JSON output.
-- **OIDC redirect fails** -- Ensure your IdP allows loopback redirect URIs (`http://127.0.0.1/callback`).
-- **External auth provider not found** -- Check that the `auth_provider_command` path is correct and the binary is executable.
+Run:
+
+```text
+/provider test allm
+/provider refresh allm
+```
+
+Then inspect local logs under `$ATELIER_HOME/logs/`. Confirm that the base URL
+and `/models` response are compatible with the selected protocol.
+
+### Provider works but a session cannot start
+
+Configure and test the required Role:
+
+```text
+/roles get main
+/roles test main
+```
+
+Atelier does not silently fall back to another Provider or model.

@@ -29,7 +29,7 @@ const SUPPORTED = new Set([
 ]);
 if (!SUPPORTED.has(key)) {
     console.error(`@atelier/atelier: unsupported platform ${key}`);
-    process.exit(0);
+    process.exit(1);
 }
 
 // Resolve the per-platform sibling package's directory. The matching
@@ -49,11 +49,26 @@ let version;
 try { version = require('../package.json').version; } catch {}
 if (!version) {
     console.error('@atelier/atelier: unable to determine version');
-    process.exit(0);
+    process.exit(1);
 }
 
 const IS_WINDOWS = process.platform === 'win32';
 const EXE = IS_WINDOWS ? '.exe' : '';
+
+// Validate the existing config before changing the installed binary. A broken
+// config must fail the npm install without replacing either file.
+const configDir = path.join(os.homedir(), '.atelier');
+const configPath = path.join(configDir, 'config.toml');
+let obj = {};
+if (fs.existsSync(configPath)) {
+    try {
+        obj = TOML.parse(fs.readFileSync(configPath, 'utf8'));
+    } catch (error) {
+        console.error(`@atelier/atelier: failed to parse existing config ${configPath}: ${error.message}`);
+        console.error('The existing config was left unchanged. Fix it and run npm install again.');
+        process.exit(1);
+    }
+}
 
 fs.mkdirSync(CANONICAL_DIR, { recursive: true });
 
@@ -168,18 +183,15 @@ if (!platformDir) {
     console.error(`@atelier/atelier: platform package @atelier/atelier-${key} not installed.`);
     console.error('  This usually means npm was invoked with --no-optional, or the install failed.');
     console.error('  Try: npm install -g @atelier/atelier');
-    process.exit(0);
+    process.exit(1);
 }
 
-installBinary('atelier', platformDir, `atelier${EXE}`);
-cleanupOldVersions('atelier');
+if (!installBinary('atelier', platformDir, `atelier${EXE}`)) {
+    process.exit(1);
+}
 cleanupOldVersions('atelier');
 
 // Write installer config
-const configDir = path.join(os.homedir(), '.atelier');
-const configPath = path.join(configDir, 'config.toml');
-let obj = {};
-try { obj = TOML.parse(fs.readFileSync(configPath, 'utf8')); } catch { }
 obj.cli ??= {};
 obj.cli.installer = 'npm';
 
@@ -200,7 +212,13 @@ if (npmRegistry) {
     obj.cli.npm_registry = npmRegistry;
 }
 
-fs.writeFileSync(configPath, TOML.stringify(obj), 'utf8');
+const configTmpPath = `${configPath}.tmp.${process.pid}`;
+try {
+    fs.writeFileSync(configTmpPath, TOML.stringify(obj), 'utf8');
+    fs.renameSync(configTmpPath, configPath);
+} finally {
+    try { fs.unlinkSync(configTmpPath); } catch {}
+}
 
 // Shell completions: print setup hints (no silent shell config mutation).
 // Set ATELIER_INSTALL_COMPLETIONS=1 to auto-generate to ~/.atelier/completions.

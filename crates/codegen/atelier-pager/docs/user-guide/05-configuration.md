@@ -10,40 +10,22 @@ CLI flags. This document covers the common options.
 Configuration is resolved in this order (highest priority first):
 
 1. **CLI flags** (e.g., `--yolo`, `--model`, `--sandbox`)
-2. **Environment variables** (e.g., `XAI_API_KEY`, `ATELIER_MEMORY`)
-3. **config.toml** (`~/.atelier/config.toml`)
-4. **Managed / requirements config** (local files your org may deploy, e.g.
-   `managed_config.toml` / `requirements.toml`)
+2. **Environment variables** (e.g., Provider credential variables, `ATELIER_MEMORY`)
+3. **Workspace config** (`<workspace>/.atelier/config.toml` where supported)
+4. **User config** (`$ATELIER_HOME/config.toml`)
 5. **Built-in defaults**
 
 ---
 
 ## config.toml (Main Configuration)
 
-Location: `~/.atelier/config.toml`
+Location: `$ATELIER_HOME/config.toml` (default: `~/.atelier/config.toml`)
 
 If the file does not exist, Atelier uses built-in defaults. Specify only the values you want to override.
 
 ### General Settings
 
 ```toml
-[cli]
-auto_update = true                     # check for updates on launch
-
-[models]
-default = "atelier-build"           # model used for new sessions
-web_search = "atelier-4.20-multi-agent"   # model used by the web_search tool
-
-# Defaults applied to every model; a per-model [model.<id>] value always wins.
-# See "Custom Models" for the per-model overrides and full details.
-extra_headers = { "X-Request-Tags" = "team=example,env=prod" }
-temperature = 0.7
-top_p = 0.95
-max_completion_tokens = 8192
-max_retries = 8
-inference_idle_timeout_secs = 600
-stream_tool_calls = true
-
 [ui]
 simple_mode = true                      # readline-style prompt editing (default); false = vim editing in the prompt
 vim_mode = false                       # vim-style scrollback navigation keys (default: false)
@@ -62,14 +44,9 @@ screen_mode = "fullscreen"             # default render mode: "fullscreen" | "mi
                                        # (unset → fullscreen); set via /settings → Default screen mode
 
 [features]
-telemetry = false                      # anonymous usage telemetry
-feedback = true                        # feedback system (default: true)
 lsp_tools = false                      # expose the lsp tool
 codebase_indexing = true               # code graph indexing
 two_pass_compaction = false            # prefire two-pass compaction (default: false, opt-in)
-remote_fetch = true                    # allow optional online model-catalog fetches (default: true;
-                                       # set false for firewalled/air-gapped deployments; background
-                                       # managed-config sync has its own switch: managed_config)
 
 [session]
 auto_compact_threshold_percent = 85    # auto-compact at this % of context window
@@ -78,6 +55,10 @@ load_envrc = true                      # load .envrc environment variables
 [tools]
 respect_gitignore = false              # default: false; set true to make every tool skip gitignored files
 ```
+
+Provider, discovered model, Wire API, and fixed Role configuration is stored in
+`$ATELIER_HOME/providers.toml` and should normally be changed with `/provider`,
+`/model-config`, and `/roles`. Atelier does not provide a hosted model default.
 
 #### Input Mode
 
@@ -225,62 +206,35 @@ timeout_secs = 1800                    # seconds to wait when enabled (default: 
 
 [toolset.web_fetch]
 proxy_endpoint = "https://proxy.example.com"   # egress proxy URL
-allowed_domains = ["docs.rs", "x.ai"]           # override the built-in allowlist
+allowed_domains = ["docs.rs", "example.com"]    # override the built-in allowlist
 ```
 
-`[toolset.ask_user_question]` is honored across **requirements.toml**, **managed
-config**, and **user `config.toml`**. Precedence: requirements → env
+`[toolset.ask_user_question]` is read from local workspace and user config.
+Environment variables
 (`ATELIER_ASK_USER_QUESTION_TIMEOUT_ENABLED` /
-`ATELIER_ASK_USER_QUESTION_TIMEOUT_SECS`) → user config → managed →
-defaults. Set `timeout_enabled = false` in your user config to disable the
+`ATELIER_ASK_USER_QUESTION_TIMEOUT_SECS`) take precedence over config files.
+Set `timeout_enabled = false` in your user config to disable the
 automatic questionnaire timeout for yourself; `timeout_secs` must be a
 positive integer. `timeout_enabled` can also be toggled from the settings
 pane (`/settings` → **Ask-Question timeout**, under Agent & Approval);
 changes apply to newly started sessions.
 
-### Authentication
+### Providers, Models, and Roles
 
-See [Authentication](02-authentication.md) for full details.
+Provider credentials are explicit references such as `env:NAME`,
+`cmd:PROGRAM`, or `none`. Configure them through the TUI:
 
-```toml
-[auth]
-auth_provider_command = "/usr/local/bin/my-auth-provider"
-auth_provider_label = "Acme Corp"
-auth_token_ttl = 3600
-
-[atelier_com_config.oidc]
-issuer = "https://acme.okta.com"
-client_id = "0oa1b2c3d4e5f6g7h8i9"
-# scopes = ["openid", "profile", "email", "offline_access", "api:access"]
-# audience = "https://api.acme.com"
+```text
+/provider add allm chat https://api.example.com/v1 env:ALLM_API_KEY
+/provider test allm
+/provider refresh allm
+/model
+/roles
 ```
 
-### Custom Models
-
-Add custom model endpoints to use alternative providers or self-hosted models.
-
-```toml
-[model.my-model]
-model = "model-id"                    # model identifier sent to API
-base_url = "https://api.example.com/v1"  # OpenAI-compatible endpoint
-name = "Display Name"                 # shown in model picker
-description = "Model description"     # optional
-api_key = "sk-..."                    # API key for this provider
-env_key = "XAI_API_KEY"               # env var(s) holding the API key; string or array (first set, non-empty wins)
-temperature = 0.7                     # sampling temperature (0.0-2.0)
-top_p = 0.95                          # nucleus sampling parameter
-max_completion_tokens = 8192          # max tokens per response
-context_window = 128000               # context window size (for auto-compact)
-```
-
-Credential resolution: `api_key` > `env_key` > signed-in session token > `XAI_API_KEY`.
-
-Override built-in models by using their name as the section key:
-
-```toml
-[model.atelier-build]
-api_key = "my-api-key"               # only override the fields you need
-```
+See [Provider Credentials](02-authentication.md) and
+[Providers, Models, and Roles](11-custom-models.md). Do not place credentials
+inside `config.toml`, Role payloads, or model payload overrides.
 
 ### MCP Servers
 
@@ -345,12 +299,11 @@ enabled = true
 [subagents.toggle]
 explore = true                        # enable/disable specific types
 plan = false
-
-[subagents.models]
-explore = "atelier-build"               # route to different models
 ```
 
-To pin the model a subagent uses, set its entry under `[subagents.models]`.
+Built-in subagent model assignment uses the fixed `explore`, `implement`,
+`review`, and `test` Roles. Configure them with `/roles`, not with a parent
+session model override.
 
 ### Skills
 
@@ -412,7 +365,8 @@ disabled = ["user/a1b2c3d4/noisy-plugin"]
 
 The `[hints]` table holds small persisted UI preferences — mostly "stop asking me" opt-outs. Atelier writes these for you when you pick a "don't ask again" / "reset in config.toml" option in the TUI, but you can edit or remove them by hand. Deleting a key restores the default behavior.
 
-`[hints]` is read from the **effective config merge** (same precedence as other settings): system managed → user `managed_config.toml` → user `config.toml` → user `requirements.toml` → system `requirements.toml`. Higher-priority layers override lower ones. The TUI only **writes** opt-outs to user `~/.atelier/config.toml`.
+`[hints]` is read from the normal local config merge. The TUI writes opt-outs
+only to `$ATELIER_HOME/config.toml`.
 
 ```toml
 [hints]
@@ -424,7 +378,7 @@ fork_worktree_mode = "ask"             # /fork worktree prompt: "ask" | "always"
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `project_picker_disabled` | bool | `false` | When `true`, skips the picker that asks you to choose a project directory on the first prompt when Atelier is launched from a non-project directory (home, Desktop, Downloads, `/tmp`). Set automatically when you choose **"Don't ask me again"** in that picker. Teams can pin this in `managed_config.toml` or `requirements.toml` via `[hints] project_picker_disabled = true`. |
+| `project_picker_disabled` | bool | `false` | When `true`, skips the picker that asks you to choose a project directory on the first prompt when Atelier is launched from a non-project directory (home, Desktop, Downloads, `/tmp`). Set automatically when you choose **"Don't ask me again"** in that picker. |
 | `memory_modal_fullscreen` | bool | `false` | Remembers whether the memory modal was last opened fullscreen. |
 | `new_session_worktree_mode` | string | `"never"` | Worktree prompt for `/new`: `ask` shows the popup, `always` creates a worktree, `never` skips it. |
 | `fork_worktree_mode` | string | `"ask"` | Worktree prompt for `/fork`: `ask`, `always`, or `never`. |
@@ -546,56 +500,42 @@ See [Keyboard Shortcuts](03-keyboard-shortcuts.md) for the complete reference.
 
 ### Telemetry
 
-The `[features] telemetry` toggle (in the `[features]` block above) is the master switch for anonymous usage telemetry. When telemetry is enabled, enterprises that run their own collector can redirect it or selectively disable parts of it under `[telemetry]`:
+Atelier has no built-in product analytics or trace uploader. The
+`[telemetry]` table configures only the optional OpenTelemetry stream to a
+collector you choose. It is off by default. Collector authentication is
+supplied through `OTEL_EXPORTER_OTLP_HEADERS` and is not stored on disk.
 
 ```toml
 [telemetry]
-events_url = "https://telemetry.your-company.com/events"  # send events to your own collector
-events_api_key = "your-collector-token"                   # auth for your collector, if required
-mixpanel_enabled = false                                  # disable Mixpanel product analytics
-trace_upload = false                                      # disable session/trace uploads (inherits the telemetry toggle when unset)
-```
-
-Set these only to point telemetry at your own infrastructure or to turn parts of it off. The built-in endpoint and credentials are managed by Atelier; leave them unset to use the defaults.
-
-The same `[telemetry]` table also configures the **external OpenTelemetry stream** — an independent opt-in (it does not require the telemetry toggle above) that ships a curated, content-free usage schema to your *own* OTLP collector. Collector auth is supplied via `OTEL_EXPORTER_OTLP_HEADERS` and is never stored on disk. See [Monitoring & Usage](24-monitoring-usage.md) for the full schema, env vars, and privacy model.
-
-```toml
-[telemetry]
-otel_enabled = true                                       # external OTEL master switch (= ATELIER_EXTERNAL_OTEL)
+otel_enabled = true                                       # master switch (= ATELIER_EXTERNAL_OTEL)
 otel_metrics_exporter = "otlp"                            # otlp | console | none
 otel_logs_exporter = "otlp"                               # otlp | console | none
 otel_endpoint = "https://collector.corp.example:4318"     # OTLP base endpoint
 otel_protocol = "http/protobuf"                           # http/protobuf | grpc
-otel_log_user_prompts = false                             # content gate (admins can pin via requirements)
-otel_log_tool_details = false                             # content gate (admins can pin via requirements)
+otel_log_user_prompts = false                             # explicit content gate
+otel_log_tool_details = false                             # explicit content gate
 ```
 
-### Enterprise Deployment
+See [Optional OpenTelemetry Export](24-monitoring-usage.md) for the schema,
+environment variables, and privacy behavior.
 
-A complete config for enterprise use:
+### Local Deployment Example
+
+A minimal local Runtime config keeps Provider/model assignment outside
+`config.toml`:
 
 ```toml
-[cli]
-auto_update = false
-
-[auth]
-auth_provider_command = "/usr/local/bin/my-company-auth-provider"
-auth_provider_label = "Acme Corp"
-auth_token_ttl = 3600
-
-[models]
-default = "company-atelier"
-
-[model.company-atelier]
-model = "atelier-build"
-base_url = "https://atelier-proxy.acme.com/"
-name = "Atelier Latest (Proxy)"
-context_window = 128000
-
 [features]
-telemetry = false
+lsp_tools = false
+codebase_indexing = true
+
+[session]
+auto_compact_threshold_percent = 85
 ```
+
+Configure the actual endpoint, credential, discovered models, and Roles with
+`/provider` and `/roles`. For isolated CI state, set `ATELIER_HOME` to a
+dedicated writable directory.
 
 ---
 
@@ -726,23 +666,16 @@ disable_plugins = false               # hide hooks/plugins UI entirely
 
 Key environment variables. See the README for the complete list.
 
-### Authentication
+### Provider Credentials
 
-| Variable | Description |
-|----------|-------------|
-| `XAI_API_KEY` | API key from console.x.ai |
-| `ATELIER_AUTH_PROVIDER_COMMAND` | External auth binary path |
-| `ATELIER_AUTH_PROVIDER_LABEL` | Display name on TUI login screen |
-| `ATELIER_AUTH_TOKEN_TTL` | Token lifetime in seconds |
-| `ATELIER_AUTH_EARLY_INVALIDATION_SECS` | Seconds before expiry to refresh (default: 300) |
-| `ATELIER_OIDC_ISSUER` | OIDC issuer URL |
-| `ATELIER_OIDC_CLIENT_ID` | OIDC client ID |
+Provider credentials use the environment variable named in the Provider's
+`env:NAME` reference. Atelier does not define a global model API-key variable.
 
-### Endpoints
+```text
+/provider add allm chat https://api.example.com/v1 env:ALLM_API_KEY
+```
 
-| Variable | Description |
-|----------|-------------|
-| `ATELIER_CLI_CHAT_PROXY_BASE_URL` | Override API proxy base URL |
+In that example, only `ALLM_API_KEY` is read for Provider `allm`.
 
 ### Features
 
@@ -768,13 +701,15 @@ Key environment variables. See the README for the complete list.
 | `ATELIER_HOME` | Override config directory (default: `~/.atelier`) |
 | `ATELIER_RESPECT_GITIGNORE` | Force gitignore filtering on (`1`) or off (`0`); overrides `[tools] respect_gitignore` |
 
-### Telemetry
+### Optional OpenTelemetry
 
 | Variable | Description |
 |----------|-------------|
-| `ATELIER_TELEMETRY_ENABLED` | Enable/disable telemetry |
-| `ATELIER_FEEDBACK_ENABLED` | Enable/disable feedback system |
-| `ATELIER_DEPLOYMENT_KEY` | Management API key for enterprise |
+| `ATELIER_EXTERNAL_OTEL` | Opt in to export to a user-configured collector |
+| `OTEL_METRICS_EXPORTER` | Metrics exporter selection |
+| `OTEL_LOGS_EXPORTER` | Event exporter selection |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | Collector endpoint |
+| `OTEL_EXPORTER_OTLP_HEADERS` | Collector authentication headers |
 
 ---
 
@@ -782,16 +717,18 @@ Key environment variables. See the README for the complete list.
 
 | Path | Description |
 |------|-------------|
-| `~/.atelier/config.toml` | Main configuration file |
-| `~/.atelier/pager.toml` | TUI appearance configuration |
-| `~/.atelier/auth.json` | Authentication credentials (auto-managed) |
-| `~/.atelier/sessions/` | Persisted sessions (organized by working directory) |
-| `~/.atelier/memory/` | Cross-session memory files and index |
-| `~/.atelier/skills/` | User-scoped skill definitions |
-| `~/.atelier/plugins/` | User-scoped plugins |
-| `~/.atelier/agents/` | User-scoped agent definitions |
-| `~/.atelier/lsp.json` | LSP server configuration (user-scoped) |
-| `~/.atelier/logs/` | Internal log files (for example `unified.jsonl`, MCP server logs) |
+| `$ATELIER_HOME/config.toml` | Main configuration file |
+| `$ATELIER_HOME/providers.toml` | Provider registry, discovered models, Wire API settings, and fixed Roles |
+| `$ATELIER_HOME/pager.toml` | TUI appearance configuration |
+| `$ATELIER_HOME/mcp_credentials.json` | Credentials for explicitly configured OAuth MCP servers |
+| `$ATELIER_HOME/sessions/` | Persisted sessions (organized by working directory) |
+| `$ATELIER_HOME/memory/` | Cross-session memory files and index |
+| `$ATELIER_HOME/skills/` | User-scoped skill definitions |
+| `$ATELIER_HOME/plugins/` | User-scoped plugins |
+| `$ATELIER_HOME/agents/` | User-scoped agent definitions |
+| `$ATELIER_HOME/lsp.json` | LSP server configuration (user-scoped) |
+| `$ATELIER_HOME/logs/` | Local log files (for example `unified.jsonl`, MCP server logs) |
+| `~/.atelier/bin/atelier` | npm-installed executable (`atelier.exe` on Windows); independent of a custom Runtime `ATELIER_HOME` |
 | `.atelier/config.toml` | Project-scoped MCP servers, plugins, and permission rules |
 | `.atelier/skills/` | Project-scoped skill definitions |
 | `.atelier/plugins/` | Project-scoped plugins |

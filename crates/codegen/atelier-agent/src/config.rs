@@ -180,9 +180,6 @@ pub fn workspace_atelier_build_toolset() -> ToolServerConfig {
     tools.push((&atelier_build::ExitPlanModeTool).into());
     tools.push((&atelier_build::AskUserQuestionTool).into());
     tools.push((&atelier_build::WebSearchTool).into());
-    tools.push((&atelier_build::ImageGenTool).into());
-    tools.push((&atelier_build::ImageToVideoTool).into());
-    tools.push((&atelier_build::ReferenceToVideoTool).into());
     tools.push((&atelier_build::WebFetchTool).into());
     tools.push((&memory::search_tool::MemorySearchImpl).into());
     tools.push((&memory::get_tool::MemoryGetImpl).into());
@@ -447,9 +444,6 @@ fn orchestrator_toolset() -> ToolServerConfig {
             (&atelier_build::MonitorTool).into(),
             (&atelier_build::WebSearchTool).into(),
             (&atelier_build::WebFetchTool).into(),
-            (&atelier_build::ImageGenTool).into(),
-            (&atelier_build::ImageToVideoTool).into(),
-            (&atelier_build::ReferenceToVideoTool).into(),
             (&memory::MemorySearchImpl).into(),
             (&memory::MemoryGetImpl).into(),
         ],

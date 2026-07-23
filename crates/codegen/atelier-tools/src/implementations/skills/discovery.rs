@@ -1396,7 +1396,10 @@ model: test-model
         std::fs::write(standard.join("SKILL.md"), "---\nname: mine\n---\n").unwrap();
 
         let paths = find_skill_paths(&cursor_dir);
-        let strs: Vec<String> = paths.iter().map(|p| p.display().to_string()).collect();
+        let strs: Vec<String> = paths
+            .iter()
+            .map(|p| p.display().to_string().replace('\\', "/"))
+            .collect();
         assert!(
             strs.iter().any(|p| p.contains("skills/mine")),
             "standard skills/ layout must still be found: {strs:?}"
@@ -1480,7 +1483,7 @@ model: test-model
             (atelier_shell.join("SKILL.md"), SkillScope::User),
         ]);
         assert_eq!(skills.len(), 1, "cursor builtin must be dropped");
-        assert!(skills[0].path.contains("/.atelier/"));
+        assert!(skills[0].path.replace('\\', "/").contains("/.atelier/"));
     }
 
     #[test]

@@ -1,0 +1,78 @@
+{
+  "roleListResult": {
+    "roles": [
+      {
+        "roleId": "main",
+        "config": {
+          "provider": "local",
+          "model": "coding-model",
+          "effort": null,
+          "fast_mode": true,
+          "payload": {
+            "temperature": 0.2
+          }
+        }
+      }
+    ]
+  },
+  "runtimeStatusResult": {
+    "protocolVersion": "2.0",
+    "statuses": [
+      {
+        "sessionId": "session-1",
+        "state": "running",
+        "startedAtMs": 1000,
+        "lastProgressAtMs": 1200,
+        "requestId": "request-1",
+        "turnId": null,
+        "role": "main",
+        "provider": "local",
+        "model": "coding-model",
+        "timeoutMs": null,
+        "retryCount": 1,
+        "cancelSupported": true,
+        "diagnosticMessage": null
+      }
+    ]
+  },
+  "convenienceMethods": [
+    { "rust": "context_current", "typescript": "contextCurrent", "csharp": "ContextCurrentAsync", "wire": "_atelier/context/current" },
+    { "rust": "context_list", "typescript": "contextList", "csharp": "ContextListAsync", "wire": "_atelier/context/list" },
+    { "rust": "context_get", "typescript": "contextGet", "csharp": "ContextGetAsync", "wire": "_atelier/context/get" },
+    { "rust": "request_list", "typescript": "requestList", "csharp": "RequestListAsync", "wire": "_atelier/request/list" },
+    { "rust": "request_get", "typescript": "requestGet", "csharp": "RequestGetAsync", "wire": "_atelier/request/get" },
+    { "rust": "trace_get", "typescript": "traceGet", "csharp": "TraceGetAsync", "wire": "_atelier/trace/get" },
+    { "rust": "runtime_status", "typescript": "runtimeStatus", "csharp": "RuntimeStatusAsync", "wire": "_atelier/runtime/status" },
+    { "rust": "runtime_doctor", "typescript": "runtimeDoctor", "csharp": "RuntimeDoctorAsync", "wire": "_atelier/runtime/doctor" },
+    { "rust": "runtime_cancel", "typescript": "runtimeCancel", "csharp": "RuntimeCancelAsync", "wire": "_atelier/runtime/cancel" },
+    { "rust": "runtime_retry", "typescript": "runtimeRetry", "csharp": "RuntimeRetryAsync", "wire": "_atelier/runtime/retry" },
+    { "rust": "runtime_recover", "typescript": "runtimeRecover", "csharp": "RuntimeRecoverAsync", "wire": "_atelier/runtime/recover" },
+    { "rust": "runtime_tasks", "typescript": "runtimeTasks", "csharp": "RuntimeTasksAsync", "wire": "_atelier/runtime/tasks" },
+    { "rust": "role_list", "typescript": "roleList", "csharp": "RoleListAsync", "wire": "_atelier/role/list" },
+    { "rust": "role_get", "typescript": "roleGet", "csharp": "RoleGetAsync", "wire": "_atelier/role/get" },
+    { "rust": "role_set", "typescript": "roleSet", "csharp": "RoleSetAsync", "wire": "_atelier/role/update" },
+    { "rust": "role_test", "typescript": "roleTest", "csharp": "RoleTestAsync", "wire": "_atelier/role/test" },
+    { "rust": "context_snapshot_create", "typescript": "contextSnapshotCreate", "csharp": "ContextSnapshotCreateAsync", "wire": "_atelier/context_snapshot/create" },
+    { "rust": "context_snapshot_get", "typescript": "contextSnapshotGet", "csharp": "ContextSnapshotGetAsync", "wire": "_atelier/context_snapshot/get" },
+    { "rust": "context_snapshot_delete", "typescript": "contextSnapshotDelete", "csharp": "ContextSnapshotDeleteAsync", "wire": "_atelier/context_snapshot/delete" },
+    { "rust": "agent_spawn_derived", "typescript": "agentSpawnDerived", "csharp": "AgentSpawnDerivedAsync", "wire": "_atelier/agent/spawn_derived" },
+    { "rust": "agent_spawn_parallel", "typescript": "agentSpawnParallel", "csharp": "AgentSpawnParallelAsync", "wire": "_atelier/agent/spawn_parallel" },
+    { "rust": "session_fork", "typescript": "sessionFork", "csharp": "SessionForkAsync", "wire": "_atelier/session/fork" },
+    { "rust": "btw_ask", "typescript": "btwAsk", "csharp": "BtwAskAsync", "wire": "_atelier/btw/ask" },
+    { "rust": "btw_get", "typescript": "btwGet", "csharp": "BtwGetAsync", "wire": "_atelier/btw/get" },
+    { "rust": "btw_list", "typescript": "btwList", "csharp": "BtwListAsync", "wire": "_atelier/btw/list" },
+    { "rust": "btw_delete", "typescript": "btwDelete", "csharp": "BtwDeleteAsync", "wire": "_atelier/btw/delete" },
+    { "rust": "task_list", "typescript": "taskList", "csharp": "TaskListAsync", "wire": "_atelier/task/list" },
+    { "rust": "task_get", "typescript": "taskGet", "csharp": "TaskGetAsync", "wire": "_atelier/task/get" },
+    { "rust": "task_detach", "typescript": "taskDetach", "csharp": "TaskDetachAsync", "wire": "_atelier/task/detach" },
+    { "rust": "task_attach", "typescript": "taskAttach", "csharp": "TaskAttachAsync", "wire": "_atelier/task/attach" },
+    { "rust": "task_cancel", "typescript": "taskCancel", "csharp": "TaskCancelAsync", "wire": "_atelier/task/cancel" },
+    { "rust": "task_subscribe", "typescript": "taskSubscribe", "csharp": "TaskSubscribeAsync", "wire": "_atelier/task/subscribe" },
+    { "rust": "model_get", "typescript": "modelGet", "csharp": "ModelGetAsync", "wire": "_atelier/model/get" },
+    { "rust": "model_update_wire_api", "typescript": "modelUpdateWireApi", "csharp": "ModelUpdateWireApiAsync", "wire": "_atelier/model/update_wire_api" },
+    { "rust": "model_provider_override_list", "typescript": "modelProviderOverrideList", "csharp": "ModelProviderOverrideListAsync", "wire": "_atelier/model_provider_override/list" },
+    { "rust": "model_provider_override_set", "typescript": "modelProviderOverrideSet", "csharp": "ModelProviderOverrideSetAsync", "wire": "_atelier/model_provider_override/set" },
+    { "rust": "model_provider_override_delete", "typescript": "modelProviderOverrideDelete", "csharp": "ModelProviderOverrideDeleteAsync", "wire": "_atelier/model_provider_override/delete" },
+    { "rust": "model_provider_override_test", "typescript": "modelProviderOverrideTest", "csharp": "ModelProviderOverrideTestAsync", "wire": "_atelier/model_provider_override/test" }
+  ]
+}

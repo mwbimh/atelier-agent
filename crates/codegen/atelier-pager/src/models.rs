@@ -5,7 +5,7 @@ use atelier_shell::agent::config::Config as AgentConfig;
 use atelier_shell::cli_models::{AuthStatus, list_models};
 use tokio_util::sync::CancellationToken;
 
-use crate::client_identity::{PAGER_CLIENT_TYPE, PAGER_CLIENT_VERSION};
+use crate::runtime_identity::{PAGER_CLIENT_TYPE, PAGER_CLIENT_VERSION};
 
 pub async fn list_available_models(agent_config: &AgentConfig) -> Result<()> {
     match AuthStatus::resolve(agent_config) {

@@ -97,17 +97,16 @@ fn config_login_device_flow(effective: Option<&toml::Value>) -> Option<bool> {
     effective.and_then(|cfg| cfg.get("auth")?.get("login_device_flow")?.as_bool())
 }
 
-/// Device-flow precedence: CLI > env > config > remote feature flag > loopback.
+/// Device-flow precedence: CLI > env > config > loopback.
 /// Returns the deciding tier so the caller can log which one chose the transport.
 fn resolve_device_flow(
     login_override: LoginTransportOverride,
     config: Option<bool>,
-    remote: Option<bool>,
+    _legacy_remote: Option<bool>,
 ) -> crate::agent::config::Resolved<bool> {
     crate::agent::config::BoolFlag::env("ATELIER_LOGIN_DEVICE_FLOW")
         .cli(login_override.as_cli_bool())
         .config(config)
-        .feature_flag(remote)
         .default(false)
         .resolve()
 }
@@ -125,7 +124,7 @@ async fn cli_should_use_device(
 /// Whether interactive xAI OAuth2 login uses the RFC 8628 device flow (vs loopback).
 ///
 /// Precedence: CLI (`--oauth`/`--device-auth`) > `ATELIER_LOGIN_DEVICE_FLOW` env >
-/// `[auth] login_device_flow` config > `atelier_build_login_device_flow` remote feature flag > loopback.
+/// `[auth] login_device_flow` config > loopback.
 async fn should_use_device_flow(login_override: LoginTransportOverride) -> bool {
     // Already resolved (and logged) upstream — honor it without re-resolving or
     // emitting a second transport log.
@@ -136,31 +135,11 @@ async fn should_use_device_flow(login_override: LoginTransportOverride) -> bool 
         // CLI flag wins outright, so skip the config load and the remote settings fetch.
         resolve_device_flow(login_override, None, None)
     } else {
-        // Read once to gate the fetch; resolve_device_flow reads it again for the decision.
-        let env = crate::agent::config::env_bool("ATELIER_LOGIN_DEVICE_FLOW");
-        // One config snapshot feeds both the `[auth]` tier and the proxy URL.
+        // Atelier is vendorless: login transport is decided locally and must
+        // never consult the removed vendor feature-flag endpoint.
         let effective = crate::config::load_effective_config().ok();
         let config = config_login_device_flow(effective.as_ref());
-        // Only hit remote settings when env/config haven't already pinned the transport.
-        let remote = if env.is_none() && config.is_none() {
-            let proxy_url = effective
-                .as_ref()
-                .map(crate::agent::config::EndpointsConfig::from_config_value)
-                .unwrap_or_default()
-                .proxy_url();
-            // Bound the whole fetch — including the one-time agent_id lookup — so a
-            // slow/hung agent_id or proxy can never stall login; time out to loopback.
-            tokio::time::timeout(
-                std::time::Duration::from_secs(2),
-                crate::remote::fetch_login_device_flow(&proxy_url),
-            )
-            .await
-            .ok()
-            .flatten()
-        } else {
-            None
-        };
-        resolve_device_flow(login_override, config, remote)
+        resolve_device_flow(login_override, config, None)
     };
     tracing::info!(
         transport = if resolved.value { "device" } else { "loopback" },
@@ -223,9 +202,8 @@ async fn run_external_auth_provider(
         "auth: running external auth provider"
     );
 
-    let mut cmd = tokio::process::Command::new("sh");
-    cmd.args(["-c", command])
-        .stdin(std::process::Stdio::null())
+    let mut cmd = tokio::process::Command::from(super::external_auth::shell_command(command));
+    cmd.stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .kill_on_drop(true);
 
@@ -713,6 +691,7 @@ pub(crate) async fn try_ensure_session_noninteractive(
 
 /// A cached, refreshable session (not BYOK/ApiKey). Reached only after fresh
 /// auth failed, so in practice the token is expired but recoverable on 401.
+#[cfg(any())] // The vendor session relay was removed; local Providers own credentials.
 fn expired_refreshable_session(auth_manager: &AuthManager) -> Option<AtelierAuth> {
     auth_manager
         .current_or_expired()
@@ -721,6 +700,7 @@ fn expired_refreshable_session(auth_manager: &AuthManager) -> Option<AtelierAuth
 
 /// Cold-start mint via non-interactive providers (external command, devbox);
 /// `None` when none is available.
+#[cfg(any())] // Non-interactive vendor session minting was removed from Atelier startup.
 async fn mint_session_noninteractive(
     auth_manager: &Arc<AuthManager>,
     atelier_com_config: &AtelierComConfig,
@@ -910,10 +890,37 @@ pub fn run_cli_logout(_config: &crate::agent::config::Config) -> anyhow::Result<
 mod tests {
     use super::*;
     use crate::auth::AuthMode;
-    use crate::auth::config::XAI_OAUTH2_ISSUER;
+    use crate::auth::XAI_OAUTH2_ISSUER;
     use crate::env::EnvVarGuard;
     use chrono::Utc;
     use serial_test::serial;
+
+    fn emit_command(value: &str) -> String {
+        #[cfg(windows)]
+        {
+            format!("echo {value}")
+        }
+        #[cfg(not(windows))]
+        {
+            format!("printf '%s' '{value}'")
+        }
+    }
+
+    fn large_stderr_command() -> &'static str {
+        #[cfg(windows)]
+        {
+            // `cmd.exe /S /C` owns the outer command-line parsing. Quoting the
+            // entire PowerShell script here makes `/S` strip/reinterpret those
+            // quotes and PowerShell can receive the script as literal output.
+            // `-Command` consumes the remaining command line, so no nested
+            // quotes are needed for this script.
+            r#"powershell.exe -NoProfile -NonInteractive -Command [Console]::Error.Write('x' * 70000); [Console]::Out.Write('token')"#
+        }
+        #[cfg(not(windows))]
+        {
+            r#"i=0; while [ $i -lt 2000 ]; do printf "%s" "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" >&2; i=$((i+1)); done; printf token"#
+        }
+    }
 
     /// Run `f` with `ATELIER_LOGIN_DEVICE_FLOW` set to `value` (unset for `None`).
     /// `EnvVarGuard` serializes the process env and restores it on drop, so
@@ -983,6 +990,7 @@ mod tests {
         }
     }
 
+    #[cfg(any())] // The vendor session relay was removed; local Providers own credentials.
     #[test]
     fn expired_refreshable_session_gate() {
         let dir = tempfile::tempdir().unwrap();
@@ -1069,6 +1077,7 @@ mod tests {
         format!("http://127.0.0.1:{port}")
     }
 
+    #[cfg(any())] // Non-interactive vendor session minting was removed from Atelier startup.
     #[tokio::test]
     async fn mint_session_noninteractive_uses_external_provider() {
         let dir = tempfile::tempdir().unwrap();
@@ -1093,7 +1102,7 @@ mod tests {
             AuthManager::new(dir.path(), pinned_cfg("team-good"))
                 .with_proxy_base_url(&dead_proxy_url()),
         );
-        let cmd = format!("printf '%s' {}", team_jwt("team-wrong"));
+        let cmd = emit_command(&team_jwt("team-wrong"));
 
         assert!(
             run_external_auth_provider(&cmd, &mgr, false, None)
@@ -1120,7 +1129,7 @@ mod tests {
             AuthManager::new(dir.path(), pinned_cfg("team-good"))
                 .with_proxy_base_url(&dead_proxy_url()),
         );
-        let cmd = format!("printf '%s' {jwt}");
+        let cmd = emit_command(&jwt);
 
         let (auth, _) = run_external_auth_provider(&cmd, &mgr, false, None)
             .await
@@ -1152,7 +1161,8 @@ mod tests {
         );
         assert!(mgr.current_or_expired().is_none(), "precondition: no auth");
 
-        let (auth, _) = run_external_auth_provider("printf '%s' fresh-token", &mgr, true, None)
+        let command = emit_command("fresh-token");
+        let (auth, _) = run_external_auth_provider(&command, &mgr, true, None)
             .await
             .unwrap();
         assert_eq!(auth.key, "fresh-token");
@@ -1174,7 +1184,8 @@ mod tests {
             ..oidc_session("old-token", None)
         });
 
-        let (auth, _) = run_external_auth_provider("printf '%s' fresh-token", &mgr, true, None)
+        let command = emit_command("fresh-token");
+        let (auth, _) = run_external_auth_provider(&command, &mgr, true, None)
             .await
             .unwrap();
         assert_eq!(auth.key, "fresh-token");
@@ -1183,6 +1194,7 @@ mod tests {
         assert_eq!(auth.organization_id.as_deref(), Some("org-1"));
     }
 
+    #[cfg(any())] // Vendor device login and its external-provider precedence were removed.
     #[tokio::test]
     async fn device_flow_still_runs_external_provider() {
         // Regression: with the device flow opted into (--device-auth), the
@@ -1267,13 +1279,13 @@ mod tests {
                 "the resolver path still honors env (sole resolution)"
             );
         }
-        // Even if it reached the resolver it carries no CLI value, so a remote
-        // decision is the remote tier, never cli.
+        // Even if it reached the resolver it carries no CLI value. Legacy
+        // remote values are ignored in the vendorless build.
         with_device_flow_env(None, || {
             assert_eq!(
                 resolve_device_flow(LoginTransportOverride::Preresolved(true), None, Some(true))
                     .source,
-                crate::agent::config::ConfigSource::Remote,
+                crate::agent::config::ConfigSource::Default,
                 "Preresolved must never resolve as the cli tier"
             );
         });
@@ -1320,10 +1332,6 @@ mod tests {
             !cli_should_use_device(&cfg, LoginTransportOverride::ForceDevice).await,
             "enterprise OIDC must stay on loopback"
         );
-        // The xAI OAuth2 provider (oidc=None, oauth2=Some) does use device.
-        let xai = AtelierComConfig::default();
-        assert!(xai.oauth2.is_some() && xai.oidc.is_none());
-        assert!(cli_should_use_device(&xai, LoginTransportOverride::ForceDevice).await);
     }
 
     #[test]
@@ -1410,21 +1418,30 @@ mod tests {
     }
 
     #[test]
-    fn device_flow_remote_then_default() {
-        // No CLI flag, no env, no config: the remote feature flag drives the rollout.
+    fn vendorless_device_flow_ignores_remote_feature_flags() {
         with_device_flow_env(None, || {
             assert!(
-                resolve_device_flow(LoginTransportOverride::None, None, Some(true)).value,
-                "remote=device rolls device-auth in when nothing local is set"
+                !resolve_device_flow(LoginTransportOverride::None, None, Some(true)).value,
+                "a legacy vendor flag must not enable device auth"
+            );
+        });
+    }
+
+    #[test]
+    fn device_flow_legacy_remote_is_ignored_then_default() {
+        // No CLI flag, no env, no config: legacy vendor flags cannot affect Atelier.
+        with_device_flow_env(None, || {
+            assert!(
+                !resolve_device_flow(LoginTransportOverride::None, None, Some(true)).value,
+                "legacy remote=device must not enable device auth"
             );
             assert!(
                 !resolve_device_flow(LoginTransportOverride::None, None, Some(false)).value,
-                "remote=loopback keeps loopback when nothing local is set"
+                "legacy remote=loopback is also ignored"
             );
-            // remote settings unavailable / flag unset → None → hardcoded loopback default.
             assert!(
                 !resolve_device_flow(LoginTransportOverride::None, None, None).value,
-                "remote settings unavailable falls back to the loopback default"
+                "the local default is loopback"
             );
         });
     }
@@ -1453,8 +1470,8 @@ mod tests {
             );
             assert_eq!(
                 resolve_device_flow(LoginTransportOverride::None, None, Some(true)).source,
-                ConfigSource::Remote,
-                "the remote feature flag is reported as the remote tier"
+                ConfigSource::Default,
+                "legacy remote values are ignored"
             );
             assert_eq!(
                 resolve_device_flow(LoginTransportOverride::None, None, None).source,
@@ -1502,22 +1519,46 @@ mod tests {
 
     #[test]
     fn weblogin_cred_is_never_compatible() {
-        let cfg = AtelierComConfig::default();
+        let cfg = AtelierComConfig {
+            oidc: Some(crate::auth::OidcAuthConfig {
+                issuer: "https://idp.example".into(),
+                client_id: "client".into(),
+                scopes: vec!["openid".into()],
+                audience: None,
+            }),
+            ..AtelierComConfig::default()
+        };
         assert!(!is_cached_credential_compatible(&legacy_auth(), &cfg));
     }
 
     #[test]
     fn oidc_cred_with_matching_issuer_is_compatible() {
-        let cfg = AtelierComConfig::default();
+        let cfg = AtelierComConfig {
+            oidc: Some(crate::auth::OidcAuthConfig {
+                issuer: "https://idp.example".into(),
+                client_id: "client".into(),
+                scopes: vec!["openid".into()],
+                audience: None,
+            }),
+            ..AtelierComConfig::default()
+        };
         assert!(is_cached_credential_compatible(
-            &oidc_auth(XAI_OAUTH2_ISSUER),
+            &oidc_auth("https://idp.example"),
             &cfg,
         ));
     }
 
     #[test]
     fn external_cred_compatibility_follows_issuer() {
-        let cfg = AtelierComConfig::default();
+        let cfg = AtelierComConfig {
+            oidc: Some(crate::auth::OidcAuthConfig {
+                issuer: "https://idp.example".into(),
+                client_id: "client".into(),
+                scopes: vec!["openid".into()],
+                audience: None,
+            }),
+            ..AtelierComConfig::default()
+        };
 
         // A first-party external credential (provider emitted the issuer) is
         // reused by interactive login like an OIDC session instead of
@@ -1525,7 +1566,7 @@ mod tests {
         assert!(is_cached_credential_compatible(
             &AtelierAuth {
                 auth_mode: AuthMode::External,
-                ..oidc_auth(XAI_OAUTH2_ISSUER)
+                ..oidc_auth("https://idp.example")
             },
             &cfg,
         ));
@@ -1727,6 +1768,7 @@ mod tests {
         assert!(!is_new_login);
     }
 
+    #[cfg(any())] // Vendor WebLogin/device fallback was removed; Atelier fails closed to Providers.
     #[tokio::test]
     async fn run_auth_flow_falls_through_when_no_refresh_token() {
         let dir = tempfile::tempdir().unwrap();
@@ -1820,8 +1862,7 @@ mod tests {
             AuthManager::new(dir.path(), AtelierComConfig::default())
                 .with_proxy_base_url(&dead_proxy_url()),
         );
-        let cmd = r#"sh -c 'i=0; while [ $i -lt 2000 ]; do printf "%s" "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" >&2; i=$((i+1)); done; printf token'"#;
-        let (auth, _) = run_external_auth_provider(cmd, &mgr, false, None)
+        let (auth, _) = run_external_auth_provider(large_stderr_command(), &mgr, false, None)
             .await
             .expect("CLI path must inherit stderr so large stderr does not deadlock");
         assert_eq!(auth.key, "token");
@@ -1875,7 +1916,7 @@ mod tests {
 
         // Same engine as `try_ensure_fresh_auth`.
         let auth_manager = Arc::new(AuthManager::new(dir.path(), cfg.clone()));
-        auth_manager.configure_refresher(cfg.auth_provider_command.clone(), None);
+        auth_manager.configure_refresher(cfg.auth_provider_command.clone());
 
         assert!(
             auth_manager.auth().await.is_err(),

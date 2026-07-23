@@ -56,10 +56,6 @@ pub enum Action {
     ExitSession,
     /// Exit session without double-press confirmation (e.g., from command palette).
     ExitSessionConfirmed,
-    /// Open atelier.invalid in the browser for SuperAtelier subscription upsell.
-    OpenSuperatelierUrl,
-    /// Re-check subscription status via the shell's `atelier/auth/check_subscription`.
-    CheckSubscription,
     /// Open an arbitrary URL in the system browser (with scheme validation).
     OpenUrl(String),
     /// Open atelier.invalid managed connectors, appending session teamId when set.
@@ -529,12 +525,11 @@ pub enum Action {
     SetAutoLightTheme(String),
     /// Commit the user's default model. Payload is a resolved `ModelId`
     /// (NOT a free-form string). The dispatcher switches the active
-    /// session and persists via `Effect::PersistSetting`. Does not
-    /// carry effort — use `Action::SwitchModel` for that.
+    /// session and persists the successful selection through `roles.main`.
+    /// Does not carry effort — use `Action::SwitchModel` for that.
     SetDefaultModel(acp::ModelId),
-    /// Clear the persisted default model (`cfg.models.default = None`).
-    /// Active session's model is unchanged; next session resolves
-    /// via the shell's default-resolution chain.
+    /// Delete obsolete default-model fields. If the active Session has a
+    /// selected model, retain it as the explicit `roles.main` value.
     ClearDefaultModel,
     /// Commit the max-thoughts-width (column budget for the thoughts panel).
     /// Payload is `i64`; clamped to `u16` at the shell helper boundary.
@@ -549,9 +544,6 @@ pub enum Action {
     /// Commit the `show_tips` preference. Persisted to `[cli].show_tips`.
     /// Restart-required — tips are resolved once at startup.
     SetShowTips(bool),
-    /// Commit the `auto_update` preference. Persisted to `[cli].auto_update`.
-    /// Restart-required — auto-update check fires once at startup.
-    SetAutoUpdate(bool),
     /// Commit `[ui.display_refresh].auto_cadence_enabled`. Restart-required —
     /// cadence is pinned once at startup.
     SetDisplayRefreshAutoCadence(bool),
@@ -629,8 +621,6 @@ pub enum Action {
     TrustFolder,
     /// A spawned task completed.
     TaskComplete(TaskResult),
-    /// Share the current session via URL.
-    ShareSession,
     /// Show session info (ID, cwd, model, context usage) instantly.
     ShowSessionInfo,
     /// Show release notes in a modal.
@@ -644,8 +634,6 @@ pub enum Action {
     },
     /// Show detailed context usage (progress bar, token breakdown, stats).
     ShowContextInfo,
-    /// Show credit usage via /usage command.
-    ShowUsage,
     /// Commit a read-only list of the queued prompts as a system block
     /// (`/queue`). The surface minimal mode uses in place of the `QueuePane`.
     ShowQueue,
@@ -712,11 +700,6 @@ pub enum Action {
     TriggerDeepSearch,
     /// Force an immediate deep content search, skipping the debounce.
     ForceDeepSearch,
-    /// Show privacy and data retention status.
-    ShowPrivacyInfo,
-    SetCodingDataSharing {
-        opted_in: bool,
-    },
     /// `/fork` slash command: parsed args produced by
     /// [`crate::slash::commands::fork::parse_fork_args`]. The dispatcher
     /// resolves the worktree question (via flag or the local
@@ -1553,11 +1536,16 @@ pub enum Effect {
         mode: crate::app::app_view::WorktreeMode,
         config_key: &'static str,
     },
-    /// Persist preferred model (and effort if Some) to config.toml.
+    /// Persist preferred model and effort to the fixed `roles.main` entry.
+    /// This is the only cross-session model source of truth.
     PersistPreferredModel {
         model_id: acp::ModelId,
         reasoning_effort: Option<ReasoningEffort>,
     },
+    /// Delete obsolete model-default fields while preserving the configured
+    /// `roles.main` entry. Used when the settings UI is reset before the live
+    /// model catalog has selected a current model.
+    ClearLegacyModelDefaults,
     /// Persist the permission mode to config.toml and notify the agent
     /// via ACP. See [`PermissionModePersist`] for rollback semantics.
     PersistPermissionMode {
@@ -1811,11 +1799,6 @@ pub enum Effect {
         tool_name: String,
         enabled: bool,
     },
-    /// Share the current session via URL.
-    ShareSession {
-        agent_id: AgentId,
-        session_id: acp::SessionId,
-    },
     /// Fetch and display session info via atelier/session/info.
     ShowSessionInfo {
         agent_id: AgentId,
@@ -1868,19 +1851,24 @@ pub enum Effect {
     SendBtw {
         agent_id: AgentId,
         session_id: acp::SessionId,
-        question: String,
+        request: crate::app::agent::BtwRequest,
+    },
+    /// Persist the exact answer displayed for one completed `/btw` request.
+    PersistBtw {
+        agent_id: AgentId,
+        request: crate::app::agent::BtwRequest,
+        params: serde_json::Value,
     },
     /// Invoke a control-plane extension without coupling the slash command
     /// layer to the ACP transport details.
     RuntimeExtension {
-        agent_id: AgentId,
+        agent_id: Option<AgentId>,
         method: String,
         params: serde_json::Value,
     },
     /// Refresh a Provider's model catalog via `_atelier/provider/refresh_models`.
     RefreshProviderModels {
-        agent_id: AgentId,
-        session_id: acp::SessionId,
+        agent_id: Option<AgentId>,
         provider_id: String,
     },
     /// Request a session recap via the atelier/recap ext method. Fire-and-forget:
@@ -1903,19 +1891,6 @@ pub enum Effect {
     },
     /// Log out via `atelier/auth/logout` (shell clears auth.json + in-memory state).
     Logout,
-    /// Re-check subscription status via `atelier/auth/check_subscription`.
-    /// `verify` scopes the result to a deferred-gate verification (see
-    /// [`crate::app::subscription`]); `None` for generic checks.
-    CheckSubscription { verify: Option<u64> },
-    /// One-shot subscription re-check triggered by a credit-limit 403.
-    /// If the tier changed, the stashed prompt is retried instead of
-    /// showing the upsell modal.
-    CreditLimitRecheck { agent_id: AgentId },
-    /// Schedule a 5s timer that fires `TaskResult::PaywallCheckTick`.
-    SchedulePaywallCheck,
-    /// Schedule `TaskResult::GateVerifyTimeout { generation }` after
-    /// [`crate::app::subscription::GATE_VERIFY_TIMEOUT`].
-    ScheduleGateVerifyTimeout { generation: u64 },
     /// Log out then authenticate sequentially in one task.
     SwitchAccount {
         request_seq: u64,
@@ -1934,13 +1909,6 @@ pub enum Effect {
     UnregisterActiveSession { session_id: acp::SessionId },
     /// Quit the application.
     Quit,
-    /// Toggle coding data sharing via ACP.
-    SetCodingDataSharing {
-        agent_id: AgentId,
-        opted_in: bool,
-        /// Pre-toggle value to revert to on failure.
-        rollback_to_opted_in: bool,
-    },
     /// Rename the current session.
     RenameSession {
         agent_id: AgentId,
@@ -1997,16 +1965,6 @@ pub enum Effect {
         target_prompt_index: usize,
         mode: crate::views::rewind::RewindMode,
     },
-    /// Fetch billing/credit usage from the agent's `atelier/billing` extension.
-    /// When `silent` is true the result updates `credit_balance` without
-    /// pushing a system message into scrollback (used for automatic refreshes
-    /// on session init and after each turn).
-    FetchBilling { agent_id: AgentId, silent: bool },
-    /// Fetch billing data at the app level (no agent required).
-    /// Used on startup to populate the welcome-screen credit warning.
-    FetchAppBilling,
-    /// Re-fetch remote settings to check subscription gate.
-    RefreshGate,
     /// Spawn a debounce sleep task for shell suggestions. `agent_id` rides
     /// to the expiry so the fetch is built from the arming agent, not
     /// whatever view is active when the timer fires.
@@ -2086,6 +2044,19 @@ pub struct BtwResponseData {
     pub model: String,
     pub wire_api: Option<String>,
     pub wire_api_source: Option<String>,
+}
+
+/// Async completion for a request-scoped `/btw` operation.
+#[derive(Debug)]
+pub enum BtwTaskResult {
+    Answer {
+        request: crate::app::agent::BtwRequest,
+        result: Result<BtwResponseData, String>,
+    },
+    Persist {
+        request: crate::app::agent::BtwRequest,
+        result: Result<bool, String>,
+    },
 }
 
 /// Result from a completed async [`Effect`].
@@ -2447,16 +2418,6 @@ pub enum TaskResult {
         agent_id: AgentId,
         result: Result<(), String>,
     },
-    /// Share session completed successfully.
-    ShareSessionComplete {
-        agent_id: AgentId,
-        share_url: String,
-    },
-    /// Share session failed.
-    ShareSessionFailed {
-        agent_id: AgentId,
-        error: String,
-    },
     /// Session info fetched successfully.
     SessionInfoComplete {
         agent_id: AgentId,
@@ -2467,17 +2428,6 @@ pub enum TaskResult {
     SessionInfoFailed {
         agent_id: AgentId,
         error: String,
-    },
-    /// Coding data sharing preference updated.
-    CodingDataSharingUpdated {
-        agent_id: AgentId,
-        opted_in: bool,
-    },
-    /// Coding data sharing update failed.
-    CodingDataSharingFailed {
-        agent_id: AgentId,
-        error: String,
-        rollback_to_opted_in: bool,
     },
     /// Session rename completed successfully.
     RenameSessionComplete {
@@ -2561,11 +2511,11 @@ pub enum TaskResult {
     /// Side question (/btw) response received.
     BtwResponse {
         agent_id: AgentId,
-        result: Result<BtwResponseData, String>,
+        result: BtwTaskResult,
     },
     /// A control-plane slash command failed at the transport boundary.
     RuntimeExtensionFailed {
-        agent_id: AgentId,
+        agent_id: Option<AgentId>,
         method: String,
         error: String,
     },
@@ -2573,13 +2523,13 @@ pub enum TaskResult {
     /// kept as text so the runtime can evolve its JSON payloads without
     /// coupling the pager slash layer to every extension schema.
     RuntimeExtensionComplete {
-        agent_id: AgentId,
+        agent_id: Option<AgentId>,
         method: String,
         response: String,
     },
     /// Provider model catalog refresh completed.
     ProviderModelsRefreshed {
-        agent_id: AgentId,
+        agent_id: Option<AgentId>,
         provider_id: String,
         result: Result<String, String>,
     },
@@ -2616,25 +2566,6 @@ pub enum TaskResult {
     },
     /// Shell acknowledged logout (auth cleared).
     LogoutComplete,
-    /// Shell responded to `atelier/auth/check_subscription`. `verify` echoes
-    /// the generation from `Effect::CheckSubscription` for deferred-gate
-    /// verifications.
-    CheckSubscriptionComplete {
-        verify: Option<u64>,
-        meta: Option<serde_json::Value>,
-    },
-    /// Result of the credit-limit subscription re-check. If the tier
-    /// changed the stashed prompt is retried; otherwise the upsell is shown.
-    CreditLimitRecheckComplete {
-        agent_id: AgentId,
-        meta: Option<serde_json::Value>,
-    },
-    /// 5s paywall check timer fired -- time to send another check.
-    PaywallCheckTick,
-    /// The deferred-gate verification window expired.
-    GateVerifyTimeout {
-        generation: u64,
-    },
     /// The 2-second "copied!" display timer expired.
     AuthCopiedTimeout,
     DeepSearchResults {
@@ -2680,32 +2611,6 @@ pub enum TaskResult {
     RewindExecuteFailed {
         agent_id: AgentId,
         error: String,
-    },
-    /// Billing data fetched from the agent.
-    BillingFetched {
-        agent_id: AgentId,
-        balance: Option<crate::views::credit_bar::CreditBalance>,
-        /// When true, update `credit_balance` silently (no scrollback message).
-        silent: bool,
-        /// Subscription tier piggybacked from remote settings.
-        subscription_tier: Option<String>,
-        /// Auto top-up rule fetch result; `Unchanged` keeps any cached rule.
-        autotopup: crate::views::credit_bar::AutoTopupFetch,
-    },
-    /// App-level billing data (welcome screen).
-    AppBillingFetched {
-        balance: Option<crate::views::credit_bar::CreditBalance>,
-        autotopup: crate::views::credit_bar::AutoTopupFetch,
-    },
-    GateRefreshed {
-        settings: Option<atelier_shell::util::config::RemoteSettings>,
-    },
-    /// Billing fetch failed with an error message.
-    BillingError {
-        agent_id: AgentId,
-        error: String,
-        /// When true, swallow the error silently (background refresh).
-        silent: bool,
     },
     /// Debounce timer for shell suggestions expired. Routed by the arming
     /// `agent_id`, like the sibling `PluginCtaDebounceExpired`.

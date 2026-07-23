@@ -71,37 +71,69 @@ pub async fn handle(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
 
 async fn ask(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
     let params: AskParams = parse_params(args)?;
+    if params.question.trim().is_empty() {
+        return Err(acp::Error::invalid_params().data("question must not be empty"));
+    }
     let session_id = acp::SessionId::new(params.session_id.clone());
     let session = agent
         .session_handle_now(&params.session_id)
         .ok_or_else(|| acp::Error::invalid_params().data("session not found"))?;
+    let side_query_id = format!("btw-{}", uuid::Uuid::now_v7());
+    agent.runtime_begin_auxiliary_task(
+        &side_query_id,
+        session_id.0.as_ref(),
+        atelier_provider::RoleId::Main.as_str(),
+        xai_acp_lib::RuntimeState::PreparingContext,
+        false,
+    );
     let (respond_to, response) = tokio::sync::oneshot::channel();
-    session
+    if session
         .cmd_tx
         .send(SessionCommand::SideQuestionDetailed {
+            side_query_id: side_query_id.clone(),
             snapshot_id: params.snapshot_id,
             question: params.question,
             append_context: params.append_context,
             persist: params.persist,
             respond_to,
         })
-        .map_err(|_| acp::Error::internal_error().data("failed to dispatch side query"))?;
-    let result = response
-        .await
-        .map_err(|_| acp::Error::internal_error().data("side query did not respond"))?
-        .map_err(|error| acp::Error::internal_error().data(error))?;
-    // The query itself is executed by the session actor, so it cannot borrow
-    // the agent-level runtime registry while it is running.  Register the
-    // completed side-query task here after the actor returns its immutable
-    // result.  It remains visible in `/tasks`, but is deliberately not
-    // attachable or cancellable as a session turn.
-    agent.runtime_begin_auxiliary_task(
-        &result.btw_id,
-        session_id.0.as_ref(),
-        atelier_provider::RoleId::Main.as_str(),
-        xai_acp_lib::RuntimeState::Completed,
-        false,
-    );
+        .is_err()
+    {
+        agent.runtime_finish_task(
+            &side_query_id,
+            xai_acp_lib::RuntimeState::Failed,
+            Some("failed to dispatch side query".to_owned()),
+        );
+        return Err(acp::Error::internal_error().data("failed to dispatch side query"));
+    }
+    let result = match response.await {
+        Ok(Ok(result)) => result,
+        Ok(Err(error)) => {
+            agent.runtime_finish_task(
+                &side_query_id,
+                xai_acp_lib::RuntimeState::Failed,
+                Some(error.clone()),
+            );
+            return Err(acp::Error::internal_error().data(error));
+        }
+        Err(_) => {
+            agent.runtime_finish_task(
+                &side_query_id,
+                xai_acp_lib::RuntimeState::Failed,
+                Some("side query did not respond".to_owned()),
+            );
+            return Err(acp::Error::internal_error().data("side query did not respond"));
+        }
+    };
+    if result.btw_id != side_query_id {
+        agent.runtime_finish_task(
+            &side_query_id,
+            xai_acp_lib::RuntimeState::Failed,
+            Some("side query returned a mismatched task id".to_owned()),
+        );
+        return Err(acp::Error::internal_error().data("side query returned a mismatched task id"));
+    }
+    agent.runtime_finish_task(&side_query_id, xai_acp_lib::RuntimeState::Completed, None);
     to_raw_response(&serde_json::json!({
         "sessionId": session_id,
         "btwId": result.btw_id,

@@ -1,6 +1,6 @@
 # Atelier User Guide
 
-Learn how to install, configure, and extend Atelier, the terminal-based AI coding assistant from SpaceXAI.
+Learn how to install, configure, and extend Atelier, a local-first terminal coding agent with explicitly configured model Providers.
 
 ---
 
@@ -10,8 +10,8 @@ Start here. These guides cover what you need on your first day.
 
 | # | Document | Description |
 |---|----------|-------------|
-| 1 | [Getting Started](01-getting-started.md) | Installation, first launch, authentication, basic interaction, and key concepts |
-| 2 | [Authentication](02-authentication.md) | Browser login, API keys, OIDC/SSO, external auth providers, and device-code flow |
+| 1 | [Getting Started](01-getting-started.md) | Installation, first launch, Provider setup, basic interaction, and key concepts |
+| 2 | [Provider Credentials](02-authentication.md) | Provider CRUD, credentials, model discovery, and `ATELIER_HOME` |
 | 3 | [Keyboard Shortcuts](03-keyboard-shortcuts.md) | Reference for every key binding and mouse action in the TUI |
 | 4 | [Slash Commands](04-slash-commands.md) | Every `/` command for sessions, models, memory, hooks, and plugins |
 | 5 | [Configuration](05-configuration.md) | `config.toml`, `pager.toml`, environment variables, and file locations |
@@ -29,7 +29,7 @@ Customize and extend Atelier.
 | 8 | [Skills](08-skills.md) | Reusable prompt packages in the SKILL.md format |
 | 9 | [Plugins](09-plugins.md) | Bundle and share skills, commands, agents, hooks, and MCP servers; install from marketplace sources |
 | 10 | [Hooks](10-hooks.md) | Lifecycle scripts and HTTP callbacks for pre- and post-tool-use events |
-| 11 | [Custom Models](11-custom-models.md) | Bring-your-own-key, Ollama, and OpenAI-compatible endpoints |
+| 11 | [Providers, Models, and Roles](11-custom-models.md) | Provider/model selection, discovery, Wire API, and fixed Roles |
 | 12 | [Project Rules (AGENTS.md)](12-project-rules.md) | Per-directory AGENTS.md instructions and their precedence |
 | 13 | [Memory](13-memory.md) | Cross-session knowledge persistence with `/flush`, `/dream`, and hybrid search |
 

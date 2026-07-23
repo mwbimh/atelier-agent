@@ -508,10 +508,10 @@ pub fn is_legacy_windows_console() -> bool {
     static CACHE: OnceLock<bool> = OnceLock::new();
     *CACHE.get_or_init(|| {
         forced_legacy_console_override().unwrap_or_else(|| {
-            // `env_brand`, not `brand`: a bare ConHost is detected as
-            // `Unknown`, but `brand` optimistically becomes `WindowsTerminal`
-            // on native Windows. Font capability needs the raw detection so
-            // legacy consoles still get the ASCII glyph fallback.
+            // Unknown terminals must not be treated as legacy. Doing so made
+            // ordinary PowerShell hosts, test runners, and embedded terminals
+            // silently downgrade every glyph. Truly legacy hosts can opt in
+            // through ATELIER_FORCE_LEGACY_CONSOLE=1.
             decide_legacy_windows_console(HostOs::current(), terminal_context().env_brand)
         })
     })
@@ -537,29 +537,20 @@ fn parse_forced_legacy_console(value: Option<&str>) -> Option<bool> {
     }
 }
 
-/// Pure decision function so tests can drive (host, brand) pairs
-/// without touching ambient state. Default-deny on Windows: an unknown
-/// brand is treated as legacy, since bare `cmd.exe` / `powershell.exe`
-/// in ConHost sets no terminal env vars and the brand probe returns
-/// `Unknown` in exactly the case we need to catch.
+/// Pure decision function so tests can drive (host, brand) pairs without
+/// touching ambient state. Terminal-brand probing cannot reliably distinguish
+/// modern PowerShell hosts from legacy ConHost, so unknown or unfamiliar
+/// brands stay on the normal Unicode path. Legacy fallback is explicit via
+/// `ATELIER_FORCE_LEGACY_CONSOLE=1`.
 fn decide_legacy_windows_console(host: HostOs, brand: TerminalName) -> bool {
     if host != HostOs::Windows {
         return false;
     }
-    !matches!(
-        brand,
-        TerminalName::WindowsTerminal
-            | TerminalName::VsCode
-            | TerminalName::Cursor
-            | TerminalName::Windsurf
-            | TerminalName::Zed
-            | TerminalName::WezTerm
-            | TerminalName::Kitty
-            | TerminalName::Alacritty
-            | TerminalName::Ghostty
-            | TerminalName::Rio
-            | TerminalName::AtelierDesktop
-    )
+    // There is currently no reliable positive ConHost brand. Keep the probe
+    // argument consumed so a future positive signal can be added here without
+    // restoring the unsafe "unknown means legacy" behavior.
+    let _ = brand;
+    false
 }
 
 #[cfg(test)]
@@ -765,9 +756,8 @@ mod tests {
     }
 
     #[test]
-    fn windows_unknown_is_legacy() {
-        // Realistic ConHost case: no terminal env vars set.
-        assert!(decide_legacy_windows_console(
+    fn windows_unknown_is_not_assumed_legacy() {
+        assert!(!decide_legacy_windows_console(
             HostOs::Windows,
             TerminalName::Unknown
         ));
@@ -807,17 +797,15 @@ mod tests {
         }
     }
 
-    // AppleTerminal/VTE can't actually be probed on Windows; the
-    // assertion is the default-deny safety net for unfamiliar brands.
     #[test]
-    fn unfamiliar_brands_on_windows_default_to_legacy() {
+    fn unfamiliar_brands_on_windows_are_not_assumed_legacy() {
         for brand in [
             TerminalName::AppleTerminal,
             TerminalName::Vte,
             TerminalName::Iterm2,
             TerminalName::WarpTerminal,
         ] {
-            assert!(decide_legacy_windows_console(HostOs::Windows, brand));
+            assert!(!decide_legacy_windows_console(HostOs::Windows, brand));
         }
     }
 }

@@ -358,177 +358,6 @@ pub(crate) fn state_is_busy(state: &State) -> bool {
     state.running_task.is_some() || !state.pending_inputs.is_empty()
 }
 use crate::auth::AuthManager;
-#[derive(Clone)]
-struct ShellManagedGatewayToolClient {
-    proxy_base_url: String,
-    auth_manager: Arc<AuthManager>,
-}
-#[async_trait::async_trait]
-impl atelier_tools::types::resources::ManagedGatewayToolCaller for ShellManagedGatewayToolClient {
-    async fn call_tool(
-        &self,
-        call_id: &str,
-        arguments: serde_json::Value,
-        caller: &str,
-    ) -> Result<
-        atelier_tools::types::resources::ManagedGatewayToolCallResponse,
-        xai_tool_runtime::ToolError,
-    > {
-        let auth_key = self
-            .auth_manager
-            .get_valid_token()
-            .await
-            .ok()
-            .or_else(|| self.auth_manager.current_or_expired().map(|a| a.key))
-            .ok_or_else(|| xai_tool_runtime::ToolError::unauthorized("no auth token available"))?;
-        let response = crate::session::managed_mcp::call_gateway_tool(
-            &self.proxy_base_url,
-            &auth_key,
-            call_id,
-            arguments,
-        )
-        .await
-        .map_err(|error| managed_gateway_error_to_tool_error(error, caller))?;
-        Ok(
-            atelier_tools::types::resources::ManagedGatewayToolCallResponse {
-                result: response.result,
-                connectors_needing_reauth: response.connectors_needing_reauth,
-            },
-        )
-    }
-}
-fn managed_gateway_error_to_tool_error(
-    error: crate::session::managed_mcp::ManagedMcpFetchError,
-    caller: &str,
-) -> xai_tool_runtime::ToolError {
-    match error {
-        crate::session::managed_mcp::ManagedMcpFetchError::Status { status, message } => {
-            let detail = format!("Managed MCP gateway tool call failed: {message}");
-            let mut err = if status == reqwest::StatusCode::UNAUTHORIZED {
-                xai_tool_runtime::ToolError::unauthorized(detail)
-            } else if status == reqwest::StatusCode::FORBIDDEN {
-                xai_tool_runtime::ToolError::permission_denied(detail)
-            } else {
-                let tool_id = xai_tool_protocol::ToolId::new(caller)
-                    .unwrap_or_else(|_| xai_tool_protocol::ToolId::new("use_tool").expect("valid"));
-                xai_tool_runtime::ToolError::execution(tool_id, detail)
-            };
-            match err.details.as_mut() {
-                Some(serde_json::Value::Object(map)) => {
-                    map.insert(
-                        HTTP_STATUS_DETAILS_KEY.to_string(),
-                        serde_json::json!(status.as_u16()),
-                    );
-                }
-                _ => {
-                    err.details =
-                        Some(serde_json::json!({ HTTP_STATUS_DETAILS_KEY : status.as_u16(), }));
-                }
-            }
-            err
-        }
-        crate::session::managed_mcp::ManagedMcpFetchError::Transport(e) => {
-            xai_tool_runtime::ToolError::network_error(format!(
-                "Managed MCP gateway tool call failed: {}",
-                e.without_url()
-            ))
-        }
-        crate::session::managed_mcp::ManagedMcpFetchError::NoAuth => {
-            xai_tool_runtime::ToolError::unauthorized("no auth token available")
-        }
-        crate::session::managed_mcp::ManagedMcpFetchError::Disabled => {
-            xai_tool_runtime::ToolError::permission_denied("managed MCP is disabled in this build")
-        }
-    }
-}
-#[cfg(test)]
-mod managed_gateway_error_tests {
-    use super::*;
-    fn status_error(code: u16, message: &str) -> crate::session::managed_mcp::ManagedMcpFetchError {
-        crate::session::managed_mcp::ManagedMcpFetchError::Status {
-            status: reqwest::StatusCode::from_u16(code).unwrap(),
-            message: message.to_string(),
-        }
-    }
-    #[test]
-    fn unauthorized_status_maps_to_unauthorized_and_carries_status() {
-        let err = managed_gateway_error_to_tool_error(status_error(401, "expired"), "use_tool");
-        assert_eq!(err.kind, xai_tool_runtime::ToolErrorKind::Unauthorized);
-        assert!(err.detail.contains("expired"));
-        let details = err.details.as_ref().unwrap();
-        assert_eq!(
-            details.get(HTTP_STATUS_DETAILS_KEY),
-            Some(&serde_json::json!(401))
-        );
-    }
-    #[test]
-    fn forbidden_status_maps_to_permission_denied_and_carries_status() {
-        let err = managed_gateway_error_to_tool_error(status_error(403, "denied"), "use_tool");
-        assert_eq!(err.kind, xai_tool_runtime::ToolErrorKind::PermissionDenied);
-        let details = err.details.as_ref().unwrap();
-        assert_eq!(
-            details.get(HTTP_STATUS_DETAILS_KEY),
-            Some(&serde_json::json!(403))
-        );
-    }
-    #[test]
-    fn general_status_maps_to_execution_with_caller_tool_id() {
-        let err = managed_gateway_error_to_tool_error(status_error(500, "boom"), "CallMcpTool");
-        assert_eq!(err.kind, xai_tool_runtime::ToolErrorKind::Execution);
-        let details = err.details.as_ref().unwrap();
-        assert_eq!(
-            details.get(HTTP_STATUS_DETAILS_KEY),
-            Some(&serde_json::json!(500))
-        );
-        assert_eq!(
-            details.get("tool_id"),
-            Some(&serde_json::json!("CallMcpTool"))
-        );
-    }
-    #[test]
-    fn general_status_falls_back_to_use_tool_for_unknown_caller() {
-        let err = managed_gateway_error_to_tool_error(status_error(500, "boom"), "not a tool id");
-        assert_eq!(err.kind, xai_tool_runtime::ToolErrorKind::Execution);
-        let details = err.details.as_ref().unwrap();
-        assert_eq!(details.get("tool_id"), Some(&serde_json::json!("use_tool")));
-    }
-    #[test]
-    fn no_auth_maps_to_unauthorized() {
-        let err = managed_gateway_error_to_tool_error(
-            crate::session::managed_mcp::ManagedMcpFetchError::NoAuth,
-            "use_tool",
-        );
-        assert_eq!(err.kind, xai_tool_runtime::ToolErrorKind::Unauthorized);
-    }
-    #[test]
-    fn disabled_maps_to_permission_denied() {
-        let err = managed_gateway_error_to_tool_error(
-            crate::session::managed_mcp::ManagedMcpFetchError::Disabled,
-            "use_tool",
-        );
-        assert_eq!(err.kind, xai_tool_runtime::ToolErrorKind::PermissionDenied);
-        assert!(err.detail.contains("managed MCP is disabled"));
-    }
-    #[tokio::test]
-    async fn transport_error_maps_to_network_error_without_url() {
-        let transport = reqwest::Client::new()
-            .post("http://127.0.0.1:1/mcp/tools/call")
-            .send()
-            .await
-            .expect_err("connection to a dead port should fail");
-        let err = managed_gateway_error_to_tool_error(
-            crate::session::managed_mcp::ManagedMcpFetchError::Transport(transport),
-            "use_tool",
-        );
-        assert_eq!(err.kind, xai_tool_runtime::ToolErrorKind::NetworkError);
-        assert!(err.detail.contains("Managed MCP gateway tool call failed"));
-        assert!(
-            !err.detail.contains("http://"),
-            "transport detail must not leak the proxy URL: {}",
-            err.detail
-        );
-    }
-}
 /// Data carried from prepare_tool_call → dispatch_tool → finalize.
 #[derive(Debug, Clone)]
 pub(crate) struct PreparedToolCall {
@@ -635,7 +464,7 @@ pub(crate) struct SessionActor {
     /// Effective payload for the session's fixed `main` role. Kept outside
     /// ChatState because role configuration is runtime control-plane state,
     /// not conversation history.
-    pub(crate) role_request_payload: serde_json::Map<String, serde_json::Value>,
+    pub(crate) role_request_payload: std::cell::RefCell<serde_json::Map<String, serde_json::Value>>,
     pub(crate) compactions_remaining:
         std::cell::Cell<Option<atelier_sampling_types::CompactionsRemaining>>,
     pub(crate) compaction_at_tokens:
@@ -718,6 +547,10 @@ pub(crate) struct SessionActor {
     git_head_enabled: bool,
     /// Shared models manager for etag-triggered refresh from response headers.
     pub(crate) models_manager: crate::agent::models::ModelsManager,
+    /// Deterministic registry injection for session tests. Production always
+    /// resolves roles from the live local registry at the request boundary.
+    #[cfg(test)]
+    pub(crate) role_registry_override: Option<atelier_provider::ProviderRegistry>,
     /// Stable display path for forked sessions (original project path).
     ///
     /// Used by `build_user_message_prefix` (user-message `Workspace Path`),
@@ -1839,11 +1672,6 @@ mod parallel_dispatch_tests;
 #[path = "acp_session_tests/prompt_context_persistence_tests.rs"]
 mod prompt_context_persistence_tests;
 #[cfg(test)]
-#[path = "acp_session_tests/reactive_managed_reauth_e2e_tests.rs"]
-mod reactive_managed_reauth_e2e_tests;
-#[cfg(test)]
-#[path = "acp_session_tests/reactive_managed_reauth_tests.rs"]
-mod reactive_managed_reauth_tests;
 #[cfg(test)]
 #[path = "acp_session_tests/session_thread_tests.rs"]
 mod session_thread_tests;

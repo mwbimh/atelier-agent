@@ -1687,14 +1687,15 @@
 
         let mut pw = PromptWidget::new();
         let mut models = crate::acp::model_state::ModelState::default();
-        let model_id = agent_client_protocol::ModelId::new(Arc::from("atelier-4.5"));
+        let model_id =
+            agent_client_protocol::ModelId::new(Arc::from("allm/deepseek-v4-flash"));
         models.available.insert(
             model_id.clone(),
-            agent_client_protocol::ModelInfo::new(model_id, "Atelier 4.5".to_string()),
+            agent_client_protocol::ModelInfo::new(model_id, "DeepSeek V4 Flash".to_string()),
         );
 
         // Type "/model gr" and position cursor at end (in args).
-        pw.textarea.insert_str("/model gr");
+        pw.textarea.insert_str("/model deep");
         pw.refresh_slash(&models);
 
         let snap = pw.slash_snapshot();
@@ -1705,7 +1706,7 @@
         pw.accept_slash_completion(&models);
         let text = pw.textarea.text().to_string();
         assert!(
-            text.contains("Atelier 4.5"),
+            text.contains("DeepSeek V4 Flash"),
             "arg should be replaced, got: {:?}",
             text
         );

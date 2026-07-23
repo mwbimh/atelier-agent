@@ -233,7 +233,14 @@ impl UserPromptBlock {
         };
         let mut prefix_style = theme.fg(prefix_color);
         let mut text_style = theme.fg(theme.text_primary);
-        let mut skill_style = theme.fg(theme.accent_skill);
+        let skill_color = if theme.accent_skill == ratatui::style::Color::Reset
+            || theme.accent_skill == theme.text_primary
+        {
+            ratatui::style::Color::Magenta
+        } else {
+            theme.accent_skill
+        };
+        let mut skill_style = theme.fg(skill_color);
         if terminal_native {
             prefix_style = prefix_style.add_modifier(Modifier::BOLD);
             text_style = text_style.add_modifier(Modifier::BOLD);
@@ -636,7 +643,10 @@ mod tests {
         let spans = &lines[0].content.spans;
         assert_eq!(spans.len(), 3);
         assert_eq!(spans[1].content.as_ref(), "/pr-workflow");
-        assert_eq!(spans[1].style.fg, Some(theme.accent_skill));
+        assert_eq!(
+            spans[1].style.fg,
+            UserPromptBlock::prompt_styles(&theme, false).2.fg
+        );
         assert_eq!(spans[2].content.as_ref(), " create a ticket for this");
         assert_eq!(spans[2].style.fg, Some(theme.text_primary));
     }
@@ -651,7 +661,10 @@ mod tests {
         let spans = &lines[0].content.spans;
         assert_eq!(spans.len(), 2);
         assert_eq!(spans[1].content.as_ref(), "/pr-workflow");
-        assert_eq!(spans[1].style.fg, Some(theme.accent_skill));
+        assert_eq!(
+            spans[1].style.fg,
+            UserPromptBlock::prompt_styles(&theme, false).2.fg
+        );
     }
 
     #[test]
@@ -663,7 +676,10 @@ mod tests {
         let theme = Theme::current();
         let line0 = &lines[0].content.spans;
         assert_eq!(line0[1].content.as_ref(), "/foo");
-        assert_eq!(line0[1].style.fg, Some(theme.accent_skill));
+        assert_eq!(
+            line0[1].style.fg,
+            UserPromptBlock::prompt_styles(&theme, false).2.fg
+        );
         assert_eq!(line0[2].content.as_ref(), " bar");
         assert_eq!(line0[2].style.fg, Some(theme.text_primary));
 
@@ -687,7 +703,10 @@ mod tests {
         assert_eq!(spans[1].content.as_ref(), "great ");
         assert_eq!(spans[1].style.fg, Some(theme.text_primary));
         assert_eq!(spans[2].content.as_ref(), "/pr-workflow");
-        assert_eq!(spans[2].style.fg, Some(theme.accent_skill));
+        assert_eq!(
+            spans[2].style.fg,
+            UserPromptBlock::prompt_styles(&theme, false).2.fg
+        );
         assert_eq!(spans[3].content.as_ref(), " all good now");
         assert_eq!(spans[3].style.fg, Some(theme.text_primary));
     }
@@ -704,7 +723,7 @@ mod tests {
             .content
             .spans
             .iter()
-            .filter(|s| s.style.fg == Some(theme.accent_skill))
+            .filter(|s| s.style.fg == UserPromptBlock::prompt_styles(&theme, false).2.fg)
             .map(|s| s.content.as_ref())
             .collect();
         assert_eq!(teal, vec!["/commit", "/review"]);
@@ -721,14 +740,19 @@ mod tests {
         let theme = Theme::current();
         let line0 = &lines[0].content.spans;
         assert!(
-            line0.iter().all(|s| s.style.fg != Some(theme.accent_skill)),
+            line0
+                .iter()
+                .all(|s| s.style.fg != UserPromptBlock::prompt_styles(&theme, false).2.fg),
             "line 0 has no token"
         );
         let line1 = &lines[1].content.spans;
         assert_eq!(line1[1].content.as_ref(), "then ");
         assert_eq!(line1[1].style.fg, Some(theme.text_primary));
         assert_eq!(line1[2].content.as_ref(), "/model");
-        assert_eq!(line1[2].style.fg, Some(theme.accent_skill));
+        assert_eq!(
+            line1[2].style.fg,
+            UserPromptBlock::prompt_styles(&theme, false).2.fg
+        );
         assert_eq!(line1[3].content.as_ref(), " here");
     }
 
@@ -753,7 +777,7 @@ mod tests {
             .content
             .spans
             .iter()
-            .filter(|s| s.style.fg == Some(theme.accent_skill))
+            .filter(|s| s.style.fg == UserPromptBlock::prompt_styles(&theme, false).2.fg)
             .map(|s| s.content.as_ref())
             .collect();
         assert_eq!(teal, vec!["/model"]);
@@ -774,7 +798,7 @@ mod tests {
     fn teal_text(line: &Line, theme: &Theme) -> String {
         line.spans
             .iter()
-            .filter(|s| s.style.fg == Some(theme.accent_skill))
+            .filter(|s| s.style.fg == UserPromptBlock::prompt_styles(&theme, false).2.fg)
             .map(|s| s.content.as_ref())
             .collect()
     }

@@ -376,7 +376,7 @@ impl UnauthorizedRecovery {
                 "auth recovery: disk token expired",
                 None,
                 Some(serde_json::json!({
-                    "disk_key_prefix": crate::auth::token_suffix(&disk_auth.key),
+                    "has_access_token": !disk_auth.key.is_empty(),
                     "expires_at": disk_auth.expires_at.map(|e| e.to_rfc3339()),
                 })),
             );
@@ -388,7 +388,7 @@ impl UnauthorizedRecovery {
                 "auth recovery: adopted disk token",
                 None,
                 Some(serde_json::json!({
-                    "adopted_key_prefix": crate::auth::token_suffix(&disk_auth.key),
+                    "has_access_token": !disk_auth.key.is_empty(),
                     "expires_at": disk_auth.expires_at.map(|e| e.to_rfc3339()),
                 })),
             );
@@ -409,8 +409,7 @@ impl UnauthorizedRecovery {
     /// within ±[`FRESH_MINT_GUARD_SECS`]; anything outside (including a
     /// clock that stepped far back) falls through to a normal refresh.
     ///
-    /// A 401 moments after a successful mint is a stale rejection (sent with
-    /// the previous key and mis-attributed — see `is_stale_snapshot`) or
+    /// A 401 moments after a successful mint is a stale rejection or
     /// validation lag on the new key — re-minting fixes neither, and a crash
     /// between the IdP grant and persisting the response orphans the
     /// replacement RT (forced re-login). Consumers retry with the returned
@@ -431,7 +430,7 @@ impl UnauthorizedRecovery {
             "auth recovery: fresh mint, refresh skipped",
             None,
             Some(serde_json::json!({
-                "key_prefix": crate::auth::token_suffix(&auth.key),
+                "has_access_token": !auth.key.is_empty(),
                 "mint_age_seconds": mint_age_seconds,
                 "guard_seconds": FRESH_MINT_GUARD_SECS,
                 "expires_at": auth.expires_at.map(|e| e.to_rfc3339()),
@@ -475,7 +474,7 @@ impl UnauthorizedRecovery {
                             None,
                             Some(serde_json::json!({
                                 "token_type": format!("{tt:?}"),
-                                "new_key_prefix": crate::auth::token_suffix(&auth.key),
+                                "has_access_token": !auth.key.is_empty(),
                                 "expires_at": auth.expires_at.map(|e| e.to_rfc3339()),
                             })),
                         );

@@ -1073,10 +1073,19 @@ mod tests {
     use atelier_paths::AbsPathBuf;
     use std::sync::Arc;
 
+    fn legacy_absolute_root() -> PathBuf {
+        if cfg!(windows) {
+            PathBuf::from("C:/home/user/project")
+        } else {
+            PathBuf::from("/home/user/project")
+        }
+    }
+
     #[tokio::test]
     async fn test_rewind_point_creation() {
         let tracker = FileStateTracker::new();
-        let cwd = AbsPathBuf::new(PathBuf::from("/test")).unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let cwd = AbsPathBuf::new(temp.path().to_path_buf()).unwrap();
         let fs = Arc::new(MockFs::new(cwd.to_path_buf()));
         let fs_wrapper = crate::file_system::AsyncFsWrapper::new(fs);
         let ctx = ToolContext::new_local_context(cwd.to_path_buf(), fs_wrapper, Arc::new(()));
@@ -1098,7 +1107,8 @@ mod tests {
     #[tokio::test]
     async fn test_truncate_from() {
         let tracker = FileStateTracker::new();
-        let cwd = AbsPathBuf::new(PathBuf::from("/test")).unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let cwd = AbsPathBuf::new(temp.path().to_path_buf()).unwrap();
         let fs = Arc::new(MockFs::new(cwd.to_path_buf()));
         let fs_wrapper = crate::file_system::AsyncFsWrapper::new(fs);
         let ctx = ToolContext::new_local_context(cwd.to_path_buf(), fs_wrapper, Arc::new(()));
@@ -1223,25 +1233,23 @@ mod tests {
     #[test]
     fn test_deserialize_file_snapshot_with_absolute_path() {
         // Simulate JSON from an older session that stored absolute paths
-        let json = r#"{
-            "path": "/home/user/project/src/main.rs",
+        let root = legacy_absolute_root();
+        let absolute_path = root.join("src/main.rs");
+        let json = serde_json::json!({
+            "path": absolute_path,
             "content": "fn main() {}",
             "captured_at": "2024-01-01T00:00:00Z"
-        }"#;
+        });
 
-        let snapshot: FileSnapshot = serde_json::from_str(json).unwrap();
+        let snapshot: FileSnapshot = serde_json::from_value(json).unwrap();
 
         // Should deserialize successfully with an absolute path
         assert!(!snapshot.path.is_relative());
-        assert_eq!(
-            snapshot.path.as_path(),
-            Path::new("/home/user/project/src/main.rs")
-        );
+        assert_eq!(snapshot.path.as_path(), absolute_path);
         assert_eq!(snapshot.content, Some("fn main() {}".into()));
 
         // Should be able to normalize it to relative
-        let root = Path::new("/home/user/project");
-        let normalized = snapshot.normalize_to_relative(root);
+        let normalized = snapshot.normalize_to_relative(&root);
         assert!(normalized.path.is_relative());
         assert_eq!(normalized.path.as_path(), Path::new("src/main.rs"));
     }
@@ -1265,25 +1273,34 @@ mod tests {
     #[test]
     fn test_deserialize_rewind_point_with_absolute_paths() {
         // Simulate JSON from an older session with absolute paths in the hashmap keys
-        let json = r#"{
+        let root = legacy_absolute_root();
+        let main_path = root.join("src/main.rs");
+        let lib_path = root.join("src/lib.rs");
+        let mut snapshots = serde_json::Map::new();
+        snapshots.insert(
+            main_path.to_string_lossy().into_owned(),
+            serde_json::json!({
+                "path": main_path,
+                "content": "fn main() {}",
+                "captured_at": "2024-01-01T00:00:00Z"
+            }),
+        );
+        snapshots.insert(
+            lib_path.to_string_lossy().into_owned(),
+            serde_json::json!({
+                "path": lib_path,
+                "content": "pub mod foo;",
+                "captured_at": "2024-01-01T00:00:00Z"
+            }),
+        );
+        let json = serde_json::json!({
             "prompt_index": 0,
             "created_at": "2024-01-01T00:00:00Z",
-            "file_snapshots": {
-                "/home/user/project/src/main.rs": {
-                    "path": "/home/user/project/src/main.rs",
-                    "content": "fn main() {}",
-                    "captured_at": "2024-01-01T00:00:00Z"
-                },
-                "/home/user/project/src/lib.rs": {
-                    "path": "/home/user/project/src/lib.rs",
-                    "content": "pub mod foo;",
-                    "captured_at": "2024-01-01T00:00:00Z"
-                }
-            },
+            "file_snapshots": snapshots,
             "after_snapshots": {}
-        }"#;
+        });
 
-        let point: RewindPoint = serde_json::from_str(json).unwrap();
+        let point: RewindPoint = serde_json::from_value(json).unwrap();
 
         // Should deserialize successfully
         assert_eq!(point.prompt_index, 0);
@@ -1299,9 +1316,8 @@ mod tests {
         }
 
         // After normalization, paths should be relative
-        let root = Path::new("/home/user/project");
         let mut normalized_point = point.clone();
-        normalized_point.normalize_to_relative(root);
+        normalized_point.normalize_to_relative(&root);
 
         for (path, snapshot) in &normalized_point.file_snapshots {
             assert!(path.is_relative(), "Expected relative path, got {:?}", path);
@@ -1322,32 +1338,39 @@ mod tests {
     #[test]
     fn test_deserialize_rewind_point_with_mixed_paths() {
         // Simulate JSON with a mix of absolute and relative paths (edge case)
-        let json = r#"{
+        let root = legacy_absolute_root();
+        let old_path = root.join("src/old.rs");
+        let mut snapshots = serde_json::Map::new();
+        snapshots.insert(
+            old_path.to_string_lossy().into_owned(),
+            serde_json::json!({
+                "path": old_path,
+                "content": "// old file",
+                "captured_at": "2024-01-01T00:00:00Z"
+            }),
+        );
+        snapshots.insert(
+            "src/new.rs".into(),
+            serde_json::json!({
+                "path": "src/new.rs",
+                "content": "// new file",
+                "captured_at": "2024-01-01T00:00:00Z"
+            }),
+        );
+        let json = serde_json::json!({
             "prompt_index": 1,
             "created_at": "2024-01-01T00:00:00Z",
-            "file_snapshots": {
-                "/home/user/project/src/old.rs": {
-                    "path": "/home/user/project/src/old.rs",
-                    "content": "// old file",
-                    "captured_at": "2024-01-01T00:00:00Z"
-                },
-                "src/new.rs": {
-                    "path": "src/new.rs",
-                    "content": "// new file",
-                    "captured_at": "2024-01-01T00:00:00Z"
-                }
-            },
+            "file_snapshots": snapshots,
             "after_snapshots": {}
-        }"#;
+        });
 
-        let point: RewindPoint = serde_json::from_str(json).unwrap();
+        let point: RewindPoint = serde_json::from_value(json).unwrap();
 
         assert_eq!(point.file_snapshots.len(), 2);
 
         // Normalize
-        let root = Path::new("/home/user/project");
         let mut normalized = point.clone();
-        normalized.normalize_to_relative(root);
+        normalized.normalize_to_relative(&root);
 
         // All should now be relative
         for path in normalized.file_snapshots.keys() {

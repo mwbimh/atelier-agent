@@ -861,7 +861,7 @@ mod tests {
         assert!(
             processed
                 .content
-                .contains(artifact.to_string_lossy().as_ref())
+                .contains(&artifact.to_string_lossy().replace('\\', "/"))
         );
         assert_eq!(tokio::fs::read_to_string(artifact).await.unwrap(), expected);
     }

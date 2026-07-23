@@ -1261,8 +1261,39 @@ mod tests {
             .collect()
     }
 
+    fn test_direct_command(command: &str) -> (String, Vec<String>) {
+        #[cfg(windows)]
+        {
+            (
+                "cmd.exe".to_string(),
+                vec![
+                    "/D".to_string(),
+                    "/S".to_string(),
+                    "/C".to_string(),
+                    command.to_string(),
+                ],
+            )
+        }
+        #[cfg(not(windows))]
+        {
+            (
+                crate::terminal::default_shell_path().to_string(),
+                vec!["-c".to_string(), command.to_string()],
+            )
+        }
+    }
+
+    fn test_sleep_command() -> &'static str {
+        if cfg!(windows) {
+            "ping -n 31 127.0.0.1 >NUL"
+        } else {
+            "sleep 30"
+        }
+    }
+
     #[tokio::test]
     async fn test_streaming_sends_status_updates() {
+        let _execution_guard = crate::terminal::allow_test_unsandboxed_execution();
         let session_id = format!("s1-status-{}", std::process::id());
         let tool_id = format!("t1-status-{}", std::process::id());
 
@@ -1284,6 +1315,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_kill_returns_signal() {
+        let _execution_guard = crate::terminal::allow_test_unsandboxed_execution();
         let session_id = format!("s1-kill-{}", std::process::id());
         let tool_id = format!("t1-kill-{}", std::process::id());
 
@@ -1300,7 +1332,9 @@ mod tests {
                 };
 
                 let handle = tokio::task::spawn_local(async move {
-                    runner.run(make_request(&tool_id_clone, "sleep 30")).await
+                    runner
+                        .run(make_request(&tool_id_clone, test_sleep_command()))
+                        .await
                 });
 
                 // Wait for the process to start
@@ -1324,7 +1358,17 @@ mod tests {
                 );
 
                 let result = handle.await.unwrap().unwrap();
+                #[cfg(unix)]
                 assert_eq!(result.signal, Some("signal 9".to_string()));
+                #[cfg(windows)]
+                {
+                    assert_eq!(result.signal, None);
+                    assert_ne!(
+                        result.exit_code,
+                        Some(0),
+                        "terminated Windows process must not report success"
+                    );
+                }
 
                 let statuses = extract_statuses(&notifier.notifications.lock().await);
                 assert_eq!(statuses.last(), Some(&acp::ToolCallStatus::Failed));
@@ -1334,20 +1378,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_ext_create_output_wait_release() {
+        let _execution_guard = crate::terminal::allow_test_unsandboxed_execution();
         tokio::task::LocalSet::new()
             .run_until(async {
                 let session_id = format!("ext-create-{}", std::process::id());
+                let (program, args) = test_direct_command("echo hello");
 
-                let id = create_terminal(
-                    &session_id,
-                    "echo",
-                    &["hello".to_string()],
-                    HashMap::new(),
-                    None,
-                    None,
-                )
-                .await
-                .unwrap();
+                let id = create_terminal(&session_id, &program, &args, HashMap::new(), None, None)
+                    .await
+                    .unwrap();
                 assert!(!id.is_empty());
 
                 let status = wait_for_terminal_exit(&session_id, &id).await.unwrap();
@@ -1364,20 +1403,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_ext_release_cleans_up() {
+        let _execution_guard = crate::terminal::allow_test_unsandboxed_execution();
         tokio::task::LocalSet::new()
             .run_until(async {
                 let session_id = format!("ext-release-{}", std::process::id());
+                let (program, args) = test_direct_command(test_sleep_command());
 
-                let id = create_terminal(
-                    &session_id,
-                    "sleep",
-                    &["30".to_string()],
-                    HashMap::new(),
-                    None,
-                    None,
-                )
-                .await
-                .unwrap();
+                let id = create_terminal(&session_id, &program, &args, HashMap::new(), None, None)
+                    .await
+                    .unwrap();
 
                 tokio::time::sleep(Duration::from_millis(50)).await;
 
@@ -1391,32 +1425,22 @@ mod tests {
 
     #[tokio::test]
     async fn test_kill_and_release_all_kills_non_bg_and_preserves_bg() {
+        let _execution_guard = crate::terminal::allow_test_unsandboxed_execution();
         tokio::task::LocalSet::new()
             .run_until(async {
                 let session_id = format!("kill-all-{}", std::process::id());
+                let (program, args) = test_direct_command(test_sleep_command());
 
                 // Create two terminals: one normal, one we'll background.
-                let normal_id = create_terminal(
-                    &session_id,
-                    "sleep",
-                    &["30".to_string()],
-                    HashMap::new(),
-                    None,
-                    None,
-                )
-                .await
-                .unwrap();
+                let normal_id =
+                    create_terminal(&session_id, &program, &args, HashMap::new(), None, None)
+                        .await
+                        .unwrap();
 
-                let bg_id = create_terminal(
-                    &session_id,
-                    "sleep",
-                    &["30".to_string()],
-                    HashMap::new(),
-                    None,
-                    None,
-                )
-                .await
-                .unwrap();
+                let bg_id =
+                    create_terminal(&session_id, &program, &args, HashMap::new(), None, None)
+                        .await
+                        .unwrap();
 
                 // Wait for both to start.
                 tokio::time::sleep(Duration::from_millis(100)).await;
@@ -1495,6 +1519,7 @@ mod tests {
     /// ProcessGroup::leader() to ProcessSession. A parent shell spawns
     /// a background child; killing the terminal should reap both.
     #[tokio::test]
+    #[cfg(unix)]
     async fn test_process_group_kill_with_session() {
         tokio::task::LocalSet::new()
             .run_until(async {
@@ -1546,22 +1571,17 @@ mod tests {
 
     #[tokio::test]
     async fn test_kill_and_release_all_noop_for_other_sessions() {
+        let _execution_guard = crate::terminal::allow_test_unsandboxed_execution();
         tokio::task::LocalSet::new()
             .run_until(async {
                 let session_a = format!("kill-all-a-{}", std::process::id());
                 let session_b = format!("kill-all-b-{}", std::process::id());
+                let (program, args) = test_direct_command(test_sleep_command());
 
                 // Create a terminal in session B.
-                let id_b = create_terminal(
-                    &session_b,
-                    "sleep",
-                    &["30".to_string()],
-                    HashMap::new(),
-                    None,
-                    None,
-                )
-                .await
-                .unwrap();
+                let id_b = create_terminal(&session_b, &program, &args, HashMap::new(), None, None)
+                    .await
+                    .unwrap();
 
                 tokio::time::sleep(Duration::from_millis(50)).await;
 

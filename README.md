@@ -12,7 +12,7 @@ prompt.
 
 ```sh
 cargo run -p atelier-pager-bin --bin atelier
-cargo build -p atelier-pager-bin --release
+cargo build -p atelier-pager-bin --release --bin atelier -j 1
 cargo check -p atelier-pager-bin
 ```
 

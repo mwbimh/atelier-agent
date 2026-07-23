@@ -85,7 +85,6 @@ impl AgentView {
             bash_turn: false,
             cron_task_id: None,
             stashed_prompt: None,
-            credit_limit_stashed_prompt: None,
             reauth_stashed_prompt: None,
             active_modal: None,
             modal_buttons: Vec::new(),
@@ -93,8 +92,6 @@ impl AgentView {
             context_state: None,
             chat_kind: false,
             app_chat_mode: false,
-            credit_balance: None,
-            auto_topup: None,
             goal_state: None,
             parked_wait_marker_for: None,
             end_work_announced: false,
@@ -203,6 +200,8 @@ impl AgentView {
             agents_modal: None,
             persona_detail: None,
             btw_state: None,
+            btw_request: None,
+            next_btw_request_id: 0,
             btw_focused: false,
             hit_btw_close: Default::default(),
             toast: None,
@@ -747,21 +746,6 @@ impl AgentView {
             }
         }
     }
-    /// Apply Build coding-credit balance only for non-chat agents.
-    /// Gateway/chat-kind sessions keep credits unset so bars/warnings stay off.
-    pub fn apply_credit_balance(
-        &mut self,
-        balance: Option<crate::views::credit_bar::CreditBalance>,
-        auto_topup: Option<crate::views::credit_bar::AutoTopupInfo>,
-    ) {
-        if self.chat_kind {
-            self.credit_balance = None;
-            self.auto_topup = None;
-            return;
-        }
-        self.credit_balance = balance;
-        self.auto_topup = auto_topup;
-    }
     /// Record a key event to the input flight recorder.
     ///
     /// Zero heap allocations — stores raw `Copy` types in the ring buffer.
@@ -820,19 +804,6 @@ impl AgentView {
             .registry_mut()
             .set_share_visible(enabled);
     }
-    /// Show or hide the `/usage` slash command in this agent's registry.
-    pub fn set_usage_visible(&mut self, visible: bool) {
-        self.prompt
-            .slash_controller
-            .registry_mut()
-            .set_usage_visible(visible);
-    }
-    /// Replace the restricted slash-command deny list in this agent's
-    /// registry (e.g. `/usage` denied on the free / X Basic tiers). Deny
-    /// wins over every `set_*_visible` gate.
-    pub fn set_restricted_commands(&mut self, names: &[String]) {
-        self.prompt.set_restricted_commands(names);
-    }
     /// Show or hide the `/dashboard` slash command in this agent's registry.
     /// Driven by the dashboard feature flag
     /// (`crate::views::dashboard::dashboard_enabled()`) at agent-creation
@@ -853,21 +824,17 @@ impl AgentView {
     pub(crate) fn apply_app_scoped_gates(
         &mut self,
         sharing_enabled: bool,
-        usage_visible: bool,
         chat_mode: bool,
         screen_mode: crate::app::ScreenMode,
         announcements: &[atelier_announcements::RemoteAnnouncement],
-        restricted_commands: &[String],
     ) {
         self.set_sharing_enabled(sharing_enabled);
-        self.set_usage_visible(usage_visible);
         self.app_chat_mode = chat_mode;
         self.prompt.set_screen_mode(screen_mode);
         self.set_dashboard_visible(crate::views::dashboard::dashboard_enabled());
         self.set_has_session_announcements(crate::views::announcements::has_session_announcements(
             announcements,
         ));
-        self.set_restricted_commands(restricted_commands);
     }
     /// Show or hide the `/recap` slash command in this agent's registry.
     pub fn set_session_recap_available(&mut self, available: bool) {

@@ -53,7 +53,6 @@ pub(super) fn ensure_dashboard_state(app: &mut AppView) {
     state.set_screen_mode(app.screen_mode);
     state.set_recap_visible(app.session_recap_available);
     state.set_voice_visible(app.voice_mode_enabled);
-    state.set_restricted_commands(&app.tier_restricted_commands);
     app.dashboard = Some(state);
 }
 
@@ -150,7 +149,6 @@ pub(super) fn dispatch_open_dashboard(app: &mut AppView) -> Vec<Effect> {
         d.gc_stale_refs(&dashboard_alive_fn(&app.agents));
         d.set_recap_visible(app.session_recap_available);
         d.set_voice_visible(app.voice_mode_enabled);
-        d.set_restricted_commands(&app.tier_restricted_commands);
     }
     // Refresh each local agent's git context (branch / worktree / label)
     // from disk so the row subtitles show the LATEST branch and worktree
@@ -1232,9 +1230,7 @@ pub(super) fn dispatch_dashboard_dispatch_slash(app: &mut AppView, text: String)
         return vec![];
     }
 
-    let coding_data_sharing_opt_out_from_app = app.coding_data_retention_opt_out;
     let show_tips_from_app = app.show_tips;
-    let auto_update_from_app = app.auto_update;
     let respect_manual_folds_from_app = app.appearance.scrollback.scroll.respect_manual_folds;
     let auto_mode_gate_from_app = app.auto_mode_gate;
     let ask_user_question_timeout_enabled_from_app = app.ask_user_question_timeout_enabled;
@@ -1269,23 +1265,6 @@ pub(super) fn dispatch_dashboard_dispatch_slash(app: &mut AppView, text: String)
                 command_name: invocation.token.to_string(),
                 source,
             });
-        }
-
-        // Tier-restricted commands stay visible for discoverability but must
-        // not execute — and must not fall through to the unknown-command
-        // path below (which would spawn a session with the raw slash text as
-        // its first prompt). The dashboard has no question-modal surface, so
-        // upsell via the feedback toast.
-        if reg.is_restricted(invocation.token) {
-            let token = invocation.token.to_string();
-            if let Some(d) = app.dashboard.as_mut() {
-                d.dispatch.set_text("");
-                d.set_error_toast(&format!(
-                    "/{token} requires SuperAtelier — upgrade at {}",
-                    super::billing::UPSELL_URL_UPGRADE
-                ));
-            }
-            return vec![];
         }
 
         let Some(command) = reg.get(invocation.token).cloned() else {
@@ -1335,10 +1314,8 @@ pub(super) fn dispatch_dashboard_dispatch_slash(app: &mut AppView, text: String)
                     .iter()
                     .map(|(id, info)| (info.name.clone(), id.clone()))
                     .collect(),
-                coding_data_sharing_opt_out: coding_data_sharing_opt_out_from_app,
                 plan_mode_active: false,
                 show_tips: show_tips_from_app,
-                auto_update: auto_update_from_app,
                 vim_mode: crate::appearance::cache::load_vim_mode(),
                 scroll_speed: crate::appearance::cache::load_scroll_speed(),
                 respect_manual_folds: respect_manual_folds_from_app,
@@ -1389,6 +1366,14 @@ pub(super) fn dispatch_dashboard_dispatch_slash(app: &mut AppView, text: String)
             }
             vec![]
         }
+        CommandResult::Action(Action::OpenSlashCommandInput { command }) => {
+            if let Some(d) = app.dashboard.as_mut() {
+                d.dispatch.set_text(&format!("/{command} "));
+                d.dispatch.refresh_slash(&app.models);
+                d.error_toast = None;
+            }
+            vec![]
+        }
         CommandResult::Action(Action::ExitSession) => {
             // ExitSession from a session-less surface is meaningless
             // — collapse it to `/dashboard`'s exit semantics.
@@ -1400,15 +1385,21 @@ pub(super) fn dispatch_dashboard_dispatch_slash(app: &mut AppView, text: String)
         // `/model` on the session-less dashboard stages the model for the
         // NEXT spawned agent instead of switching a (nonexistent) session.
         // Both the effort-bearing (`SwitchModel`) and bare
-        // (`SetDefaultModel`) forms map to the same per-spawn staging — we
-        // deliberately do NOT persist a global default here.
+        // (`SetDefaultModel`) forms map to the same per-spawn staging and
+        // persist that exact selection to `roles.main`.
         CommandResult::Action(Action::SwitchModel { model_id, effort }) => {
-            stage_dashboard_model(app, model_id, effort);
-            vec![]
+            stage_dashboard_model(app, model_id.clone(), effort);
+            vec![Effect::PersistPreferredModel {
+                model_id,
+                reasoning_effort: effort,
+            }]
         }
         CommandResult::Action(Action::SetDefaultModel(model_id)) => {
-            stage_dashboard_model(app, model_id, None);
-            vec![]
+            stage_dashboard_model(app, model_id.clone(), None);
+            vec![Effect::PersistPreferredModel {
+                model_id,
+                reasoning_effort: None,
+            }]
         }
         // `/plan` toggles whether the next spawned agent starts in plan
         // mode. The command always reports `On` here (the dashboard's

@@ -373,7 +373,7 @@ pub fn find_claude_settings_paths(cwd: &Path) -> Vec<PathBuf> {
 /// `is_global` check.
 fn global_claude_settings_paths() -> Vec<PathBuf> {
     let mut paths = Vec::new();
-    if let Some(home) = dirs::home_dir() {
+    if let Some(home) = crate::trust::home_dir() {
         let global = home.join(".claude");
         paths.push(global.join("settings.local.json"));
         paths.push(global.join("settings.json"));

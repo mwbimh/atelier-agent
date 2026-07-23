@@ -1,6 +1,6 @@
 {
     "name": "@atelier/atelier-linux-x64",
-    "version": "0.2.0-dev",
+  "version": "0.1.220-alpha.4",
     "description": "linux-x64 binary for @atelier/atelier. Do not install directly; install @atelier/atelier instead.",
     "license": "Apache-2.0",
     "files": [

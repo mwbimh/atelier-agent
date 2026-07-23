@@ -239,7 +239,7 @@ pub fn render_search_bar_with_label(
     label: &str,
     query: &str,
     active: bool,
-    show_hint: bool,
+    _show_hint: bool,
     query_cursor: usize,
     bg: Option<ratatui::style::Color>,
 ) {
@@ -251,10 +251,7 @@ pub fn render_search_bar_with_label(
     };
     let bg_style = |style: Style| -> Style { if let Some(c) = bg { style.bg(c) } else { style } };
 
-    // "Always-active" mode: cursor always visible (Floating mode search).
-    let always_active = !active && !show_hint;
-
-    if active || !query.is_empty() || always_active {
+    if active || !query.is_empty() {
         let label_w = label.len() as u16;
         buf.set_line(
             x,
@@ -315,7 +312,7 @@ pub fn render_search_bar_with_label(
 
         let cursor_display_w = (cursor_col as u16).min(input_max as u16);
 
-        if active || always_active {
+        if active {
             let cursor_x = input_x + cursor_display_w;
             if cursor_x < x + width {
                 // Inverse-video the cell at the cursor position so the
@@ -327,7 +324,7 @@ pub fn render_search_bar_with_label(
                 }
             }
         }
-    } else if show_hint {
+    } else {
         buf.set_line(
             x,
             y,
@@ -3219,7 +3216,7 @@ mod tests {
 
         // A `show_search_hint: false` picker (command palette / arg-picker family):
         // the cursor must track focus (`search_active`), not render always-on.
-        let theme = Theme::current();
+        let theme = Theme::ateliernight();
         let config = cfg(false, false);
         let area = Rect::new(0, 0, 60, 16);
 

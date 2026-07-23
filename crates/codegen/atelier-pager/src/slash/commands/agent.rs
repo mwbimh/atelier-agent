@@ -46,7 +46,7 @@ impl SlashCommand for AgentCommand {
             return Some(derived_role_items(""));
         }
         let first = query.split_whitespace().next().unwrap_or_default();
-        if RoleId::from_str(first).is_ok() && query.ends_with(char::is_whitespace) {
+        if parse_derived_role(first).is_ok() && query.ends_with(char::is_whitespace) {
             return None;
         }
         Some(derived_role_items(query))
@@ -109,7 +109,7 @@ pub(crate) fn parse_agent_args(args: &str) -> Result<AgentArgs, String> {
     let role_name = tokens.get(index).ok_or_else(|| {
         "Usage: /agent [--fresh] [--background] <role> [--append <context>] <prompt>".to_owned()
     })?;
-    let role = RoleId::from_str(role_name).map_err(|error| error.to_string())?;
+    let role = parse_derived_role(role_name)?;
     index += 1;
 
     let mut append_context = None;
@@ -145,19 +145,14 @@ pub(crate) fn tokenize(input: &str) -> Result<Vec<String>, String> {
     let mut tokens = Vec::new();
     let mut current = String::new();
     let mut quote = None;
-    let mut escaped = false;
-    for character in input.chars() {
-        if escaped {
-            current.push(character);
-            escaped = false;
-            continue;
-        }
-        if character == '\\' && quote.is_some() {
-            escaped = true;
-            continue;
-        }
+    let mut characters = input.chars().peekable();
+    while let Some(character) = characters.next() {
         match quote {
             Some(delimiter) if character == delimiter => quote = None,
+            Some(delimiter) if character == '\\' && characters.peek() == Some(&delimiter) => {
+                current.push(delimiter);
+                characters.next();
+            }
             Some(_) => current.push(character),
             None if character == '\'' || character == '"' => quote = Some(character),
             None if character.is_whitespace() => {
@@ -167,9 +162,6 @@ pub(crate) fn tokenize(input: &str) -> Result<Vec<String>, String> {
             }
             None => current.push(character),
         }
-    }
-    if escaped {
-        current.push('\\');
     }
     if quote.is_some() {
         return Err("unterminated quote in command arguments".to_owned());
@@ -200,9 +192,23 @@ fn derived_role_items(query: &str) -> Vec<ArgItem> {
     .collect()
 }
 
+fn parse_derived_role(value: &str) -> Result<RoleId, String> {
+    let role = RoleId::from_str(value).map_err(|error| error.to_string())?;
+    if matches!(
+        role,
+        RoleId::Explore | RoleId::Implement | RoleId::Review | RoleId::Test | RoleId::Main
+    ) {
+        Ok(role)
+    } else {
+        Err(format!(
+            "Role '{value}' cannot be spawned with /agent; use main, explore, implement, review, or test"
+        ))
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{AgentCommand, parse_agent_args, tokenize};
+    use super::{AgentCommand, derived_role_items, parse_agent_args, tokenize};
     use crate::app::actions::Action;
     use crate::slash::command::{CommandExecCtx, CommandResult, SlashCommand};
     use atelier_provider::RoleId;
@@ -268,7 +274,50 @@ mod tests {
     }
 
     #[test]
+    fn full_agent_command_allows_exactly_the_interactive_roles() {
+        let interactive = derived_role_items("")
+            .into_iter()
+            .map(|item| item.display)
+            .collect::<Vec<_>>();
+        for role in &interactive {
+            assert!(
+                parse_agent_args(&format!("{role} inspect provider")).is_ok(),
+                "interactive role {role} must work in the full command"
+            );
+        }
+        for role in ["compact", "summary", "title"] {
+            assert!(
+                parse_agent_args(&format!("{role} inspect provider")).is_err(),
+                "internal role {role} must not bypass the interactive role list"
+            );
+        }
+    }
+
+    #[test]
     fn tokenizer_rejects_unterminated_quotes() {
         assert!(tokenize("explore --append \"missing").is_err());
+    }
+
+    #[test]
+    fn tokenizer_preserves_backslashes_in_quoted_windows_paths() {
+        assert_eq!(
+            tokenize(r#"explore "inspect C:\Users\alice\atelier repo""#).unwrap(),
+            vec![
+                "explore".to_owned(),
+                r#"inspect C:\Users\alice\atelier repo"#.to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn internal_runtime_roles_cannot_be_spawned_by_users() {
+        for role in ["compact", "summary", "title"] {
+            let error = parse_agent_args(&format!("{role} run internal work"))
+                .expect_err("internal runtime roles must not be user-spawnable");
+            assert!(
+                error.contains("cannot be spawned"),
+                "unexpected error: {error}"
+            );
+        }
     }
 }

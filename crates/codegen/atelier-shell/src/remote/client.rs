@@ -2,7 +2,6 @@
 use crate::auth::{AtelierAuth, AtelierComConfig};
 use crate::session::export::{ExportedMessage, ExportedMetadata, ExportedSession};
 use indexmap::IndexMap;
-use prod_mc_cli_chat_proxy_types::SubagentBundle;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
@@ -40,175 +39,6 @@ async fn parse_json_response<T: serde::de::DeserializeOwned>(
 ) -> Result<T, BackendError> {
     let bytes = response.bytes().await?;
     serde_json::from_slice(&bytes).map_err(BackendError::from)
-}
-async fn add_bundle_fetch_headers(
-    builder: reqwest::RequestBuilder,
-    auth_manager: Option<&std::sync::Arc<crate::auth::AuthManager>>,
-    deployment_key: Option<&str>,
-    alpha_test_key: Option<&str>,
-    url: &str,
-) -> reqwest::RequestBuilder {
-    let resolved_auth = match auth_manager {
-        Some(am) => am.auth().await.ok(),
-        None => None,
-    };
-    let mut credentials = crate::util::atelier_auth_credentials::AtelierAuthCredentials::new(
-        resolved_auth.as_ref().map(|auth| auth.key.clone()),
-    );
-    credentials.deployment_key = deployment_key.map(str::to_owned);
-    credentials.alpha_test_key = alpha_test_key.map(str::to_owned);
-    let mut builder = credentials
-        .apply(builder, url)
-        .header("x-atelier-client-version", atelier_version::VERSION);
-    if deployment_key.is_none()
-        && let Some(auth) = &resolved_auth
-    {
-        builder = builder.header("x-userid", &auth.user_id);
-        if let Some(email) = &auth.email {
-            builder = builder.header("x-email", email);
-        }
-    }
-    builder = builder
-        .header(
-            "x-atelier-client-identifier",
-            crate::http::process_client_identifier(),
-        )
-        .header(
-            crate::http::CLIENT_MODE_HEADER,
-            crate::http::process_client_mode(),
-        );
-    xai_file_utils::trace_context::inject_trace_context_into_request(builder)
-}
-/// Fetch the bundled subagent cache payload from cli-chat-proxy `GET /v1/subagents/bundle`.
-///
-/// Uses the shell's standard proxy-backed auth model: deployment key auth takes
-/// precedence when configured; otherwise user-session token auth is used.
-pub async fn fetch_subagent_bundle(
-    cli_chat_proxy_base_url: &str,
-    auth_manager: Option<&std::sync::Arc<crate::auth::AuthManager>>,
-    deployment_key: Option<&str>,
-    alpha_test_key: Option<&str>,
-) -> Result<SubagentBundle, BackendError> {
-    let url = format!("{}/subagents/bundle", cli_chat_proxy_base_url);
-    let response = add_bundle_fetch_headers(
-        crate::http::shared_client()
-            .get(&url)
-            .timeout(std::time::Duration::from_secs(10)),
-        auth_manager,
-        deployment_key,
-        alpha_test_key,
-        &url,
-    )
-    .await
-    .send()
-    .await?;
-    if !response.status().is_success() {
-        let status = response.status().as_u16();
-        let body = response.text().await.unwrap_or_default();
-        return Err(BackendError::RequestFailed { status, body });
-    }
-    let bundle: SubagentBundle = parse_json_response(response).await?;
-    tracing::debug!(
-        version = % bundle.version, personas = bundle.personas.len(), roles = bundle
-        .roles.len(), agents = bundle.agents.len(),
-        "Fetched subagent bundle from cli-chat-proxy"
-    );
-    Ok(bundle)
-}
-/// The result of fetching a bundle: either raw tar.gz bytes from the new
-/// archive endpoint, or a parsed JSON bundle from the legacy endpoint.
-#[derive(Debug)]
-pub enum FetchedBundle {
-    Archive(Vec<u8>),
-    Legacy(SubagentBundle),
-}
-/// Fetch a bundle, trying the archive endpoint first and falling back to
-/// legacy JSON on any non-success HTTP status.
-pub async fn fetch_bundle(
-    cli_chat_proxy_base_url: &str,
-    auth_manager: Option<&std::sync::Arc<crate::auth::AuthManager>>,
-    deployment_key: Option<&str>,
-    alpha_test_key: Option<&str>,
-) -> Result<FetchedBundle, BackendError> {
-    fetch_bundle_inner(
-        cli_chat_proxy_base_url,
-        auth_manager,
-        deployment_key,
-        alpha_test_key,
-    )
-    .await
-}
-async fn fetch_bundle_inner(
-    cli_chat_proxy_base_url: &str,
-    auth_manager: Option<&std::sync::Arc<crate::auth::AuthManager>>,
-    deployment_key: Option<&str>,
-    alpha_test_key: Option<&str>,
-) -> Result<FetchedBundle, BackendError> {
-    let _ = (
-        cli_chat_proxy_base_url,
-        auth_manager,
-        deployment_key,
-        alpha_test_key,
-    );
-    return Err(BackendError::Disabled);
-
-    #[allow(unreachable_code)]
-    let archive_url = format!("{}/bundle/archive", cli_chat_proxy_base_url);
-    let raw_client = crate::http::shared_client();
-    let client: reqwest_middleware::ClientWithMiddleware = if let Some(am) = auth_manager {
-        let provider: std::sync::Arc<dyn atelier_auth::AuthCredentialProvider> =
-            std::sync::Arc::new(
-                crate::auth::credential_provider::ShellAuthCredentialProvider::new(
-                    am.clone(),
-                    deployment_key.map(str::to_owned),
-                    alpha_test_key.map(str::to_owned),
-                ),
-            );
-        crate::http::with_auth_retry(raw_client, provider)
-    } else {
-        reqwest_middleware::ClientBuilder::new(raw_client).build()
-    };
-    let mut request = client
-        .get(&archive_url)
-        .timeout(std::time::Duration::from_secs(30))
-        .header("x-atelier-client-version", atelier_version::VERSION)
-        .header(
-            crate::http::CLIENT_MODE_HEADER,
-            crate::http::process_client_mode(),
-        );
-    if deployment_key.is_none()
-        && let Some(am) = auth_manager
-        && let Some(auth) = am.current()
-    {
-        request = request.header("x-userid", &auth.user_id);
-        if let Some(ref email) = auth.email {
-            request = request.header("x-email", email);
-        }
-    }
-    let archive_response = request.send().await.map_err(|e| match e {
-        reqwest_middleware::Error::Reqwest(e) => BackendError::Network(e),
-        reqwest_middleware::Error::Middleware(e) => BackendError::Auth(e.to_string()),
-    })?;
-    if archive_response.status().is_success() {
-        let bytes = archive_response.bytes().await?;
-        return Ok(FetchedBundle::Archive(bytes.to_vec()));
-    }
-    if archive_response.status() == reqwest::StatusCode::UNAUTHORIZED {
-        let body = archive_response.text().await.unwrap_or_default();
-        return Err(BackendError::RequestFailed { status: 401, body });
-    }
-    tracing::debug!(
-        status = % archive_response.status(),
-        "archive endpoint unavailable, falling back to legacy JSON"
-    );
-    let bundle = fetch_subagent_bundle(
-        cli_chat_proxy_base_url,
-        auth_manager,
-        deployment_key,
-        alpha_test_key,
-    )
-    .await?;
-    Ok(FetchedBundle::Legacy(bundle))
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -556,124 +386,6 @@ impl BackendClient {
         Ok(())
     }
 }
-/// Fetch remote settings from cli-chat-proxy `GET /v1/settings`.
-///
-/// This is a blocking call intended for use in the early prefetch thread
-/// (`std::thread::spawn`, no tokio runtime). Returns `None` on any error
-/// so startup is never blocked by a settings fetch failure.
-///
-/// Retries up to 2 times (3 attempts total) on transient errors (5xx,
-/// network). 4xx and parse errors are not retried.
-pub fn fetch_settings_blocking(
-    cli_chat_proxy_base_url: &str,
-    auth: &AtelierAuth,
-    alpha_test_key: Option<&str>,
-) -> Option<crate::util::config::RemoteSettings> {
-    let _ = (cli_chat_proxy_base_url, auth, alpha_test_key);
-    return None;
-
-    #[allow(unreachable_code)]
-    let client = crate::http::shared_blocking_client();
-    let url = format!("{}/settings", cli_chat_proxy_base_url);
-    for attempt in 0u64..3 {
-        if attempt > 0 {
-            std::thread::sleep(std::time::Duration::from_millis(500 * attempt));
-        }
-        let request =
-            add_cli_chat_proxy_headers_blocking(client.get(&url), auth, alpha_test_key, &url);
-        match request.send() {
-            Ok(resp) if resp.status().is_success() => match resp.json() {
-                Ok(settings) => {
-                    tracing::debug!("Fetched remote settings from cli-chat-proxy");
-                    return Some(settings);
-                }
-                Err(e) => {
-                    tracing::warn!(attempt, "Failed to parse settings response: {e}");
-                    return None;
-                }
-            },
-            Ok(resp) if resp.status().is_server_error() => {
-                tracing::warn!(
-                    attempt,
-                    status = resp.status().as_u16(),
-                    "Settings fetch server error, retrying"
-                );
-                continue;
-            }
-            Ok(resp) => {
-                tracing::warn!(status = resp.status().as_u16(), "Failed to fetch settings");
-                return None;
-            }
-            Err(e) => {
-                tracing::warn!(attempt, "Settings fetch network error: {e}");
-                continue;
-            }
-        }
-    }
-    tracing::error!("Settings fetch failed after 3 attempts");
-    None
-}
-#[derive(Deserialize)]
-struct LoginConfigResponse {
-    /// Tri-state: `Some` forces a transport; `None`/absent → client default.
-    #[serde(default)]
-    device_flow: Option<bool>,
-}
-/// Fetch `atelier_build_login_device_flow` from cli-chat-proxy `GET /v1/login-config`.
-///
-/// Unauthenticated (pre-login); `x-atelier-agent-id` is the per-install bucketing key.
-/// Best-effort: any error or unset flag returns `None` so the caller keeps the
-/// loopback default. Caps at 1.5s with no retries since it's on the login path;
-/// `agent_id()` runs on the blocking pool so the fetch never stalls the executor.
-pub async fn fetch_login_device_flow(cli_chat_proxy_base_url: &str) -> Option<bool> {
-    let _ = cli_chat_proxy_base_url;
-    return None;
-
-    #[allow(unreachable_code)]
-    let agent_id = tokio::task::spawn_blocking(atelier_telemetry::id::agent_id)
-        .await
-        .ok()?;
-    let client = crate::http::shared_client();
-    let url = format!("{}/login-config", cli_chat_proxy_base_url);
-    let response = client
-        .get(&url)
-        .timeout(std::time::Duration::from_millis(1500))
-        .header("x-atelier-agent-id", agent_id)
-        .header("x-atelier-client-version", atelier_version::VERSION)
-        .header(
-            "x-atelier-client-identifier",
-            crate::http::process_client_identifier(),
-        )
-        .header(
-            crate::http::CLIENT_MODE_HEADER,
-            crate::http::process_client_mode(),
-        )
-        .send()
-        .await;
-    let resp = match response {
-        Ok(resp) if resp.status().is_success() => resp,
-        Ok(resp) => {
-            tracing::debug!(status = resp.status().as_u16(), "login-config fetch failed");
-            return None;
-        }
-        Err(e) => {
-            tracing::debug!("login-config fetch error: {e}");
-            return None;
-        }
-    };
-    match resp.json::<LoginConfigResponse>().await {
-        Ok(cfg) => {
-            tracing::debug!(
-                device_flow = ? cfg.device_flow, "Fetched remote login-config"
-            );
-            cfg.device_flow
-        }
-        Err(e) => {
-            tracing::debug!("Failed to parse login-config response: {e}");
-            None
-        }
-    }
-}
 /// Default context window (256k) when the remote endpoint doesn't provide one.
 pub(crate) const DEFAULT_CONTEXT_WINDOW: u64 = 256_000;
 #[derive(Debug, Deserialize)]
@@ -711,8 +423,13 @@ impl ListModelsEndpoint {
                 auth: EndpointAuth::ApiKey,
             }
         } else if fetch_auth == crate::agent::models::ModelFetchAuth::ApiKey {
+            let base_url = endpoints.xai_api_base_url.trim_end_matches('/');
             Self {
-                url: format!("{}/models", endpoints.xai_api_base_url),
+                url: if base_url.is_empty() {
+                    String::new()
+                } else {
+                    format!("{base_url}/models")
+                },
                 auth: EndpointAuth::ApiKey,
             }
         } else {
@@ -736,6 +453,9 @@ pub(crate) fn fetch_models_blocking(
 ) -> Result<FetchModelsResult, BackendError> {
     let client = crate::http::shared_blocking_client();
     let source = ListModelsEndpoint::from_endpoints(endpoints, fetch_auth);
+    if source.url.trim().is_empty() {
+        return Err(BackendError::Disabled);
+    }
     let inference_base_url = endpoints.resolve_inference_base_url();
     tracing::info!("Fetching models from {}", source.url);
     let mut request = client.get(&source.url);
@@ -1046,18 +766,6 @@ mod tests {
     };
     use std::sync::{Arc, Mutex};
     #[test]
-    fn login_config_response_parses_tristate() {
-        let parse = |s: &str| {
-            serde_json::from_str::<LoginConfigResponse>(s)
-                .unwrap()
-                .device_flow
-        };
-        assert_eq!(parse(r#"{"device_flow": true}"#), Some(true));
-        assert_eq!(parse(r#"{"device_flow": false}"#), Some(false));
-        assert_eq!(parse(r#"{"device_flow": null}"#), None);
-        assert_eq!(parse("{}"), None, "absent flag must parse as unset");
-    }
-    #[test]
     fn get_env_keys_parses_strings_and_rejects_non_strings() {
         use crate::agent::config::EnvKeys;
         let parse = |v: serde_json::Value| {
@@ -1071,231 +779,6 @@ mod tests {
         );
         assert_eq!(parse(serde_json::json!(["A", 123])), None);
         assert_eq!(parse(serde_json::json!([])), None);
-    }
-    fn header_str(headers: &HeaderMap, name: &str) -> Option<String> {
-        headers
-            .get(name)
-            .and_then(|v| v.to_str().ok())
-            .map(str::to_owned)
-    }
-    #[derive(Debug, Default, Clone)]
-    struct LoginConfigHeaders {
-        authorization: Option<String>,
-        user_id: Option<String>,
-        email: Option<String>,
-        agent_id: Option<String>,
-        client_identifier: Option<String>,
-        client_version: Option<String>,
-    }
-    #[derive(Clone)]
-    struct LoginConfigServerState {
-        status_code: StatusCode,
-        body: String,
-        seen: Arc<Mutex<Vec<LoginConfigHeaders>>>,
-    }
-    /// Mock cli-chat-proxy serving `GET /v1/login-config` with a fixed status +
-    /// raw body, recording the request headers it saw.
-    async fn start_login_config_server(
-        status_code: StatusCode,
-        body: String,
-    ) -> (
-        String,
-        Arc<Mutex<Vec<LoginConfigHeaders>>>,
-        tokio::task::JoinHandle<()>,
-    ) {
-        let seen = Arc::new(Mutex::new(Vec::new()));
-        let state = LoginConfigServerState {
-            status_code,
-            body,
-            seen: seen.clone(),
-        };
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let base = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
-        let app = Router::new()
-            .route(
-                "/v1/login-config",
-                get(
-                    |State(state): State<LoginConfigServerState>, headers: HeaderMap| async move {
-                        state.seen.lock().unwrap().push(LoginConfigHeaders {
-                            authorization: header_str(&headers, "authorization"),
-                            user_id: header_str(&headers, "x-userid"),
-                            email: header_str(&headers, "x-email"),
-                            agent_id: header_str(&headers, "x-atelier-agent-id"),
-                            client_identifier: header_str(&headers, "x-atelier-client-identifier"),
-                            client_version: header_str(&headers, "x-atelier-client-version"),
-                        });
-                        (state.status_code, state.body)
-                    },
-                ),
-            )
-            .with_state(state);
-        let handle = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-        (format!("{base}/v1"), seen, handle)
-    }
-    #[tokio::test]
-    async fn fetch_login_device_flow_parses_2xx_bodies() {
-        for (body, expected) in [
-            (r#"{"device_flow": true}"#, Some(true)),
-            (r#"{"device_flow": false}"#, Some(false)),
-            (r#"{"device_flow": null}"#, None),
-            (r#"{}"#, None),
-            (r#"{"other": 1}"#, None),
-        ] {
-            let (base, _seen, server) =
-                start_login_config_server(StatusCode::OK, body.to_string()).await;
-            let got = fetch_login_device_flow(&base).await;
-            server.abort();
-            assert_eq!(got, expected, "body {body:?}");
-        }
-    }
-    #[tokio::test]
-    async fn fetch_login_device_flow_errors_return_none() {
-        for (status, body) in [
-            (StatusCode::NOT_FOUND, r#"{"device_flow": true}"#),
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                r#"{"device_flow": true}"#,
-            ),
-            (StatusCode::OK, "not json"),
-        ] {
-            let (base, _seen, server) = start_login_config_server(status, body.to_string()).await;
-            let got = fetch_login_device_flow(&base).await;
-            server.abort();
-            assert_eq!(got, None, "status {status}, body {body:?}");
-        }
-    }
-    #[tokio::test]
-    async fn fetch_login_device_flow_sends_only_unauthenticated_headers() {
-        let (base, seen, server) =
-            start_login_config_server(StatusCode::OK, r#"{"device_flow": true}"#.to_string()).await;
-        let got = fetch_login_device_flow(&base).await;
-        server.abort();
-        assert_eq!(got, Some(true));
-        let seen = seen.lock().unwrap();
-        let h = seen
-            .last()
-            .expect("server should have received one request");
-        assert!(
-            h.agent_id.as_deref().is_some_and(|v| !v.is_empty()),
-            "must send x-atelier-agent-id (the bucketing key)"
-        );
-        assert!(
-            h.client_identifier.is_some(),
-            "must send x-atelier-client-identifier"
-        );
-        assert!(
-            h.client_version.is_some(),
-            "must send x-atelier-client-version"
-        );
-        assert_eq!(h.authorization, None, "must not send Authorization");
-        assert_eq!(h.user_id, None, "must not send x-userid");
-        assert_eq!(h.email, None, "must not send x-email");
-    }
-    #[derive(Debug, Default, Clone)]
-    struct SeenHeaders {
-        authorization: Option<String>,
-        token_auth: Option<String>,
-        user_id: Option<String>,
-        email: Option<String>,
-        alpha_test_key: Option<String>,
-        client_version: Option<String>,
-    }
-    #[derive(Clone)]
-    struct BundleServerState {
-        body: serde_json::Value,
-        status_code: StatusCode,
-        seen_headers: Arc<Mutex<Vec<SeenHeaders>>>,
-    }
-    async fn start_bundle_server(
-        status_code: StatusCode,
-        body: serde_json::Value,
-    ) -> (
-        String,
-        Arc<Mutex<Vec<SeenHeaders>>>,
-        tokio::task::JoinHandle<()>,
-    ) {
-        let seen_headers = Arc::new(Mutex::new(Vec::new()));
-        let state = BundleServerState {
-            body,
-            status_code,
-            seen_headers: seen_headers.clone(),
-        };
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let base = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
-        let app = Router::new()
-            .route(
-                "/v1/subagents/bundle",
-                get(
-                    |State(state): State<BundleServerState>, headers: HeaderMap| async move {
-                        state.seen_headers.lock().unwrap().push(SeenHeaders {
-                            authorization: headers
-                                .get("authorization")
-                                .and_then(|v| v.to_str().ok())
-                                .map(str::to_owned),
-                            token_auth: headers
-                                .get("x-xai-token-auth")
-                                .and_then(|v| v.to_str().ok())
-                                .map(str::to_owned),
-                            user_id: headers
-                                .get("x-userid")
-                                .and_then(|v| v.to_str().ok())
-                                .map(str::to_owned),
-                            email: headers
-                                .get("x-email")
-                                .and_then(|v| v.to_str().ok())
-                                .map(str::to_owned),
-                            alpha_test_key: {
-                                let _ = &headers;
-                                None
-                            },
-                            client_version: headers
-                                .get("x-atelier-client-version")
-                                .and_then(|v| v.to_str().ok())
-                                .map(str::to_owned),
-                        });
-                        (state.status_code, axum::Json(state.body))
-                    },
-                ),
-            )
-            .route(
-                "/forward/{tail}",
-                get(
-                    |Path(_tail): Path<String>,
-                     State(state): State<BundleServerState>,
-                     headers: HeaderMap| async move {
-                        state.seen_headers.lock().unwrap().push(SeenHeaders {
-                            authorization: headers
-                                .get("authorization")
-                                .and_then(|v| v.to_str().ok())
-                                .map(str::to_owned),
-                            token_auth: headers
-                                .get("x-xai-token-auth")
-                                .and_then(|v| v.to_str().ok())
-                                .map(str::to_owned),
-                            user_id: headers
-                                .get("x-userid")
-                                .and_then(|v| v.to_str().ok())
-                                .map(str::to_owned),
-                            email: headers
-                                .get("x-email")
-                                .and_then(|v| v.to_str().ok())
-                                .map(str::to_owned),
-                            alpha_test_key: {
-                                let _ = &headers;
-                                None
-                            },
-                            client_version: headers
-                                .get("x-atelier-client-version")
-                                .and_then(|v| v.to_str().ok())
-                                .map(str::to_owned),
-                        });
-                        (state.status_code, axum::Json(state.body))
-                    },
-                ),
-            )
-            .with_state(state);
-        let handle = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-        (format!("{base}/v1"), seen_headers, handle)
     }
     fn test_auth() -> AtelierAuth {
         AtelierAuth {
@@ -1332,86 +815,6 @@ mod tests {
         mgr.hot_swap(test_auth());
         std::mem::forget(dir);
         Arc::new(mgr)
-    }
-    #[tokio::test(flavor = "current_thread")]
-    async fn fetch_subagent_bundle_success() {
-        let body = serde_json::json!(
-            { "version" : "bundle-v1", "personas" : { "researcher" : "persona" }, "roles"
-            : { "reviewer" : "role" }, "agents" : { "default" : "agent" } }
-        );
-        let (proxy_base_url, seen_headers, server) =
-            start_bundle_server(axum::http::StatusCode::OK, body).await;
-        let am = test_auth_manager();
-        let bundle = fetch_subagent_bundle(&proxy_base_url, Some(&am), None, None)
-            .await
-            .unwrap();
-        assert_eq!(bundle.version, "bundle-v1");
-        assert_eq!(
-            bundle.personas.get("researcher"),
-            Some(&"persona".to_string())
-        );
-        assert_eq!(bundle.roles.get("reviewer"), Some(&"role".to_string()));
-        assert_eq!(bundle.agents.get("default"), Some(&"agent".to_string()));
-        let headers = seen_headers.lock().unwrap();
-        let headers = headers.last().unwrap();
-        assert_eq!(headers.authorization.as_deref(), Some("Bearer token"));
-        assert_eq!(headers.token_auth.as_deref(), Some("atelier-cli"));
-        assert_eq!(headers.user_id.as_deref(), Some("user-1"));
-        assert_eq!(headers.email.as_deref(), Some("test@example.com"));
-        assert_eq!(headers.alpha_test_key, None);
-        assert!(headers.client_version.is_some());
-        server.abort();
-    }
-    #[tokio::test(flavor = "current_thread")]
-    async fn fetch_subagent_bundle_uses_deployment_key_without_user_headers() {
-        let body = serde_json::json!(
-            { "version" : "bundle-v1", "personas" : {}, "roles" : {}, "agents" : {} }
-        );
-        let (proxy_base_url, seen_headers, server) =
-            start_bundle_server(axum::http::StatusCode::OK, body).await;
-        let am = test_auth_manager();
-        let bundle = fetch_subagent_bundle(&proxy_base_url, Some(&am), Some("deploy-key"), None)
-            .await
-            .unwrap();
-        assert_eq!(bundle.version, "bundle-v1");
-        let headers = seen_headers.lock().unwrap();
-        let headers = headers.last().unwrap();
-        assert_eq!(headers.authorization.as_deref(), Some("Bearer deploy-key"));
-        assert_eq!(headers.token_auth, None);
-        assert_eq!(headers.user_id, None);
-        assert_eq!(headers.email, None);
-        server.abort();
-    }
-    #[tokio::test(flavor = "current_thread")]
-    async fn fetch_subagent_bundle_http_failure() {
-        let (proxy_base_url, _seen_headers, server) = start_bundle_server(
-            axum::http::StatusCode::UNAUTHORIZED,
-            serde_json::json!({ "error" : "unauthorized" }),
-        )
-        .await;
-        let am = test_auth_manager();
-        let error = fetch_subagent_bundle(&proxy_base_url, Some(&am), None, None)
-            .await
-            .unwrap_err();
-        assert!(matches!(
-            error,
-            BackendError::RequestFailed { status: 401, .. }
-        ));
-        server.abort();
-    }
-    #[tokio::test(flavor = "current_thread")]
-    async fn fetch_subagent_bundle_parse_failure() {
-        let (proxy_base_url, _seen_headers, server) = start_bundle_server(
-            axum::http::StatusCode::OK,
-            serde_json::json!({ "version" : 42 }),
-        )
-        .await;
-        let am = test_auth_manager();
-        let error = fetch_subagent_bundle(&proxy_base_url, Some(&am), None, None)
-            .await
-            .unwrap_err();
-        assert!(matches!(error, BackendError::Serialization(_)));
-        server.abort();
     }
     #[test]
     fn parse_openai_format_uses_id_field() {
@@ -1795,10 +1198,8 @@ mod tests {
             "https://registry.acme.com/api/list-models"
         );
     }
-    /// INVARIANT: the `/models` fetch URL + auth scheme match the auth mode —
-    /// Session/Deployment → cli-chat-proxy (Session auth), never the inference host;
-    /// ApiKey → `xai_api_base_url` (ApiKey, public default when unset); a custom
-    /// models endpoint → that URL verbatim.
+    /// Generic model discovery only uses an explicit/custom endpoint or the
+    /// configured API endpoint. Vendor Session/Deployment discovery has no URL.
     #[test]
     #[serial_test::serial]
     fn models_fetch_endpoint_matches_auth_mode() {
@@ -1819,13 +1220,10 @@ mod tests {
             .unwrap(),
         );
         let session = ListModelsEndpoint::from_endpoints(&cfg, ModelFetchAuth::Session);
-        assert_eq!(session.url, "https://cli-chat-proxy.atelier.com/v1/models");
+        assert_eq!(session.url, "");
         assert_eq!(session.auth, EndpointAuth::Session);
         let deployment = ListModelsEndpoint::from_endpoints(&cfg, ModelFetchAuth::Deployment);
-        assert_eq!(
-            deployment.url,
-            "https://cli-chat-proxy.atelier.com/v1/models"
-        );
+        assert_eq!(deployment.url, "");
         assert_eq!(deployment.auth, EndpointAuth::Session);
         let api = ListModelsEndpoint::from_endpoints(&cfg, ModelFetchAuth::ApiKey);
         assert_eq!(api.url, "https://inference.acme-corp.example/xai/v1/models");
@@ -1833,7 +1231,7 @@ mod tests {
         let default = EndpointsConfig::from_config_value(&toml::Value::Table(Default::default()));
         assert_eq!(
             ListModelsEndpoint::from_endpoints(&default, ModelFetchAuth::ApiKey).url,
-            "https://api.atelier/v1/models"
+            ""
         );
         let custom = EndpointsConfig::from_config_value(
             &toml::from_str(
@@ -1846,10 +1244,33 @@ mod tests {
         assert_eq!(ep.url, "https://models.acme.com/v1/models");
         assert_eq!(ep.auth, EndpointAuth::ApiKey);
     }
+    #[test]
+    #[serial_test::serial]
+    fn vendor_session_model_discovery_is_disabled_before_network() {
+        use crate::agent::config::EndpointsConfig;
+        use crate::agent::models::ModelFetchAuth;
+        for key in [
+            "ATELIER_CLI_CHAT_PROXY_BASE_URL",
+            "ATELIER_MODELS_BASE_URL",
+            "ATELIER_MODELS_LIST_URL",
+        ] {
+            unsafe { std::env::remove_var(key) };
+        }
+        let endpoints = EndpointsConfig::from_config_value(&toml::Value::Table(Default::default()));
+        assert!(matches!(
+            fetch_models_blocking(&endpoints, None, ModelFetchAuth::Session),
+            Err(BackendError::Disabled)
+        ));
+        assert!(matches!(
+            fetch_models_blocking(&endpoints, None, ModelFetchAuth::ApiKey),
+            Err(BackendError::Disabled)
+        ));
+    }
     /// REGRESSION: `atelier setup` must send the deployment key to
     /// the proxy, never the inference endpoint.
     #[test]
     #[serial_test::serial]
+    #[cfg(any())] // Vendor managed-config proxy routing was removed from Atelier.
     fn deployment_config_url_uses_cli_chat_proxy_when_not_overridden() {
         use crate::agent::config::EndpointsConfig;
         for k in [
@@ -1887,103 +1308,6 @@ mod tests {
         );
         unsafe { std::env::remove_var("ATELIER_DEPLOYMENT_KEY") };
     }
-    #[derive(Clone)]
-    struct DualBundleServerState {
-        archive_status: StatusCode,
-        archive_bytes: Vec<u8>,
-        legacy_status: StatusCode,
-        legacy_body: serde_json::Value,
-    }
-    async fn start_dual_bundle_server(
-        state: DualBundleServerState,
-    ) -> (String, tokio::task::JoinHandle<()>) {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let base = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
-        let app = Router::new()
-            .route(
-                "/v1/bundle/archive",
-                get(|State(state): State<DualBundleServerState>| async move {
-                    (state.archive_status, state.archive_bytes)
-                }),
-            )
-            .route(
-                "/v1/subagents/bundle",
-                get(|State(state): State<DualBundleServerState>| async move {
-                    (state.legacy_status, axum::Json(state.legacy_body))
-                }),
-            )
-            .with_state(state);
-        let handle = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-        (format!("{base}/v1"), handle)
-    }
-    #[tokio::test(flavor = "current_thread")]
-    async fn fetch_bundle_returns_archive_on_success() {
-        let archive_bytes = b"fake-tar-gz-bytes".to_vec();
-        let (proxy_base_url, server) = start_dual_bundle_server(DualBundleServerState {
-            archive_status: StatusCode::OK,
-            archive_bytes: archive_bytes.clone(),
-            legacy_status: StatusCode::OK,
-            legacy_body: serde_json::json!(
-                { "version" : "v1", "personas" : {}, "roles" : {}, "agents" : {} }
-            ),
-        })
-        .await;
-        let am = test_auth_manager();
-        let result = fetch_bundle(&proxy_base_url, Some(&am), None, None)
-            .await
-            .unwrap();
-        match result {
-            FetchedBundle::Archive(bytes) => assert_eq!(bytes, archive_bytes),
-            FetchedBundle::Legacy(_) => panic!("expected Archive variant"),
-        }
-        server.abort();
-    }
-    #[tokio::test(flavor = "current_thread")]
-    async fn fetch_bundle_falls_back_on_archive_404() {
-        let (proxy_base_url, server) = start_dual_bundle_server(DualBundleServerState {
-            archive_status: StatusCode::NOT_FOUND,
-            archive_bytes: Vec::new(),
-            legacy_status: StatusCode::OK,
-            legacy_body: serde_json::json!(
-                { "version" : "v1", "personas" : { "r" : "p" }, "roles" : {},
-                "agents" : {} }
-            ),
-        })
-        .await;
-        let am = test_auth_manager();
-        let result = fetch_bundle(&proxy_base_url, Some(&am), None, None)
-            .await
-            .unwrap();
-        match result {
-            FetchedBundle::Legacy(bundle) => {
-                assert_eq!(bundle.version, "v1");
-                assert_eq!(bundle.personas.get("r"), Some(&"p".to_string()));
-            }
-            FetchedBundle::Archive(_) => panic!("expected Legacy variant"),
-        }
-        server.abort();
-    }
-    #[tokio::test(flavor = "current_thread")]
-    async fn fetch_bundle_falls_back_on_archive_503() {
-        let (proxy_base_url, server) = start_dual_bundle_server(DualBundleServerState {
-            archive_status: StatusCode::SERVICE_UNAVAILABLE,
-            archive_bytes: Vec::new(),
-            legacy_status: StatusCode::OK,
-            legacy_body: serde_json::json!(
-                { "version" : "v1", "personas" : {}, "roles" : {}, "agents" : {} }
-            ),
-        })
-        .await;
-        let am = test_auth_manager();
-        let result = fetch_bundle(&proxy_base_url, Some(&am), None, None)
-            .await
-            .unwrap();
-        match &result {
-            FetchedBundle::Legacy(bundle) => assert_eq!(bundle.version, "v1"),
-            FetchedBundle::Archive(_) => panic!("expected Legacy variant"),
-        }
-        server.abort();
-    }
     /// `BackendClient::save_session_data` resolves auth from the attached
     /// `AuthManager` and sends the token as `Bearer <key>` on the wire.
     /// This is the writeback path used on every session flush.
@@ -2016,25 +1340,6 @@ mod tests {
             .clone()
             .expect("server must receive Authorization header");
         assert_eq!(sent, "Bearer token", "must use token from AuthManager");
-        server.abort();
-    }
-    #[tokio::test(flavor = "current_thread")]
-    async fn fetch_bundle_propagates_legacy_error_after_fallback() {
-        let (proxy_base_url, server) = start_dual_bundle_server(DualBundleServerState {
-            archive_status: StatusCode::NOT_FOUND,
-            archive_bytes: Vec::new(),
-            legacy_status: StatusCode::UNAUTHORIZED,
-            legacy_body: serde_json::json!({ "error" : "unauthorized" }),
-        })
-        .await;
-        let am = test_auth_manager();
-        let error = fetch_bundle(&proxy_base_url, Some(&am), None, None)
-            .await
-            .unwrap_err();
-        assert!(matches!(
-            error,
-            BackendError::RequestFailed { status: 401, .. }
-        ));
         server.abort();
     }
     /// Regression: reqwest .header() appends — duplicate

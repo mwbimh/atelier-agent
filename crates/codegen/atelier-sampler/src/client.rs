@@ -97,12 +97,47 @@ impl AtelierRequestHeaders<'_> {
 /// `ResponseUsage` unchanged so billing telemetry stays correct. When
 /// the API doesn't emit `context_details` (older deployments) `total_tokens`
 /// passes through unchanged.
+#[cfg(test)]
 fn deserialize_response_event(data: &str) -> Result<rs::ResponseStreamEvent> {
+    deserialize_response_event_with_fallback_model(data, None)
+}
+
+fn deserialize_response_event_with_fallback_model(
+    data: &str,
+    fallback_model: Option<&str>,
+) -> Result<rs::ResponseStreamEvent> {
     let mut event = match serde_json::from_str::<rs::ResponseStreamEvent>(data) {
         Ok(event) => event,
         Err(first_err) => {
             // Try sanitizing: parse as Value, strip unknown tools, retry.
             if let Ok(mut value) = serde_json::from_str::<serde_json::Value>(data) {
+                // Some Responses-compatible proxies omit the echoed model on
+                // response.created/completed. async-openai models it as a
+                // required field, so restore it from the request before the
+                // typed retry. The empty fallback keeps direct parser tests
+                // and legacy callers tolerant without inventing another
+                // model name.
+                if value.pointer("/response/model").is_none() {
+                    if let Some(response) = value
+                        .get_mut("response")
+                        .and_then(serde_json::Value::as_object_mut)
+                    {
+                        response.insert(
+                            "model".to_owned(),
+                            serde_json::Value::String(
+                                fallback_model.unwrap_or_default().to_owned(),
+                            ),
+                        );
+                    }
+                }
+                if value.pointer("/response/output").is_none() {
+                    if let Some(response) = value
+                        .get_mut("response")
+                        .and_then(serde_json::Value::as_object_mut)
+                    {
+                        response.insert("output".to_owned(), serde_json::Value::Array(Vec::new()));
+                    }
+                }
                 // Strip tools that async_openai's rs::Tool can't deserialize
                 // (e.g., xAI-specific "x_search"). Instead of maintaining a
                 // hardcoded allowlist, try deserializing each tool entry —
@@ -113,9 +148,20 @@ fn deserialize_response_event(data: &str) -> Result<rs::ResponseStreamEvent> {
                 {
                     tools.retain(|t| serde_json::from_value::<rs::Tool>(t.clone()).is_ok());
                 }
-                if let Ok(mut event) = serde_json::from_value::<rs::ResponseStreamEvent>(value) {
-                    apply_terminal_event_overrides(&mut event, data);
-                    return Ok(event);
+                match serde_json::from_value::<rs::ResponseStreamEvent>(value) {
+                    Ok(mut event) => {
+                        apply_terminal_event_overrides(&mut event, data);
+                        return Ok(event);
+                    }
+                    Err(retry_err) => {
+                        tracing::error!(
+                            error = %retry_err,
+                            initial_error = %first_err,
+                            raw_data = %data,
+                            "Failed to deserialize sanitized ResponseStreamEvent"
+                        );
+                        return Err(SamplingError::Serialization(retry_err));
+                    }
                 }
             }
             tracing::error!(
@@ -342,7 +388,9 @@ impl std::fmt::Debug for ClientDefaults {
 
 #[cfg(test)]
 mod request_payload_tests {
-    use super::apply_request_payload;
+    use super::{SamplingClient, apply_request_payload};
+    use crate::SamplerConfig;
+    use atelier_sampling_types::{ApiBackend, ConversationRequest};
     use serde_json::{Value, json};
 
     #[test]
@@ -413,6 +461,32 @@ mod request_payload_tests {
         assert_eq!(body["stream_options"]["include_usage"], true);
         assert_eq!(body["temperature"], 0.2);
         assert_eq!(body["provider_option"]["budget"], 123);
+    }
+
+    #[test]
+    fn preview_body_contains_the_actual_backend_shape_and_merged_role_payload() {
+        let config = SamplerConfig {
+            base_url: "http://127.0.0.1:1/v1".to_owned(),
+            model: "deepseek-v4-flash".to_owned(),
+            api_backend: ApiBackend::ChatCompletions,
+            request_payload: serde_json::from_value(json!({
+                "fast_mode": false,
+                "provider_option": {"budget": 123},
+            }))
+            .unwrap(),
+            ..Default::default()
+        };
+        let client = SamplingClient::new(config).expect("valid preview client");
+        let body = client
+            .preview_streaming_request_body(ConversationRequest::default())
+            .expect("preview body");
+
+        assert_eq!(body["model"], "deepseek-v4-flash");
+        assert_eq!(body["stream"], true);
+        assert_eq!(body["stream_options"]["include_usage"], true);
+        assert_eq!(body["fast_mode"], false);
+        assert_eq!(body["provider_option"]["budget"], 123);
+        assert!(body.get("messages").is_some());
     }
 }
 
@@ -523,7 +597,6 @@ impl SamplingClient {
                 AuthScheme::XApiKey => {
                     let header_value = HeaderValue::from_str(api_key).map_err(|_| {
                         tracing::debug!(
-                            api_key = %api_key,
                             "Invalid api_key: cannot be converted to a valid HTTP header"
                         );
                         SamplingError::Auth(
@@ -537,7 +610,6 @@ impl SamplingClient {
                     let bearer = format!("Bearer {}", api_key);
                     let header_value = HeaderValue::from_str(&bearer).map_err(|_| {
                         tracing::debug!(
-                            api_key = %api_key,
                             "Invalid api_key: cannot be converted to a valid HTTP Authorization header"
                         );
                         SamplingError::Auth(
@@ -664,6 +736,12 @@ impl SamplingClient {
         self.defaults.api_backend.clone()
     }
 
+    /// Provider endpoint used by this client. Exposed for local diagnostics;
+    /// credentials and headers are intentionally not included.
+    pub fn base_url(&self) -> &str {
+        &self.base_url
+    }
+
     /// POST with default headers. Overrides auth from resolver if wired.
     fn post(&self, url: impl reqwest::IntoUrl) -> reqwest::RequestBuilder {
         let mut headers = self.default_headers.clone();
@@ -685,29 +763,17 @@ impl SamplingClient {
                 }
             }
         }
-        {
-            let auth_prefix = headers
-                .get(AUTHORIZATION)
-                .and_then(|v| v.to_str().ok())
-                .map(|s| s.chars().take(20).collect::<String>());
-            let x_api_key_prefix = headers
-                .get(HeaderName::from_static("x-api-key"))
-                .and_then(|v| v.to_str().ok())
-                .map(|s| s.chars().take(12).collect::<String>());
-            tracing::info!(
-                target: crate::sampling_log::TARGET,
-                event = "client_post",
-                base_url = %self.base_url,
-                model = %self.defaults.model,
-                api_backend = ?self.defaults.api_backend,
-                auth_scheme = ?self.defaults.auth_scheme,
-                has_bearer_resolver = self.bearer_resolver.is_some(),
-                has_authorization_header = headers.get(AUTHORIZATION).is_some(),
-                has_x_api_key_header = headers.get(HeaderName::from_static("x-api-key")).is_some(),
-                auth_header_prefix = auth_prefix.as_deref().unwrap_or("none"),
-                x_api_key_prefix = x_api_key_prefix.as_deref().unwrap_or("none"),
-            );
-        }
+        tracing::info!(
+            target: crate::sampling_log::TARGET,
+            event = "client_post",
+            base_url = %self.base_url,
+            model = %self.defaults.model,
+            api_backend = ?self.defaults.api_backend,
+            auth_scheme = ?self.defaults.auth_scheme,
+            has_bearer_resolver = self.bearer_resolver.is_some(),
+            has_authorization_header = headers.get(AUTHORIZATION).is_some(),
+            has_x_api_key_header = headers.get(HeaderName::from_static("x-api-key")).is_some(),
+        );
         if let Some(injector) = &self.header_injector {
             injector.inject(&mut headers);
         }
@@ -774,15 +840,15 @@ impl SamplingClient {
     }
 
     pub fn auth_info(&self) -> crate::sampling_log::AuthInfo {
-        let auth_prefix = self.current_sent_bearer_prefix();
-        let auth_type = match (&self.defaults.auth_scheme, &auth_prefix) {
-            (AuthScheme::XApiKey, Some(_)) => "x-api-key",
-            (AuthScheme::Bearer, Some(_)) => "bearer",
-            (_, None) => "none",
+        let has_auth = self.current_sent_bearer_prefix().is_some();
+        let auth_type = match (&self.defaults.auth_scheme, has_auth) {
+            (AuthScheme::XApiKey, true) => "x-api-key",
+            (AuthScheme::Bearer, true) => "bearer",
+            (_, false) => "none",
         };
         crate::sampling_log::AuthInfo {
             auth_type,
-            auth_prefix,
+            auth_prefix: None,
         }
     }
 
@@ -1531,6 +1597,7 @@ impl SamplingClient {
         let event_stream = byte_stream.eventsource();
 
         let doom_loop_for_stream = doom_loop.clone();
+        let response_model_id = model_id.clone();
 
         // The scan item is an `Option`: `Some(None)` skips an absorbed
         // doom-loop event without terminating the stream (`filter_map`
@@ -1569,7 +1636,10 @@ impl SamplingClient {
                         } else if let Some(stream_error) = try_parse_stream_error(data) {
                             Some(Some(Err(stream_error)))
                         } else {
-                            Some(Some(deserialize_response_event(data)))
+                            Some(Some(deserialize_response_event_with_fallback_model(
+                                data,
+                                Some(&response_model_id),
+                            )))
                         }
                     }
                     Err(e) => {
@@ -1926,6 +1996,96 @@ impl SamplingClient {
         Ok(())
     }
 
+    /// Build the exact JSON body used by the streaming backend without
+    /// sending it. Runtime inspectors and pre-egress policy use this method so
+    /// their view cannot drift from Provider protocol conversion or opaque
+    /// Role payload merging.
+    pub fn preview_streaming_request_body(
+        &self,
+        mut request: ConversationRequest,
+    ) -> Result<Value> {
+        self.apply_conversation_defaults(&mut request)?;
+        match self.api_backend() {
+            ApiBackend::ChatCompletions => {
+                let trace = request.trace.take();
+                let mut chat_request: ChatCompletionRequest = request.into();
+                if let Some(trace) = trace {
+                    chat_request.trace = Some(trace);
+                }
+                let payload = self.apply_defaults(chat_request)?;
+                let streaming_request = StreamingChatRequest {
+                    inner: &payload,
+                    stream: true,
+                    stream_options: StreamOptions {
+                        include_usage: true,
+                    },
+                };
+                let mut body = serde_json::to_value(&streaming_request)
+                    .map_err(SamplingError::Serialization)?;
+                apply_request_payload(&mut body, &self.defaults.request_payload);
+                body["stream"] = serde_json::json!(true);
+                Ok(body)
+            }
+            ApiBackend::Responses => {
+                let trace = request.trace.take();
+                let x_atelier_conv_id = request.x_atelier_conv_id.clone();
+                let x_atelier_req_id = request.x_atelier_req_id.clone();
+                let x_atelier_session_id = request.x_atelier_session_id.clone();
+                let x_atelier_turn_idx = request.x_atelier_turn_idx.clone();
+                let x_atelier_agent_id = request.x_atelier_agent_id.clone();
+                let extra_tools = atelier_sampling_types::extra_raw_tools(&request.hosted_tools);
+                let responses_request: rs::CreateResponse = (&request).into();
+                let mut wrapper = CreateResponseWrapper::new(responses_request);
+                wrapper.x_atelier_conv_id = x_atelier_conv_id;
+                wrapper.x_atelier_req_id = x_atelier_req_id;
+                wrapper.x_atelier_session_id = x_atelier_session_id;
+                wrapper.x_atelier_turn_idx = x_atelier_turn_idx;
+                wrapper.x_atelier_agent_id = x_atelier_agent_id;
+                wrapper.extra_raw_tools = extra_tools;
+                wrapper.trace = trace;
+                self.apply_response_defaults(&mut wrapper)?;
+                wrapper.inner.stream = Some(true);
+                wrapper.trace.take();
+                let extra_raw_tools = std::mem::take(&mut wrapper.extra_raw_tools);
+                let mut body =
+                    serde_json::to_value(&wrapper.inner).map_err(SamplingError::Serialization)?;
+                if self.defaults.stream_tool_calls {
+                    body["stream_tool_calls"] = serde_json::json!(true);
+                }
+                if !extra_raw_tools.is_empty() {
+                    if let Some(tools) = body.get_mut("tools").and_then(Value::as_array_mut) {
+                        tools.extend(extra_raw_tools);
+                    } else {
+                        body["tools"] = Value::Array(extra_raw_tools);
+                    }
+                }
+                atelier_sampling_types::patch_reasoning_text_types(&mut body);
+                apply_request_payload(&mut body, &self.defaults.request_payload);
+                Ok(body)
+            }
+            ApiBackend::Messages => {
+                let trace = request.trace.take();
+                let x_atelier_conv_id = request.x_atelier_conv_id.clone();
+                let x_atelier_req_id = request.x_atelier_req_id.clone();
+                let x_atelier_session_id = request.x_atelier_session_id.clone();
+                let x_atelier_turn_idx = request.x_atelier_turn_idx.clone();
+                let x_atelier_agent_id = request.x_atelier_agent_id.clone();
+                let messages_request = build_messages_request(&request);
+                let mut wrapper = MessagesRequestWrapper::new(messages_request);
+                wrapper.x_atelier_conv_id = x_atelier_conv_id;
+                wrapper.x_atelier_req_id = x_atelier_req_id;
+                wrapper.x_atelier_session_id = x_atelier_session_id;
+                wrapper.x_atelier_turn_idx = x_atelier_turn_idx;
+                wrapper.x_atelier_agent_id = x_atelier_agent_id;
+                wrapper.trace = trace;
+                self.apply_message_defaults(&mut wrapper)?;
+                wrapper.inner.stream = Some(true);
+                wrapper.trace.take();
+                self.request_body(&wrapper.inner)
+            }
+        }
+    }
+
     /// Send a conversation request using the Chat Completions API (streaming).
     ///
     /// Converts the `ConversationRequest` to `ChatCompletionRequest` internally.
@@ -2156,6 +2316,50 @@ mod tests {
     use super::*;
     use atelier_sampling_types::types::ChatRequestMessage;
     use indexmap::IndexMap;
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Clone, Default)]
+    struct CapturingSubscriber {
+        output: Arc<Mutex<String>>,
+    }
+
+    struct CapturingVisitor<'a> {
+        output: &'a Arc<Mutex<String>>,
+    }
+
+    impl tracing::field::Visit for CapturingVisitor<'_> {
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            let mut output = self.output.lock().expect("capture lock");
+            output.push_str(field.name());
+            output.push('=');
+            output.push_str(&format!("{value:?}"));
+            output.push('\n');
+        }
+    }
+
+    impl tracing::Subscriber for CapturingSubscriber {
+        fn enabled(&self, _metadata: &tracing::Metadata<'_>) -> bool {
+            true
+        }
+
+        fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            tracing::span::Id::from_u64(1)
+        }
+
+        fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
+
+        fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
+
+        fn event(&self, event: &tracing::Event<'_>) {
+            event.record(&mut CapturingVisitor {
+                output: &self.output,
+            });
+        }
+
+        fn enter(&self, _span: &tracing::span::Id) {}
+
+        fn exit(&self, _span: &tracing::span::Id) {}
+    }
 
     fn minimal_config() -> SamplerConfig {
         SamplerConfig {
@@ -2377,11 +2581,55 @@ mod tests {
         );
     }
 
+    #[test]
+    fn sampling_auth_info_never_exposes_credential_prefix() {
+        let cfg = SamplerConfig {
+            api_key: Some("secret-token-that-must-never-appear-in-logs".to_string()),
+            auth_scheme: AuthScheme::Bearer,
+            ..minimal_config()
+        };
+        let client = SamplingClient::new(cfg).expect("client should build");
+
+        let auth = client.auth_info();
+        assert_eq!(auth.auth_type, "bearer");
+        assert!(
+            auth.auth_prefix.is_none(),
+            "sampling diagnostics must not retain any credential prefix"
+        );
+    }
+
+    #[test]
+    fn invalid_api_key_is_never_written_to_tracing_events() {
+        let secret = "credential-canary-must-not-be-logged\r\n";
+        for auth_scheme in [AuthScheme::Bearer, AuthScheme::XApiKey] {
+            let subscriber = CapturingSubscriber::default();
+            let output = subscriber.output.clone();
+            let cfg = SamplerConfig {
+                api_key: Some(secret.to_string()),
+                auth_scheme,
+                ..minimal_config()
+            };
+
+            let result = tracing::subscriber::with_default(subscriber, || SamplingClient::new(cfg));
+            assert!(result.is_err(), "invalid header value must be rejected");
+            assert!(
+                !output.lock().expect("capture lock").contains(secret.trim()),
+                "credential values must never be recorded in tracing events"
+            );
+        }
+    }
+
     // Regression: a past change dropped User-Agent from sampling requests.
     #[test]
     fn sampling_client_always_has_user_agent() {
         let client = SamplingClient::new(minimal_config()).expect("build");
         assert!(client.default_headers.contains_key(USER_AGENT));
+    }
+
+    #[test]
+    fn sampling_client_exposes_provider_base_url_for_local_diagnostics() {
+        let client = SamplingClient::new(minimal_config()).expect("build");
+        assert_eq!(client.base_url(), "https://example.test");
     }
 
     // Regression: a past change dropped HeaderInjector (traceparent) from sampling requests.
@@ -2886,5 +3134,51 @@ mod tests {
             event,
             rs::ResponseStreamEvent::ResponseOutputTextDelta(_)
         ));
+    }
+
+    #[test]
+    fn deserialize_response_event_accepts_response_without_model() {
+        let sse = r#"{
+            "type": "response.created",
+            "sequence_number": 1,
+            "response": {
+                "id": "resp_allm_1",
+                "object": "response",
+                "created_at": 1784529459,
+                "status": "in_progress",
+                "background": false,
+                "error": null,
+                "output": []
+            }
+        }"#;
+
+        let event = deserialize_response_event_with_fallback_model(sse, Some("deepseek-v4-flash"))
+            .expect("Responses-compatible proxies may omit the echoed model field");
+        let rs::ResponseStreamEvent::ResponseCreated(created) = event else {
+            panic!("expected ResponseCreated");
+        };
+        assert_eq!(created.response.model, "deepseek-v4-flash");
+    }
+
+    #[test]
+    fn deserialize_response_event_accepts_sparse_in_progress_response() {
+        let sse = r#"{
+            "type": "response.in_progress",
+            "sequence_number": 2,
+            "response": {
+                "id": "resp_allm_2",
+                "object": "response",
+                "created_at": 1784531824,
+                "status": "in_progress"
+            }
+        }"#;
+
+        let event = deserialize_response_event_with_fallback_model(sse, Some("deepseek-v4-flash"))
+            .expect("Responses-compatible proxies may emit sparse lifecycle responses");
+        let rs::ResponseStreamEvent::ResponseInProgress(in_progress) = event else {
+            panic!("expected ResponseInProgress");
+        };
+        assert_eq!(in_progress.response.model, "deepseek-v4-flash");
+        assert!(in_progress.response.output.is_empty());
     }
 }

@@ -181,6 +181,16 @@ pub enum SessionCommand {
         auto_compact_threshold_percent: u8,
         responds_to: oneshot::Sender<Result<acp::ModelId, acp::Error>>,
     },
+    /// Refresh transport/provider configuration for the session's existing
+    /// model without changing its Role, harness, or system prompt.
+    RefreshProviderModel {
+        sampling_config: atelier_sampler::SamplerConfig,
+        auto_compact_threshold_percent: u8,
+        responds_to: oneshot::Sender<Result<acp::ModelId, acp::Error>>,
+    },
+    GetRequestPayload {
+        responds_to: oneshot::Sender<serde_json::Map<String, serde_json::Value>>,
+    },
     /// Zero-turn harness rebuild: build a brand-new `Agent` from the
     /// session's `AgentRebuildSpec` and the new `AgentDefinition`,
     /// re-register MCP tools, swap the live `Agent`, rewrite the
@@ -629,6 +639,9 @@ pub enum SessionCommand {
     /// the legacy `SideQuestion` contract intact for existing callers while
     /// exposing snapshot and Wire API metadata to new clients.
     SideQuestionDetailed {
+        /// Stable auxiliary RuntimeTask id allocated before dispatch so the
+        /// side query is observable while inference is still running.
+        side_query_id: String,
         /// Use a previously persisted immutable snapshot when supplied;
         /// otherwise the session captures its current completed context.
         snapshot_id: Option<String>,

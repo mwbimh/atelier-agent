@@ -30,7 +30,6 @@ atelier-pager-minimal = { path = "../atelier-pager-minimal" }
 
 # Agent runtime + leader/stdio/headless entry points.
 atelier-shell = { workspace = true }
-atelier-update = { path = "../atelier-update" }
 atelier-version = { workspace = true }
 atelier-telemetry = { workspace = true }
 atelier-workspace = { workspace = true }

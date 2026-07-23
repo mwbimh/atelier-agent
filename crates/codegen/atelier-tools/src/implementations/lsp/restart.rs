@@ -10,6 +10,14 @@ use super::config::LspServerConfig;
 use super::manager::LspManager;
 use super::{DiagnosticsNotify, file_uri};
 
+pub(super) fn tracked_document_path(uri_str: &str) -> PathBuf {
+    Url::parse(uri_str)
+        .ok()
+        .filter(|uri| uri.scheme() == "file")
+        .and_then(|uri| uri.to_file_path().ok())
+        .unwrap_or_else(|| PathBuf::from(uri_str))
+}
+
 /// Waits for the current lifecycle to exit.
 async fn wait_for_crashed_lifecycle(
     lsp_manager: &Arc<tokio::sync::Mutex<LspManager>>,
@@ -35,10 +43,7 @@ fn replay_tracked_documents(
     tracked_docs
         .iter()
         .filter_map(|(uri_str, lang_id)| {
-            let path = uri_str
-                .strip_prefix("file://")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| PathBuf::from(uri_str));
+            let path = tracked_document_path(uri_str);
             let content = std::fs::read_to_string(&path).ok()?;
             restarted_client.notify_file_change(&path, &content, lang_id);
             file_uri(&path).ok()

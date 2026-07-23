@@ -1490,10 +1490,9 @@ pub(in crate::app::dispatch) fn preview_auto_light_theme(
 }
 
 // ---------------------------------------------------------------------------
-// default_model — resolves display name to `ModelId`, then emits both
-// `Effect::SwitchModel` (active session) and `Effect::PersistSetting`
-// (next-session default). No live preview (model switch has ACP side
-// effects).
+// default_model — resolves display name to `ModelId`, switches the active
+// Session, then persists the successful selection to `roles.main`.
+// No live preview (model switch has ACP side effects).
 // ---------------------------------------------------------------------------
 
 /// State-only mutation for `default_model`: set
@@ -1539,9 +1538,9 @@ fn save_default_model_toast(value: &str) -> String {
     format!("\u{2713} Default model: {value}")
 }
 
-/// Outer dispatcher for `Action::SetDefaultModel`. Switches and persists
-/// and toasts. `PersistSetting` emitted first for consistent rollback;
-/// `SwitchModel` second. Idempotent: same model already active → no-op.
+/// Outer dispatcher for `Action::SetDefaultModel`. A live Session switches
+/// first and persists only after ACP confirms success. Before Session creation,
+/// the selected model is applied locally and persisted immediately.
 pub(in crate::app::dispatch) fn set_default_model(
     app: &mut AppView,
     new_id: acp::ModelId,
@@ -1587,42 +1586,33 @@ pub(in crate::app::dispatch) fn set_default_model(
 
     // Idempotent: same model already active → no-op.
     if prev_id.as_ref() == Some(&new_id) {
-        return vec![];
+        let Some(agent) = app.agents.get(&aid) else {
+            return vec![];
+        };
+        if agent.chat_kind {
+            return vec![];
+        }
+        return vec![Effect::PersistPreferredModel {
+            model_id: new_id,
+            reasoning_effort: agent.session.models.reasoning_effort,
+        }];
     }
 
-    let did_mutate = set_default_model_inner(app, &new_id);
-    debug_assert!(did_mutate, "available_has_new gate guarantees mutation");
-    refresh_open_settings_modals(app);
     tracing::info!(
         target: "settings",
-        key = "default_model",
+        key = "roles.main.model",
         new = ?new_display,
         new_id = %new_id.0,
         prev_id = ?prev_id.as_ref().map(|id| id.0.as_ref()),
-        "setting changed",
+        "model switch requested",
     );
-    app.show_toast(&save_default_model_toast(&new_display));
 
-    // Persist the **model ID** (catalog key), not the display name.
-    // The shell's `resolve_default_model` matches by slug / map key,
-    // so persisting the human-readable name (e.g. "Atelier")
-    // would silently fail to resolve on the next startup.
+    // Persist the composite **model ID** (`provider/model`), not the display
+    // name. `roles.main` is the only cross-Session model source.
     //
     // Chat (`--chat` / ATELIER_CHAT_MODE) catalogs use opaque `/rest/modes`
-    // slugs that must not become the global Build `default_model`.
+    // slugs that must not become the global main Role.
     let mut effects: Vec<Effect> = Vec::new();
-    if !atelier_shell::agent::chat_modes::process_chat_mode_enabled() {
-        let new_id_str = new_id.0.to_string();
-        let prev_id_str = prev_id
-            .as_ref()
-            .map(|id| id.0.to_string())
-            .unwrap_or_default();
-        effects.push(Effect::PersistSetting {
-            key: "default_model",
-            value: crate::settings::SettingValue::String(new_id_str),
-            rollback_value: crate::settings::SettingValue::String(prev_id_str),
-        });
-    }
 
     // Best-effort session-level switch. The `Effect::SwitchModel`
     // pipeline handles its own deferred-switch semantics for the
@@ -1640,68 +1630,74 @@ pub(in crate::app::dispatch) fn set_default_model(
             effort: None,
             prev_model_id: prev_id.clone(),
         });
-    } else if let Some(agent) = app.agents.get_mut(&aid) {
-        // No session id yet — stash for
-        // `EventLoop::on_session_created` to apply once the session
-        // id materialises. Mirrors `Action::SwitchModel` line 586.
-        agent.session.deferred_model_switch = Some((new_id, None));
+    } else {
+        let did_mutate = set_default_model_inner(app, &new_id);
+        debug_assert!(did_mutate, "available_has_new gate guarantees mutation");
+        refresh_open_settings_modals(app);
+        app.show_toast(&save_default_model_toast(&new_display));
+        if let Some(agent) = app.agents.get_mut(&aid) {
+            // No session id yet — stash for
+            // `EventLoop::on_session_created` to apply once the session
+            // id materialises. Mirrors `Action::SwitchModel` line 586.
+            agent.session.deferred_model_switch = Some((new_id.clone(), None));
+            if !agent.chat_kind {
+                effects.push(Effect::PersistPreferredModel {
+                    model_id: new_id,
+                    reasoning_effort: agent.session.models.reasoning_effort,
+                });
+            }
+        }
     }
     effects
 }
 
-/// Clear the default model override. Persists `[models].default = None`;
-/// does NOT mutate the active session's current model.
+/// Retire legacy default-model sources without unconfiguring `roles.main`.
+/// When a current model is available it is persisted as the explicit main
+/// Role, keeping the active and next Session consistent. During early startup
+/// only the obsolete fields are deleted; the existing main Role is preserved.
 pub(in crate::app::dispatch) fn clear_default_model(app: &mut AppView) -> Vec<Effect> {
-    // Active-agent snapshot: prev model ID for the rollback payload.
-    // Use the model ID (catalog key), not the display name, so that
-    // rollback persists a value `resolve_default_model` can match.
-    let prev_id_str = if let ActiveView::Agent(aid) = app.active_view
-        && let Some(agent) = app.agents.get(&aid)
-    {
-        agent
-            .session
-            .models
-            .current
-            .as_ref()
-            .map(|id| id.0.to_string())
-            .unwrap_or_default()
+    let current = if let ActiveView::Agent(aid) = app.active_view {
+        app.agents.get(&aid).and_then(|agent| {
+            if agent.chat_kind {
+                None
+            } else {
+                agent
+                    .session
+                    .models
+                    .current
+                    .clone()
+                    .map(|model_id| (model_id, agent.session.models.reasoning_effort))
+            }
+        })
     } else {
-        String::new()
+        None
     };
 
-    // During the startup window `current` is None even if a default
-    // is on disk. Emit persist unconditionally — the shell de-dupes.
-    if prev_id_str.is_empty() {
-        // Cosmetic toast even when the persist may be a no-op.
-        tracing::info!(
-            target: "settings",
-            key = "default_model",
-            value = "<cleared>",
-            "setting changed (startup-window clear — pager mirror was already None; \
-             persist proceeds to ensure disk state matches user intent)",
-        );
-        app.show_toast("\u{2713} Default model: cleared");
-        return vec![Effect::PersistSetting {
-            key: "default_model",
-            value: crate::settings::SettingValue::String(String::new()),
-            rollback_value: crate::settings::SettingValue::String(String::new()),
-        }];
-    }
-
-    tracing::info!(
-        target: "settings",
-        key = "default_model",
-        value = "<cleared>",
-        prev_id = %prev_id_str,
-        "setting changed",
-    );
     refresh_open_settings_modals(app);
-    app.show_toast("\u{2713} Default model: cleared");
-    vec![Effect::PersistSetting {
-        key: "default_model",
-        value: crate::settings::SettingValue::String(String::new()),
-        rollback_value: crate::settings::SettingValue::String(prev_id_str),
-    }]
+    match current {
+        Some((model_id, reasoning_effort)) => {
+            tracing::info!(
+                target: "settings",
+                key = "roles.main.model",
+                model_id = %model_id.0,
+                "legacy model defaults cleared; current model retained as roles.main",
+            );
+            app.show_toast("\u{2713} Current model kept as main Role");
+            vec![Effect::PersistPreferredModel {
+                model_id,
+                reasoning_effort,
+            }]
+        }
+        None => {
+            tracing::info!(
+                target: "settings",
+                key = "roles.main.model",
+                "legacy model defaults cleared; existing roles.main preserved",
+            );
+            app.show_toast("\u{2713} Legacy model default cleared");
+            vec![Effect::ClearLegacyModelDefaults]
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1881,7 +1877,7 @@ pub(in crate::app::dispatch) fn set_max_thoughts_width(app: &mut AppView, new: i
 // registry entry. Mirror field stays for compat.
 
 // ---------------------------------------------------------------------------
-// show_tips, auto_update — SHELL-OWNED `Option<bool>` setters.
+// SHELL-owned `Option<bool>` setters.
 // Changes take effect on next session start (restart_required: true).
 // Standard inner/outer split. First commit of the default value
 // persists (so the resolver sees user intent vs managed default).
@@ -1890,13 +1886,12 @@ pub(in crate::app::dispatch) fn set_max_thoughts_width(app: &mut AppView, new: i
 // ---------------------------------------------------------------------------
 
 /// Effective-default lookup for the `Option<bool>` AppView mirrors
-/// (`show_tips`, `auto_update`, ask_user_question timeout).
+/// (`show_tips`, ask_user_question timeout).
 /// Matches the consumer's `.unwrap_or(...)` fallback.
 pub(super) fn pr13_effective_default(key: &str) -> Option<bool> {
     use atelier_tools::implementations::atelier_build::ask_user_question;
     match key {
         "show_tips" => Some(true),
-        "auto_update" => Some(true),
         "toolset.ask_user_question.timeout_enabled" => {
             Some(ask_user_question::DEFAULT_ASK_USER_QUESTION_TIMEOUT_ENABLED)
         }
@@ -1928,32 +1923,6 @@ pub(in crate::app::dispatch) fn set_show_tips(app: &mut AppView, new: bool) -> V
     ));
     vec![Effect::PersistSetting {
         key: "show_tips",
-        value: crate::settings::SettingValue::Bool(new),
-        rollback_value: crate::settings::SettingValue::Bool(prev_effective),
-    }]
-}
-
-/// State-only mutation for `auto_update`.
-pub(super) fn set_auto_update_inner(app: &mut AppView, value: bool) {
-    app.auto_update = Some(value);
-}
-
-/// Outer dispatcher for `Action::SetAutoUpdate`.
-pub(in crate::app::dispatch) fn set_auto_update(app: &mut AppView, new: bool) -> Vec<Effect> {
-    let prev_state = app.auto_update;
-    let prev_effective = prev_state.unwrap_or(true);
-    if prev_effective == new && prev_state.is_some() {
-        return vec![];
-    }
-    set_auto_update_inner(app, new);
-    refresh_open_settings_modals(app);
-    tracing::info!(target: "settings", key = "auto_update", value = new, "setting changed");
-    app.show_toast(&format!(
-        "{} (restart to apply)",
-        save_success_toast("Auto-update", new),
-    ));
-    vec![Effect::PersistSetting {
-        key: "auto_update",
         value: crate::settings::SettingValue::Bool(new),
         rollback_value: crate::settings::SettingValue::Bool(prev_effective),
     }]

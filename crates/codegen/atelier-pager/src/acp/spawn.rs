@@ -40,10 +40,6 @@ pub async fn spawn_atelier_shell(
 ) -> Result<SpawnedAgent> {
     let auth_manager = std::sync::Arc::new(AuthManager::new_local(&atelier_home()));
 
-    // Best-effort refresh of managed policy before bootstrap reads it (repairs a wrong-identity/missing
-    // cache). Never errors — the OS-protected system/MDM layers still apply.
-    atelier_shell::managed_config::ensure_managed_policy_present(&auth_manager).await;
-
     // Run the full bootstrap sequence: config resolution, process-level
     // singletons (including `extract_bundled_files` which writes compiled-in
     // skills to ~/.atelier/skills/), and model catalog construction.

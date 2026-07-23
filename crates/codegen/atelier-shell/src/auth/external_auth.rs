@@ -1,5 +1,21 @@
 use crate::auth::{AtelierAuth, AuthMode};
 
+pub(crate) fn shell_command(command: &str) -> std::process::Command {
+    #[cfg(windows)]
+    {
+        let mut cmd = std::process::Command::new("cmd.exe");
+        cmd.args(["/D", "/S", "/C", command]);
+        cmd
+    }
+
+    #[cfg(not(windows))]
+    {
+        let mut cmd = std::process::Command::new("sh");
+        cmd.args(["-c", command]);
+        cmd
+    }
+}
+
 #[derive(serde::Deserialize)]
 pub(crate) struct ExternalAuthOutput {
     pub access_token: String,
@@ -83,15 +99,15 @@ pub(crate) fn parse_output(output: &std::process::Output) -> anyhow::Result<Atel
 
 /// Sync version for mid-session refresh. 5s timeout for refresh, 60s for initial.
 pub(crate) fn run_external_auth_sync(command: &str, is_refresh: bool) -> Option<AtelierAuth> {
-    use std::process::{Command, Stdio};
+    use std::io::Read as _;
+    use std::process::{Output, Stdio};
 
     let timeout_secs = if is_refresh { 5 } else { 60 };
 
     tracing::info!(cmd = %command, is_refresh, timeout_secs, "auth: running external auth provider (sync)");
 
-    let mut cmd = Command::new("sh");
-    cmd.args(["-c", command])
-        .stdin(Stdio::null())
+    let mut cmd = shell_command(command);
+    cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
         // Pipe stderr — inherit would corrupt the TUI alternate screen.
         .stderr(Stdio::piped());
@@ -100,18 +116,32 @@ pub(crate) fn run_external_auth_sync(command: &str, is_refresh: bool) -> Option<
     }
     atelier_tools::util::detach_std_command(&mut cmd);
     cmd.envs(atelier_tools::util::pager_env());
-    let mut child = cmd.spawn()
+    let mut child = cmd
+        .spawn()
         .map_err(|e| {
             tracing::warn!(error = %e, cmd = %command, "auth: failed to start external auth provider");
             e
         })
         .ok()?;
 
+    // Drain both pipes while the child is running. Waiting first can deadlock
+    // when a provider writes more than the OS pipe buffer before exiting.
+    let mut stdout = child.stdout.take()?;
+    let mut stderr = child.stderr.take()?;
+    let stdout_reader = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        stdout.read_to_end(&mut bytes).map(|_| bytes)
+    });
+    let stderr_reader = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        stderr.read_to_end(&mut bytes).map(|_| bytes)
+    });
+
     let timeout = std::time::Duration::from_secs(timeout_secs);
     let start = std::time::Instant::now();
-    loop {
+    let status = loop {
         match child.try_wait() {
-            Ok(Some(_status)) => break,
+            Ok(Some(status)) => break status,
             Ok(None) => {
                 if start.elapsed() > timeout {
                     tracing::warn!(
@@ -121,6 +151,8 @@ pub(crate) fn run_external_auth_sync(command: &str, is_refresh: bool) -> Option<
                     );
                     let _ = child.kill();
                     let _ = child.wait();
+                    let _ = stdout_reader.join();
+                    let _ = stderr_reader.join();
                     return None;
                 }
                 std::thread::sleep(std::time::Duration::from_millis(100));
@@ -130,15 +162,15 @@ pub(crate) fn run_external_auth_sync(command: &str, is_refresh: bool) -> Option<
                 return None;
             }
         }
-    }
+    };
 
-    let output = child
-        .wait_with_output()
-        .map_err(|e| {
-            tracing::warn!(error = %e, "auth: failed to read external auth provider output");
-            e
-        })
-        .ok()?;
+    let stdout = stdout_reader.join().ok()?.ok()?;
+    let stderr = stderr_reader.join().ok()?.ok()?;
+    let output = Output {
+        status,
+        stdout,
+        stderr,
+    };
 
     match parse_output(&output) {
         Ok(auth) => {
@@ -183,6 +215,7 @@ mod tests {
         assert!(parse_output(&output).is_err());
     }
 
+    #[cfg(any())] // xAI first-party issuer classification was removed with vendor authentication.
     #[test]
     fn parse_output_issuer_claim_enables_xai_auth() {
         let ok = |stdout: &str| std::process::Output {
@@ -241,27 +274,23 @@ mod tests {
 
     #[test]
     fn sync_sets_atelier_auth_expired_env_on_refresh() {
-        let auth = run_external_auth_sync("echo $ATELIER_AUTH_EXPIRED", true).unwrap();
+        #[cfg(windows)]
+        let command = "echo %ATELIER_AUTH_EXPIRED%";
+        #[cfg(not(windows))]
+        let command = "echo $ATELIER_AUTH_EXPIRED";
+
+        let auth = run_external_auth_sync(command, true).unwrap();
         assert_eq!(auth.key, "1");
     }
 
     #[test]
-    fn refresh_carries_zdr_flags_forward() {
+    fn refresh_carries_user_profile_forward() {
         let prev = AtelierAuth {
-            user_blocked_reason: Some("BLOCKED_REASON_OTHER".into()),
-            team_blocked_reasons: vec!["BLOCKED_REASON_NO_LOGS".into()],
-            coding_data_retention_opt_out: true,
             organization_id: Some("org-1".into()),
             ..AtelierAuth::test_default()
         };
         let auth = refresh_with_command("echo fresh-token", &prev).unwrap();
         assert_eq!(auth.key, "fresh-token");
-        assert!(auth.is_zdr_team(), "ZDR flag must survive refresh");
-        assert!(auth.coding_data_retention_opt_out);
-        assert_eq!(
-            auth.user_blocked_reason.as_deref(),
-            Some("BLOCKED_REASON_OTHER")
-        );
         assert_eq!(auth.user_id, "test-user", "profile must survive refresh");
         assert_eq!(auth.organization_id.as_deref(), Some("org-1"));
     }
@@ -269,6 +298,9 @@ mod tests {
     #[test]
     fn sync_refresh_interactive_times_out() {
         // Binary writes link to stderr then blocks — 5s refresh timeout kills it.
+        #[cfg(windows)]
+        let cmd = r#"powershell.exe -NoProfile -Command \"[Console]::Error.WriteLine('Visit http://example.com/auth'); Start-Sleep -Seconds 20; Write-Output token\""#;
+        #[cfg(not(windows))]
         let cmd = r#"echo 'Visit http://example.com/auth' >&2; sleep 20; echo token"#;
         let start = std::time::Instant::now();
         let result = run_external_auth_sync(cmd, true);

@@ -68,8 +68,12 @@ fn non_empty_rel(rel: &Path) -> Option<String> {
     if value.is_empty() {
         None
     } else {
-        Some(value.into_owned())
+        Some(value.replace('\\', "/"))
     }
+}
+
+fn display_path(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
 }
 
 fn home_dir() -> Option<&'static Path> {
@@ -107,17 +111,14 @@ fn resolve_tool_path(path: &str, cwd: Option<&Path>) -> ResolvedToolPath {
 }
 
 fn path_for_fullscreen_header(path: &str, cwd: Option<&Path>) -> String {
-    resolve_tool_path(path, cwd)
-        .display_path
-        .to_string_lossy()
-        .into_owned()
+    display_path(&resolve_tool_path(path, cwd).display_path)
 }
 
 fn path_for_expanded_header(path: &str, cwd: Option<&Path>) -> String {
     let resolved = resolve_tool_path(path, cwd);
     resolved
         .relative_to_cwd
-        .unwrap_or_else(|| resolved.display_path.to_string_lossy().into_owned())
+        .unwrap_or_else(|| display_path(&resolved.display_path))
 }
 
 /// Shorten a file path to fit within `budget` display columns using fish-style

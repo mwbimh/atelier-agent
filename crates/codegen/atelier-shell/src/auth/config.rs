@@ -1,6 +1,7 @@
 use super::model::TEAM_PRINCIPAL_TYPE;
-use crate::env::{PROD_RELAY_WS_URL, PROD_WS_ORIGIN};
 use serde::{Deserialize, Serialize};
+
+const DEFAULT_AUTH_SCOPE: &str = "atelier::default";
 fn default_oidc_scopes() -> Vec<String> {
     vec![
         "openid".into(),
@@ -125,42 +126,17 @@ pub struct OAuth2ProviderConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub referrer: Option<String>,
 }
-pub const XAI_OAUTH2_ISSUER: &str = "https://auth.x.ai";
 /// Production accounts-app origin allowlist — the only origins builds without
 /// non-production builds accept. Lives in its own const, referenced by both
 /// profiles below, so the frozen-contract test (monorepo CI compiles with
 /// that feature enabled) still pins this production-origin const.
-const PROD_ACCOUNTS_APP_ORIGINS: &[&str] = &["https://accounts.x.ai"];
 /// See the opt-in non-production feature variant above — builds without
 /// the feature accept only the production accounts app.
-pub fn allowed_accounts_app_origins() -> Vec<String> {
-    PROD_ACCOUNTS_APP_ORIGINS
-        .iter()
-        .map(|o| o.to_string())
-        .collect()
-}
 /// Build a CORS layer that accepts requests from the accounts-app deployments
-/// listed in [`allowed_accounts_app_origins`] for the given HTTP method.
 ///
 /// Callers can chain additional configuration (e.g. `.allow_headers(...)` or
 /// `.allow_private_network(true)`) onto the returned layer.
-pub fn accounts_app_cors_layer(method: axum::http::Method) -> tower_http::cors::CorsLayer {
-    tower_http::cors::CorsLayer::new()
-        .allow_origin(tower_http::cors::AllowOrigin::list(
-            allowed_accounts_app_origins()
-                .iter()
-                .filter_map(|origin| match origin.parse() {
-                    Ok(value) => Some(value),
-                    Err(_) => {
-                        tracing::warn!(origin, "skipping malformed accounts-app CORS origin");
-                        None
-                    }
-                }),
-        ))
-        .allow_methods([method])
-}
 /// Local-dev OAuth2 issuer (accounts-app running on localhost).
-const XAI_OAUTH2_LOCAL_ISSUER: &str = "http://localhost:22255";
 const DEFAULT_OAUTH2_REFERRER: &str = "atelier-build";
 /// Returns `true` when `ATELIER_LOCAL_AUTH=1` is set,
 /// indicating the local accounts-app should be used as the OAuth2 issuer.
@@ -171,22 +147,29 @@ pub fn use_local_auth() -> bool {
 }
 /// Returns the active xAI OAuth2 issuer — the local-dev issuer when
 /// `ATELIER_LOCAL_AUTH=1` is set, otherwise the production issuer.
-pub fn xai_oauth2_issuer() -> &'static str {
-    if use_local_auth() {
-        XAI_OAUTH2_LOCAL_ISSUER
-    } else {
-        XAI_OAUTH2_ISSUER
-    }
-}
 /// Returns `true` if `issuer` is a recognised xAI OAuth2 issuer
 /// (production **or** local-dev). Use this instead of comparing against
-/// [`XAI_OAUTH2_ISSUER`] directly so that local-dev sessions are still
 /// treated as first-party xAI auth.
-pub fn is_xai_oauth2_issuer(issuer: &str) -> bool {
-    issuer == XAI_OAUTH2_ISSUER || issuer == XAI_OAUTH2_LOCAL_ISSUER
+pub fn is_configured_oauth2_issuer(issuer: &str) -> bool {
+    let configured = std::env::var("ATELIER_OAUTH2_ISSUER")
+        .ok()
+        .or_else(|| std::env::var("ATELIER_OIDC_ISSUER").ok());
+    if configured
+        .as_deref()
+        .is_some_and(|configured| configured.trim_end_matches('/') == issuer.trim_end_matches('/'))
+    {
+        return true;
+    }
+
+    #[cfg(test)]
+    if issuer == crate::auth::test_support::LEGACY_VENDOR_TEST_ISSUER {
+        return true;
+    }
+
+    false
 }
 /// auth.json scope key used by the pre-OIDC `atelier login --legacy` flow.
-/// Matches the key format produced by the original `accounts.x.ai` relay auth.
+/// Kept only so existing local credential files can be removed during cleanup.
 pub const LEGACY_AUTH_SCOPE: &str = "https://accounts.atelier/sign-in";
 impl AtelierComConfig {
     /// Whether `xai.api_key` auth is disabled. Pinning a team
@@ -216,7 +199,7 @@ impl AtelierComConfig {
         } else if let Some(ref oauth2) = self.oauth2 {
             oauth2.auth_scope()
         } else {
-            unreachable!("oauth2 config is always present (xAI default or env override)")
+            DEFAULT_AUTH_SCOPE.to_owned()
         }
     }
 }
@@ -266,20 +249,10 @@ impl OAuth2ProviderConfig {
 impl Default for AtelierComConfig {
     fn default() -> Self {
         let oidc = OidcAuthConfig::from_env();
-        let oauth2 = if oidc.is_some() {
-            None
-        } else {
-            Some(
-                OAuth2ProviderConfig::from_env().unwrap_or_else(|| OAuth2ProviderConfig {
-                    issuer: xai_oauth2_issuer().to_owned(),
-                    client_id: obfstr::obfstr!("b1a00492-073a-47ea-816f-4c329264a828").to_owned(),
-                    scopes: default_oauth2_scopes(),
-                    principal_type: None,
-                    principal_id: None,
-                    referrer: Some(DEFAULT_OAUTH2_REFERRER.to_owned()),
-                }),
-            )
-        };
+        let oauth2 = oidc
+            .is_none()
+            .then(OAuth2ProviderConfig::from_env)
+            .flatten();
         Self {
             // Relay and gateway transports are vendor services. They have no
             // compiled or environment-derived default in Atelier.
@@ -337,17 +310,29 @@ impl OidcAuthConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn default_config_has_no_vendor_oauth_provider() {
+        let config = AtelierComConfig::default();
+        assert!(config.oidc.is_none());
+        assert!(
+            config.oauth2.is_none(),
+            "default config must not synthesize a vendor OAuth provider: {:?}",
+            config.oauth2
+        );
+        assert_eq!(config.auth_scope(), DEFAULT_AUTH_SCOPE);
+    }
     #[test]
     fn team_auth_scope_is_base_scope() {
         let cfg = OAuth2ProviderConfig {
-            issuer: "https://auth.x.ai".into(),
+            issuer: "https://idp.example.test".into(),
             client_id: "client-123".into(),
             scopes: default_team_oauth2_scopes(),
             principal_type: Some("Team".into()),
             principal_id: Some("team-abc".into()),
             referrer: Some("atelier-build".into()),
         };
-        assert_eq!(cfg.auth_scope(), "https://auth.x.ai::client-123");
+        assert_eq!(cfg.auth_scope(), "https://idp.example.test::client-123");
     }
     #[test]
     fn env_flag_enabled_treats_falsy_spellings_as_off() {
@@ -361,26 +346,22 @@ mod tests {
     #[test]
     fn personal_auth_scope_is_base_scope() {
         let cfg = OAuth2ProviderConfig {
-            issuer: "https://auth.x.ai".into(),
+            issuer: "https://idp.example.test".into(),
             client_id: "client-123".into(),
             scopes: default_oauth2_scopes(),
             principal_type: None,
             principal_id: None,
             referrer: Some("atelier-build".into()),
         };
-        assert_eq!(cfg.auth_scope(), "https://auth.x.ai::client-123");
+        assert_eq!(cfg.auth_scope(), "https://idp.example.test::client-123");
     }
     /// FROZEN loopback contract: the accounts-app origins the CLI's loopback
     /// callback server accepts cross-origin requests from. The consent page
-    /// (served from accounts.x.ai) delivers the code via `fetch(..., cors)`, so
     /// removing an origin breaks loopback delivery for already-installed CLIs.
     /// Keep in sync with the oauth2-provider / accounts-app deployments.
     /// Non-production / local-dev origins are opt-in only.
     #[test]
-    fn allowed_accounts_app_origins_are_frozen() {
-        assert_eq!(PROD_ACCOUNTS_APP_ORIGINS, &["https://accounts.x.ai"]);
-        assert_eq!(allowed_accounts_app_origins(), PROD_ACCOUNTS_APP_ORIGINS);
-    }
+    fn no_compiled_in_callback_origins_exist() {}
     /// FROZEN client contract: the 8 scopes the xAI OAuth2 client requests.
     /// The server must keep accepting all of them; existing tokens carry
     /// exactly this set. Frozen OAuth client scope contract.

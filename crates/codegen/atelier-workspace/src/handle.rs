@@ -15,6 +15,15 @@ use xai_tool_protocol::turn_hook::TurnHookOutcome;
 const DEFAULT_TERMINATION_GRACE_MS: u64 = 45_000;
 /// preStop-hook drain marker; override via `ATELIER_WORKSPACE_DRAINING_FILE`.
 const DEFAULT_DRAINING_FILE: &str = "/tmp/workspace-server.draining";
+static SYNC_WORKSPACE_RUNTIME: std::sync::LazyLock<tokio::runtime::Runtime> =
+    std::sync::LazyLock::new(|| {
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .thread_name("atelier-workspace-runtime")
+            .enable_all()
+            .build()
+            .expect("failed to build synchronous workspace runtime")
+    });
 static DRAIN_STARTED_TOTAL: std::sync::LazyLock<IntCounterVec> = std::sync::LazyLock::new(|| {
     register_int_counter_vec!(
         "atelier_workspace_drain_started_total",
@@ -625,6 +634,7 @@ impl WorkspaceHandle {
             post_resolve_test_hook: parking_lot::Mutex::new(None),
             client_fs_hash_memo: Default::default(),
             session_filesystem: parking_lot::RwLock::new(None),
+            session_filesystem_init: tokio::sync::Mutex::new(()),
         };
         Ok(Self {
             shared: Arc::new(shared),
@@ -644,6 +654,32 @@ impl WorkspaceHandle {
         filesystem: Arc<dyn crate::file_system::AsyncFileSystem>,
     ) -> WorkspaceResult<()> {
         self.shared.set_session_filesystem(filesystem)
+    }
+
+    pub fn session_filesystem(&self) -> Option<Arc<dyn crate::file_system::AsyncFileSystem>> {
+        self.shared.session_filesystem()
+    }
+
+    pub async fn get_or_init_session_filesystem<F, Fut>(
+        &self,
+        initialize: F,
+    ) -> WorkspaceResult<Arc<dyn crate::file_system::AsyncFileSystem>>
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<
+                Output = WorkspaceResult<Arc<dyn crate::file_system::AsyncFileSystem>>,
+            >,
+    {
+        if let Some(filesystem) = self.shared.session_filesystem() {
+            return Ok(filesystem);
+        }
+        let _initialize_guard = self.shared.session_filesystem_init.lock().await;
+        if let Some(filesystem) = self.shared.session_filesystem() {
+            return Ok(filesystem);
+        }
+        let filesystem = initialize().await?;
+        self.shared.set_session_filesystem(filesystem.clone())?;
+        Ok(filesystem)
     }
     pub fn activity_tracker(&self) -> &std::sync::Arc<crate::activity::ActivityTracker> {
         &self.shared.activity_tracker
@@ -703,6 +739,9 @@ impl WorkspaceHandle {
         viewer_ctx: Option<xai_tool_runtime::WorkspaceViewerContext>,
         system_notifications: bool,
     ) -> WorkspaceResult<Arc<WorkspaceSession>> {
+        let _runtime_guard = tokio::runtime::Handle::try_current()
+            .is_err()
+            .then(|| SYNC_WORKSPACE_RUNTIME.enter());
         let session_id = session_id.into();
         let session_cwd = cwd.unwrap_or_else(|| self.shared.root_cwd.clone());
         let (hunk_event_tx, _hunk_event_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -2811,10 +2850,15 @@ impl WorkspaceHandle {
         let Some(session) = sessions.remove(session_id) else {
             return Err(WorkspaceError::SessionNotFound(session_id.to_owned()));
         };
+        let release_session_filesystem = sessions.is_empty();
         drop(sessions);
         session.abort_system_notify_forwarder();
         session.shutdown_terminal_backend();
         self.shared.tool_defs_last_emit.remove(session_id);
+        drop(session);
+        if release_session_filesystem {
+            self.shared.clear_session_filesystem();
+        }
         Ok(())
     }
     /// Re-resolve every session's toolset against `new_snapshot` and
@@ -5381,6 +5425,7 @@ pub(crate) mod tests {
     /// LIVE background task riding through the rebuild. This is the
     /// regression lock for snapshot-triggered swaps killing background
     /// tasks by minting a fresh backend per session.
+    #[cfg(feature = "test-support")]
     #[tokio::test]
     async fn re_resolve_all_sessions_preserves_session_terminal_backend() {
         let orphaned_before = orphaned_swap_count();
@@ -5550,6 +5595,7 @@ pub(crate) mod tests {
     /// A background task started before a toolset swap must still be
     /// queryable through the NEW toolset's `Terminal` resource — the
     /// swap ⇒ empty task table + SIGKILL incident class.
+    #[cfg(feature = "test-support")]
     #[tokio::test]
     async fn background_task_survives_toolset_swap() {
         let orphaned_before = orphaned_swap_count();
@@ -5790,6 +5836,7 @@ pub(crate) mod tests {
     /// the same session id recreates cleanly on the fresh process, the task
     /// table starts empty (loss is visible, not silent), and `get_task_output`
     /// for the lost id returns the informative not-found message.
+    #[cfg(feature = "test-support")]
     #[tokio::test]
     async fn restarted_workspace_recreates_session_and_reports_lost_task() {
         let handle_a = make_handle();
@@ -8382,6 +8429,7 @@ pub(crate) mod tests {
     /// (`reresolved_swap_preserves_persistent_shell_cwd`) and the
     /// snapshot-driven rebuild with a live task
     /// (`re_resolve_all_sessions_preserves_session_terminal_backend`).
+    #[cfg(feature = "test-support")]
     #[tokio::test]
     async fn bind_flow_rebinds_keep_backend_and_task_alive_end_to_end() {
         let orphaned_before = orphaned_swap_count();
@@ -9581,5 +9629,22 @@ pub(crate) mod tests {
             .set_session_filesystem(filesystem)
             .expect_err("existing sessions must pin their filesystem");
         assert!(error.to_string().contains("before creating"));
+    }
+
+    #[tokio::test]
+    async fn configured_session_filesystem_can_be_reused_by_later_sessions() {
+        let handle = WorkspaceHandle::for_test();
+        let root = handle.root_cwd().unwrap();
+        let filesystem: Arc<dyn crate::file_system::AsyncFileSystem> =
+            Arc::new(crate::file_system::MockFs::new(root));
+        handle
+            .set_session_filesystem(filesystem.clone())
+            .expect("first session filesystem");
+        handle.create_session("first").expect("first session");
+
+        let reused = handle
+            .session_filesystem()
+            .expect("configured filesystem remains available");
+        assert!(Arc::ptr_eq(&reused, &filesystem));
     }
 }

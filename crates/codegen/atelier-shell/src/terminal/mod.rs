@@ -21,6 +21,46 @@ pub mod pty_session;
 pub const DEFAULT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 pub const DEFAULT_OUTPUT_BYTE_LIMIT: usize = 30_000; // 30k characters
 
+#[cfg(all(test, windows))]
+thread_local! {
+    static TEST_UNSANDBOXED_EXECUTION_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Explicit, test-build-only permission for process-based terminal tests.
+///
+/// This symbol is absent from production builds. The thread-local scope also
+/// prevents one concurrently running test from opening the execution gate for
+/// another test thread.
+#[cfg(test)]
+pub(crate) struct TestUnsandboxedExecutionGuard;
+
+#[cfg(test)]
+pub(crate) fn allow_test_unsandboxed_execution() -> TestUnsandboxedExecutionGuard {
+    #[cfg(windows)]
+    TEST_UNSANDBOXED_EXECUTION_DEPTH.with(|depth| depth.set(depth.get() + 1));
+    TestUnsandboxedExecutionGuard
+}
+
+#[cfg(test)]
+impl Drop for TestUnsandboxedExecutionGuard {
+    fn drop(&mut self) {
+        #[cfg(windows)]
+        TEST_UNSANDBOXED_EXECUTION_DEPTH.with(|depth| {
+            depth.set(
+                depth
+                    .get()
+                    .checked_sub(1)
+                    .expect("unbalanced terminal test guard"),
+            );
+        });
+    }
+}
+
+#[cfg(all(test, windows))]
+fn test_unsandboxed_execution_allowed() -> bool {
+    TEST_UNSANDBOXED_EXECUTION_DEPTH.with(|depth| depth.get() > 0)
+}
+
 /// Resolve a Windows child invocation through the restricted-token helper.
 ///
 /// The native backend is the only implicit path.  A missing/disabled helper
@@ -32,6 +72,11 @@ pub(crate) fn windows_sandbox_invocation(
     args: &[std::ffi::OsString],
     cwd: &std::path::Path,
 ) -> std::io::Result<(std::path::PathBuf, Vec<std::ffi::OsString>)> {
+    #[cfg(test)]
+    if test_unsandboxed_execution_allowed() {
+        return Ok((program.to_path_buf(), args.to_vec()));
+    }
+
     if atelier_sandbox::diagnostics().backend == atelier_sandbox::SandboxBackendKind::Unsafe {
         return Ok((program.to_path_buf(), args.to_vec()));
     }

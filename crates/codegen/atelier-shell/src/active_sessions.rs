@@ -119,8 +119,28 @@ where
             let _ = lock_file.unlock();
             result.map(Some)
         }
-        Err(e) if e.kind() == io::ErrorKind::WouldBlock => Ok(None),
+        Err(e) if is_lock_contention(&e) => Ok(None),
         Err(e) => Err(e),
+    }
+}
+
+fn is_lock_contention(error: &io::Error) -> bool {
+    if error.kind() == io::ErrorKind::WouldBlock {
+        return true;
+    }
+
+    #[cfg(windows)]
+    {
+        // Windows reports a contended byte-range/file lock as
+        // ERROR_SHARING_VIOLATION (32) or ERROR_LOCK_VIOLATION (33), both of
+        // which Rust currently exposes as `Uncategorized` rather than
+        // `WouldBlock`.
+        matches!(error.raw_os_error(), Some(32 | 33))
+    }
+
+    #[cfg(not(windows))]
+    {
+        false
     }
 }
 

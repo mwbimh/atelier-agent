@@ -1612,9 +1612,9 @@ mod tests {
 
     #[test]
     fn expanded_shows_relative_when_under_cwd_preamble_absolute() {
-        let abs = "/Users/me/project/src/foo.rs";
-        let cwd = Path::new("/Users/me/project");
-        let block = EditToolCallBlock::new(abs, vec![]);
+        let cwd = std::env::current_dir().unwrap().join("edit-test-project");
+        let abs = cwd.join("src/foo.rs");
+        let block = EditToolCallBlock::new(abs.to_string_lossy(), vec![]);
         let theme = Theme::current();
         let header = block.header_line(
             &theme,
@@ -1622,7 +1622,7 @@ mod tests {
             false,
             false,
             ToolPathSurface::Expanded,
-            Some(cwd),
+            Some(cwd.as_path()),
             None,
         );
         let text: String = header.spans.iter().map(|s| s.content.as_ref()).collect();
@@ -1630,7 +1630,7 @@ mod tests {
 
         let mut ctx = test_ctx();
         ctx.mode = DisplayMode::Expanded;
-        ctx.cwd = Some(cwd.to_path_buf());
+        ctx.cwd = Some(cwd.clone());
         let preamble = block.preamble(&ctx).unwrap();
         let preamble_text: String = preamble
             .lines
@@ -1638,7 +1638,10 @@ mod tests {
             .flat_map(|l| l.spans.iter())
             .map(|s| s.content.as_ref())
             .collect();
-        assert_eq!(preamble_text, "Edit /Users/me/project/src/foo.rs");
+        assert_eq!(
+            preamble_text,
+            format!("Edit {}", abs.to_string_lossy().replace('\\', "/"))
+        );
     }
 
     #[test]
@@ -1657,15 +1660,15 @@ mod tests {
 
     #[test]
     fn header_link_url_is_absolute_file_url_for_all_surfaces() {
-        let abs = "/Users/me/project/src/foo.rs";
-        let cwd = Path::new("/Users/me/project");
-        let block = EditToolCallBlock::new(abs, vec![]);
-        let url = block.path_link_url(Some(cwd)).expect("file url");
+        let cwd = std::env::current_dir().unwrap().join("edit-link-project");
+        let abs = cwd.join("src/foo.rs");
+        let block = EditToolCallBlock::new(abs.to_string_lossy(), vec![]);
+        let url = block.path_link_url(Some(cwd.as_path())).expect("file url");
         assert!(url.starts_with("file://"), "got {url}");
         assert!(url.contains("foo.rs"), "got {url}");
 
         let mut ctx = test_ctx();
-        ctx.cwd = Some(cwd.to_path_buf());
+        ctx.cwd = Some(cwd);
         ctx.mode = DisplayMode::Collapsed;
         let collapsed = block.output(&ctx);
         assert_eq!(

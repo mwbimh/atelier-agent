@@ -1,5 +1,93 @@
 //! Tests for the action router, model switching, slash commands, and other cross-cutting dispatch behavior.
 use super::*;
+
+#[test]
+fn model_picker_uses_global_catalog_when_agent_catalog_is_empty() {
+    let mut app = test_app_with_agent();
+    let model_id = acp::ModelId::new("allm/gpt-5");
+    let mut available = IndexMap::new();
+    available.insert(
+        model_id.clone(),
+        acp::ModelInfo::new(model_id.clone(), "GPT-5"),
+    );
+    app.models.update_catalog(available, Some(model_id));
+
+    assert!(app.agents[&AgentId(0)].session.models.is_empty());
+
+    let effects = dispatch(
+        Action::OpenSlashArgPicker {
+            command: "model".into(),
+        },
+        &mut app,
+    );
+
+    assert!(effects.is_empty());
+    assert!(matches!(
+        app.agents[&AgentId(0)].active_modal.as_ref(),
+        Some(crate::views::modal::ActiveModal::ArgPicker {
+            command, items, ..
+        }) if command == "model" && !items.is_empty()
+    ));
+}
+
+#[test]
+fn slash_model_picker_uses_global_catalog_when_agent_catalog_is_empty() {
+    let mut app = test_app_with_agent();
+    let model_id = acp::ModelId::new("allm/gpt-5");
+    let mut available = IndexMap::new();
+    available.insert(
+        model_id.clone(),
+        acp::ModelInfo::new(model_id.clone(), "GPT-5"),
+    );
+    app.models.update_catalog(available, Some(model_id));
+
+    let effects = dispatch(Action::SendPrompt("/model".into()), &mut app);
+
+    assert!(effects.is_empty());
+    assert!(matches!(
+        app.agents[&AgentId(0)].active_modal.as_ref(),
+        Some(crate::views::modal::ActiveModal::ArgPicker {
+            command, items, ..
+        }) if command == "model" && !items.is_empty()
+    ));
+}
+
+#[test]
+fn slash_model_command_uses_global_catalog_when_agent_catalog_is_empty() {
+    let mut app = test_app_with_agent();
+    let current_id = acp::ModelId::new("allm/current");
+    let target_id = acp::ModelId::new("allm/gpt-5");
+    let mut available = IndexMap::new();
+    available.insert(
+        current_id.clone(),
+        acp::ModelInfo::new(current_id.clone(), "Current"),
+    );
+    available.insert(
+        target_id.clone(),
+        acp::ModelInfo::new(target_id.clone(), "GPT-5"),
+    );
+    app.models
+        .update_catalog(available, Some(current_id.clone()));
+
+    assert!(app.agents[&AgentId(0)].session.models.is_empty());
+
+    let effects = dispatch(Action::SendPrompt("/model allm/gpt-5".into()), &mut app);
+
+    assert!(
+        effects.iter().any(|effect| matches!(
+            effect,
+            Effect::SwitchModel { model_id, .. } if model_id == &target_id
+        )),
+        "expected /model to resolve the refreshed global catalog, got {effects:?}"
+    );
+    assert!(app.agents[&AgentId(0)].session.model_switch_pending);
+    assert_eq!(
+        app.agents[&AgentId(0)].session.models.current,
+        Some(current_id),
+        "the displayed current model must change only after the runtime confirms the switch"
+    );
+}
+
 fn seed_foreign_resume_hint(
     app: &mut AppView,
     tool: atelier_workspace::foreign_sessions::ForeignSessionTool,
@@ -846,13 +934,78 @@ fn slash_model_invalid_arg_produces_scrollback_error() {
     assert!(app.agents[&id].prompt.text().is_empty());
 }
 #[test]
-fn slash_model_no_args_produces_scrollback_error() {
+fn slash_model_no_args_without_providers_only_offers_add() {
+    let _provider_presence = super::super::router::override_model_recovery_provider_presence(false);
     let mut app = test_app_with_agent();
     let id = AgentId(0);
     let initial_scrollback = app.agents[&id].scrollback.len();
+
     let effects = dispatch(Action::SendPrompt("/model".into()), &mut app);
+
     assert!(effects.is_empty());
     assert_eq!(app.agents[&id].scrollback.len(), initial_scrollback + 1);
+    let Some(crate::views::modal::ActiveModal::ArgPicker { command, items, .. }) =
+        app.agents[&id].active_modal.as_ref()
+    else {
+        panic!("expected the empty model catalog to open a Provider recovery picker");
+    };
+    assert_eq!(command, "provider");
+    assert_eq!(
+        items
+            .iter()
+            .map(|item| item.insert_text.as_str())
+            .collect::<Vec<_>>(),
+        vec!["add "],
+        "refresh must stay hidden when there is no configured Provider"
+    );
+    assert!(
+        items[0].description.contains("Configure"),
+        "add entry should explain how it restores the model catalog"
+    );
+}
+
+#[test]
+fn slash_model_no_args_with_provider_offers_refresh_and_add_and_add_can_continue() {
+    use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+
+    let _provider_presence = super::super::router::override_model_recovery_provider_presence(true);
+    let mut app = test_app_with_agent();
+    let id = AgentId(0);
+
+    let effects = dispatch(Action::SendPrompt("/model".into()), &mut app);
+
+    assert!(effects.is_empty());
+    let Some(crate::views::modal::ActiveModal::ArgPicker {
+        command,
+        items,
+        state,
+        ..
+    }) = app.agents[&id].active_modal.as_mut()
+    else {
+        panic!("expected the empty model catalog to open a Provider recovery picker");
+    };
+    assert_eq!(command, "provider");
+    assert_eq!(
+        items
+            .iter()
+            .map(|item| item.insert_text.as_str())
+            .collect::<Vec<_>>(),
+        vec!["refresh ", "add "],
+        "configured Providers must make both recovery paths available"
+    );
+    state.selected = 1;
+
+    let outcome = app.agents.get_mut(&id).unwrap().handle_input(
+        &Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        &crate::actions::ActionRegistry::defaults(),
+    );
+
+    assert!(matches!(
+        outcome,
+        crate::app::app_view::InputOutcome::Changed
+    ));
+    assert!(app.agents[&id].active_modal.is_none());
+    assert_eq!(app.agents[&id].prompt.text(), "/provider add ");
 }
 #[test]
 fn slash_hooks_opens_modal() {
@@ -1565,12 +1718,7 @@ fn find_agent_by_session_id_finds_inactive_agent() {
 fn pr13_each_setter_writes_to_its_own_mirror() {
     let mut app = test_app_with_agent();
     assert_eq!(app.show_tips, None);
-    assert_eq!(app.auto_update, None);
     let _ = dispatch(Action::SetShowTips(false), &mut app);
-    assert_eq!(app.show_tips, Some(false));
-    assert_eq!(app.auto_update, None);
-    let _ = dispatch(Action::SetAutoUpdate(false), &mut app);
-    assert_eq!(app.auto_update, Some(false));
     assert_eq!(app.show_tips, Some(false));
 }
 /// Three-way alignment pin: the PAGER registry default must agree

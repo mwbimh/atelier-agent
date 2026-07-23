@@ -13,7 +13,7 @@
 //! - direnv helper functions (source_up_if_exists, PATH_add, etc.)
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// Stub implementations of common direnv helper functions.
@@ -121,30 +121,37 @@ fn try_direnv_export(dir: &Path) -> Option<HashMap<String, String>> {
 /// This is the fallback when direnv is not installed.
 fn load_envrc_via_bash(dir: &Path) -> Option<HashMap<String, String>> {
     let envrc_path = dir.join(".envrc");
+    let bash = resolve_bash_program()?;
 
     // Build a script that:
     // 1. Includes direnv stubs
     // 2. Sources the .envrc
     // 3. Outputs all env vars as KEY=VALUE pairs (null-separated for safety)
+    #[cfg(windows)]
+    let pwd_override = format!(
+        "export PWD={}\n",
+        bash_single_quote(&dir.to_string_lossy().replace('\\', "/"))
+    );
+    #[cfg(not(windows))]
+    let pwd_override = String::new();
     let script = format!(
         r#"
 set -e
-cd "{dir}"
+{pwd_override}
 {stubs}
-. "{envrc}"
+. ./.envrc
 # Output all environment variables, null-separated
 env -0
 "#,
-        dir = dir.display(),
+        pwd_override = pwd_override,
         stubs = DIRENV_STUBS,
-        envrc = envrc_path.display(),
     );
 
     // Capture baseline environment (before running .envrc)
     let baseline: HashMap<String, String> = std::env::vars().collect();
 
     // Run the script and capture output
-    let mut bash_cmd = Command::new("/bin/bash");
+    let mut bash_cmd = Command::new(&bash);
     bash_cmd
         .arg("-c")
         .arg(&script)
@@ -205,6 +212,80 @@ env -0
     }
 }
 
+fn bash_single_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
+}
+
+#[cfg(unix)]
+fn resolve_bash_program() -> Option<PathBuf> {
+    Some(PathBuf::from(atelier_config::shell::unix_shell_path(
+        atelier_config::shell::UnixShellKind::Bash,
+    )))
+}
+
+#[cfg(windows)]
+fn resolve_bash_program() -> Option<PathBuf> {
+    use atelier_config::shell::WindowsShell;
+
+    if let WindowsShell::GitBash(path) = atelier_config::shell::detect_windows_shell() {
+        let path = PathBuf::from(path);
+        if path.is_file() {
+            return Some(path);
+        }
+    }
+
+    let mut candidates = Vec::new();
+    let mut git = Command::new("git.exe");
+    git.arg("--exec-path").stdin(std::process::Stdio::null());
+    atelier_tools::util::detach_std_command(&mut git);
+    if let Ok(output) = git.output()
+        && output.status.success()
+    {
+        let exec_path = PathBuf::from(String::from_utf8_lossy(&output.stdout).trim());
+        if let Some(git_root) = exec_path.ancestors().find(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.eq_ignore_ascii_case("Git"))
+        }) {
+            candidates.push(git_root.join("bin").join("bash.exe"));
+        }
+    }
+
+    for env_name in ["PROGRAMFILES", "PROGRAMFILES(X86)", "LOCALAPPDATA"] {
+        if let Some(root) = std::env::var_os(env_name) {
+            let root = PathBuf::from(root);
+            candidates.push(if env_name == "LOCALAPPDATA" {
+                root.join("Programs")
+                    .join("Git")
+                    .join("bin")
+                    .join("bash.exe")
+            } else {
+                root.join("Git").join("bin").join("bash.exe")
+            });
+        }
+    }
+
+    let mut where_git = Command::new("where.exe");
+    where_git.arg("git.exe").stdin(std::process::Stdio::null());
+    atelier_tools::util::detach_std_command(&mut where_git);
+    if let Ok(output) = where_git.output()
+        && output.status.success()
+    {
+        for line in String::from_utf8_lossy(&output.stdout).lines() {
+            let git = PathBuf::from(line.trim());
+            if git.parent().and_then(Path::parent).is_some_and(|root| {
+                root.file_name()
+                    .is_some_and(|name| name.eq_ignore_ascii_case("Git"))
+            }) && let Some(root) = git.parent().and_then(Path::parent)
+            {
+                candidates.push(root.join("bin").join("bash.exe"));
+            }
+        }
+    }
+
+    candidates.into_iter().find(|path| path.is_file())
+}
+
 /// Load .envrc and return the environment, or empty HashMap on failure.
 pub fn load_envrc_or_empty(dir: &Path) -> HashMap<String, String> {
     load_envrc(dir).unwrap_or_default()
@@ -245,6 +326,8 @@ mod tests {
 
         let env = load_envrc(dir.path()).unwrap();
         let expected = format!("{}/subdir", dir.path().display());
+        #[cfg(windows)]
+        let expected = expected.replace('\\', "/");
         assert_eq!(env.get("MY_DIR"), Some(&expected));
     }
 
@@ -261,7 +344,10 @@ mod tests {
 
         let env = load_envrc(dir.path()).unwrap();
         let path = env.get("PATH").unwrap();
-        assert!(path.contains(&format!("{}/bin", dir.path().display())));
+        let expected = format!("{}/bin", dir.path().display());
+        #[cfg(windows)]
+        let expected = expected.replace('\\', "/");
+        assert!(path.contains(&expected));
     }
 
     #[test]
@@ -281,5 +367,25 @@ fi
 
         let env = load_envrc(dir.path()).unwrap();
         assert_eq!(env.get("EXISTS"), Some(&"yes".to_string()));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_bash_resolver_finds_real_git_bash_not_wsl_alias() {
+        let bash = resolve_bash_program().expect("Git Bash must be resolved on Windows");
+        let normalized = bash
+            .to_string_lossy()
+            .replace('\\', "/")
+            .to_ascii_lowercase();
+        assert!(
+            normalized.ends_with("/git/bin/bash.exe"),
+            "must resolve Git Bash, not the System32/WindowsApps WSL alias: {}",
+            bash.display()
+        );
+        let output = Command::new(&bash)
+            .arg("--version")
+            .output()
+            .expect("resolved Git Bash must be executable");
+        assert!(output.status.success());
     }
 }

@@ -1093,6 +1093,7 @@ mod tests {
             _ => "",
         }
     }
+    #[cfg(feature = "test-support")]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn backgrounded_bash_increments_then_decrements_through_real_wiring() {
         let handle = make_bg_tracking_handle();
@@ -1130,6 +1131,7 @@ mod tests {
             "idle restored when nothing runs"
         );
     }
+    #[cfg(feature = "test-support")]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn auto_background_on_timeout_increments_then_decrements_through_real_wiring() {
         let mut cfg = bg_config();
@@ -1172,6 +1174,7 @@ mod tests {
         );
         assert!(idle.idle_since_ms.is_some());
     }
+    #[cfg(feature = "test-support")]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn monitor_increments_then_decrements_through_real_wiring() {
         let handle = make_bg_tracking_handle();
@@ -1204,6 +1207,7 @@ mod tests {
         );
         assert!(idle.idle_since_ms.is_some());
     }
+    #[cfg(feature = "test-support")]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn concurrent_background_tasks_track_independently() {
         let handle = make_bg_tracking_handle();
@@ -1265,6 +1269,7 @@ mod tests {
             "idle restored only after the last ends"
         );
     }
+    #[cfg(feature = "test-support")]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn forked_child_background_task_feeds_tracker() {
         let handle = make_bg_tracking_handle();
@@ -1380,6 +1385,7 @@ mod tests {
         feed.await
             .expect("activity feed must exit cleanly once senders drop");
     }
+    #[cfg(feature = "test-support")]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn update_tool_config_preserves_tracker_feed() {
         let handle = make_bg_tracking_handle();
@@ -1409,6 +1415,7 @@ mod tests {
             "a bg task after update_tool_config must still feed the tracker"
         );
     }
+    #[cfg(feature = "test-support")]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn re_resolve_all_sessions_preserves_tracker_feed() {
         let handle = make_bg_tracking_handle();

@@ -967,3 +967,58 @@ async fn set_session_model_invalidates_byok_memo_for_same_model_id() {
         })
         .await;
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn refresh_provider_model_updates_payload_without_changing_ordinary_model_switches() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (actor, mut persistence_rx) = make_actor_with_method_and_credentials(
+                None,
+                "cached_token",
+                xai_chat_state::AuthType::SessionToken,
+                "k".to_string(),
+            )
+            .await;
+            actor
+                .role_request_payload
+                .borrow_mut()
+                .insert("payload".into(), serde_json::json!("captured-role"));
+
+            let mut refreshed = actor.reconstruct_full_config().await;
+            refreshed
+                .request_payload
+                .insert("payload".into(), serde_json::json!("provider-refresh"));
+            actor
+                .handle_refresh_provider_model(refreshed, 85)
+                .await
+                .unwrap();
+            assert_eq!(
+                actor.role_request_payload.borrow()["payload"],
+                "provider-refresh"
+            );
+            assert!(
+                persistence_rx.try_recv().is_err(),
+                "Provider refresh must not persist the routing slug as a user model switch",
+            );
+
+            let mut ordinary_switch = actor.reconstruct_full_config().await;
+            ordinary_switch
+                .request_payload
+                .insert("payload".into(), serde_json::json!("must-not-apply"));
+            actor
+                .handle_set_session_model(ordinary_switch, false, false, true, 85)
+                .await
+                .unwrap();
+            assert_eq!(
+                actor.role_request_payload.borrow()["payload"],
+                "provider-refresh",
+                "ordinary model switches must keep the captured running-session Role payload",
+            );
+            assert!(matches!(
+                persistence_rx.try_recv(),
+                Ok(PersistenceMsg::CurrentModel { .. })
+            ));
+        })
+        .await;
+}

@@ -432,13 +432,20 @@ pub(crate) async fn handle_subagent_request(
         if let Some(resolved) = fixed_role_resolution {
             resolved
         } else {
-            resolve_effective_model_config(
+            match resolve_effective_model_config(
                 effective_runtime.model.as_deref(),
                 &request.subagent_type,
                 &definition.model,
                 &ctx,
             )
             .await
+            {
+                Ok(resolved) => resolved,
+                Err(error) => {
+                    send_failure(request, &error);
+                    return;
+                }
+            }
         };
     let subagent_max_turns = resolve_subagent_max_turns(
         definition.max_turns,
@@ -764,6 +771,8 @@ pub(crate) async fn handle_subagent_request(
         )
         .with_hunk_tracking_enabled(ctx.hunk_tracking_enabled);
     tool_ctx.subagent_event_tx = Some(ctx.subagent_event_tx.clone());
+    tool_ctx.runtime_policy = ctx.runtime_policy.clone();
+    tool_ctx.runtime_control = ctx.runtime_control.clone();
     tool_ctx.monitor_event_buffer = Some(MonitorEventBuffer::default());
     tool_ctx.subagent_depth = ctx.parent_depth + 1;
     tool_ctx.lsp = ctx.lsp.clone();
@@ -794,12 +803,13 @@ pub(crate) async fn handle_subagent_request(
                 { "subagent_id" : & request.id, "subagent_type" : & request
                 .subagent_type, "effective_model" : effective_model_id.0.as_ref(),
                 "effective_model_raw" : & effective_sampling_config.model, "base_url" : &
-                effective_sampling_config.base_url, "key_prefix" : key_prefix(&
-                effective_sampling_config.api_key), "auth_type" : format!("{:?}",
+                effective_sampling_config.base_url, "has_key" :
+                effective_sampling_config.api_key.is_some(), "auth_type" : format!("{:?}",
                 inherited_auth_type), "model_has_own_creds" : model_has_own_creds,
                 "auth_method_id" : ctx.auth_method_id.0.as_ref(), "parent_model" : ctx
-                .model_id.0.as_ref(), "parent_key_prefix" : key_prefix(& ctx
-                .sampling_config.api_key), "context_window" : effective_sampling_config
+                .model_id.0.as_ref(), "parent_has_key" : ctx.sampling_config.api_key
+                .is_some(), "keys_match" : effective_sampling_config.api_key == ctx
+                .sampling_config.api_key, "context_window" : effective_sampling_config
                 .context_window, }
             ),
         ),
@@ -1150,7 +1160,6 @@ pub(crate) async fn handle_subagent_request(
             Default::default(),
             ctx.managed_mcp_state.clone(),
             None,
-            ctx.managed_mcp_proxy_base_url.clone(),
             effective_model_id,
             ctx.yolo_mode
                 || matches!(

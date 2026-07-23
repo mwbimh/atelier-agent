@@ -50,7 +50,7 @@ pub(super) async fn make_replay_send_update_fixture() -> ReplaySendUpdateFixture
         }
     });
     let (persistence_tx, persistence_rx) = mpsc::unbounded_channel::<PersistenceMsg>();
-    let cwd = AbsPathBuf::new(std::path::PathBuf::from("/tmp")).unwrap();
+    let cwd = AbsPathBuf::new(std::env::current_dir().expect("test cwd must exist")).unwrap();
     let fs = Arc::new(MockFs::new(cwd.to_path_buf()));
     let terminal = Arc::new(DummyTerminal {});
     let (hunk_tx, _hunk_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -97,7 +97,7 @@ pub(super) async fn make_replay_send_update_fixture() -> ReplaySendUpdateFixture
             std::collections::HashMap::new(),
         )),
         telemetry_enabled: false,
-        role_request_payload: serde_json::Map::new(),
+        role_request_payload: std::cell::RefCell::new(serde_json::Map::new()),
         supports_backend_search: std::cell::Cell::new(false),
         compactions_remaining: std::cell::Cell::new(None),
         compaction_at_tokens: std::cell::Cell::new(None),
@@ -165,6 +165,7 @@ pub(super) async fn make_replay_send_update_fixture() -> ReplaySendUpdateFixture
         last_reported_branch: std::sync::Arc::new(parking_lot::Mutex::new(None)),
         git_head_enabled: false,
         models_manager: Default::default(),
+        role_registry_override: None,
         display_cwd: std::sync::OnceLock::new(),
         active_agent_type: parking_lot::Mutex::new(None),
         queue_exit_reminder_on_approved_exit: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -531,6 +532,65 @@ async fn channel_tokens_accumulate_into_streaming_capture() {
                 CapturePhase::ResponseText,
                 "phase must reflect the most recent channel — text \
                      arrived last, so the model was cut off mid-response",
+            );
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn sampling_events_drive_the_shared_runtime_status_and_first_token_metrics() {
+    use atelier_sampler::{RequestId, SamplingChannel, SamplingEvent};
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let mut fixture = make_replay_send_update_fixture().await;
+            let control = Arc::new(parking_lot::Mutex::new(
+                crate::runtime_control::RuntimeControl::default(),
+            ));
+            let session_id = fixture.actor.session_info.id.0.to_string();
+            control.lock().begin_request(
+                session_id.clone(),
+                "prompt-runtime-1",
+                None,
+                "main",
+                Some("allm".to_owned()),
+                Some("deepseek-v4-flash".to_owned()),
+                crate::runtime_control::now_millis().saturating_sub(25),
+            );
+            fixture.actor.tool_context.runtime_control = Some(control.clone());
+            let actor = Arc::new(fixture.actor);
+            let request_id = RequestId::random();
+
+            actor
+                .handle_sampling_event(SamplingEvent::FirstToken {
+                    request_id: request_id.clone(),
+                })
+                .await;
+            actor
+                .handle_sampling_event(SamplingEvent::ChannelToken {
+                    request_id,
+                    channel: SamplingChannel::Text,
+                    text: "ok".to_owned(),
+                    chunk_index: 0,
+                })
+                .await;
+
+            let snapshot = control
+                .lock()
+                .request("prompt-runtime-1")
+                .expect("runtime request snapshot");
+            assert_eq!(
+                snapshot.state,
+                crate::runtime_control::RuntimeState::StreamingResponse
+            );
+            assert!(snapshot.first_token_latency_ms.is_some());
+            assert!(
+                control
+                    .lock()
+                    .status(&session_id)
+                    .expect("runtime status")
+                    .last_progress_at_ms
+                    >= snapshot.started_at_ms
             );
         })
         .await;

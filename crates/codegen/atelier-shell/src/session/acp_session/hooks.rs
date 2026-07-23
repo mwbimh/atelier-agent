@@ -126,6 +126,110 @@ fn dispatch_params(dispatch: &ClientHookDispatch<'_>) -> Option<Arc<RawValue>> {
 }
 
 impl SessionActor {
+    pub(super) fn record_typed_lifecycle(
+        &self,
+        event: atelier_hooks::HookEvent,
+        request_id: &str,
+        decision: Option<&atelier_hooks::PolicyDecision>,
+        mutated: bool,
+    ) {
+        let Some(control) = &self.tool_context.runtime_control else {
+            return;
+        };
+        control.lock().record_event(
+            Some(self.session_id_string()),
+            Some(request_id.to_owned()),
+            "hook.lifecycle",
+            serde_json::json!({
+                "event": event.as_str(),
+                "decision": decision,
+                "mutated": mutated,
+            }),
+        );
+    }
+
+    /// Ask the connected ACP client to approve a typed policy decision.
+    /// This path intentionally bypasses normal YOLO/auto permission fast
+    /// paths: a PolicyDecision::Ask is itself a mandatory prompt.
+    pub(super) async fn request_typed_policy_approval(
+        &self,
+        event: atelier_hooks::HookEvent,
+        request_id: &str,
+        tool_call_id: acp::ToolCallId,
+        title: String,
+        prompt: &str,
+        raw_input: serde_json::Value,
+    ) -> Result<bool, acp::Error> {
+        const ALLOW_ID: &str = "policy-allow-once";
+        const REJECT_ID: &str = "policy-reject-once";
+
+        let safe_prompt = xai_acp_lib::redact_text(prompt);
+        let update = acp::ToolCallUpdate::new(
+            tool_call_id.clone(),
+            acp::ToolCallUpdateFields::new()
+                .title(Some(title))
+                .kind(Some(acp::ToolKind::Other))
+                .raw_input(Some(serde_json::json!({
+                    "event": event.as_str(),
+                    "prompt": safe_prompt,
+                    "operation": raw_input,
+                }))),
+        );
+        let options = vec![
+            acp::PermissionOption::new(
+                ALLOW_ID,
+                "Allow once".to_owned(),
+                acp::PermissionOptionKind::AllowOnce,
+            ),
+            acp::PermissionOption::new(
+                REJECT_ID,
+                "Reject".to_owned(),
+                acp::PermissionOptionKind::RejectOnce,
+            ),
+        ];
+        let request =
+            acp::RequestPermissionRequest::new(self.session_info.id.clone(), update, options);
+        let interaction_id = format!("policy:{request_id}:{}", event.as_str());
+        self.record_typed_lifecycle(
+            atelier_hooks::HookEvent::PermissionRequest,
+            request_id,
+            None,
+            false,
+        );
+        if let Some(control) = &self.tool_context.runtime_control {
+            control.lock().update_status(
+                self.session_info.id.0.as_ref(),
+                crate::runtime_control::RuntimeState::WaitingForPermission,
+                crate::runtime_control::now_millis(),
+                Some(format!("Waiting for policy approval: {}", event.as_str())),
+            );
+        }
+        let _pending_guard = crate::session::pending_interaction::PendingInteractionGuard::new(
+            self.pending_interactions.clone(),
+            self.notifications.gateway.clone(),
+            self.session_info.id.clone(),
+            interaction_id,
+            crate::session::pending_interaction::PendingKind::Permission,
+        );
+        let response = self.notifications.gateway.request_permission(request).await;
+        if let Some(control) = &self.tool_context.runtime_control {
+            control.lock().update_status(
+                self.session_info.id.0.as_ref(),
+                crate::runtime_control::RuntimeState::CheckingPolicy,
+                crate::runtime_control::now_millis(),
+                None,
+            );
+        }
+        let response = response?;
+        match response.outcome {
+            acp::RequestPermissionOutcome::Selected(selected) => {
+                Ok(selected.option_id == acp::PermissionOptionId::new(ALLOW_ID))
+            }
+            acp::RequestPermissionOutcome::Cancelled => Ok(false),
+            _ => Ok(false),
+        }
+    }
+
     /// Build a [`HookEventEnvelope`] with this session's common fields filled (session id,
     /// cwd, workspace root, timestamp). Single source of truth for envelope shape; every
     /// fire site goes through here.

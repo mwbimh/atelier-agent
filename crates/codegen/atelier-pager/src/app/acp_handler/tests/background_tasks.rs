@@ -1,6 +1,31 @@
 #![cfg_attr(rustfmt, rustfmt::skip)]
     use super::*;
 
+    #[test]
+    fn runtime_task_update_without_agent_view_surfaces_on_dashboard() {
+        let mut app = make_app_with_agent("parent-sess");
+        app.agents.clear();
+        app.active_view = ActiveView::AgentDashboard;
+        app.dashboard = Some(crate::views::dashboard::DashboardState::new());
+        let raw = serde_json::value::to_raw_value(&serde_json::json!({
+            "sessionId": "derived-sess",
+            "task": {
+                "taskId": "task-derived",
+                "state": "waiting_for_permission",
+            },
+        }))
+        .unwrap();
+        let notif = acp::ExtNotification::new("_atelier/task/update", raw.into());
+
+        assert!(handle_task_update(&notif, &mut app));
+        assert_eq!(
+            app.dashboard
+                .as_ref()
+                .and_then(|dashboard| dashboard.error_toast.as_deref()),
+            Some("Runtime task task-derived needs input; use /attach task-derived")
+        );
+    }
+
     /// Regression (resume sync): the on-disk replay stream re-emits persisted
     /// notifications through the generic `atelier/session/update` envelope. A
     /// background `monitor`/bash task (`TaskBackgrounded`) must restore into

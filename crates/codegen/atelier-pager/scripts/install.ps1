@@ -90,43 +90,11 @@ function Download-File([string]$Url, [string]$OutFile) {
     }
 }
 
-function Read-AtelierToken([string]$Scope) {
-    $authFile = Join-Path $AtelierDir 'auth.json'
-    if (-not (Test-Path $authFile)) { return $null }
-    try {
-        $auth = Get-Content -Raw $authFile | ConvertFrom-Json
-        $entry = $auth.$Scope
-        if ($entry -and $entry.key) { return $entry.key }
-    } catch {}
-    return $null
-}
-
 # --- Validate version ---
 
 if ($Version -and $Version -notmatch '^\d+\.\d+\.\d+(-\S+)?$') {
     Write-Error "Invalid version format: $Version (expected X.Y.Z or X.Y.Z-suffix)"
     exit 1
-}
-
-# --- Resolve auth ---
-
-$OidcScope = 'https://auth.x.ai::b1a00492-073a-47ea-816f-4c329264a828'
-$LegacyScope = 'https://accounts.atelier/sign-in'
-$AuthSource = ''
-
-if ($env:ATELIER_DEPLOYMENT_KEY) {
-    $AuthSource = 'deployment key'
-    Write-Host 'Auth: using deployment key.' -ForegroundColor DarkGray
-} else {
-    $oidcToken = Read-AtelierToken $OidcScope
-    $legacyToken = Read-AtelierToken $LegacyScope
-    if ($oidcToken) {
-        $AuthSource = 'auth.json (oidc)'
-        Write-Host 'Auth: using OIDC token from ~/.atelier/auth.json.' -ForegroundColor DarkGray
-    } elseif ($legacyToken) {
-        $AuthSource = 'auth.json (legacy)'
-        Write-Host 'Auth: using legacy token from ~/.atelier/auth.json.' -ForegroundColor DarkGray
-    }
 }
 
 # --- Detect architecture ---
@@ -147,8 +115,12 @@ $platform = "windows-$arch"
 
 # --- Resolve version and channel ---
 
-$BaseUrlPrimary = 'https://atelier/cli'
-$BaseUrlFallback = 'https://atelier.invalid/cli'
+$BaseUrl = $env:ATELIER_RELEASE_BASE_URL
+if ([string]::IsNullOrWhiteSpace($BaseUrl)) {
+    Write-Error 'ATELIER_RELEASE_BASE_URL is required for vendorless installation.'
+    exit 1
+}
+$BaseUrl = $BaseUrl.TrimEnd('/')
 $DownloadDir = Join-Path $AtelierDir 'downloads'
 $BinDir = if ($env:ATELIER_BIN_DIR) { $env:ATELIER_BIN_DIR } else { Join-Path $AtelierDir 'bin' }
 
@@ -157,33 +129,19 @@ New-Item -ItemType Directory -Path $BinDir -Force | Out-Null
 
 $Channel = if ($env:ATELIER_CHANNEL) { $env:ATELIER_CHANNEL } else { 'stable' }
 
-# Pick a working BaseUrl: try Cloudflare-fronted x.ai first, fall back to
-# direct GCS if it's unreachable. The probe doubles as the channel-pointer
-# fetch when no -Version was passed, so the happy path costs zero extra requests.
 if (-not $Version) { Write-Host "Fetching latest $Channel version..." -ForegroundColor DarkGray }
-$probeResult = Download-String "$BaseUrlPrimary/$Channel"
-if ($probeResult) {
-    $BaseUrl = $BaseUrlPrimary
-} else {
-    Write-Host "Note: $BaseUrlPrimary unreachable, falling back to direct GCS." -ForegroundColor Yellow
-    $BaseUrl = $BaseUrlFallback
-    $probeResult = Download-String "$BaseUrl/$Channel"
-}
+$probeResult = if ($Version) { $null } else { Download-String "$BaseUrl/$Channel" }
 
 if ($Version) {
     $resolvedVersion = $Version
 } elseif ($probeResult) {
     $resolvedVersion = $probeResult.Trim()
 } else {
-    Write-Error "Failed to fetch latest version from $BaseUrlPrimary/$Channel and $BaseUrlFallback/$Channel"
+    Write-Error "Failed to fetch latest version from $BaseUrl/$Channel"
     exit 1
 }
 
-if ($AuthSource) {
-    Write-Host "Installing Atelier $resolvedVersion ($platform, $AuthSource)..." -ForegroundColor Cyan
-} else {
-    Write-Host "Installing Atelier $resolvedVersion ($platform)..." -ForegroundColor Cyan
-}
+Write-Host "Installing Atelier $resolvedVersion ($platform)..." -ForegroundColor Cyan
 
 # --- Download binary ---
 
@@ -276,42 +234,6 @@ if (-not (Test-Path $ConfigFile)) {
     [System.IO.File]::WriteAllLines($ConfigFile, [string[]]$output.ToArray(), [System.Text.Encoding]::UTF8)
 } else {
     Add-Content -Path $ConfigFile -Value "`r`n[cli]`r`n$($cliLines -join "`r`n")`r`n"
-}
-
-# --- Fetch deployment config (deployment key only) ---
-
-if ($env:ATELIER_DEPLOYMENT_KEY) {
-    $ProxyUrl = if ($env:ATELIER_PROXY_URL) { $env:ATELIER_PROXY_URL } else { 'https://cli-chat-proxy.atelier.com/v1' }
-    Write-Host '  Fetching deployment config...' -ForegroundColor DarkGray
-    try {
-        $headers = @{ 'Authorization' = "Bearer $($env:ATELIER_DEPLOYMENT_KEY)" }
-        $deployResponse = Invoke-RestMethod -Uri "$ProxyUrl/deployment/config" -Headers $headers -UseBasicParsing
-    } catch {
-        Write-Host "  Warning: failed to fetch deployment config from $ProxyUrl/deployment/config" -ForegroundColor Yellow
-        $deployResponse = $null
-    }
-
-    if ($deployResponse) {
-        $managedConfig = $deployResponse.managed_config
-        $requirements = $deployResponse.requirements
-
-        $managedConfigPath = Join-Path $AtelierDir 'managed_config.toml'
-        $requirementsPath = Join-Path $AtelierDir 'requirements.toml'
-
-        if ($managedConfig -and $managedConfig -ne 'null') {
-            [System.IO.File]::WriteAllText($managedConfigPath, $managedConfig, [System.Text.Encoding]::UTF8)
-            Write-Host '  Managed config applied.' -ForegroundColor DarkGray
-        } else {
-            if (Test-Path $managedConfigPath) { Remove-Item $managedConfigPath -Force }
-        }
-
-        if ($requirements -and $requirements -ne 'null') {
-            [System.IO.File]::WriteAllText($requirementsPath, $requirements, [System.Text.Encoding]::UTF8)
-            Write-Host '  Requirements applied.' -ForegroundColor DarkGray
-        } else {
-            if (Test-Path $requirementsPath) { Remove-Item $requirementsPath -Force }
-        }
-    }
 }
 
 Write-Host "Atelier $resolvedVersion installed to $BinDir\atelier.exe" -ForegroundColor Green

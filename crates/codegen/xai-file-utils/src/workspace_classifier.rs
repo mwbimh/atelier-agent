@@ -87,6 +87,12 @@ fn is_platform_system_dir(cwd: &Path) -> bool {
 
 #[cfg(target_os = "windows")]
 fn is_platform_system_dir(cwd: &Path) -> bool {
+    // Keep the cross-platform CLI spelling of /tmp classified the same way
+    // as on Unix. On Windows it is root-relative, not the value of %TEMP%.
+    if cwd == Path::new("/tmp") || cwd.starts_with(Path::new("/tmp/")) {
+        return true;
+    }
+
     if let Ok(temp) = std::env::var("TEMP").or_else(|_| std::env::var("TMP")) {
         if cwd.starts_with(&temp) {
             return true;
@@ -245,6 +251,17 @@ mod tests {
         #[test]
         fn root_project_is_safe() {
             assert!(is_project_dir(Path::new("/root/my-project")));
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    mod windows {
+        use super::*;
+
+        #[test]
+        fn unix_style_tmp_is_unsafe() {
+            assert!(!is_project_dir(Path::new("/tmp")));
+            assert!(!is_project_dir(Path::new("/tmp/scratch")));
         }
     }
 

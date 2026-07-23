@@ -314,7 +314,7 @@ impl SessionActor {
             max_completion_tokens: cfg.max_completion_tokens,
             temperature: cfg.temperature,
             top_p: cfg.top_p,
-            request_payload: self.role_request_payload.clone(),
+            request_payload: self.role_request_payload.borrow().clone(),
             api_backend: cfg.api_backend,
             auth_scheme,
             extra_headers,
@@ -361,22 +361,23 @@ impl SessionActor {
     pub(super) async fn reconstruct_role_config(
         &self,
         role_id: atelier_provider::RoleId,
-    ) -> Result<Option<SamplingConfig>, acp::Error> {
-        let registry = atelier_provider::ProviderRegistry::load_or_create(
-            atelier_config::atelier_home().join("providers.toml"),
-        )
-        .map_err(|error| {
-            acp::Error::internal_error().data(format!(
-                "failed to load {} role configuration: {error}",
-                role_id
-            ))
-        })?;
+    ) -> Result<(SamplingConfig, atelier_provider::RoleConfig), acp::Error> {
+        #[cfg(test)]
+        let registry = if let Some(registry) = &self.role_registry_override {
+            registry.clone()
+        } else {
+            self.load_live_role_registry(role_id)?
+        };
+        #[cfg(not(test))]
+        let registry = self.load_live_role_registry(role_id)?;
         let Some(role) = registry
             .role(role_id)
             .filter(|role| role.provider != "default" && role.model != "default")
             .cloned()
         else {
-            return Ok(None);
+            return Err(
+                acp::Error::invalid_params().data(format!("role {role_id} is not configured"))
+            );
         };
         let model_id = acp::ModelId::new(format!("{}/{}", role.provider, role.model));
         let credentials = self.chat_state_handle.get_credentials().await;
@@ -414,26 +415,68 @@ impl SessionActor {
                 ))
             })?);
         }
-        Ok(Some(config))
+        Ok((config, role))
     }
 
-    /// Build a client for a fixed helper role. `None` means the role is not
-    /// configured or its model is not in the live catalog; callers then keep
-    /// the existing active-session behavior.
+    fn load_live_role_registry(
+        &self,
+        role_id: atelier_provider::RoleId,
+    ) -> Result<atelier_provider::ProviderRegistry, acp::Error> {
+        atelier_provider::ProviderRegistry::load_or_create(
+            atelier_config::atelier_home().join("providers.toml"),
+        )
+        .map_err(|error| {
+            acp::Error::internal_error().data(format!(
+                "failed to load {} role configuration: {error}",
+                role_id
+            ))
+        })
+    }
+
+    /// Build a client for a fixed helper role. Fixed roles fail closed when
+    /// they are unconfigured or unavailable; they never inherit the active
+    /// session model.
     pub(crate) async fn prepare_role_chat_completion(
         &self,
         role_id: atelier_provider::RoleId,
         force_http1: bool,
-    ) -> Result<Option<(SamplingConfig, atelier_sampler::SamplingClient)>, acp::Error> {
+    ) -> Result<(SamplingConfig, atelier_sampler::SamplingClient), acp::Error> {
         self.refresh_token_if_expired().await;
-        let Some(mut config) = self.reconstruct_role_config(role_id).await? else {
-            return Ok(None);
-        };
+        let (mut config, role) = self.reconstruct_role_config(role_id).await?;
+        let policy_decision = crate::extensions::policy::evaluate_runtime_policy(
+            &self.tool_context.runtime_policy.read(),
+            crate::extensions::policy::PolicyOperation::ProviderRequest,
+            Some(role_id.as_str()),
+            Some(&role.provider),
+            None,
+            None,
+            crate::extensions::policy::PolicyGates::default(),
+        );
+        match policy_decision {
+            atelier_hooks::PolicyDecision::Allow => {}
+            atelier_hooks::PolicyDecision::Deny { reason } => {
+                return Err(acp::Error::invalid_params().data(reason));
+            }
+            atelier_hooks::PolicyDecision::Ask { prompt } => {
+                return Err(acp::Error::invalid_params()
+                    .data(format!("Provider request requires approval: {prompt}")));
+            }
+            atelier_hooks::PolicyDecision::Modify { .. } => {
+                return Err(acp::Error::invalid_params().data(
+                    "Provider policy requested a payload modification that could not be applied",
+                ));
+            }
+            atelier_hooks::PolicyDecision::AddContext { .. } => {
+                return Err(acp::Error::invalid_params().data(
+                    "Provider policy requested context injection after context construction",
+                ));
+            }
+        }
         config.force_http1 = force_http1;
         config.idle_timeout_secs = Some(self.inference_idle_timeout.as_secs());
         let client = atelier_sampler::SamplingClient::new(config.clone())
             .map_err(|error| self.to_acp_error(error))?;
-        Ok(Some((config, client)))
+        Ok((config, client))
     }
     /// Install auto-mode permission classifier with a live LLM side-query
     /// (laziness-classifier pattern: `prepare_chat_completion` +
@@ -651,8 +694,8 @@ impl SessionActor {
             Some(serde_json::json!(
                 { "error_type" : error_type, "status_code" : status_code,
                 "reauthable" : reauthable, "auth_mode" : auth.as_ref().map(| a |
-                format!("{:?}", a.auth_mode)), "key_prefix" : auth.as_ref().map(| a |
-                crate ::auth::token_suffix(& a.key).to_owned()), "expires_at" : auth
+                format!("{:?}", a.auth_mode)), "has_access_token" : auth.as_ref().map(| a |
+                !a.key.is_empty()), "expires_at" : auth
                 .as_ref().and_then(| a | a.expires_at.map(| e | e.to_rfc3339())),
                 "message" : crate ::util::truncate(message, 300), }
             )),

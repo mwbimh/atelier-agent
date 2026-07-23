@@ -2535,6 +2535,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn markdown_wrapped_session_media_path_fully_linkified() {
         // Regression: imagine-tool prose whose long session path soft-wraps
         // across rows. The whole path must be clickable (one overlay region
@@ -2619,6 +2620,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn collapsed_block_header_file_path_is_scanned() {
         // File paths in the command header line should be linkified even
         // when the block is collapsed.
@@ -2735,6 +2737,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn collapse_header_entry_does_not_leak_links_but_visible_group_entries_do() {
         // Smallest shape the truncation fold can produce for an expanded
         // group: 3 entries, header count = group_len - 1 = 2.
@@ -3416,9 +3419,9 @@ mod tests {
         use crate::scrollback::types::{BlockContext, selectable_cols};
         use unicode_width::UnicodeWidthStr;
 
-        let abs = "/Users/me/project/src/foo.rs";
-        let cwd = std::path::PathBuf::from("/Users/me/project");
-        let mut entry = ScrollbackEntry::new(RenderBlock::edit(abs, None));
+        let cwd = std::env::current_dir().unwrap().join("render-link-project");
+        let abs = cwd.join("src/foo.rs");
+        let mut entry = ScrollbackEntry::new(RenderBlock::edit(abs.to_string_lossy(), None));
         entry.display_mode = DisplayMode::Collapsed;
 
         let mut appearance = AppearanceConfig::default();
@@ -3509,6 +3512,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn long_read_header_link_is_clipped_to_offset_content_area() {
         let path = "/outside/a/very/long/path/that/is/clipped/main.rs";
         let mut entry = ScrollbackEntry::new(RenderBlock::read(path, None));
@@ -3529,6 +3533,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn explicit_tool_link_clips_before_u16_conversion() {
         let path = format!("/outside/{}.rs", "x".repeat(70_000));
         let mut entry = ScrollbackEntry::new(RenderBlock::read(path, None));

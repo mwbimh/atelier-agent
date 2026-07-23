@@ -812,10 +812,6 @@ pub struct AgentView {
     /// Stashed normal prompt state while editing a queued prompt.
     /// Restored when editing ends.
     pub stashed_prompt: Option<StashedPrompt>,
-    /// Complete prompt stashed from a credit-limit-blocked turn. Used by
-    /// `CreditLimitRecheckComplete` to retry the prompt after a tier
-    /// upgrade instead of showing a stale upsell.
-    pub credit_limit_stashed_prompt: Option<crate::app::agent::InFlightPrompt>,
     /// Complete prompt stashed from a turn that failed because the login
     /// expired (401 / re-auth). Used by the `AuthComplete` handler to
     /// auto-resubmit the prompt after a successful mid-session re-auth so
@@ -830,8 +826,8 @@ pub struct AgentView {
     /// Cached server-reported context state.
     pub context_state: Option<atelier_shell::session::ContextInfo>,
     /// Gateway light-frontend session (`kind: "chat"` / `--chat` / conversation
-    /// resume). Suppresses Build credits / local sampler context telemetry so the
-    /// status bar and prompt never imply remote usage from wrong metrics.
+    /// resume). Suppresses local sampler context telemetry so the status bar and
+    /// prompt never imply remote usage from wrong metrics.
     pub chat_kind: bool,
     /// Process-wide `--chat` (mirrors `AppView::chat_mode`; set via
     /// [`Self::apply_app_scoped_gates`]). UI policy only: hides picker
@@ -839,10 +835,6 @@ pub struct AgentView {
     /// Unlike `chat_kind`, stays `false` for a `/chat` one-shot session in
     /// a Build process, whose picker still lists local sessions.
     pub app_chat_mode: bool,
-    /// Mocked credit balance for the status bar indicator.
-    pub credit_balance: Option<crate::views::credit_bar::CreditBalance>,
-    /// Auto top-up rule paired with `credit_balance` for the prompt warning.
-    pub auto_topup: Option<crate::views::credit_bar::AutoTopupInfo>,
     /// Current goal orchestration state. Set by `GoalUpdated` session
     /// notifications, cleared when a new session starts.
     pub goal_state: Option<super::agent::GoalDisplayState>,
@@ -1149,6 +1141,12 @@ pub struct AgentView {
     /// Active /btw side question overlay. When `Some`, renders as a dismissible
     /// overlay and captures keyboard input (Esc/Enter/Space to dismiss).
     pub btw_state: Option<crate::views::btw_overlay::BtwOverlayState>,
+    /// Request currently owning `btw_state`. Kept separately from the visual
+    /// state so async answers and persist completions can be rejected after the
+    /// overlay is dismissed or replaced by a newer question.
+    pub(crate) btw_request: Option<crate::app::agent::BtwRequest>,
+    /// Monotonic per-agent sequence used to allocate `/btw` request IDs.
+    pub(crate) next_btw_request_id: u64,
     /// Whether the /btw panel holds keyboard focus. The panel is non-blocking,
     /// so Up/Down/PgUp/PgDn scroll it when focused and otherwise reach the
     /// prompt. Set on a `Done` answer; cleared when the user types in or clicks
@@ -1619,39 +1617,6 @@ fn translate_local_submit(
                 worktree,
                 persist_mode,
             })
-        }
-        LocalQuestionKind::CreditLimitUpsell { choices } => {
-            let q = qv.questions.first();
-            let url = q
-                .and_then(|q| q.options.get(*idx))
-                .and_then(|o| o.id.as_deref())
-                .unwrap_or(super::dispatch::UPSELL_URL_PAYG);
-            let choice = choices
-                .get(*idx)
-                .copied()
-                .unwrap_or(atelier_telemetry::events::CreditLimitChoice::PayAsYouGo);
-            atelier_telemetry::session_ctx::log_event(
-                atelier_telemetry::events::CreditLimitUpsellClicked {
-                    surface: atelier_telemetry::events::CreditLimitUpsellSurface::QuestionModal,
-                    choice,
-                },
-            );
-            InputOutcome::Action(Action::OpenUrl(url.to_string()))
-        }
-        LocalQuestionKind::FreeUsageUpsell { source } => {
-            let url = qv
-                .questions
-                .first()
-                .and_then(|q| q.options.get(*idx))
-                .and_then(|o| o.id.as_deref())
-                .unwrap_or(super::dispatch::UPSELL_URL_UPGRADE);
-            atelier_telemetry::session_ctx::log_event(
-                atelier_telemetry::events::SuperAtelierUpsellClicked {
-                    source,
-                    auth_method: None,
-                },
-            );
-            InputOutcome::Action(Action::OpenUrl(url.to_string()))
         }
         LocalQuestionKind::AgentTypeMismatch { model_id, effort } => {
             let start_new = *idx == 0;

@@ -664,26 +664,26 @@ mod tests {
         // untrust click. HOME overridden so workspace_key sees the tempdir as
         // home; ATELIER_HOME-isolated store; ATELIER_FOLDER_TRUST unset so the
         // default-on flag applies.
-        let home = tempfile::tempdir().unwrap();
-        let _home = EnvGuard::set("HOME", home.path());
+        // `dirs::home_dir()` uses the Windows known-folder API rather than the
+        // process `HOME` variable, so an environment override does not create a
+        // real home-directory key on Windows. Use the actual resolved home and
+        // avoid writing anything into it: revoke must return before store/cache
+        // mutation for every unsafe root.
+        let home = dirs::home_dir().expect("the test process must have a home directory");
         let atelier_home = tempfile::tempdir().unwrap();
         let _env = EnvGuard::set("ATELIER_HOME", atelier_home.path());
         let _flag = EnvGuard::unset("ATELIER_FOLDER_TRUST");
-        git2::Repository::init(home.path()).unwrap();
-        // Repo-local code-exec config, so the final allow is the unrecordable-key
-        // rule at work (a recordable key with configs + empty store would deny).
-        std::fs::create_dir_all(home.path().join(".atelier").join("hooks")).unwrap();
 
         assert!(
-            !revoke_folder_trust(home.path()),
+            !revoke_folder_trust(&home),
             "an unrecordable root reports was_trusted=false"
         );
         assert!(
-            DECISIONS.lock().get(&workspace_key(home.path())).is_none(),
+            DECISIONS.lock().get(&workspace_key(&home)).is_none(),
             "revoke must record no cache deny for an unrecordable root"
         );
         assert!(
-            project_scope_allowed(home.path()),
+            project_scope_allowed(&home),
             "$HOME must stay allowed after a revoke attempt"
         );
     }

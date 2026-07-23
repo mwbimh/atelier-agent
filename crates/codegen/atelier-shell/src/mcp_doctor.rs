@@ -8,7 +8,6 @@ use atelier_tools::types::config_source::ConfigSource;
 use serde::Serialize;
 
 use crate::auth::AtelierComConfig;
-use crate::session::managed_mcp;
 use crate::session::mcp_servers;
 
 // ── Report types ────────────────────────────────────────────────
@@ -238,90 +237,6 @@ fn discover_servers(cwd: &Path) -> (Vec<ConfigSourceStatus>, Vec<DiscoveredServe
     (sources, servers)
 }
 
-// ── Managed (atelier.invalid) server discovery ─────────────────────────
-
-const MANAGED_SOURCE_LABEL: &str = "atelier.invalid";
-
-fn managed_skipped(reason: impl Into<String>) -> (ConfigSourceStatus, Vec<DiscoveredServer>) {
-    (
-        ConfigSourceStatus {
-            path: MANAGED_SOURCE_LABEL.to_string(),
-            status: ConfigSourceState::Skipped {
-                reason: reason.into(),
-            },
-        },
-        vec![],
-    )
-}
-
-fn managed_found(
-    count: usize,
-    servers: Vec<DiscoveredServer>,
-) -> (ConfigSourceStatus, Vec<DiscoveredServer>) {
-    (
-        ConfigSourceStatus {
-            path: MANAGED_SOURCE_LABEL.to_string(),
-            status: ConfigSourceState::Found {
-                server_count: count,
-            },
-        },
-        servers,
-    )
-}
-
-/// Discover managed `atelier_com_*` servers if the user has xAI auth on disk.
-async fn try_discover_managed_servers() -> (ConfigSourceStatus, Vec<DiscoveredServer>) {
-    return managed_skipped("managed MCP is disabled in Atelier");
-    #[allow(unreachable_code)]
-    let atelier_home = atelier_tools::util::atelier_home::atelier_home();
-    let atelier_com_config = AtelierComConfig::default();
-    let auth_manager = Arc::new(crate::auth::AuthManager::new(
-        &atelier_home,
-        atelier_com_config,
-    ));
-
-    let Some(snapshot) = auth_manager.current_or_expired() else {
-        return managed_skipped("not logged in");
-    };
-    if !snapshot.is_managed_mcp_eligible() {
-        return managed_skipped(format!("{:?} auth (not xAI OIDC)", snapshot.auth_mode));
-    }
-
-    let token = match auth_manager.get_valid_token().await {
-        Ok(key) => key,
-        Err(_) => return managed_skipped("auth expired — run `atelier login`"),
-    };
-
-    let proxy_url = crate::agent::config::EndpointsConfig::from_effective_config().proxy_url();
-
-    let configs = match managed_mcp::fetch_managed_configs(&proxy_url, &token).await {
-        Ok(configs) => configs,
-        Err(e) => return managed_skipped(format!("fetch failed: {e}")),
-    };
-    if configs.is_empty() {
-        return managed_found(0, vec![]);
-    }
-
-    let mut servers: Vec<agent_client_protocol::McpServer> = vec![];
-    managed_mcp::auto_inject_managed_servers_with_disabled(
-        &mut servers,
-        &configs,
-        &Default::default(),
-    );
-    managed_mcp::inject_managed_headers(&mut servers, &configs);
-
-    let source = ConfigSource::Managed { path: None };
-    let discovered: Vec<DiscoveredServer> = servers
-        .into_iter()
-        .map(|server| DiscoveredServer {
-            server,
-            source: source.clone(),
-        })
-        .collect();
-
-    managed_found(discovered.len(), discovered)
-}
-
 // ── Check functions ─────────────────────────────────────────────
 
 fn resolve_command(command: &str) -> Option<String> {
@@ -520,10 +435,6 @@ async fn check_server(
 
 pub async fn run_doctor(cwd: &Path, name_filter: Option<&str>) -> DoctorReport {
     let (mut sources, mut discovered) = discover_servers(cwd);
-
-    let (managed_source, managed_servers) = try_discover_managed_servers().await;
-    sources.push(managed_source);
-    discovered.extend(managed_servers);
 
     let allowlist = &atelier_workspace::permission::resolution::managed_settings().mcp_allowlist;
     if allowlist.is_restricted() {

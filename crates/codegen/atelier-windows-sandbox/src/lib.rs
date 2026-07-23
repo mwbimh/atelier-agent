@@ -57,14 +57,10 @@ pub fn command_runner_path() -> Result<PathBuf, SandboxError> {
                 "cannot resolve the Atelier command runner executable: {error}"
             ))
         })?;
-        if is_atelier_main_executable(&current_exe) {
-            current_exe
-        } else {
-            current_exe
-                .parent()
-                .map(|dir| dir.join("atelier-command-runner.exe"))
-                .unwrap_or(current_exe)
-        }
+        // The command runner is an internal mode of the main executable.
+        // Aliases and versioned npm filenames must behave exactly like
+        // `atelier.exe`, so the filename is deliberately not inspected.
+        current_exe
     };
 
     if !path.is_file() {
@@ -74,14 +70,6 @@ pub fn command_runner_path() -> Result<PathBuf, SandboxError> {
         )));
     }
     Ok(path)
-}
-
-fn is_atelier_main_executable(path: &Path) -> bool {
-    path.file_stem()
-        .and_then(|stem| stem.to_str())
-        .is_some_and(|stem| {
-            stem.eq_ignore_ascii_case("atelier") || stem.eq_ignore_ascii_case("atelier-pager")
-        })
 }
 
 /// Build the command-line arguments for `atelier-command-runner`.
@@ -401,6 +389,38 @@ mod contract_tests {
         .expect("embedded runner args");
         assert_eq!(args[0], "--internal-command-runner");
         assert!(args.iter().any(|arg| arg == "--"));
+    }
+
+    #[test]
+    fn renamed_release_executable_uses_embedded_command_runner_mode() {
+        for executable in [
+            r"C:\bin\agent.exe",
+            r"C:\bin\atelier-0.1.220-alpha.4.exe",
+            r"C:\bin\my-company-agent.exe",
+        ] {
+            let path = PathBuf::from(executable);
+            let args = super::command_runner_args_for(
+                path.as_path(),
+                path.as_path(),
+                SandboxMode::WorkspaceWrite,
+                &[PathBuf::from(r"C:\workspace")],
+                PathBuf::from(r"C:\workspace").as_path(),
+                PathBuf::from(r"C:\Windows\System32\cmd.exe").as_path(),
+                &[OsString::from("/C"), OsString::from("echo ok")],
+            )
+            .expect("embedded runner args");
+            assert_eq!(args[0], "--internal-command-runner", "{executable}");
+        }
+    }
+
+    #[test]
+    fn command_runner_defaults_to_the_current_executable_regardless_of_name() {
+        if std::env::var_os("ATELIER_COMMAND_RUNNER").is_some() {
+            return;
+        }
+        let current = std::env::current_exe().expect("current test executable");
+        let runner = super::command_runner_path().expect("embedded command runner");
+        assert_eq!(runner, current);
     }
 
     #[test]

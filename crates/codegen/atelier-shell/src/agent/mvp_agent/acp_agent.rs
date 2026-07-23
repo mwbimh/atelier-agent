@@ -48,32 +48,6 @@ impl acp::Agent for MvpAgent {
                 );
             });
         atelier_workspace::trust::migrate_legacy_hook_trust();
-        if let Some(auth) = self.auth_manager.current() {
-            let user_id = auth.user_id.trim();
-            let needs_user_info = user_id.is_empty()
-                || user_id.eq_ignore_ascii_case("unknown");
-            atelier_telemetry::unified_log::info(
-                "auth init user_info check",
-                None,
-                Some(
-                    serde_json::json!(
-                        { "user_id" : user_id, "needs_user_info" : needs_user_info,
-                        "key_prefix" : crate ::auth::token_suffix(& auth.key),
-                        "rt_prefix" : auth.refresh_token.as_deref().map(crate
-                        ::auth::token_suffix), }
-                    ),
-                ),
-            );
-            if needs_user_info && let Err(e) = self.auth_manager.update(auth).await {
-                tracing::warn!(
-                    "Failed to refresh user info from proxy during new_session: {}", e
-                );
-            }
-        }
-        if !self.tier_allowed.get() && let Some(auth) = self.auth_manager.current() {
-            self.enforce_atelier_code_access(&auth).await;
-        }
-        self.maybe_sync_bundle_in_background(false);
         let mut client_type = arguments
             .meta
             .as_ref()
@@ -141,37 +115,21 @@ impl acp::Agent for MvpAgent {
         if self.initialize_request.set(arguments).is_err() {
             tracing::info!("Initialize called on reconnect (already initialized)");
         }
-        let pre = self
-            .auth_manager
-            .current()
-            .map(|a| (
-                crate::auth::token_suffix(&a.key).to_owned(),
-                a
-                    .refresh_token
-                    .as_deref()
-                    .map(|t| crate::auth::token_suffix(t).to_owned()),
-            ));
+        let pre = self.auth_manager.current();
         self.auth_manager.force_reload_from_disk();
-        let post = self
-            .auth_manager
-            .current()
-            .map(|a| (
-                crate::auth::token_suffix(&a.key).to_owned(),
-                a
-                    .refresh_token
-                    .as_deref()
-                    .map(|t| crate::auth::token_suffix(t).to_owned()),
-            ));
+        let post = self.auth_manager.current();
         atelier_telemetry::unified_log::info(
             "auth init disk refresh",
             None,
             Some(
                 serde_json::json!(
-                    { "pre_key" : pre.as_ref().map(| p | & p.0), "pre_rt" : pre.as_ref()
-                    .and_then(| p | p.1.as_deref()), "post_key" : post.as_ref().map(| p |
-                    & p.0), "post_rt" : post.as_ref().and_then(| p | p.1.as_deref()),
-                    "changed" : pre.as_ref().map(| p | & p.0) != post.as_ref().map(| p |
-                    & p.0), }
+                    { "had_access_token" : pre.as_ref().is_some_and(| a | !a.key.is_empty()),
+                    "had_refresh_token" : pre.as_ref().is_some_and(| a | a.refresh_token.is_some()),
+                    "has_access_token" : post.as_ref().is_some_and(| a | !a.key.is_empty()),
+                    "has_refresh_token" : post.as_ref().is_some_and(| a | a.refresh_token.is_some()),
+                    "access_token_changed" : pre.as_ref().map(| a | &a.key) != post.as_ref().map(| a | &a.key),
+                    "refresh_token_changed" : pre.as_ref().and_then(| a | a.refresh_token.as_ref())
+                    != post.as_ref().and_then(| a | a.refresh_token.as_ref()), }
                 ),
             ),
         );
@@ -326,11 +284,11 @@ impl acp::Agent for MvpAgent {
             ),
         );
         debug_assert!(
-            ! has_external_api_key || matches!(auth_methods.first().map(| m |
-            auth_method::AuthMethodKind::from_id(m.id())),
-            Some(auth_method::AuthMethodKind::XaiApiKey)),
-            "BYOK invariant violated: xai.api_key MUST be auth_methods.first() \
-             when has_external_api_key is true; got {:?}",
+            matches!(auth_methods.first().map(|m|
+                auth_method::AuthMethodKind::from_id(m.id())),
+                Some(auth_method::AuthMethodKind::LocalProvider)),
+            "vendorless invariant violated: atelier.provider MUST be \
+             auth_methods.first(); got {:?}",
             auth_methods.first().map(| m | m.id()),
         );
         let default_auth_method_id_wire: Option<String> = built
@@ -355,21 +313,7 @@ impl acp::Agent for MvpAgent {
         let current_working_directory = self.launch_cwd.clone();
         let hostname = gethostname::gethostname();
         let mcp_servers: Vec<crate::extensions::mcp::McpServerEntry> = Vec::new();
-        let fetch_managed_mcps = self.cfg.borrow().managed_mcps_enabled
-            && self.can_fetch_managed_mcps();
-        if self.cfg.borrow().managed_mcps_enabled && !fetch_managed_mcps {
-            tracing::info!("Managed MCP fetch: DISABLED");
-        }
-        self.spawn_initialize_launch_mcp_setup(fetch_managed_mcps);
-        self.spawn_managed_gateway_tool_catalog_fetch();
-        {
-            let agent_ref = LocalRef::new(self);
-            tokio::task::spawn_local(async move {
-                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                agent_ref.get().emit_announcements(AnnouncementsPushMode::SeedNewClient);
-            });
-        }
-        self.spawn_announcements_refresh();
+        self.spawn_initialize_launch_mcp_setup();
         self.spawn_heap_profile_monitor();
         let init_model_state = if crate::agent::chat_modes::process_chat_mode_enabled() {
             self.chat_modes.model_state().await
@@ -434,387 +378,16 @@ impl acp::Agent for MvpAgent {
         if !vendorless_auth_method_allowed(arguments.method_id.0.as_ref()) {
             tracing::warn!(
                 method = %arguments.method_id.0,
-                "auth: rejected non-local authentication method in vendorless runtime"
+                "auth: rejected non-local authentication method"
             );
             return Err(acp::Error::auth_required().data(
-                "Atelier only accepts the atelier.provider authentication method; configure a local Provider.",
+                "Atelier only accepts atelier.provider; configure credentials on a Provider.",
             ));
         }
-        tracing::info!(method = % arguments.method_id.0, "auth: authenticate request");
-        atelier_telemetry::unified_log::info(
-            "auth started",
-            None,
-            Some(serde_json::json!({ "method" : arguments.method_id.0.as_ref() })),
-        );
-        let requested_kind = auth_method::AuthMethodKind::from_id(&arguments.method_id);
-        if requested_kind != auth_method::AuthMethodKind::LocalProvider
-            && let Some(preferred) = self.cfg.borrow().atelier_com_config.preferred_method
-        {
-            let kind = auth_method::AuthMethodKind::from_id(&arguments.method_id);
-            let allowed = match preferred {
-                crate::auth::PreferredAuthMethod::ApiKey => kind.is_api_key(),
-                crate::auth::PreferredAuthMethod::Oidc => kind.is_session_based(),
-            };
-            if !allowed {
-                let msg = match preferred {
-                    crate::auth::PreferredAuthMethod::ApiKey => {
-                        auth_method::PREFERRED_API_KEY_UNAVAILABLE
-                    }
-                    crate::auth::PreferredAuthMethod::Oidc => {
-                        "preferred_method=oidc; API-key auth is not allowed."
-                    }
-                };
-                emit_login_span(
-                    false,
-                    arguments.method_id.0.as_ref(),
-                    None,
-                    Some("preferred_method_mismatch"),
-                );
-                return Err(acp::Error::auth_required().data(msg));
-            }
-        }
-        match arguments.method_id.0.as_ref() {
-            auth_method::LOCAL_PROVIDER_AUTH_METHOD_ID => {
-                self.set_auth_method(arguments.method_id.clone());
-                tracing::debug!("auth: local Provider method accepted without login");
-                Ok(Default::default())
-            }
-            auth_method::XAI_API_KEY_METHOD_ID => {
-                if self.cfg.borrow().atelier_com_config.api_key_auth_disabled() {
-                    emit_login_span(false, "api_key", None, Some("disabled_by_admin"));
-                    return Err(
-                        acp::Error::auth_required()
-                            .data("API-key auth is disabled by your administrator."),
-                    );
-                }
-                let mut sampling_config = self.sampling_config.borrow_mut();
-                if sampling_config.api_key.is_none() {
-                    if let Ok(api_key) = auth_method::read_xai_api_key_env() {
-                        sampling_config.api_key = Some(api_key.clone());
-                        if let Err(e) = crate::auth::store_api_key(
-                            &crate::util::atelier_home::atelier_home(),
-                            &api_key,
-                        ) {
-                            tracing::warn!(
-                                "failed to persist API key to auth.json: {e}"
-                            );
-                            atelier_telemetry::unified_log::warn(
-                                "failed to persist API key to auth.json",
-                                None,
-                                Some(serde_json::json!({ "error" : e.to_string() })),
-                            );
-                        }
-                    } else if !self
-                        .models_manager
-                        .models()
-                        .values()
-                        .any(|m| m.has_own_credentials())
-                    {
-                        emit_login_span(false, "api_key", None, Some("no_credentials"));
-                        return Err(
-                            acp::Error::auth_required()
-                                .data(
-                                    "Set XAI_API_KEY or add api_key/env_key to config.toml.",
-                                ),
-                        );
-                    }
-                }
-                self.set_auth_method(arguments.method_id.clone());
-                self.ensure_telemetry_client();
-                if crate::agent::chat_modes::process_chat_mode_enabled() {
-                    self.chat_modes.warm_in_background();
-                }
-                emit_login_span(true, "api_key", None, None);
-                log_event(atelier_telemetry::events::Login {
-                    auth_method: "api_key".to_string(),
-                    user_id: None,
-                });
-                Ok(Default::default())
-            }
-            auth_method::CACHED_TOKEN_AUTH_METHOD_ID => {
-                let auth_meta = AuthRequestMeta::from_json(arguments.meta.as_ref());
-                if auth_meta.force_interactive {
-                    return self
-                        .authenticate(
-                            acp::AuthenticateRequest::new(
-                                    acp::AuthMethodId::new(auth_method::OIDC_METHOD_ID),
-                                )
-                                .meta(arguments.meta),
-                        )
-                        .await;
-                }
-                let current_auth = self.auth_manager.current();
-                let has_current = current_auth.is_some();
-                let is_expired = self.auth_manager.is_expired();
-                let is_devbox = crate::auth::devbox_login::is_devbox_environment();
-                let is_legacy = current_auth
-                    .as_ref()
-                    .is_some_and(|a| a.auth_mode == crate::auth::AuthMode::WebLogin);
-                atelier_telemetry::unified_log::info(
-                    "auth cached_token check",
-                    None,
-                    Some(
-                        serde_json::json!(
-                            { "has_current" : has_current, "is_expired" : is_expired,
-                            "is_devbox" : is_devbox, "is_legacy" : is_legacy, }
-                        ),
-                    ),
-                );
-                let pin_blocks_oidc_mint = matches!(
-                    self.cfg.borrow().atelier_com_config.preferred_method, Some(crate
-                    ::auth::PreferredAuthMethod::ApiKey)
-                );
-                if is_devbox && is_legacy && !pin_blocks_oidc_mint {
-                    atelier_telemetry::unified_log::info(
-                        "auth cached_token: devbox legacy migration starting",
-                        None,
-                        None,
-                    );
-                    match crate::auth::devbox_login::mint_devbox_auth(&self.auth_manager)
-                        .await
-                    {
-                        Ok(new_auth) => {
-                            match self
-                                .auth_manager
-                                .save_without_enrichment(new_auth)
-                                .await
-                            {
-                                Ok(_) => {
-                                    if let Err(e) = self
-                                        .auth_manager
-                                        .remove_scope(crate::auth::LEGACY_AUTH_SCOPE)
-                                    {
-                                        tracing::warn!(
-                                            error = ? e,
-                                            "auth: failed to remove legacy scope (non-fatal)"
-                                        );
-                                    }
-                                    atelier_telemetry::unified_log::info(
-                                        "auth cached_token: devbox legacy migration succeeded",
-                                        None,
-                                        None,
-                                    );
-                                }
-                                Err(e) => {
-                                    atelier_telemetry::unified_log::warn(
-                                        "auth cached_token: devbox migration save failed",
-                                        None,
-                                        Some(serde_json::json!({ "error" : e.to_string() })),
-                                    );
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            atelier_telemetry::unified_log::warn(
-                                "auth cached_token: devbox mint failed, will reject legacy token",
-                                None,
-                                Some(serde_json::json!({ "error" : format!("{e}") })),
-                            );
-                        }
-                    }
-                }
-                let Some(auth) = self.auth_manager.current() else {
-                    let message = if self.auth_manager.is_expired() {
-                        "Session expired, re-authentication required"
-                    } else {
-                        "No cached auth token found"
-                    };
-                    tracing::info!(
-                        % message, "cached_token missing/expired, falling through"
-                    );
-                    atelier_telemetry::unified_log::warn(
-                        "auth cached_token fallthrough",
-                        None,
-                        Some(serde_json::json!({ "reason" : message })),
-                    );
-                    return self
-                        .authenticate_after_cached_token_unavailable(arguments)
-                        .await;
-                };
-                if auth.auth_mode == crate::auth::AuthMode::WebLogin {
-                    tracing::info!("auth: rejecting legacy WebLogin token");
-                    atelier_telemetry::unified_log::warn(
-                        "auth cached_token legacy rejected",
-                        None,
-                        Some(
-                            serde_json::json!(
-                                { "auth_mode" : format!("{:?}", auth.auth_mode) }
-                            ),
-                        ),
-                    );
-                    self.auth_manager.clear_in_memory();
-                    if let Err(e) = self
-                        .auth_manager
-                        .remove_scope(crate::auth::LEGACY_AUTH_SCOPE)
-                    {
-                        tracing::warn!(
-                            error = ? e,
-                            "auth: failed to remove legacy scope during WebLogin rejection (non-fatal)"
-                        );
-                    }
-                    return self
-                        .authenticate_after_cached_token_unavailable(arguments)
-                        .await;
-                }
-                self.refresh_remote_settings(&auth).await;
-                self.emit_settings_update_notification();
-                self.enforce_atelier_code_access(&auth).await;
-                self.maybe_sync_bundle_in_background(false);
-                {
-                    let mut sampling_config = self.sampling_config.borrow_mut();
-                    sampling_config.api_key = Some(auth.key);
-                    tracing::debug!(
-                        "auth: cached_token handler set api_key (SessionToken)"
-                    );
-                    atelier_telemetry::unified_log::debug(
-                        "auth: cached_token handler set api_key (SessionToken)",
-                        None,
-                        None,
-                    );
-                }
-                self.set_auth_method(arguments.method_id.clone());
-                self.ensure_telemetry_client();
-                if crate::agent::chat_modes::process_chat_mode_enabled() {
-                    self.chat_modes.warm_in_background();
-                }
-                let uid = self.auth_manager.current().map(|a| a.user_id);
-                emit_login_span(true, "cached_token", uid.as_deref(), None);
-                log_event(atelier_telemetry::events::Login {
-                    auth_method: "cached_token".to_string(),
-                    user_id: uid,
-                });
-                self.maybe_fetch_post_auth_settings().await;
-                Ok(self.auth_response_with_meta())
-            }
-            auth_method::ATELIER_COM_METHOD_ID | auth_method::OIDC_METHOD_ID => {
-                let atelier_ctx = self.auth_manager.atelier_com_config();
-                let auth_meta = AuthRequestMeta::from_json(arguments.meta.as_ref());
-                tracing::info!(
-                    method = arguments.method_id.0.as_ref(), headless = auth_meta
-                    .headless, reauth = auth_meta.reauth, use_oauth = auth_meta
-                    .use_oauth, "auth: inline auth flow",
-                );
-                atelier_telemetry::unified_log::info(
-                    "auth: inline auth flow",
-                    None,
-                    Some(
-                        serde_json::json!(
-                            { "method" : arguments.method_id.0.as_ref(), "headless" :
-                            auth_meta.headless, "reauth" : auth_meta.reauth, "use_oauth"
-                            : auth_meta.use_oauth, }
-                        ),
-                    ),
-                );
-                if auth_meta.reauth {
-                    let _ = self.auth_manager.clear();
-                }
-                let cli_oauth = auth_meta.use_oauth.then_some(true);
-                let use_oidc = self.cfg.borrow().resolve_atelier_oauth(cli_oauth);
-                tracing::debug!(
-                    resolved = use_oidc.value, source = ? use_oidc.source,
-                    "auth: method resolved"
-                );
-                atelier_telemetry::unified_log::debug(
-                    "auth: method resolved",
-                    None,
-                    Some(
-                        serde_json::json!(
-                            { "use_oidc" : use_oidc.value, "source" : format!("{:?}",
-                            use_oidc.source), }
-                        ),
-                    ),
-                );
-                let login_override = auth_meta.login_override();
-                let (auth, _did_auth) = if !auth_meta.headless {
-                    let (url_tx, url_rx) = tokio::sync::oneshot::channel();
-                    let (code_tx, code_rx) = tokio::sync::mpsc::channel(1);
-                    *self.auth_code_tx.borrow_mut() = Some(code_tx);
-                    *self.auth_url_rx.borrow_mut() = Some(url_rx);
-                    let result = crate::auth::run_auth_flow_with_stderr_bridge(
-                            &self.auth_manager,
-                            atelier_ctx,
-                            crate::auth::AuthChannels {
-                                url_tx: Some(url_tx),
-                                code_rx,
-                            },
-                            auth_meta.reauth,
-                            auth_meta.force_interactive,
-                            login_override,
-                        )
-                        .await;
-                    *self.auth_code_tx.borrow_mut() = None;
-                    *self.auth_url_rx.borrow_mut() = None;
-                    result
-                } else {
-                    crate::auth::run_auth_flow(
-                                &self.auth_manager,
-                                atelier_ctx,
-                                auth_meta.reauth,
-                                None,
-                                None,
-                                None,
-                                login_override,
-                            )
-                            .await
-                }
-                    .map_err(|e| {
-                        emit_login_span(
-                            false,
-                            arguments.method_id.0.as_ref(),
-                            None,
-                            Some("login_flow_failed"),
-                        );
-                        let mut err = acp::Error::auth_required();
-                        err.message = e.to_string();
-                        err
-                    })?;
-                {
-                    let mut sampling_config = self.sampling_config.borrow_mut();
-                    sampling_config.api_key = Some(auth.key.clone());
-                    tracing::debug!(
-                        "auth: atelier.invalid/oidc handler set api_key (SessionToken)"
-                    );
-                    atelier_telemetry::unified_log::debug(
-                        "auth: atelier.invalid/oidc handler set api_key (SessionToken)",
-                        None,
-                        None,
-                    );
-                }
-                self.auth_manager.hot_swap(auth.clone());
-                self.refresh_remote_settings(&auth).await;
-                self.emit_settings_update_notification();
-                self.enforce_atelier_code_access(&auth).await;
-                self.maybe_sync_bundle_in_background(false);
-                tokio::task::spawn_local(
-                    crate::managed_config::post_login_sync(Some(auth.clone())),
-                );
-                self.set_auth_method(arguments.method_id.clone());
-                self.models_manager.on_auth_changed().await;
-                if crate::agent::chat_modes::process_chat_mode_enabled() {
-                    self.chat_modes.warm_in_background();
-                }
-                emit_login_span(
-                    true,
-                    arguments.method_id.0.as_ref(),
-                    Some(auth.user_id.as_str()),
-                    None,
-                );
-                log_event(atelier_telemetry::events::Login {
-                    auth_method: arguments.method_id.0.as_ref().to_string(),
-                    user_id: Some(auth.user_id.clone()),
-                });
-                self.maybe_fetch_post_auth_settings().await;
-                Ok(self.auth_response_with_meta())
-            }
-            _ => {
-                Err(
-                    acp::Error::invalid_params()
-                        .data(
-                            format!("unsupported auth method: {}", arguments.method_id.0),
-                        ),
-                )
-            }
-        }
+
+        self.set_auth_method(arguments.method_id);
+        tracing::debug!("auth: local Provider method accepted without login");
+        Ok(AuthenticateResponse::new())
     }
     async fn new_session(
         &self,
@@ -832,13 +405,9 @@ impl acp::Agent for MvpAgent {
             })?;
         require_local_provider_catalog(self.models_manager.models().is_empty())?;
         self.seed_client_config_auth_if_available();
-        if let Ok(auth) = self.auth_manager.auth().await {
-            self.refresh_settings_and_reapply(&auth).await;
-        }
         let cwd = AbsPathBuf::new(arguments.cwd.clone())
             .map_err(|e| acp::Error::invalid_params().data(e.to_string()))?;
-        let remote_settings = self.cfg.borrow().remote_settings.clone();
-        folder_trust::resolve_and_record(cwd.as_path(), remote_settings.as_ref(), false);
+        folder_trust::resolve_and_record(cwd.as_path(), None, false);
         let initial_client_mcp_servers = arguments.mcp_servers.clone();
         let (mcp_servers, managed_mcp_expires_at) = self
             .resolve_mcp_servers(arguments.mcp_servers, cwd.as_path())
@@ -910,61 +479,62 @@ impl acp::Agent for MvpAgent {
             id: session_id.clone(),
             cwd: cwd.as_str().to_owned(),
         };
-        let main_role = if is_chat_kind {
-            None
-        } else {
-            self.configured_role(atelier_provider::RoleId::Main)?
-        };
+        let mut session_role = role_for_new_session(arguments.meta.as_ref(), is_chat_kind, |role| {
+            self.required_role(role)
+        })?;
+        let session_role_id = session_role.as_ref().map(|(role_id, _)| *role_id);
         let mut model_agent_type: Option<String> = None;
         let mut session_sampling_override: Option<SamplingConfig> = None;
-        let mut disallowed_custom: Option<String> = None;
         let session_initial_model = chat_initial_model(is_chat_kind, custom_model_id);
         let build_custom_model_id = if is_chat_kind { None } else { custom_model_id };
-        let resolved_custom_model = build_custom_model_id
-            .and_then(|custom_model| match self
-                .resolve_model_id(&acp::ModelId::new(custom_model))
-            {
-                Ok(model) if model.info.user_selectable => {
-                    model_agent_type = Some(model.info().agent_type.clone());
-                    let origin_client = self
-                        .origin_client_info_from_meta(arguments.meta.as_ref());
-                    session_sampling_override = Some(
-                        self.prepare_sampling_config_for_model(&model, origin_client),
-                    );
-                    Some(custom_model)
+        if build_custom_model_id.is_some()
+            && session_role_id.is_some_and(|role| role != atelier_provider::RoleId::Main)
+        {
+            return Err(acp::Error::invalid_params().data(
+                "derived Agent models are fixed by their Role snapshot and cannot be overridden",
+            ));
+        }
+        let resolved_custom_model = match build_custom_model_id {
+            Some(custom_model) => {
+                let model = self
+                    .resolve_model_id(&acp::ModelId::new(custom_model))
+                    .map_err(|_| {
+                        acp::Error::invalid_params()
+                            .data(format!("requested model is unavailable: {custom_model}"))
+                    })?;
+                if !model.info.user_selectable {
+                    return Err(acp::Error::invalid_params()
+                        .data(format!("requested model is not selectable: {custom_model}")));
                 }
-                Ok(_) => {
-                    tracing::warn!(
-                        requested_model = custom_model,
-                        "Requested model not allowed by allowed_models; falling back to current default model"
-                    );
-                    disallowed_custom = Some(custom_model.to_string());
-                    None
+                model_agent_type = Some(model.info().agent_type.clone());
+                let origin_client = self.origin_client_info_from_meta(arguments.meta.as_ref());
+                session_sampling_override =
+                    Some(self.prepare_sampling_config_for_model(&model, origin_client));
+                if let Some((_, role)) = session_role.as_mut() {
+                    let key = atelier_provider::ModelKey::parse(custom_model)
+                        .map_err(|error| acp::Error::invalid_params().data(error.to_string()))?;
+                    role.provider = key.provider_id;
+                    role.model = key.model_id;
                 }
-                Err(_) => {
-                    tracing::warn!(
-                        requested_model = custom_model, fallback_model = % self
-                        .models_manager.current_model_id().0,
-                        "Requested model not found, falling back to current default model"
-                    );
-                    None
-                }
-            });
+                Some(custom_model)
+            }
+            None => None,
+        };
         let mut resolved_role_model: Option<String> = None;
         if !is_chat_kind && custom_model_id.is_none()
-            && let Some(role) = main_role.as_ref()
+            && let Some((role_id, role)) = session_role.as_ref()
         {
             let role_model = format!("{}/{}", role.provider, role.model);
             let role_entry = self
                 .resolve_model_id(&acp::ModelId::new(role_model.clone()))
                 .map_err(|_| {
                     acp::Error::invalid_params().data(format!(
-                        "configured main role model is unavailable: {role_model}"
+                        "configured {role_id} role model is unavailable: {role_model}"
                     ))
                 })?;
             if !role_entry.info.user_selectable {
                 return Err(acp::Error::invalid_params().data(format!(
-                    "configured main role model is not selectable: {role_model}"
+                    "configured {role_id} role model is not selectable: {role_model}"
                 )));
             }
             model_agent_type = Some(role_entry.info().agent_type.clone());
@@ -996,24 +566,24 @@ impl acp::Agent for MvpAgent {
                         origin_client.clone(),
                     )
             });
-        if let Some(role) = main_role.as_ref()
+        if let Some((role_id, role)) = session_role.as_ref()
             && let Some(effort) = role.effort.as_deref()
         {
             session_sampling.reasoning_effort = Some(
                 effort.parse().map_err(|_| {
                     acp::Error::invalid_params().data(format!(
-                        "unsupported main role effort: {effort}"
+                        "unsupported {role_id} role effort: {effort}"
                     ))
                 })?,
             );
         }
-        if let Some(role) = main_role.as_ref() {
+        if let Some((_, role)) = session_role.as_ref() {
             session_sampling.request_payload = atelier_provider::merge_payloads(
                 &session_sampling.request_payload,
                 &role.effective_payload(),
             );
         }
-        if main_role.is_none()
+        if session_role.is_none()
             && let Some(effort) = self.models_manager.current_reasoning_effort()
             && self
                 .models_manager
@@ -1021,20 +591,8 @@ impl acp::Agent for MvpAgent {
         {
             session_sampling.reasoning_effort = Some(effort);
         }
-        let (summary_client, summary_model) = self
-            .build_summary_client(&session_sampling)?;
-        let relay_sync = if let Some(sync) = self
-            .create_relay_sync(&session_id.0, &session_info)
-        {
-            Self::spawn_relay_state_forwarder(
-                sync.subscribe_state(),
-                sync.session_id().to_owned(),
-                self.gateway.clone(),
-            );
-            Some(sync)
-        } else {
-            None
-        };
+        let title_backend =
+            title_backend_for_session(self.build_summary_client(&session_sampling));
         let model_id = match &session_initial_model {
             Some(chat_model) => acp::ModelId::new(chat_model.clone()),
             None => {
@@ -1062,12 +620,10 @@ impl acp::Agent for MvpAgent {
             crate::session::persistence::new(
                     &session_info,
                     model_id,
-                    summary_client,
+                    title_backend,
                     self.storage_mode,
                     Some(self.auth_manager.clone()),
-                    relay_sync,
                     Some(self.gateway.clone()),
-                    summary_model,
                     registry_title_sync,
                 )
                 .await
@@ -1122,11 +678,7 @@ impl acp::Agent for MvpAgent {
                         managed_mcp_expires_at,
                         model_agent_type: model_agent_type.as_deref(),
                         session_model_id,
-                        main_role: if custom_model_id.is_none() {
-                            main_role.clone()
-                        } else {
-                            None
-                        },
+                        session_role: session_role.clone(),
                         session_yolo_mode,
                         session_auto_mode: session_auto_mode && !session_yolo_mode,
                         prompt_display_cwd: None,
@@ -1139,7 +691,7 @@ impl acp::Agent for MvpAgent {
         self.maybe_spawn_interactive_trust_prompt(
             &session_id,
             cwd.as_path(),
-            remote_settings.as_ref(),
+            None,
         );
         let bridge_attach = BridgeAttach::NotAttached;
         let product_analytics = self.product_analytics_enabled();
@@ -1179,20 +731,6 @@ impl acp::Agent for MvpAgent {
             tracing::debug!(
                 session_id = % session_id.0, "new_session: set_session_model"
             );
-        }
-        if let Some(requested) = disallowed_custom {
-            let current = self.models_manager.current_model_id();
-            let reason = format!(
-                "\"{requested}\" isn't allowed by your allowed_models setting, so this session is using \"{}\".",
-                current.0
-            );
-            self.send_model_auto_switched(
-                    &session_id,
-                    &acp::ModelId::new(requested),
-                    &current,
-                    &reason,
-                )
-                .await;
         }
         let indexed_roots = self.indexed_roots_for(cwd.as_path());
         let (git_root, is_git_repo, discovery_failed) = match atelier_workspace::session::git::discover_git_root(
@@ -1354,20 +892,8 @@ impl acp::Agent for MvpAgent {
                 &self.models_manager.current_model_id(),
                 origin_client.clone(),
             );
-        let (summary_client, summary_model) = self
-            .build_summary_client(&load_session_sampling)?;
-        let relay_sync = if let Some(sync) = self
-            .create_relay_sync(&session_id.0, &session_info)
-        {
-            Self::spawn_relay_state_forwarder(
-                sync.subscribe_state(),
-                sync.session_id().to_owned(),
-                self.gateway.clone(),
-            );
-            Some(sync)
-        } else {
-            None
-        };
+        let title_backend =
+            title_backend_for_session(self.build_summary_client(&load_session_sampling));
         let mut persistence_timer = crate::instrumentation_timer!("session.load_light");
         persistence_timer.with_field("session_id", session_id.0.as_ref());
         let backend = if self.build_registry_config().is_some() {
@@ -1389,13 +915,11 @@ impl acp::Agent for MvpAgent {
             });
         let (persistence_info, persistence) = crate::session::persistence::load_light(
                 &session_info,
-                summary_client,
+                title_backend,
                 self.storage_mode,
                 Some(self.auth_manager.clone()),
                 backend.as_ref(),
-                relay_sync,
                 Some(self.gateway.clone()),
-                summary_model,
                 registry_title_sync,
             )
             .await
@@ -1667,7 +1191,10 @@ impl acp::Agent for MvpAgent {
                         managed_mcp_expires_at,
                         model_agent_type: persisted_agent_name.as_deref(),
                         session_model_id: summary.current_model_id.clone(),
-                        main_role: self.configured_role(atelier_provider::RoleId::Main)?,
+                        session_role: Some((
+                            atelier_provider::RoleId::Main,
+                            self.required_role(atelier_provider::RoleId::Main)?,
+                        )),
                         session_yolo_mode,
                         session_auto_mode: session_auto_mode && !session_yolo_mode,
                         prompt_display_cwd,
@@ -2367,7 +1894,7 @@ impl acp::Agent for MvpAgent {
             .and_then(|value| value.as_str())
             .and_then(|value| value.parse::<atelier_provider::RoleId>().ok())
             .unwrap_or(atelier_provider::RoleId::Main);
-        let active_role = self.configured_role(role_id)?;
+        let active_role = Some(self.required_role(role_id)?);
         self.runtime_begin_request(
             &arguments.session_id,
             &prompt_id,
@@ -2404,12 +1931,11 @@ impl acp::Agent for MvpAgent {
             .map(|role| role.provider.clone())
             .or_else(|| provider_and_model.map(|(provider, _)| provider.to_owned()));
         let wire_resolution = resolved_provider_owned.as_deref().and_then(|provider| {
-            let key = atelier_provider::ModelKey::new(provider, model.clone()).ok()?;
             let registry = atelier_provider::ProviderRegistry::load_or_create(
                 atelier_config::atelier_home().join("providers.toml"),
             )
             .ok()?;
-            registry.resolve_wire_api(&key).ok()
+            resolve_inspector_wire_api(&registry, provider, &model).ok()
         });
         let mut runtime_payload = serde_json::json!({
             "promptBlockCount": arguments.prompt.len(),
@@ -2536,32 +2062,31 @@ impl acp::Agent for MvpAgent {
                 }
             }
             _ = detach_rx => {
-                self.runtime_update_status(
-                    &arguments.session_id,
-                    xai_acp_lib::RuntimeState::Paused,
-                    Some("turn detached; execution continues in background".to_owned()),
-                );
+                self.runtime_mark_task_detached(&prompt_id);
                 // The foreground ACP request returns at detach time, but the
                 // session actor still owns `rx` and will resolve it when the
-                // actual turn finishes.  Keep a local observer so the
-                // RuntimeTask does not remain permanently stuck in Paused.
+                // actual turn finishes. Keep a local observer keyed by the
+                // detached request id so a later request in the same session
+                // cannot be completed by this older turn's result.
                 let agent_ref = crate::agent::mvp_agent::LocalRef::new(self);
                 let detached_session_id = arguments.session_id.clone();
                 let detached_prompt_id = prompt_id.clone();
                 tokio::task::spawn_local(async move {
-                    let runtime_state = match rx.await {
-                        Ok(Ok(result)) if matches!(result.stop_reason, acp::StopReason::EndTurn) => {
-                            xai_acp_lib::RuntimeState::Completed
-                        }
-                        Ok(Ok(_)) => xai_acp_lib::RuntimeState::Paused,
-                        Ok(Err(_)) | Err(_) => xai_acp_lib::RuntimeState::Failed,
+                    let (runtime_state, diagnostic_message) = match rx.await {
+                        Ok(Ok(result)) => (
+                            super::runtime::runtime_state_for_stop_reason(&result.stop_reason),
+                            matches!(result.stop_reason, acp::StopReason::Cancelled)
+                                .then(|| "cancelled by client".to_owned()),
+                        ),
+                        Ok(Err(_)) | Err(_) => (xai_acp_lib::RuntimeState::Failed, None),
                     };
-                    agent_ref.get().runtime_finish_request(
+                    agent_ref.get().runtime_finish_request_by_id(
                         &detached_session_id,
+                        &detached_prompt_id,
                         runtime_state,
                         (runtime_state == xai_acp_lib::RuntimeState::Failed)
                             .then(|| "provider_or_tool".to_owned()),
-                        None,
+                        diagnostic_message,
                     );
                     if runtime_state == xai_acp_lib::RuntimeState::Completed {
                         agent_ref.get().forget_retryable_prompt(&detached_prompt_id);
@@ -2573,12 +2098,12 @@ impl acp::Agent for MvpAgent {
             }
         };
         let runtime_state = match &stop_result {
-            Ok(result) if matches!(result.stop_reason, acp::StopReason::EndTurn) => {
-                xai_acp_lib::RuntimeState::Completed
-            }
-            Ok(_) => xai_acp_lib::RuntimeState::Paused,
+            Ok(result) => super::runtime::runtime_state_for_stop_reason(&result.stop_reason),
             Err(_) => xai_acp_lib::RuntimeState::Failed,
         };
+        let cancelled = stop_result
+            .as_ref()
+            .is_ok_and(|result| matches!(result.stop_reason, acp::StopReason::Cancelled));
         self.runtime_finish_request(
             &arguments.session_id,
             runtime_state,
@@ -2586,7 +2111,11 @@ impl acp::Agent for MvpAgent {
                 .as_ref()
                 .err()
                 .map(|_| "provider_or_tool".to_owned()),
-            stop_result.as_ref().err().map(ToString::to_string),
+            stop_result
+                .as_ref()
+                .err()
+                .map(ToString::to_string)
+                .or_else(|| cancelled.then(|| "cancelled by client".to_owned())),
         );
         if runtime_state == xai_acp_lib::RuntimeState::Completed {
             self.forget_retryable_prompt(&prompt_id);
@@ -3462,6 +2991,7 @@ impl acp::Agent for MvpAgent {
             }
             "atelier/session/rename" | "atelier/session/delete"
             | "atelier/session/update_mcp_servers" | "atelier/session/fork"
+            | crate::extensions::session_admin::SESSION_FORK
             | "atelier/internal/reload_all_mcp_servers"
             | "atelier/internal/reload_project_mcp_servers" | "atelier/internal/reload_skills"
             | "atelier/internal/reload_models" | "atelier/internal/reload_models_cache"
@@ -3480,9 +3010,6 @@ impl acp::Agent for MvpAgent {
                 )
             }
             "atelier/interject" => crate::extensions::interject::handle(self, &args).await,
-            "atelier/feedback" | "atelier/feedback/dismiss" | "atelier/btw" => {
-                crate::extensions::feedback::handle(self, &args).await
-            }
             s if s.starts_with("_atelier/btw/") || s.starts_with("atelier/btw/") => {
                 crate::extensions::btw::handle(self, &args).await
             }
@@ -3688,17 +3215,6 @@ impl acp::Agent for MvpAgent {
                     })?;
                 crate::extensions::to_raw_response(&serde_json::json!({ "ok" : true }))
             }
-            "atelier/billing" => crate::extensions::billing::handle(self, &args).await,
-            "atelier/auto-topup-rule" => {
-                crate::extensions::billing::handle(self, &args).await
-            }
-            "atelier/share_session" => crate::extensions::share::handle(self, &args).await,
-            "atelier/privacy/setCodingDataRetention" => {
-                crate::extensions::privacy::handle(self, &args).await
-            }
-            "atelier/rollout/survey" => {
-                crate::extensions::rollout::handle(self, &args).await
-            }
             "atelier/prompt_history" => {
                 crate::extensions::prompt_history::handle(self, &args).await
             }
@@ -3732,9 +3248,11 @@ impl acp::Agent for MvpAgent {
             }
             s if s.starts_with("_atelier/provider/")
                 || s.starts_with("_atelier/model/")
+                || s.starts_with("_atelier/model_provider_override/")
                 || s.starts_with("_atelier/credential/")
                 || s.starts_with("atelier/provider/")
                 || s.starts_with("atelier/model/")
+                || s.starts_with("atelier/model_provider_override/")
                 || s.starts_with("atelier/credential/") => {
                 crate::extensions::provider::handle(self, &args).await
             }
@@ -3789,9 +3307,6 @@ impl acp::Agent for MvpAgent {
             s if s.starts_with("atelier/search/") => {
                 crate::extensions::search::handle(self, &args).await
             }
-            s if s.starts_with("atelier/bundle/") => {
-                crate::extensions::bundle::handle(self, &args).await
-            }
             s if s.starts_with("atelier/code/") => {
                 let ops = self.resolve_workspace_ops()?;
                 crate::extensions::code_nav::handle(self, &ops, &args).await
@@ -3804,9 +3319,6 @@ impl acp::Agent for MvpAgent {
                         compat,
                     )
                     .await
-            }
-            s if s.starts_with("atelier/review") => {
-                crate::extensions::feedback::handle(self, &args).await
             }
             s if s.starts_with("atelier/debug/") => {
                 crate::extensions::debug::handle(self, &args).await
@@ -4184,6 +3696,90 @@ fn require_local_provider_catalog(models_empty: bool) -> Result<(), acp::Error> 
     Ok(())
 }
 
+fn role_for_new_session(
+    meta: Option<&acp::Meta>,
+    is_chat_kind: bool,
+    mut load_role: impl FnMut(
+        atelier_provider::RoleId,
+    ) -> Result<atelier_provider::RoleConfig, acp::Error>,
+) -> Result<Option<(atelier_provider::RoleId, atelier_provider::RoleConfig)>, acp::Error> {
+    if is_chat_kind {
+        return Ok(None);
+    }
+    let role_id = meta
+        .and_then(|meta| meta.get("atelier/role").or_else(|| meta.get("role")))
+        .and_then(|value| value.as_str())
+        .unwrap_or(atelier_provider::RoleId::Main.as_str())
+        .parse::<atelier_provider::RoleId>()
+        .map_err(|error| acp::Error::invalid_params().data(error.to_string()))?;
+    if matches!(
+        role_id,
+        atelier_provider::RoleId::Compact
+            | atelier_provider::RoleId::Summary
+            | atelier_provider::RoleId::Title
+    ) {
+        return Err(acp::Error::invalid_params().data(format!(
+            "role {role_id} is an internal runtime role and cannot own a user session"
+        )));
+    }
+    if let Some(snapshot) = meta.and_then(|meta| meta.get("atelier/roleSnapshot")) {
+        let role = serde_json::from_value::<atelier_provider::RoleConfig>(snapshot.clone())
+            .map_err(|error| {
+                acp::Error::invalid_params().data(format!("invalid {role_id} role snapshot: {error}"))
+            })?;
+        if !role.is_configured() {
+            return Err(acp::Error::invalid_params()
+                .data(format!("role {role_id} snapshot is not configured")));
+        }
+        return Ok(Some((role_id, role)));
+    }
+    Ok(Some((role_id, load_role(role_id)?)))
+}
+
+fn title_backend_for_session(
+    result: Result<(crate::sampling::Client, String), acp::Error>,
+) -> crate::session::summary::TitleBackend {
+    match result {
+        Ok((sampling_client, model)) => {
+            crate::session::summary::TitleBackend::Enabled {
+                sampling_client,
+                model,
+            }
+        }
+        Err(error) => {
+            let reason = xai_acp_lib::redact_text(&error.to_string());
+            tracing::warn!(
+                target: "atelier.runtime",
+                role = "title",
+                state = "disabled",
+                error = %reason,
+                "Title generation disabled; main session startup continues"
+            );
+            crate::session::summary::TitleBackend::Disabled { reason }
+        }
+    }
+}
+
+fn inspector_model_key(
+    provider: &str,
+    model: &str,
+) -> Result<atelier_provider::ModelKey, atelier_provider::ProviderError> {
+    if let Ok(key) = atelier_provider::ModelKey::parse(model)
+        && key.provider_id == provider
+    {
+        return Ok(key);
+    }
+    atelier_provider::ModelKey::new(provider, model)
+}
+
+fn resolve_inspector_wire_api(
+    registry: &atelier_provider::ProviderRegistry,
+    provider: &str,
+    model: &str,
+) -> Result<atelier_provider::ResolvedWireApi, atelier_provider::ProviderError> {
+    registry.resolve_wire_api(&inspector_model_key(provider, model)?)
+}
+
 fn is_removed_vendor_extension(method: &str) -> bool {
     matches!(
         method,
@@ -4197,7 +3793,6 @@ fn is_removed_vendor_extension(method: &str) -> bool {
             | "atelier/btw"
             | "atelier/workspaces/list"
     ) || method.starts_with("atelier/cloud/")
-        || method.starts_with("atelier/bundle/")
         || method.starts_with("atelier/review")
 }
 
@@ -4209,7 +3804,107 @@ fn vendorless_auth_method_allowed(method_id: &str) -> bool {
 mod vendorless_extension_tests {
     use crate::agent::auth_method;
 
-    use super::{is_removed_vendor_extension, vendorless_auth_method_allowed};
+    use super::{
+        inspector_model_key, is_removed_vendor_extension, resolve_inspector_wire_api,
+        role_for_new_session, title_backend_for_session, vendorless_auth_method_allowed,
+    };
+
+    #[test]
+    fn derived_session_uses_the_requested_role_snapshot_instead_of_main() {
+        let mut meta = agent_client_protocol::Meta::new();
+        meta.insert("role".into(), serde_json::json!("explore"));
+        let mut explore = atelier_provider::RoleConfig::new("allm", "explore-model").unwrap();
+        explore.effort = Some("low".into());
+        explore.fast_mode = true;
+        explore.payload.insert("temperature".into(), serde_json::json!(0.1));
+        meta.insert(
+            "atelier/roleSnapshot".into(),
+            serde_json::to_value(&explore).unwrap(),
+        );
+
+        let resolved = role_for_new_session(Some(&meta), false, |_| {
+            panic!("an embedded derived Role snapshot must not be replaced from the registry")
+        })
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(resolved.0, atelier_provider::RoleId::Explore);
+        assert_eq!(resolved.1, explore);
+    }
+
+    #[test]
+    fn title_role_failure_disables_only_title_generation() {
+        let main = atelier_provider::RoleConfig::new("allm", "deepseek-v4-flash").unwrap();
+        let resolved_main = role_for_new_session(None, false, |role_id| {
+            assert_eq!(role_id, atelier_provider::RoleId::Main);
+            Ok(main.clone())
+        })
+        .expect("a configured main Role must remain independently resolvable")
+        .expect("Build sessions always have a Role snapshot");
+
+        let backend = title_backend_for_session(Err(
+            agent_client_protocol::Error::invalid_params()
+                .data("role title is not configured"),
+        ));
+
+        assert_eq!(resolved_main.0, atelier_provider::RoleId::Main);
+        assert_eq!(resolved_main.1, main);
+        assert!(matches!(
+            backend,
+            crate::session::summary::TitleBackend::Disabled { reason }
+                if reason.contains("role title is not configured")
+        ));
+    }
+
+    #[test]
+    fn inspector_does_not_prefix_an_already_composite_model_key() {
+        let key = inspector_model_key("allm", "allm/deepseek-v4-flash").unwrap();
+
+        assert_eq!(key.provider_id, "allm");
+        assert_eq!(key.model_id, "deepseek-v4-flash");
+        assert_eq!(key.to_string(), "allm/deepseek-v4-flash");
+    }
+
+    #[test]
+    fn inspector_uses_registry_default_chat_completions_resolution() {
+        let mut registry = atelier_provider::ProviderRegistry::in_memory();
+        registry
+            .upsert_provider(atelier_provider::ProviderConfig {
+                id: "allm".into(),
+                display_name: "AllM".into(),
+                protocol: atelier_provider::ProviderProtocol::OpenAiResponses,
+                base_url: url::Url::parse("http://127.0.0.1:4317/v1").unwrap(),
+                credential: atelier_provider::CredentialRef::None,
+                discovery: atelier_provider::ProviderDiscovery::Static,
+                extra_headers: Default::default(),
+                enabled: true,
+            })
+            .unwrap();
+        registry
+            .upsert_model(atelier_provider::ModelDescriptor {
+                key: atelier_provider::ModelKey::new("allm", "deepseek-v4-flash").unwrap(),
+                display_name: "deepseek-v4-flash".into(),
+                description: None,
+                wire_api: None,
+                context_window: Some(128_000),
+                capabilities: Default::default(),
+                reasoning_efforts: Vec::new(),
+                source: atelier_provider::ModelSource::Static,
+                enabled: true,
+            })
+            .unwrap();
+
+        let resolved =
+            resolve_inspector_wire_api(&registry, "allm", "allm/deepseek-v4-flash").unwrap();
+
+        assert_eq!(resolved.provider, "allm");
+        assert_eq!(resolved.model, "deepseek-v4-flash");
+        assert_eq!(resolved.wire_api, atelier_provider::WireApi::ChatCompletions);
+        assert_eq!(
+            resolved.source,
+            atelier_provider::WireApiSource::DefaultChatCompletions
+        );
+    }
 
     #[test]
     fn vendorless_authentication_accepts_only_local_provider() {
@@ -4243,7 +3938,6 @@ mod vendorless_extension_tests {
     fn vendor_hosted_extensions_are_blocked() {
         for method in [
             "atelier/cloud/env/list",
-            "atelier/bundle/refresh",
             "atelier/feedback",
             "atelier/privacy/setCodingDataRetention",
             "atelier/review/submit",

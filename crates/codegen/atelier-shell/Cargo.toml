@@ -180,7 +180,7 @@ nix = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
 siphasher = { workspace = true }
-windows = { workspace = true }
+windows = { workspace = true, features = ["Win32_System_ProcessStatus"] }
 
 [dev-dependencies]
 criterion = { workspace = true }
@@ -188,6 +188,7 @@ filetime = { workspace = true }
 tempfile = { workspace = true }
 atelier-memory = { workspace = true, features = ["test-support"] }
 atelier-workspace = { workspace = true, features = ["test-support"] }
+atelier-tools = { path = "../atelier-tools", features = ["test-unsafe-exec"] }
 # Feature-unification applies the signing seam to the lib when building tests, so
 # integration tests can inject a throwaway trusted key; production builds exclude
 # dev-deps and compile the seam out.

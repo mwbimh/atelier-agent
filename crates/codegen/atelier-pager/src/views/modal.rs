@@ -364,10 +364,8 @@ pub enum PaletteCommand {
 }
 /// Build the default set of palette entries with section grouping.
 ///
-/// `sharing_enabled` controls whether the `/share` entry is included.
-/// Pass `true` to preserve the default behavior (show `/share`).
-pub fn default_palette_entries(sharing_enabled: bool) -> Vec<PaletteEntry> {
-    let mut entries = vec![
+pub fn default_palette_entries(_sharing_enabled: bool) -> Vec<PaletteEntry> {
+    vec![
         PaletteEntry {
             label: "Session".into(),
             shortcut: String::new(),
@@ -399,11 +397,6 @@ pub fn default_palette_entries(sharing_enabled: bool) -> Vec<PaletteEntry> {
             command: PaletteCommand::SlashCommand("/resume".into()),
         },
         PaletteEntry {
-            label: "Share Session".into(),
-            shortcut: "/share".into(),
-            command: PaletteCommand::SlashCommand("/share".into()),
-        },
-        PaletteEntry {
             label: "Rename Session".into(),
             shortcut: "/rename ".into(),
             command: PaletteCommand::SlashCommand("/rename ".into()),
@@ -412,11 +405,6 @@ pub fn default_palette_entries(sharing_enabled: bool) -> Vec<PaletteEntry> {
             label: "Session Info".into(),
             shortcut: "/session-info".into(),
             command: PaletteCommand::SlashCommand("/session-info".into()),
-        },
-        PaletteEntry {
-            label: "Send Feedback".into(),
-            shortcut: "/feedback".into(),
-            command: PaletteCommand::SlashCommand("/feedback ".into()),
         },
         PaletteEntry {
             label: "Context".into(),
@@ -542,15 +530,7 @@ pub fn default_palette_entries(sharing_enabled: bool) -> Vec<PaletteEntry> {
             shortcut: "Ctrl+Q".into(),
             command: PaletteCommand::Quit,
         },
-    ];
-    if !sharing_enabled {
-        entries.retain(|e| {
-            !matches!(
-                & e.command, PaletteCommand::SlashCommand(s) if s.trim() == "/share"
-            )
-        });
-    }
-    entries
+    ]
 }
 #[allow(clippy::collapsible_if)]
 /// Filter palette entries for search, preserving section headers when any item in the section matches.
@@ -1250,12 +1230,15 @@ mod palette_sharing_tests {
         })
     }
     #[test]
-    fn default_palette_includes_share_when_enabled() {
+    fn default_palette_omits_removed_vendor_commands_even_when_legacy_gate_is_true() {
         let entries = default_palette_entries(true);
         assert!(
-            has_share(&entries),
-            "/share should be present when sharing_enabled=true"
+            !has_share(&entries),
+            "/share must remain absent even when a legacy sharing flag is true"
         );
+        assert!(!entries.iter().any(|entry| {
+            matches!(&entry.command, PaletteCommand::SlashCommand(command) if command.trim() == "/feedback")
+        }));
     }
     #[test]
     fn default_palette_includes_dashboard() {
@@ -1298,11 +1281,11 @@ mod palette_sharing_tests {
         );
     }
     #[test]
-    fn filter_palette_includes_share_when_enabled_and_matched() {
+    fn filter_palette_omits_share_when_legacy_gate_is_true() {
         let entries = filter_palette_entries("share", true);
         assert!(
-            has_share(&entries),
-            "/share should match a 'share' query when sharing_enabled=true"
+            !has_share(&entries),
+            "/share must remain absent when filtering with a legacy sharing flag"
         );
     }
     #[test]

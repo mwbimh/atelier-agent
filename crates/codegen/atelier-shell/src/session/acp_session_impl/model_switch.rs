@@ -10,6 +10,26 @@ impl SessionActor {
         skip_prompt_rewrite: bool,
         auto_compact_threshold_percent: u8,
     ) -> Result<acp::ModelId, acp::Error> {
+        self.apply_sampling_config(
+            sampling_config,
+            use_concise,
+            apply_prompt_override,
+            skip_prompt_rewrite,
+            auto_compact_threshold_percent,
+            true,
+        )
+        .await
+    }
+
+    async fn apply_sampling_config(
+        &self,
+        sampling_config: atelier_sampler::SamplerConfig,
+        use_concise: bool,
+        apply_prompt_override: bool,
+        skip_prompt_rewrite: bool,
+        auto_compact_threshold_percent: u8,
+        persist_model_change: bool,
+    ) -> Result<acp::ModelId, acp::Error> {
         let model_id = acp::ModelId::new(sampling_config.model.clone());
         let new_context_window = self.compaction.context_window_override.unwrap_or_else(|| {
             std::num::NonZeroU64::new(sampling_config.context_window).unwrap_or_else(|| {
@@ -75,8 +95,10 @@ impl SessionActor {
                 client_version: sampling_config.client_version.clone(),
             });
         self.model_auth_facts.replace(None);
-        self.signals_handle()
-            .record_model_usage(&sampling_config.model);
+        if persist_model_change {
+            self.signals_handle()
+                .record_model_usage(&sampling_config.model);
+        }
         if apply_prompt_override && !skip_prompt_rewrite {
             let mut conversation = self.chat_state_handle.get_conversation().await;
             for item in conversation.iter_mut() {
@@ -104,16 +126,35 @@ impl SessionActor {
                 "handle_set_session_model: skipping prompt rewrite (just rebuilt harness)"
             );
         }
-        let agent_name = self.agent.borrow().definition().name.clone();
-        let _ = self
-            .notifications
-            .persistence_tx
-            .send(PersistenceMsg::CurrentModel {
-                model_id: model_id.clone(),
-                agent_name: Some(agent_name),
-                reasoning_effort: Some(sampling_config.reasoning_effort),
-            });
+        if persist_model_change {
+            let agent_name = self.agent.borrow().definition().name.clone();
+            let _ = self
+                .notifications
+                .persistence_tx
+                .send(PersistenceMsg::CurrentModel {
+                    model_id: model_id.clone(),
+                    agent_name: Some(agent_name),
+                    reasoning_effort: Some(sampling_config.reasoning_effort),
+                });
+        }
         Ok(model_id)
+    }
+
+    pub(super) async fn handle_refresh_provider_model(
+        &self,
+        sampling_config: atelier_sampler::SamplerConfig,
+        auto_compact_threshold_percent: u8,
+    ) -> Result<acp::ModelId, acp::Error> {
+        *self.role_request_payload.borrow_mut() = sampling_config.request_payload.clone();
+        self.apply_sampling_config(
+            sampling_config,
+            false,
+            false,
+            true,
+            auto_compact_threshold_percent,
+            false,
+        )
+        .await
     }
     /// Handle [`SessionCommand::RebuildAgentForDefinition`].
     ///

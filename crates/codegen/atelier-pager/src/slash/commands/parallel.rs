@@ -45,7 +45,7 @@ impl SlashCommand for ParallelCommand {
             return Some(role_items());
         }
         let first = args_query.split_whitespace().next().unwrap_or_default();
-        if RoleId::from_str(first).is_ok() && args_query.ends_with(char::is_whitespace) {
+        if parse_parallel_role(first).is_ok() && args_query.ends_with(char::is_whitespace) {
             return None;
         }
         Some(role_items())
@@ -61,7 +61,11 @@ impl SlashCommand for ParallelCommand {
             });
         }
         let mut tasks = Vec::new();
-        for task in args.split([';', '\n']) {
+        let task_args = match split_parallel_tasks(args) {
+            Ok(tasks) => tasks,
+            Err(error) => return CommandResult::Error(error),
+        };
+        for task in task_args {
             let task = task.trim();
             if task.is_empty() {
                 continue;
@@ -71,9 +75,9 @@ impl SlashCommand for ParallelCommand {
                     "Usage: /parallel <role> <prompt>; <role> <prompt> ...".to_owned(),
                 );
             };
-            let role = match RoleId::from_str(role_name) {
+            let role = match parse_parallel_role(role_name) {
                 Ok(role) => role,
-                Err(error) => return CommandResult::Error(error.to_string()),
+                Err(error) => return CommandResult::Error(error),
             };
             if prompt.is_empty() {
                 return CommandResult::Error("parallel task prompt must not be empty".to_owned());
@@ -95,6 +99,35 @@ impl SlashCommand for ParallelCommand {
     }
 }
 
+fn split_parallel_tasks(input: &str) -> Result<Vec<String>, String> {
+    let mut tasks = Vec::new();
+    let mut current = String::new();
+    let mut quote = None;
+    let mut characters = input.chars().peekable();
+
+    while let Some(character) = characters.next() {
+        match quote {
+            Some(delimiter) if character == delimiter => quote = None,
+            Some(delimiter) if character == '\\' && characters.peek() == Some(&delimiter) => {
+                current.push(delimiter);
+                characters.next();
+            }
+            Some(_) => current.push(character),
+            None if character == '\'' || character == '"' => quote = Some(character),
+            None if character == ';' || character == '\n' => {
+                tasks.push(std::mem::take(&mut current));
+            }
+            None => current.push(character),
+        }
+    }
+
+    if quote.is_some() {
+        return Err("unterminated quote in command arguments".to_owned());
+    }
+    tasks.push(current);
+    Ok(tasks)
+}
+
 fn role_items() -> Vec<ArgItem> {
     [
         RoleId::Explore,
@@ -112,9 +145,23 @@ fn role_items() -> Vec<ArgItem> {
     .collect()
 }
 
+fn parse_parallel_role(value: &str) -> Result<RoleId, String> {
+    let role = RoleId::from_str(value).map_err(|error| error.to_string())?;
+    if matches!(
+        role,
+        RoleId::Explore | RoleId::Implement | RoleId::Review | RoleId::Test
+    ) {
+        Ok(role)
+    } else {
+        Err(format!(
+            "Role '{value}' cannot be spawned with /parallel; use explore, implement, review, or test"
+        ))
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::ParallelCommand;
+    use super::{ParallelCommand, role_items};
     use crate::app::actions::Action;
     use crate::slash::command::{CommandExecCtx, CommandResult, SlashCommand};
 
@@ -156,5 +203,59 @@ mod tests {
             ParallelCommand.run(&mut command_ctx, ""),
             CommandResult::Action(Action::OpenSlashArgPicker { command }) if command == "parallel"
         ));
+    }
+
+    #[test]
+    fn quoted_semicolon_stays_inside_parallel_task_prompt() {
+        let mut command_ctx = ctx();
+        let result = ParallelCommand.run(
+            &mut command_ctx,
+            r#"explore "compare alpha; beta"; review check the conclusion"#,
+        );
+        match result {
+            CommandResult::Action(Action::RuntimeExtension { params, .. }) => {
+                assert_eq!(params.as_array().unwrap().len(), 2);
+                assert_eq!(params[0]["prompt"], "compare alpha; beta");
+                assert_eq!(params[1]["role"], "review");
+            }
+            other => panic!("expected parallel request, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn full_parallel_command_allows_exactly_the_interactive_roles() {
+        let interactive = role_items()
+            .into_iter()
+            .map(|item| item.display)
+            .collect::<Vec<_>>();
+        for role in &interactive {
+            let mut command_ctx = ctx();
+            assert!(matches!(
+                ParallelCommand.run(&mut command_ctx, &format!("{role} inspect provider")),
+                CommandResult::Action(Action::RuntimeExtension { .. })
+            ));
+        }
+        for role in ["main", "compact", "summary", "title"] {
+            let mut command_ctx = ctx();
+            assert!(
+                matches!(
+                    ParallelCommand.run(&mut command_ctx, &format!("{role} inspect provider")),
+                    CommandResult::Error(_)
+                ),
+                "role {role} must not bypass the interactive role list"
+            );
+        }
+    }
+
+    #[test]
+    fn parallel_rejects_internal_runtime_roles() {
+        let mut command_ctx = ctx();
+        for role in ["compact", "summary", "title"] {
+            let result = ParallelCommand.run(&mut command_ctx, &format!("{role} internal work"));
+            assert!(
+                matches!(&result, CommandResult::Error(message) if message.contains("cannot be spawned")),
+                "{role} unexpectedly accepted: {result:?}"
+            );
+        }
     }
 }

@@ -176,21 +176,7 @@ impl SessionActor {
             .prepare_role_chat_completion(atelier_provider::RoleId::Compact, false)
             .await
         {
-            Ok(Some((config, client))) => (config, client),
-            Ok(None) => {
-                let config = self.reconstruct_full_config().await;
-                let client = match self.prepare_chat_completion(false).await {
-                    Ok(client) => client,
-                    Err(error) => {
-                        tracing::warn!(
-                            error = %error,
-                            "two_pass: failed to prepare sampling client"
-                        );
-                        return None;
-                    }
-                };
-                (config, client)
-            }
+            Ok((config, client)) => (config, client),
             Err(error) => {
                 tracing::warn!(
                     error = %error,
@@ -945,17 +931,9 @@ impl SessionActor {
             return Err(acp::Error::internal_error()
                 .data("Compaction failed: no system message in simplified conversation"));
         }
-        let (sampling_config, sampling_client) = match self
+        let (sampling_config, sampling_client) = self
             .prepare_role_chat_completion(atelier_provider::RoleId::Compact, false)
-            .await?
-        {
-            Some((config, client)) => (config, client),
-            None => {
-                let config = self.reconstruct_full_config().await;
-                let client = self.prepare_chat_completion(false).await?;
-                (config, client)
-            }
-        };
+            .await?;
         let use_backend_search =
             self.agent.borrow().backend_search_enabled() && self.supports_backend_search.get();
         let effective_tool_defs: Vec<atelier_sampling_types::ToolDefinition> = self
@@ -2010,6 +1988,25 @@ impl SessionActor {
                     .load(std::sync::atomic::Ordering::Relaxed)
                     == SUPPRESS_NONE
                 {
+                    // Some Provider adapters do not preserve the sampler's
+                    // deterministic flag when translating HTTP failures. An
+                    // AUTO failure must still arm at least turn-scoped
+                    // suppression, otherwise the same turn immediately
+                    // re-enters a doomed compaction loop. Known auth, credit,
+                    // size, and schema errors retain their stronger scopes.
+                    self.suppress_auto_compaction(
+                        Self::classify_suppress_reason(&e.to_string()),
+                        trigger_info.tokens_used,
+                        trigger_info.context_window,
+                    )
+                    .await;
+                }
+                if self
+                    .compaction
+                    .auto_compact_suppressed
+                    .load(std::sync::atomic::Ordering::Relaxed)
+                    == SUPPRESS_NONE
+                {
                     self.send_xai_notification(XaiSessionUpdate::AutoCompactFailed {
                         error: String::new(),
                     })
@@ -2168,6 +2165,33 @@ mod inline_auto_compact_flow_tests {
             Err(TerminalError::Other("dummy terminal".into()))
         }
     }
+    const COMPACT_TEST_MODEL_ID: &str = "test-provider/test-model";
+
+    fn compact_test_registry() -> atelier_provider::ProviderRegistry {
+        let mut registry = atelier_provider::ProviderRegistry::in_memory();
+        registry
+            .update_role(
+                atelier_provider::RoleId::Compact,
+                atelier_provider::RoleConfig::new("test-provider", "test-model").unwrap(),
+            )
+            .unwrap();
+        registry
+    }
+
+    fn set_compact_test_endpoint(actor: &SessionActor, base_url: &str) {
+        let mut info = crate::agent::config::ModelInfo::fallback("test-model");
+        info.base_url = base_url.to_owned();
+        actor.models_manager.insert_test_entry(
+            COMPACT_TEST_MODEL_ID,
+            crate::agent::config::ModelEntry {
+                info,
+                api_key: Some("test-key".to_owned()),
+                env_key: None,
+                api_base_url: None,
+                request_payload: serde_json::Map::new(),
+            },
+        );
+    }
     /// Create a minimal SessionActor for testing auto-compact logic.
     async fn create_test_actor(
         total_tokens: u64,
@@ -2176,7 +2200,7 @@ mod inline_auto_compact_flow_tests {
         gateway_tx: mpsc::UnboundedSender<xai_acp_lib::AcpClientMessage>,
         persistence_tx: mpsc::UnboundedSender<PersistenceMsg>,
     ) -> SessionActor {
-        let cwd = AbsPathBuf::new(std::path::PathBuf::from("/tmp")).unwrap();
+        let cwd = AbsPathBuf::new(std::env::temp_dir()).unwrap();
         let fs = Arc::new(MockFs::new(cwd.to_path_buf()));
         let terminal = Arc::new(DummyTerminal {});
         let (hunk_tx, _hunk_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -2220,7 +2244,7 @@ mod inline_auto_compact_flow_tests {
             tokio_util::sync::CancellationToken::new(),
         );
         chat_state_handle.record_token_usage(total_tokens);
-        SessionActor {
+        let actor = SessionActor {
             session_info: SessionInfo {
                 id: acp::SessionId::new("test-auto-compact"),
                 cwd: cwd.as_str().to_string(),
@@ -2246,7 +2270,7 @@ mod inline_auto_compact_flow_tests {
                 std::collections::HashMap::new(),
             )),
             telemetry_enabled: false,
-            role_request_payload: serde_json::Map::new(),
+            role_request_payload: std::cell::RefCell::new(serde_json::Map::new()),
             supports_backend_search: std::cell::Cell::new(false),
             compactions_remaining: std::cell::Cell::new(None),
             compaction_at_tokens: std::cell::Cell::new(None),
@@ -2310,6 +2334,7 @@ mod inline_auto_compact_flow_tests {
             last_reported_branch: std::sync::Arc::new(parking_lot::Mutex::new(None)),
             git_head_enabled: false,
             models_manager: Default::default(),
+            role_registry_override: Some(compact_test_registry()),
             display_cwd: std::sync::OnceLock::new(),
             active_agent_type: parking_lot::Mutex::new(None),
             queue_exit_reminder_on_approved_exit: Arc::new(std::sync::atomic::AtomicBool::new(
@@ -2320,17 +2345,17 @@ mod inline_auto_compact_flow_tests {
             turn_start_prompt_mode: parking_lot::Mutex::new(PromptMode::Agent),
             turn_prompt_mode: Arc::new(parking_lot::Mutex::new(PromptMode::Agent)),
             plan_mode: Arc::new(parking_lot::Mutex::new(
-                crate::session::plan_mode::PlanModeTracker::new(std::path::PathBuf::from(
-                    "/tmp/test-session",
-                )),
+                crate::session::plan_mode::PlanModeTracker::new(
+                    std::env::temp_dir().join("test-session"),
+                ),
             )),
             goal_enabled: false,
             goal_harness_enabled: std::sync::atomic::AtomicBool::new(false),
             goal_harness_availability_reconciled: std::sync::atomic::AtomicBool::new(false),
             goal_tracker: Arc::new(parking_lot::Mutex::new(
-                crate::session::goal_tracker::GoalTracker::new(std::path::PathBuf::from(
-                    "/tmp/test-session",
-                )),
+                crate::session::goal_tracker::GoalTracker::new(
+                    std::env::temp_dir().join("test-session"),
+                ),
             )),
             goal_turn_task_ids: parking_lot::Mutex::new(std::collections::HashSet::new()),
             goal_continuation_streak: std::sync::atomic::AtomicU32::new(0),
@@ -2375,7 +2400,7 @@ mod inline_auto_compact_flow_tests {
             hook_load_errors: std::cell::RefCell::new(Vec::new()),
             plugin_registry: std::cell::RefCell::new(None),
             plugin_registry_handle: None,
-            events: crate::session::events::EventTracker::new(std::path::Path::new("/tmp")),
+            events: crate::session::events::EventTracker::new(&std::env::temp_dir()),
             observability_bridge: noop_observability_bridge(),
             current_turn_number: std::cell::Cell::new(0),
             last_recap_main_turn: std::cell::Cell::new(0),
@@ -2396,7 +2421,9 @@ mod inline_auto_compact_flow_tests {
             subagent_token_records: parking_lot::Mutex::new(std::collections::HashMap::new()),
             workspace_ops: atelier_workspace::WorkspaceOps::for_test(),
             trace_config_template: std::cell::RefCell::new(None),
-        }
+        };
+        set_compact_test_endpoint(&actor, "http://localhost");
+        actor
     }
     /// Test check_auto_compact_needed uses state values.
     #[tokio::test(flavor = "current_thread")]
@@ -2711,6 +2738,7 @@ mod inline_auto_compact_flow_tests {
                     create_test_actor(50_000, 200_000, 85, gateway_tx, persistence_tx).await,
                 );
                 let base_url = spawn_deterministic_400_server().await;
+                set_compact_test_endpoint(&actor, &base_url);
                 let mut cfg = actor.chat_state_handle.get_sampling_config().await.unwrap();
                 cfg.base_url = base_url;
                 actor.chat_state_handle.update_sampling_config(cfg);
@@ -2768,6 +2796,7 @@ mod inline_auto_compact_flow_tests {
                 let actor = Arc::new(actor);
                 let server = MockInferenceServer::start().await.unwrap();
                 server.set_response("Summary of prior work. ".repeat(30));
+                set_compact_test_endpoint(&actor, &server.url());
                 let mut cfg = actor.chat_state_handle.get_sampling_config().await.unwrap();
                 cfg.base_url = server.url();
                 actor.chat_state_handle.update_sampling_config(cfg);
@@ -2843,6 +2872,7 @@ mod inline_auto_compact_flow_tests {
                 let actor = Arc::new(actor);
                 let server = MockInferenceServer::start().await.unwrap();
                 server.set_response("Summary. ".repeat(70));
+                set_compact_test_endpoint(&actor, &server.url());
                 let mut cfg = actor.chat_state_handle.get_sampling_config().await.unwrap();
                 cfg.base_url = server.url();
                 actor.chat_state_handle.update_sampling_config(cfg);

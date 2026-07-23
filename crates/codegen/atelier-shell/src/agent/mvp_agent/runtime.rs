@@ -25,6 +25,13 @@ fn build_retry_request(
     (retry_request_id, request)
 }
 
+pub(super) fn runtime_state_for_stop_reason(stop_reason: &acp::StopReason) -> RuntimeState {
+    match stop_reason {
+        acp::StopReason::EndTurn | acp::StopReason::Cancelled => RuntimeState::Completed,
+        _ => RuntimeState::Paused,
+    }
+}
+
 impl MvpAgent {
     pub(crate) fn register_detach_waiter(
         &self,
@@ -58,7 +65,7 @@ impl MvpAgent {
         state: RuntimeState,
         attachable: bool,
     ) {
-        self.runtime_control.borrow_mut().begin_auxiliary_task(
+        self.runtime_control.lock().begin_auxiliary_task(
             task_id,
             session_id,
             None,
@@ -76,7 +83,7 @@ impl MvpAgent {
         state: RuntimeState,
         diagnostic_message: Option<String>,
     ) {
-        let _ = self.runtime_control.borrow_mut().update_task(
+        let _ = self.runtime_control.lock().update_task(
             task_id,
             state,
             crate::runtime_control::now_millis(),
@@ -90,12 +97,19 @@ impl MvpAgent {
         state: RuntimeState,
         diagnostic_message: Option<String>,
     ) {
-        let _ = self.runtime_control.borrow_mut().finish_task(
+        let _ = self.runtime_control.lock().finish_task(
             task_id,
             state,
             crate::runtime_control::now_millis(),
             diagnostic_message,
         );
+    }
+
+    pub(crate) fn runtime_mark_task_detached(&self, task_id: &str) {
+        let _ = self
+            .runtime_control
+            .lock()
+            .mark_task_detached(task_id, crate::runtime_control::now_millis());
     }
 
     pub(crate) fn start_runtime_task_subscription(
@@ -113,16 +127,14 @@ impl MvpAgent {
             return false;
         }
 
-        let mut event_rx = self.runtime_control.borrow().subscribe_events();
+        let mut event_rx = self.runtime_control.lock().subscribe_events();
         let gateway = self.gateway.clone();
         let agent_ref = LocalRef::new(self);
         let limit = limit.max(1);
         tokio::task::spawn_local(async move {
             let mut cursor = after_event_id;
             loop {
-                let events = agent_ref
-                    .get()
-                    .runtime_events(Some(&session_id), cursor, limit);
+                let events = agent_ref.get().runtime_task_events(&task_id, cursor, limit);
                 if let Some(last) = events.last() {
                     cursor = last.event_id;
                     let task = agent_ref.get().runtime_task(&task_id);
@@ -131,6 +143,7 @@ impl MvpAgent {
                         "sessionId": session_id.clone(),
                         "task": task,
                         "events": events,
+                        "cursor": cursor,
                         "lastEventId": cursor,
                     });
                     if let Ok(raw) = serde_json::value::to_raw_value(&payload) {
@@ -170,34 +183,30 @@ impl MvpAgent {
     }
 
     pub(crate) fn runtime_status(&self, session_id: &str) -> Option<RuntimeStatus> {
-        self.runtime_control.borrow().status(session_id)
+        self.runtime_control.lock().status(session_id)
     }
 
     pub(crate) fn runtime_statuses(&self) -> Vec<RuntimeStatus> {
-        self.runtime_control.borrow().statuses()
+        self.runtime_control.lock().statuses()
     }
 
     pub(crate) fn runtime_tasks(&self, session_id: Option<&str>) -> Vec<RuntimeTask> {
-        self.runtime_control.borrow().tasks(session_id)
+        self.runtime_control.lock().tasks(session_id)
     }
 
     pub(crate) fn runtime_task(&self, task_id: &str) -> Option<RuntimeTask> {
-        self.runtime_control.borrow().task(task_id)
+        self.runtime_control.lock().task(task_id)
     }
 
     pub(crate) fn runtime_requests(&self, session_id: Option<&str>) -> Vec<RequestSnapshot> {
-        self.runtime_control.borrow().requests(session_id)
+        self.runtime_control.lock().requests(session_id)
     }
 
     pub(crate) fn runtime_request(&self, request_id: &str) -> Option<RequestSnapshot> {
-        self.runtime_control.borrow().request(request_id)
+        self.runtime_control.lock().request(request_id)
     }
 
-    pub(crate) fn remember_retryable_prompt(
-        &self,
-        request_id: &str,
-        request: acp::PromptRequest,
-    ) {
+    pub(crate) fn remember_retryable_prompt(&self, request_id: &str, request: acp::PromptRequest) {
         let mut prompts = self.retryable_prompts.borrow_mut();
         if !prompts.contains_key(request_id) && prompts.len() >= MAX_RETRYABLE_PROMPTS {
             if let Some(oldest_id) = prompts.keys().next().cloned() {
@@ -230,7 +239,7 @@ impl MvpAgent {
         let (retry_request_id, retry_request) = build_retry_request(request, request_id);
         if self
             .runtime_control
-            .borrow_mut()
+            .lock()
             .prepare_retry(
                 request_id,
                 &retry_request_id,
@@ -247,7 +256,7 @@ impl MvpAgent {
             }
             Err(error) => {
                 self.runtime_control
-                    .borrow_mut()
+                    .lock()
                     .discard_pending_retry(&retry_request_id);
                 Err(xai_acp_lib::redact_text(&error.to_string()))
             }
@@ -261,30 +270,53 @@ impl MvpAgent {
         limit: usize,
     ) -> Vec<TraceRecord> {
         self.runtime_control
-            .borrow()
+            .lock()
             .events_after(session_id, after_event_id, limit)
     }
 
+    pub(crate) fn runtime_task_events(
+        &self,
+        task_id: &str,
+        after_event_id: u64,
+        limit: usize,
+    ) -> Vec<TraceRecord> {
+        self.runtime_control
+            .lock()
+            .events_after_task(task_id, after_event_id, limit)
+    }
+
     pub(crate) fn runtime_event_bounds(&self) -> (Option<u64>, Option<u64>) {
-        let control = self.runtime_control.borrow();
+        let control = self.runtime_control.lock();
         (control.oldest_event_id(), control.latest_event_id())
     }
 
+    pub(crate) fn runtime_task_event_bounds(&self, task_id: &str) -> (Option<u64>, Option<u64>) {
+        self.runtime_control.lock().task_event_bounds(task_id)
+    }
+
+    pub(crate) fn runtime_task_replay_truncated(&self, task_id: &str, after_event_id: u64) -> bool {
+        self.runtime_control
+            .lock()
+            .task_replay_truncated(task_id, after_event_id)
+    }
+
     pub(crate) fn runtime_doctor(&self, now_ms: u64, stale_after_ms: u64) -> DoctorReport {
-        self.runtime_control.borrow().doctor(now_ms, stale_after_ms)
+        self.runtime_control.lock().doctor(now_ms, stale_after_ms)
     }
 
     pub(crate) fn runtime_recover(&self, session_id: &str) -> RecoveryResult {
         let result = self
             .runtime_control
-            .borrow_mut()
+            .lock()
             .recover(session_id, crate::runtime_control::now_millis());
-        if matches!(result.action, crate::runtime_control::RecoveryAction::Requested)
-            && let Some(handle) = self.session_handle_now(session_id)
+        if matches!(
+            result.action,
+            crate::runtime_control::RecoveryAction::Requested
+        ) && let Some(handle) = self.session_handle_now(session_id)
         {
             let _ = handle.cmd_tx.send(SessionCommand::Cancel {
                 cancel_subagents: true,
-                kill_background_tasks: false,
+                kill_background_tasks: true,
                 rewind_if_pristine: false,
                 trigger: Some("runtime_recover".to_owned()),
             });
@@ -301,7 +333,7 @@ impl MvpAgent {
         provider: Option<String>,
         model: Option<String>,
     ) {
-        self.runtime_control.borrow_mut().begin_request(
+        self.runtime_control.lock().begin_request(
             session_id.0.to_string(),
             request_id,
             turn_id,
@@ -318,7 +350,7 @@ impl MvpAgent {
         state: RuntimeState,
         diagnostic_message: Option<String>,
     ) {
-        let _ = self.runtime_control.borrow_mut().update_status(
+        let _ = self.runtime_control.lock().update_status(
             session_id.0.as_ref(),
             state,
             crate::runtime_control::now_millis(),
@@ -334,7 +366,7 @@ impl MvpAgent {
         output_token_budget: Option<u64>,
         payload: Value,
     ) {
-        let _ = self.runtime_control.borrow_mut().set_request_context(
+        let _ = self.runtime_control.lock().set_request_context(
             request_id,
             context_blocks,
             input_tokens,
@@ -351,7 +383,7 @@ impl MvpAgent {
     ) {
         let _ = self
             .runtime_control
-            .borrow_mut()
+            .lock()
             .set_request_parameters(request_id, effort, fast_mode);
     }
 
@@ -363,7 +395,7 @@ impl MvpAgent {
     ) {
         let _ = self
             .runtime_control
-            .borrow_mut()
+            .lock()
             .set_request_wire_api(request_id, wire_api, source);
     }
 
@@ -374,8 +406,26 @@ impl MvpAgent {
         error_stage: Option<String>,
         diagnostic_message: Option<String>,
     ) {
-        let _ = self.runtime_control.borrow_mut().finish_request(
+        let _ = self.runtime_control.lock().finish_request(
             session_id.0.as_ref(),
+            state,
+            crate::runtime_control::now_millis(),
+            error_stage,
+            diagnostic_message,
+        );
+    }
+
+    pub(crate) fn runtime_finish_request_by_id(
+        &self,
+        session_id: &acp::SessionId,
+        request_id: &str,
+        state: RuntimeState,
+        error_stage: Option<String>,
+        diagnostic_message: Option<String>,
+    ) {
+        let _ = self.runtime_control.lock().finish_request_by_id(
+            session_id.0.as_ref(),
+            request_id,
             state,
             crate::runtime_control::now_millis(),
             error_stage,
@@ -429,5 +479,17 @@ mod tests {
         assert_eq!(meta["sendNow"], Value::Bool(false));
         assert!(!meta.contains_key("turnId"));
         assert_ne!(retry_id, "request-1");
+    }
+
+    #[test]
+    fn cancelled_runtime_task_is_terminal_instead_of_permanently_paused() {
+        assert_eq!(
+            runtime_state_for_stop_reason(&acp::StopReason::Cancelled),
+            RuntimeState::Completed
+        );
+        assert!(
+            runtime_state_for_stop_reason(&acp::StopReason::Cancelled).is_terminal(),
+            "a cancelled task must stop accepting attach/cancel controls"
+        );
     }
 }

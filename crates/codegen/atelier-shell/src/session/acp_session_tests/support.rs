@@ -80,17 +80,18 @@ async fn test_agent_from_config(
     use atelier_tools::registry::types::SessionContext;
     let builder = crate::tools::bridge::ToolBridge::get_builder();
     let fs: std::sync::Arc<dyn AsyncFileSystem> = std::sync::Arc::new(LocalFs);
+    let test_root = std::env::temp_dir().join("atelier-shell-session-tests");
     let ctx = SessionContext {
         backend,
         fs,
-        cwd: std::path::PathBuf::from("/tmp"),
-        session_folder: std::env::temp_dir().join("atelier-test"),
+        cwd: test_root.clone(),
+        session_folder: test_root.join("session"),
         session_env: std::sync::Arc::new(std::collections::HashMap::new()),
         notification_handle: ToolNotificationHandle::noop(),
         owner_session_id: None,
         parent_scheduler_handle: None,
         skills: vec![],
-        state_path: std::path::PathBuf::from("/tmp/tool_state.json"),
+        state_path: test_root.join("tool_state.json"),
         memory_backend: None,
         web_search_config: Default::default(),
         web_fetch_config: Default::default(),
@@ -146,7 +147,7 @@ pub(crate) async fn create_test_actor_ex(
     SessionActor,
     tokio::sync::mpsc::UnboundedReceiver<SessionEvent>,
 ) {
-    let cwd = atelier_paths::AbsPathBuf::new(std::path::PathBuf::from("/tmp")).unwrap();
+    let cwd = atelier_paths::AbsPathBuf::new(std::env::temp_dir()).unwrap();
     let fs = Arc::new(atelier_workspace::file_system::MockFs::new(
         cwd.to_path_buf(),
     ));
@@ -217,7 +218,7 @@ pub(crate) async fn create_test_actor_ex(
             std::collections::HashMap::new(),
         )),
         telemetry_enabled: false,
-        role_request_payload: serde_json::Map::new(),
+        role_request_payload: std::cell::RefCell::new(serde_json::Map::new()),
         supports_backend_search: std::cell::Cell::new(false),
         compactions_remaining: std::cell::Cell::new(None),
         compaction_at_tokens: std::cell::Cell::new(None),
@@ -281,6 +282,7 @@ pub(crate) async fn create_test_actor_ex(
         last_reported_branch: std::sync::Arc::new(parking_lot::Mutex::new(None)),
         git_head_enabled: false,
         models_manager: Default::default(),
+        role_registry_override: None,
         display_cwd: std::sync::OnceLock::new(),
         active_agent_type: parking_lot::Mutex::new(None),
         queue_exit_reminder_on_approved_exit: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -289,17 +291,17 @@ pub(crate) async fn create_test_actor_ex(
         turn_start_prompt_mode: parking_lot::Mutex::new(PromptMode::Agent),
         turn_prompt_mode: Arc::new(parking_lot::Mutex::new(PromptMode::Agent)),
         plan_mode: Arc::new(parking_lot::Mutex::new(
-            crate::session::plan_mode::PlanModeTracker::new(std::path::PathBuf::from(
-                "/tmp/test-session",
-            )),
+            crate::session::plan_mode::PlanModeTracker::new(
+                std::env::temp_dir().join("test-session"),
+            ),
         )),
         goal_enabled: false,
         goal_harness_enabled: std::sync::atomic::AtomicBool::new(false),
         goal_harness_availability_reconciled: std::sync::atomic::AtomicBool::new(false),
         goal_tracker: Arc::new(parking_lot::Mutex::new(
-            crate::session::goal_tracker::GoalTracker::new(std::path::PathBuf::from(
-                "/tmp/test-session",
-            )),
+            crate::session::goal_tracker::GoalTracker::new(
+                std::env::temp_dir().join("test-session"),
+            ),
         )),
         goal_turn_task_ids: parking_lot::Mutex::new(std::collections::HashSet::new()),
         goal_continuation_streak: std::sync::atomic::AtomicU32::new(0),
@@ -341,7 +343,7 @@ pub(crate) async fn create_test_actor_ex(
         hook_load_errors: std::cell::RefCell::new(Vec::new()),
         plugin_registry: std::cell::RefCell::new(None),
         plugin_registry_handle: None,
-        events: crate::session::events::EventTracker::new(std::path::Path::new("/tmp")),
+        events: crate::session::events::EventTracker::new(&std::env::temp_dir()),
         observability_bridge: noop_observability_bridge(),
         current_turn_number: std::cell::Cell::new(0),
         last_recap_main_turn: std::cell::Cell::new(0),

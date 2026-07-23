@@ -5,7 +5,7 @@
 //! `remote_settings` rewrite, no `re_resolve_runtime_fields` / telemetry re-init).
 
 use super::*;
-use crate::heap_profile::{SCOPED_KILL_SWITCH_INTERVAL, build_upload_handles};
+use crate::heap_profile::build_upload_handles;
 
 impl MvpAgent {
     pub(super) fn reconfigure_heap_profile_monitor(&self) {
@@ -57,7 +57,6 @@ impl MvpAgent {
         self.reconfigure_heap_profile_monitor();
         let agent_ref = LocalRef::new(self);
         tokio::task::spawn_local(async move {
-            let mut last_kill_switch = tokio::time::Instant::now();
             loop {
                 let poll_interval = {
                     let mon = agent_ref.get().heap_profile_monitor.borrow();
@@ -77,19 +76,6 @@ impl MvpAgent {
                     .enabled;
                 if !enabled {
                     continue;
-                }
-
-                if last_kill_switch.elapsed() >= SCOPED_KILL_SWITCH_INTERVAL {
-                    let result = futures::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(
-                        agent_ref.get().poll_scoped_jemalloc_kill_switch_once(),
-                    ))
-                    .await;
-                    if result.is_err() {
-                        tracing::error!(
-                            "heap_profile: scoped kill-switch tick panicked; continuing"
-                        );
-                    }
-                    last_kill_switch = tokio::time::Instant::now();
                 }
 
                 let result = futures::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(
@@ -123,53 +109,6 @@ impl MvpAgent {
             .finish_tick(threshold, outcome);
     }
 
-    /// K12: fetch settings, reconfigure from jemalloc fields only.
-    ///
-    /// Also patches jemalloc fields on stored `remote_settings` so full-reapply
-    /// sites (`/new` → `reconfigure_heap_profile_monitor`) cannot re-enable
-    /// profiling from a stale enabled flag after a live kill-switch when the
-    /// subsequent wholesale refresh is skipped or fails.
-    pub(super) async fn poll_scoped_jemalloc_kill_switch_once(&self) {
-        if !self.heap_profile_monitor.borrow().config().enabled {
-            return;
-        }
-        let Ok(auth) = self.auth_manager.auth().await else {
-            tracing::debug!("heap_profile scoped poll skipped: not authenticated");
-            return;
-        };
-        let Some(settings) = self.fetch_remote_settings(auth).await else {
-            tracing::debug!("heap_profile scoped poll skipped: settings fetch failed");
-            return;
-        };
-
-        // Keep stored jemalloc knobs in sync with the live fetch without a
-        // wholesale remote_settings rewrite (no telemetry / announcements churn).
-        {
-            let mut cfg = self.cfg.borrow_mut();
-            if let Some(rs) = cfg.remote_settings.as_mut() {
-                rs.jemalloc_heap_profile_enabled = settings.jemalloc_heap_profile_enabled;
-                rs.jemalloc_heap_profile_thresholds_bytes =
-                    settings.jemalloc_heap_profile_thresholds_bytes.clone();
-                rs.jemalloc_heap_profile_poll_interval_secs =
-                    settings.jemalloc_heap_profile_poll_interval_secs;
-            }
-        }
-
-        let resolved = self
-            .cfg
-            .borrow()
-            .resolve_jemalloc_heap_profile_from_partial(
-                settings.jemalloc_heap_profile_enabled,
-                settings.jemalloc_heap_profile_thresholds_bytes.as_deref(),
-                settings.jemalloc_heap_profile_poll_interval_secs,
-                self.is_data_collection_disabled(),
-            );
-
-        let handles = self.heap_profile_upload_handles();
-        self.heap_profile_monitor
-            .borrow_mut()
-            .reconfigure(resolved, handles);
-    }
 }
 
 #[cfg(test)]

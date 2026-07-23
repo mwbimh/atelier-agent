@@ -11,10 +11,23 @@ fn execute_hook(
     session_id: Option<&str>,
     timeout: Duration,
 ) {
-    let mut cmd = Command::new("sh");
-    cmd.arg("-c")
-        .arg(command)
-        .env("ATELIER_EVENT", event_str)
+    #[cfg(windows)]
+    let mut cmd = {
+        let mut command_process = Command::new("powershell.exe");
+        command_process
+            .arg("-NoProfile")
+            .arg("-NonInteractive")
+            .arg("-Command")
+            .arg(command);
+        command_process
+    };
+    #[cfg(not(windows))]
+    let mut cmd = {
+        let mut command_process = Command::new("sh");
+        command_process.arg("-c").arg(command);
+        command_process
+    };
+    cmd.env("ATELIER_EVENT", event_str)
         .env("ATELIER_MESSAGE", message)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -100,15 +113,73 @@ mod tests {
         }
     }
 
+    fn env_dump_command(out: &std::path::Path) -> String {
+        #[cfg(windows)]
+        {
+            return format!(
+                "@('ATELIER_EVENT=' + $env:ATELIER_EVENT, \
+                 'ATELIER_MESSAGE=' + $env:ATELIER_MESSAGE, \
+                 'ATELIER_SESSION_ID=' + $env:ATELIER_SESSION_ID) | \
+                 Set-Content -LiteralPath '{}'",
+                out.display()
+            );
+        }
+        #[cfg(not(windows))]
+        format!(
+            "printf 'ATELIER_EVENT=%s\\nATELIER_MESSAGE=%s\\nATELIER_SESSION_ID=%s\\n' \
+             \"$ATELIER_EVENT\" \"$ATELIER_MESSAGE\" \"$ATELIER_SESSION_ID\" > {}",
+            out.display()
+        )
+    }
+
+    fn session_presence_command(out: &std::path::Path) -> String {
+        #[cfg(windows)]
+        {
+            return format!(
+                "$value = if (Test-Path Env:ATELIER_SESSION_ID) {{ 'present' }} \
+                 else {{ 'absent' }}; Set-Content -LiteralPath '{}' -Value $value",
+                out.display()
+            );
+        }
+        #[cfg(not(windows))]
+        format!("env > {}", out.display())
+    }
+
+    fn create_marker_command(marker: &std::path::Path) -> String {
+        #[cfg(windows)]
+        {
+            return format!(
+                "New-Item -ItemType File -Force -Path '{}' | Out-Null",
+                marker.display()
+            );
+        }
+        #[cfg(not(windows))]
+        format!("touch {}", marker.display())
+    }
+
+    fn long_sleep_command(marker: Option<&std::path::Path>) -> String {
+        #[cfg(windows)]
+        {
+            return match marker {
+                Some(marker) => format!(
+                    "Start-Sleep -Seconds 100; {}",
+                    create_marker_command(marker)
+                ),
+                None => "Start-Sleep -Seconds 100".to_owned(),
+            };
+        }
+        #[cfg(not(windows))]
+        match marker {
+            Some(marker) => format!("sleep 100; touch {}", marker.display()),
+            None => "sleep 100".to_owned(),
+        }
+    }
+
     #[test]
     fn sets_environment_variables() {
         let dir = tempfile::tempdir().unwrap();
         let out = dir.path().join("env.txt");
-        let command = format!(
-            "printf 'ATELIER_EVENT=%s\\nATELIER_MESSAGE=%s\\nATELIER_SESSION_ID=%s\\n' \
-             \"$ATELIER_EVENT\" \"$ATELIER_MESSAGE\" \"$ATELIER_SESSION_ID\" > {}",
-            out.display()
-        );
+        let command = env_dump_command(&out);
 
         execute_hook(
             &command,
@@ -137,7 +208,7 @@ mod tests {
     fn omits_session_id_when_none() {
         let dir = tempfile::tempdir().unwrap();
         let out = dir.path().join("env.txt");
-        let command = format!("env > {}", out.display());
+        let command = session_presence_command(&out);
 
         execute_hook(
             &command,
@@ -148,6 +219,9 @@ mod tests {
         );
 
         let content = std::fs::read_to_string(&out).unwrap();
+        #[cfg(windows)]
+        assert_eq!(content.trim(), "absent");
+        #[cfg(not(windows))]
         assert!(
             !content.contains("ATELIER_SESSION_ID"),
             "ATELIER_SESSION_ID should not be set: {content}"
@@ -158,7 +232,7 @@ mod tests {
     fn kills_on_timeout() {
         let start = Instant::now();
         execute_hook(
-            "sleep 100",
+            &long_sleep_command(None),
             "Turn complete",
             "msg",
             None,
@@ -197,7 +271,7 @@ mod tests {
     fn successful_command_completes_without_error() {
         let dir = tempfile::tempdir().unwrap();
         let marker = dir.path().join("done");
-        let command = format!("touch {}", marker.display());
+        let command = create_marker_command(&marker);
 
         execute_hook(
             &command,
@@ -213,7 +287,11 @@ mod tests {
     #[test]
     fn run_hook_spawns_thread_without_panic() {
         let hook = NotificationHook {
-            command: "true".into(),
+            command: if cfg!(windows) {
+                "$true | Out-Null".into()
+            } else {
+                "true".into()
+            },
             events: vec![],
             only_unfocused: false,
             timeout_secs: 5,
@@ -227,7 +305,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let marker = dir.path().join("done");
         let hook = NotificationHook {
-            command: format!("sleep 100; touch {}", marker.display()),
+            command: long_sleep_command(Some(&marker)),
             events: vec![],
             only_unfocused: false,
             timeout_secs: 0, // exercises the .max(1) clamp inside run_hook
@@ -256,11 +334,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let out = dir.path().join("env.txt");
         let hook = NotificationHook {
-            command: format!(
-                "printf 'ATELIER_EVENT=%s\\nATELIER_MESSAGE=%s\\nATELIER_SESSION_ID=%s\\n' \
-                 \"$ATELIER_EVENT\" \"$ATELIER_MESSAGE\" \"$ATELIER_SESSION_ID\" > {}",
-                out.display()
-            ),
+            command: env_dump_command(&out),
             events: vec![],
             only_unfocused: false,
             timeout_secs: 5,

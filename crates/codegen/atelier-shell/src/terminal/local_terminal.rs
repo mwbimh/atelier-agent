@@ -191,6 +191,7 @@ mod tests {
     /// Basic regression: commands still produce output and exit normally.
     #[tokio::test]
     async fn test_basic_command_output() {
+        let _execution_guard = crate::terminal::allow_test_unsandboxed_execution();
         let result = LocalTerminalRunner
             .run(make_request("echo hello"))
             .await

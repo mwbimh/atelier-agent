@@ -166,31 +166,27 @@ pub struct EndpointsConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub feedback_base_url: Option<String>,
     /// Env: `ATELIER_TRACE_UPLOAD_URL`. Where trace uploads go.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip)]
     pub trace_upload_url: Option<String>,
     /// Env: `ATELIER_TRACE_UPLOAD_BUCKET`. Direct bucket (`gs://` or `s3://`), bypasses proxy.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip)]
     pub trace_upload_bucket: Option<String>,
     /// Env: `ATELIER_TRACE_UPLOAD_REGION`. AWS region (S3 only).
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip)]
     pub trace_upload_region: Option<String>,
     /// Env: `ATELIER_TRACE_UPLOAD_CREDENTIALS_FILE`. Path to GCS SA key or AWS credentials file.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip)]
     pub trace_upload_credentials_file: Option<String>,
     /// Inline credentials (JSON/INI). Takes precedence over `credentials_file`.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip)]
     pub trace_upload_credentials: Option<String>,
     /// Env: `ATELIER_TRACE_UPLOAD_ENDPOINT_URL`. Custom S3-compatible endpoint.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip)]
     pub trace_upload_endpoint_url: Option<String>,
     /// Env: `ATELIER_DEPLOYMENT_KEY`. Management API key for enterprise deployments.
     /// Sent on telemetry and service requests for deployment-level attribution.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub deployment_key: Option<String>,
-    /// Env: `ATELIER_MANAGED_CONFIG_URL`. Override the managed config endpoint.
-    /// Defaults to `{proxy_url()}/deployment/config`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub managed_config_url: Option<String>,
     /// Env: `OTEL_EXPORTER_OTLP_ENDPOINT`. OTLP collector base; `/v1/traces` is
     /// appended. Legacy repoint of the INTERNAL trace pipeline — deprecated in
     /// favor of `ATELIER_INTERNAL_OTLP_TRACES_ENDPOINT`, and ignored by the internal
@@ -324,10 +320,6 @@ impl EndpointsConfig {
     pub fn resolve_trace_upload_url(&self) -> String {
         String::new()
     }
-    /// Managed deployment configuration is a removed vendor service.
-    pub fn resolve_managed_config_url(&self) -> String {
-        String::new()
-    }
     /// INTERNAL OTLP traces endpoint. Precedence:
     /// 1. `atelier_internal_otlp_traces_endpoint` (verbatim)
     /// 2. legacy `otel_exporter_otlp_traces_endpoint` (verbatim) >
@@ -410,24 +402,8 @@ impl EndpointsConfig {
     }
     /// Resolve trace upload credentials: inline > file > `None` (ambient).
     pub fn resolve_trace_credentials(&self) -> Option<String> {
-        if let Some(ref inline) = self.trace_upload_credentials {
-            let trimmed = inline.trim();
-            if !trimmed.is_empty() {
-                return Some(trimmed.to_owned());
-            }
-        }
-        self.trace_upload_credentials_file
-            .as_deref()
-            .and_then(|path| {
-                std::fs::read_to_string(path)
-                    .inspect_err(|e| {
-                        tracing::warn!(
-                            path = % path, error = % e,
-                            "Failed to read trace upload credentials file"
-                        );
-                    })
-                    .ok()
-            })
+        let _ = self;
+        None
     }
     /// Resolve direct-to-bucket upload method from `trace_upload_bucket`.
     /// Returns `None` if no bucket is configured or scheme is unrecognized.
@@ -486,14 +462,13 @@ impl Default for EndpointsConfig {
             models_base_url: env_string("ATELIER_MODELS_BASE_URL"),
             models_list_url: env_string("ATELIER_MODELS_LIST_URL"),
             feedback_base_url: env_string("ATELIER_FEEDBACK_BASE_URL"),
-            trace_upload_url: env_string("ATELIER_TRACE_UPLOAD_URL"),
-            trace_upload_bucket: env_string("ATELIER_TRACE_UPLOAD_BUCKET"),
-            trace_upload_region: env_string("ATELIER_TRACE_UPLOAD_REGION"),
-            trace_upload_credentials_file: env_string("ATELIER_TRACE_UPLOAD_CREDENTIALS_FILE"),
+            trace_upload_url: None,
+            trace_upload_bucket: None,
+            trace_upload_region: None,
+            trace_upload_credentials_file: None,
             trace_upload_credentials: None,
-            trace_upload_endpoint_url: env_string("ATELIER_TRACE_UPLOAD_ENDPOINT_URL"),
+            trace_upload_endpoint_url: None,
             deployment_key: env_string("ATELIER_DEPLOYMENT_KEY"),
-            managed_config_url: env_string("ATELIER_MANAGED_CONFIG_URL"),
             otel_exporter_otlp_endpoint: env_string("OTEL_EXPORTER_OTLP_ENDPOINT"),
             otel_exporter_otlp_traces_endpoint: env_string("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"),
             otel_exporter_otlp_headers: env_string("OTEL_EXPORTER_OTLP_HEADERS"),
@@ -2091,7 +2066,7 @@ impl Config {
             .source.to_string(), "telemetry_mode" : telemetry.value.to_string(),
             "telemetry_source" : telemetry.source.to_string(), "in_requirement_pin" : req
             .pinned(), "in_requirement_src" : req.source().map(| s | s.to_string()),
-            "in_env_trace_upload" : std::env::var("ATELIER_TELEMETRY_TRACE_UPLOAD").ok(),
+            "in_env_trace_upload" : serde_json::Value::Null,
             "in_env_telemetry_enabled" : std::env::var("ATELIER_TELEMETRY_ENABLED").ok(),
             "in_cfg_telemetry_trace_upload" : self.telemetry.trace_upload,
             "in_cfg_features_telemetry" : self.features.telemetry.map(| m | m
@@ -2225,34 +2200,13 @@ impl Config {
             .default(true)
             .resolve()
     }
-    /// `image_gen` tool gate. Default on; gated only by the `ATELIER_IMAGE_GEN`
-    /// env var and managed-config requirement pin.
+    /// Vendor-hosted image generation was removed from Atelier.
     pub(crate) fn resolve_image_gen(&self) -> Resolved<bool> {
-        BoolFlag::env("ATELIER_IMAGE_GEN")
-            .requirement(self.requirements.image_gen.pinned())
-            .default(true)
-            .resolve()
+        Resolved::new(false, ConfigSource::Default)
     }
-    /// `image_edit` tool gate.
-    ///
-    /// The remote settings `imagine_tools_disabled` denylist is authoritative:
-    /// when it lists `image_edit`, the tool is force-removed and local
-    /// env/config can't re-enable it. A managed requirement pin still outranks
-    /// it; otherwise the tool defaults on and is overridable via
-    /// `ATELIER_IMAGE_EDIT`.
+    /// Vendor-hosted image editing was removed from Atelier.
     pub(crate) fn resolve_image_edit(&self) -> Resolved<bool> {
-        use atelier_tools::implementations::atelier_build::IMAGE_EDIT_TOOL_NAME;
-        if let Some(pinned) = self.requirements.image_edit.pinned() {
-            return Resolved::new(pinned, ConfigSource::Requirement);
-        }
-        if self
-            .remote_settings
-            .as_ref()
-            .is_some_and(|s| s.imagine_tool_disabled(IMAGE_EDIT_TOOL_NAME))
-        {
-            return Resolved::new(false, ConfigSource::Remote);
-        }
-        BoolFlag::env("ATELIER_IMAGE_EDIT").default(true).resolve()
+        Resolved::new(false, ConfigSource::Default)
     }
     /// Optional Imagine model override for `image_gen`. When set (non-empty),
     /// `image_gen` calls this model slug instead of the default quality model.
@@ -2561,16 +2515,16 @@ impl Config {
             .default(true)
             .resolve()
     }
-    /// Resolve whether to use atelier's default OAuth2 (xAI auth.x.ai).
+    /// Resolve whether to use an explicitly configured OAuth2 provider.
     ///
-    /// Enterprise OIDC (`oidc` in config.toml) always wins — this only gates
-    /// the default xAI OAuth2 fallback when no enterprise OIDC is configured.
+    /// Enterprise OIDC (`oidc` in config.toml) always wins. Atelier does not
+    /// enable OAuth without an explicit CLI or environment setting.
     ///
-    /// Priority: `--oauth` > ATELIER_OAUTH_ENABLED env > default (true = OAuth).
+    /// Priority: `--oauth` > ATELIER_OAUTH_ENABLED env > default (off).
     pub fn resolve_atelier_oauth(&self, cli_oidc: Option<bool>) -> Resolved<bool> {
         BoolFlag::env("ATELIER_OAUTH_ENABLED")
             .cli(cli_oidc)
-            .default(true)
+            .default(false)
             .resolve()
     }
     /// Resolve whether to spawn the per-`Ready`-client transport
@@ -3237,7 +3191,7 @@ pub fn model_entries_from_provider_snapshot(
         .map(|provider| (provider.id.as_str(), provider))
         .collect::<std::collections::HashMap<_, _>>();
 
-    snapshot
+    let mut entries: IndexMap<String, ModelEntry> = snapshot
         .models
         .iter()
         .filter_map(|model| {
@@ -3263,14 +3217,7 @@ pub fn model_entries_from_provider_snapshot(
             let provider_model_override = snapshot
                 .model_provider_overrides
                 .get(&model.key.to_string());
-            let wire_api = provider_model_override
-                .and_then(|override_config| override_config.wire_api)
-                .or(model.wire_api)
-                // Wire API belongs to the model. An unset model setting is
-                // deliberately the formal Chat Completions default; the
-                // Provider protocol must not silently decide how every model
-                // on that Provider is called.
-                .unwrap_or(WireApi::ChatCompletions);
+            let wire_api = snapshot.resolve_wire_api(&model.key).ok()?.wire_api;
             info.api_backend = match wire_api {
                 WireApi::Responses => ApiBackend::Responses,
                 WireApi::ChatCompletions => ApiBackend::ChatCompletions,
@@ -3327,7 +3274,13 @@ pub fn model_entries_from_provider_snapshot(
             };
             Some((model.key.to_string(), entry))
         })
-        .collect()
+        .collect();
+    if let Some(default_key) = snapshot.default_model.as_ref().map(ToString::to_string)
+        && let Some(entry) = entries.shift_remove(&default_key)
+    {
+        entries.shift_insert(0, default_key, entry);
+    }
+    entries
 }
 
 fn provider_reasoning_efforts(model: &ProviderModelDescriptor) -> Vec<ReasoningEffortOption> {
@@ -3379,22 +3332,29 @@ pub fn resolve_model_list_with_provider_snapshot(
 /// vendor or remote model catalog.
 pub fn resolve_runtime_model_list(
     cfg: &Config,
-    prefetched: Option<IndexMap<String, ModelEntry>>,
+    _prefetched: Option<IndexMap<String, ModelEntry>>,
 ) -> IndexMap<String, ModelEntry> {
+    resolve_model_list(cfg, Some(load_runtime_provider_models()))
+}
+
+/// Load the local Provider catalog used by the vendorless runtime.
+///
+/// Absence or corruption returns an empty catalog. This fail-closed boundary
+/// prevents inherited vendor model lists from reappearing. The runtime caches
+/// the returned snapshot and refreshes it explicitly through Provider commands.
+pub fn load_runtime_provider_models() -> IndexMap<String, ModelEntry> {
     let path = atelier_config::atelier_home().join("providers.toml");
     if !path.exists() {
         // A fresh Atelier install must be offline until the user configures a
         // provider. Do not fall back to the inherited vendor model catalog.
-        return resolve_model_list(cfg, Some(IndexMap::new()));
+        return IndexMap::new();
     }
 
     match atelier_provider::ProviderRegistry::load_or_create(path) {
-        Ok(registry) => {
-            resolve_model_list_with_provider_snapshot(cfg, prefetched, Some(&registry.snapshot()))
-        }
+        Ok(registry) => model_entries_from_provider_snapshot(&registry.snapshot()),
         Err(error) => {
             tracing::error!(%error, "local Provider registry is invalid; refusing remote model catalog");
-            resolve_model_list(cfg, Some(IndexMap::new()))
+            IndexMap::new()
         }
     }
 }
@@ -3604,12 +3564,12 @@ pub struct ModelEntryConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub top_p: Option<f32>,
     /// The API key for this model's provider.
-    /// If not set, falls back to env_key, then XAI_API_KEY.
+    /// If not set, falls back only to the configured `env_key`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub api_key: Option<String>,
     /// Environment variable name(s) that hold the provider API key.
     /// Accepts a string or an array (first set, non-empty value wins).
-    /// If not set, falls back to XAI_API_KEY.
+    /// No implicit global provider credential is consulted.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub env_key: Option<EnvKeys>,
     /// Which API backend to use for this model.
@@ -4463,7 +4423,7 @@ fn is_local_provider_model(model: &ModelEntry) -> bool {
 }
 
 /// Resolve credentials for a model.
-/// Priority: model api_key/env_key > session token > XAI_API_KEY.
+/// Priority: model api_key/env_key > session token.
 ///
 /// When `env_key` lists multiple names, the first set non-empty value is used.
 pub fn resolve_credentials(model: &ModelEntry, session_key: Option<&str>) -> ResolvedCredentials {
@@ -4481,18 +4441,6 @@ pub fn resolve_credentials(model: &ModelEntry, session_key: Option<&str>) -> Res
             info.base_url.clone(),
             xai_chat_state::AuthType::SessionToken,
         )
-    } else if !local_provider_model
-        && model
-            .api_base_url
-            .as_deref()
-            .is_some_and(crate::util::is_first_party_xai_url)
-        && let Ok(key) = crate::agent::auth_method::read_xai_api_key_env()
-    {
-        let url = model
-            .api_base_url
-            .clone()
-            .unwrap_or_else(|| info.base_url.clone());
-        (Some(key), url, xai_chat_state::AuthType::ApiKey)
     } else {
         if let Some(ref env_keys) = model.env_key
             && !env_keys.is_empty()
@@ -5247,6 +5195,7 @@ reasoning_effort = "low"
             );
         }
     }
+    #[cfg(any())] // The vendor CLI proxy and its synthetic headers were removed from Atelier.
     #[test]
     fn inject_url_derived_headers_adds_proxy_headers_for_cli_chat_proxy_url() {
         let mut headers = IndexMap::new();
@@ -5267,6 +5216,7 @@ reasoning_effort = "low"
         assert!(headers.get("X-XAI-Token-Auth").is_none());
         assert!(headers.get("x-authenticateresponse").is_none());
     }
+    #[cfg(any())] // The vendor CLI proxy and its synthetic headers were removed from Atelier.
     #[test]
     fn inject_url_derived_headers_preserves_caller_extra_headers() {
         let mut headers = IndexMap::new();
@@ -5498,6 +5448,7 @@ reasoning_effort = "low"
         assert_eq!(resolved.base_url, "https://vendor.example/v1");
         assert_eq!(resolved.api_key.as_deref(), Some("vendor-key"));
     }
+    #[cfg(any())] // Vendor session-token substitution was removed; Providers own credentials.
     #[test]
     fn web_search_disable_api_key_auth_swaps_first_party_key_for_session() {
         let endpoints = EndpointsConfig::default();
@@ -5832,11 +5783,11 @@ reasoning_effort = "low"
     }
     #[test]
     #[serial]
-    fn resolve_credentials_empty_env_key_falls_through_to_global_key() {
+    fn resolve_credentials_empty_env_key_does_not_use_a_global_vendor_key() {
         use crate::agent::auth_method::{LEGACY_XAI_API_KEY_ENV_VAR, XAI_API_KEY_ENV_VAR};
         use atelier_test_support::EnvGuard;
         use xai_chat_state::AuthType;
-        let sentinel = "xai-global-sentinel-key";
+        let sentinel = "global-vendor-key-must-not-be-used";
         let primary = "ATELIER_TEST_EMPTY_ENV_GLOBAL_PRIMARY";
         let alias = "ATELIER_TEST_EMPTY_ENV_GLOBAL_ALIAS";
         let _primary = EnvGuard::set(primary, "");
@@ -5845,10 +5796,11 @@ reasoning_effort = "low"
         let _legacy = EnvGuard::unset(LEGACY_XAI_API_KEY_ENV_VAR);
         let mut model = test_model_entry("m", "https://inference.example/v1", None, None, None);
         model.env_key = Some(EnvKeys::new([primary, alias]));
+        model.api_base_url = Some("https://api.x.ai/v1".to_owned());
         assert!(!model.has_own_credentials());
         let creds = resolve_credentials(&model, None);
         assert_eq!(creds.auth_type, AuthType::ApiKey);
-        assert_eq!(creds.api_key.as_deref(), Some(sentinel));
+        assert_eq!(creds.api_key, None);
     }
     #[test]
     fn resolve_credentials_empty_api_key_falls_through_to_session() {
@@ -5923,6 +5875,7 @@ reasoning_effort = "low"
             std::env::remove_var(env_var);
         }
     }
+    #[cfg(any())] // The vendor Messages proxy was removed from Atelier.
     #[test]
     fn proxy_messages_models_use_bearer_auth_scheme() {
         let mut model = test_model_entry(
@@ -5971,6 +5924,7 @@ reasoning_effort = "low"
         }
     }
     /// `disable_api_key_auth` kill switch (Claude `forceLoginMethod` parity).
+    #[cfg(any())] // The vendor API-key kill switch was removed with vendor authentication.
     #[test]
     fn enforce_disable_api_key_auth_blocks_first_party_only() {
         use xai_chat_state::AuthType;
@@ -6003,6 +5957,7 @@ reasoning_effort = "low"
     /// `try_resolve_model_credentials` — swaps it for the session token. BYOK
     /// (non-x.ai) own keys are preserved. (`try_resolve_model_credentials`
     /// loads global config, so this exercises its resolve + enforce core.)
+    #[cfg(any())] // The vendor API-key kill switch was removed with vendor authentication.
     #[test]
     fn try_resolve_model_credentials_swaps_first_party_own_key_under_kill_switch() {
         use xai_chat_state::AuthType;
@@ -6131,6 +6086,7 @@ reasoning_effort = "low"
     fn resolve_model_auth_facts_empty_model_id_is_unknown() {
         assert_eq!(resolve_model_auth_facts("").byok, ModelByok::Unknown);
     }
+    #[cfg(any())] // Atelier has no built-in vendor default model or proxy to inherit from.
     #[test]
     fn user_override_adds_api_key_to_default_model() {
         let dm = crate::models::default_model();
@@ -7225,6 +7181,7 @@ reasoning_effort = "low"
         let info = ModelInfo::from_config(&entry);
         assert_eq!(info.inference_idle_timeout_secs, Some(120));
     }
+    #[cfg(any())] // Remote telemetry configuration was removed; observability is local-only.
     #[test]
     fn telemetry_config_parses_custom_values_from_toml() {
         let raw: toml::Value = toml::from_str(
@@ -7266,6 +7223,7 @@ reasoning_effort = "low"
         assert!(cfg.telemetry.events_api_key.is_none());
         assert!(cfg.telemetry.mixpanel_token.is_none());
     }
+    #[cfg(any())] // Remote telemetry configuration was removed; observability is local-only.
     #[test]
     fn telemetry_partial_override_retains_defaults() {
         let raw: toml::Value = toml::from_str(
@@ -7484,6 +7442,82 @@ reasoning_effort = "low"
     }
 
     #[test]
+    fn provider_default_model_is_first_in_the_runtime_catalog() {
+        let provider = atelier_provider::ProviderConfig {
+            id: "allm".into(),
+            display_name: "AllM".into(),
+            protocol: ProviderProtocol::OpenAiChatCompletions,
+            base_url: url::Url::parse("http://127.0.0.1:4317/v1").unwrap(),
+            credential: atelier_provider::CredentialRef::None,
+            discovery: atelier_provider::ProviderDiscovery::Static,
+            extra_headers: std::collections::BTreeMap::new(),
+            enabled: true,
+        };
+        let descriptor = |model_id: &str| atelier_provider::ModelDescriptor {
+            key: atelier_provider::ModelKey::new("allm", model_id).unwrap(),
+            display_name: model_id.into(),
+            description: None,
+            wire_api: None,
+            context_window: Some(128_000),
+            capabilities: Default::default(),
+            reasoning_efforts: Vec::new(),
+            source: atelier_provider::ModelSource::Static,
+            enabled: true,
+        };
+        let default = atelier_provider::ModelKey::new("allm", "deepseek-v4-flash").unwrap();
+        let snapshot = ProviderSnapshot {
+            providers: vec![provider],
+            models: vec![descriptor("other"), descriptor("deepseek-v4-flash")],
+            default_model: Some(default),
+            model_provider_overrides: Default::default(),
+        };
+
+        let entries = model_entries_from_provider_snapshot(&snapshot);
+
+        assert_eq!(
+            entries.first().map(|(key, _)| key.as_str()),
+            Some("allm/deepseek-v4-flash")
+        );
+    }
+
+    #[test]
+    fn provider_protocol_does_not_override_default_chat_completions_wire_api() {
+        let provider = atelier_provider::ProviderConfig {
+            id: "allm".into(),
+            display_name: "AllM".into(),
+            protocol: ProviderProtocol::OpenAiResponses,
+            base_url: url::Url::parse("http://127.0.0.1:4317/v1").unwrap(),
+            credential: atelier_provider::CredentialRef::None,
+            discovery: atelier_provider::ProviderDiscovery::Static,
+            extra_headers: std::collections::BTreeMap::new(),
+            enabled: true,
+        };
+        let snapshot = ProviderSnapshot {
+            providers: vec![provider],
+            models: vec![atelier_provider::ModelDescriptor {
+                key: atelier_provider::ModelKey::new("allm", "deepseek-v4-flash").unwrap(),
+                display_name: "deepseek-v4-flash".into(),
+                description: None,
+                wire_api: None,
+                context_window: Some(128_000),
+                capabilities: Default::default(),
+                reasoning_efforts: Vec::new(),
+                source: atelier_provider::ModelSource::Static,
+                enabled: true,
+            }],
+            default_model: None,
+            model_provider_overrides: Default::default(),
+        };
+
+        let entries = model_entries_from_provider_snapshot(&snapshot);
+        let entry = entries.get("allm/deepseek-v4-flash").unwrap();
+        let sampling = resolve_sampling(entry, None);
+
+        assert_eq!(entry.info.api_backend, ApiBackend::ChatCompletions);
+        assert_eq!(sampling.api_backend, ApiBackend::ChatCompletions);
+    }
+
+    #[test]
     fn composite_provider_model_does_not_inherit_vendor_session_token() {
         let mut model = test_model_entry(
             "provider-model",
@@ -7674,6 +7708,7 @@ reasoning_effort = "low"
         assert_eq!(model.info.model, "atelier-4.5");
         assert_eq!(model.info.base_url, "https://inference.example.com/v1");
     }
+    #[cfg(any())] // Atelier has no built-in vendor session or CLI proxy model.
     #[test]
     fn e2e_default_model_with_session_routes_to_proxy() {
         let (_, models) = resolve_models_from_toml("", None);
@@ -7687,6 +7722,7 @@ reasoning_effort = "low"
             "session auth should route to cli-chat-proxy, not api.x.ai"
         );
     }
+    #[cfg(any())] // Atelier does not read XAI_API_KEY or route to a vendor endpoint.
     #[test]
     #[serial]
     fn e2e_default_model_with_external_api_key_routes_to_api_xai() {
@@ -7742,6 +7778,7 @@ reasoning_effort = "low"
         );
         assert_eq!(sampling.base_url, "https://my-proxy.example.com/v1");
     }
+    #[cfg(any())] // Vendor credential priority was replaced by explicit Provider credentials.
     #[test]
     #[serial]
     fn e2e_credential_priority_model_key_beats_session_beats_env() {
@@ -7797,6 +7834,7 @@ reasoning_effort = "low"
             "no credentials available → api_key should be None"
         );
     }
+    #[cfg(any())] // Atelier has no duplicate built-in vendor model/proxy entry to preserve.
     #[test]
     fn e2e_duplicate_model_field_both_entries_survive() {
         let dm = crate::models::default_model();
@@ -8002,16 +8040,12 @@ reasoning_effort = "low"
         assert_eq!(cfg.proxy_url(), "");
         assert_eq!(cfg.resolve_inference_base_url(), "");
         assert_eq!(cfg.resolve_models_list_url(), "");
-        assert_eq!(cfg.resolve_managed_config_url(), "");
         assert_eq!(cfg.resolve_feedback_base_url(), "");
         assert_eq!(cfg.resolve_trace_upload_url(), "");
         assert_eq!(cfg.resolve_otlp_traces_endpoint(), "");
         assert_eq!(cfg.xai_api_base_url, inference);
         let overridden = EndpointsConfig {
             cli_chat_proxy_base_url: Some("https://proxy.enterprise.example/v1".to_string()),
-            managed_config_url: Some(
-                "https://control.enterprise.example/deployment/config".to_string(),
-            ),
             feedback_base_url: Some("https://feedback.enterprise.example".to_string()),
             trace_upload_url: Some("https://trace.enterprise.example".to_string()),
             ..Default::default()
@@ -8021,7 +8055,6 @@ reasoning_effort = "low"
             "https://proxy.enterprise.example/v1"
         );
         assert_eq!(overridden.resolve_otlp_traces_endpoint(), "");
-        assert_eq!(overridden.resolve_managed_config_url(), "");
         assert_eq!(overridden.resolve_feedback_base_url(), "");
         assert_eq!(overridden.resolve_trace_upload_url(), "");
     }
@@ -8031,7 +8064,7 @@ reasoning_effort = "low"
     /// inference host on either.
     #[test]
     #[serial]
-    fn loader_managed_config_url_never_follows_inference_endpoint() {
+    fn loader_deployment_key_does_not_change_inference_endpoint() {
         unset_endpoint_env_vars();
         let cfg = Config::new_from_toml_cfg(
             &toml::from_str(
@@ -8042,13 +8075,6 @@ reasoning_effort = "low"
         )
         .expect("config should parse");
         assert!(cfg.endpoints.cli_chat_proxy_base_url.is_none());
-        assert_eq!(cfg.endpoints.resolve_managed_config_url(), "");
-        assert!(
-            !cfg.endpoints
-                .resolve_managed_config_url()
-                .contains("inference.acme-corp.example"),
-            "deployment key would be sent to the inference host"
-        );
     }
     #[test]
     fn e2e_user_override_explicit_base_url_wins_over_endpoints() {
@@ -8430,13 +8456,13 @@ reasoning_effort = "low"
         assert_eq!(d["has_remote_settings"], serde_json::json!(true));
         cfg.telemetry.trace_upload = Some(true);
         let d = cfg.trace_upload_decision_debug();
-        assert_eq!(d["trace_upload"], serde_json::json!(true));
-        assert_eq!(d["trace_upload_source"], serde_json::json!("config"));
+        assert_eq!(d["trace_upload"], serde_json::json!(false));
+        assert_eq!(d["trace_upload_source"], serde_json::json!("default"));
         assert_eq!(d["in_cfg_telemetry_trace_upload"], serde_json::json!(true));
     }
     #[test]
     #[serial]
-    fn resolve_trace_upload_honors_config_when_telemetry_on() {
+    fn resolve_trace_upload_stays_disabled_when_telemetry_on() {
         unsafe { std::env::remove_var("ATELIER_TELEMETRY_ENABLED") };
         unsafe { std::env::remove_var("ATELIER_TELEMETRY_TRACE_UPLOAD") };
         let mut cfg = Config::default();
@@ -8444,10 +8470,10 @@ reasoning_effort = "low"
         cfg.telemetry.trace_upload = Some(false);
         let r = cfg.resolve_trace_upload();
         assert!(!r.value);
-        assert_eq!(r.source, ConfigSource::Config);
+        assert_eq!(r.source, ConfigSource::Default);
         cfg.telemetry.trace_upload = None;
         let r = cfg.resolve_trace_upload();
-        assert!(r.value, "defaults on when telemetry fully enabled");
+        assert!(!r.value, "Atelier never enables remote trace uploads");
     }
     #[test]
     #[serial]
@@ -8619,6 +8645,7 @@ reasoning_effort = "low"
             Some("atelier-imagine-image-pro".to_owned())
         );
     }
+    #[cfg(any())] // Vendor-hosted image editing was removed from Atelier.
     #[test]
     #[serial]
     fn imagine_tools_disabled_gates_image_edit() {
@@ -9637,6 +9664,7 @@ agent_type = "cursor"
         );
     }
     /// Regression: a deployment key with no OAuth token must resolve to Proxy.
+    #[cfg(any())] // Vendor trace upload was removed from Atelier.
     #[test]
     fn resolve_upload_method_accepts_deployment_key_without_oauth() {
         use crate::session::repo_changes::UploadMethod;
@@ -9656,6 +9684,7 @@ agent_type = "cursor"
             other => panic!("expected Proxy upload method, got {other:?}"),
         }
     }
+    #[cfg(any())] // Remote OTLP export was removed; observability is local-only.
     #[test]
     fn otlp_traces_endpoint_precedence() {
         let proxy = "https://inference.acme.com/v1".to_string();
@@ -9718,6 +9747,7 @@ agent_type = "cursor"
     }
     /// `atelier_internal_otlp_traces_endpoint` wins over the legacy `OTEL_*`
     /// fields regardless of the master switch.
+    #[cfg(any())] // Remote OTLP export was removed; observability is local-only.
     #[test]
     fn internal_otlp_endpoint_atelier_internal_wins_regardless_of_switch() {
         for switch in [false, true] {
@@ -9740,6 +9770,7 @@ agent_type = "cursor"
         }
     }
     /// Master switch unset → legacy fallback preserved (back-compat).
+    #[cfg(any())] // Remote OTLP export was removed; observability is local-only.
     #[test]
     fn internal_otlp_endpoint_legacy_fallback_when_switch_unset() {
         let traces = EndpointsConfig {
@@ -9765,6 +9796,7 @@ agent_type = "cursor"
     /// ignored by the internal pipeline (the external stream owns them); the
     /// internal pipeline falls back to the proxy default and
     /// `internal_otlp_consumed_standard_vars()` is false.
+    #[cfg(any())] // Remote OTLP export was removed; observability is local-only.
     #[test]
     fn internal_otlp_ignores_legacy_vars_when_switch_set() {
         let cfg = EndpointsConfig {
@@ -9919,6 +9951,7 @@ agent_type = "cursor"
     fn ext_client() -> atelier_telemetry::external::config::ExternalClientInfo {
         atelier_telemetry::external::config::ExternalClientInfo::default()
     }
+    #[cfg(any())] // External OTLP export was removed; observability is local-only.
     #[test]
     fn external_otel_default_off_and_double_opt_in() {
         assert!(
@@ -9949,6 +9982,7 @@ agent_type = "cursor"
             .is_some()
         );
     }
+    #[cfg(any())] // External OTLP export was removed; observability is local-only.
     #[test]
     fn external_otel_file_table_layered_under_env() {
         let effective: toml::Value = toml::from_str(
@@ -9995,6 +10029,7 @@ agent_type = "cursor"
             .is_none()
         );
     }
+    #[cfg(any())] // External OTLP export was removed; observability is local-only.
     #[test]
     fn external_otel_requirements_pin_wins_over_env() {
         let req: toml::Value = toml::from_str(
@@ -10093,6 +10128,7 @@ agent_type = "cursor"
                 .contains("collector.corp")
         );
     }
+    #[cfg(any())] // External OTLP export was removed; observability is local-only.
     #[test]
     fn external_otel_carries_internal_consumed_flag() {
         let cfg = resolve_external_otel_config_with(

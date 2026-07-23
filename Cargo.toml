@@ -7,6 +7,7 @@ members = [
     "crates/codegen/ptyctl",
     "crates/codegen/ptyctl-cli",
     "crates/codegen/atelier-provider",
+    "crates/codegen/atelier-protocol",
     "crates/codegen/atelier-windows-sandbox",
     "crates/codegen/xai-acp-lib",
     "crates/codegen/xai-agent-lifecycle",
@@ -51,7 +52,6 @@ members = [
     "crates/codegen/atelier-test-support",
     "crates/codegen/atelier-tools",
     "crates/codegen/atelier-tools-api",
-    "crates/codegen/atelier-update",
     "crates/codegen/atelier-version",
     "crates/codegen/atelier-voice",
     "crates/codegen/atelier-workspace",
@@ -273,6 +273,7 @@ windows = { version = "0.61", features = ["Win32_Security", "Win32_Security_Auth
 wiremock = "0.6"
 wl-clipboard-rs = "0.9"
 xai-acp-lib = { path = "crates/codegen/xai-acp-lib" }
+atelier-protocol = { path = "crates/codegen/atelier-protocol" }
 xai-agent-lifecycle = { path = "crates/codegen/xai-agent-lifecycle" }
 xai-circuit-breaker = { path = "crates/common/xai-circuit-breaker" }
 xai-computer-hub-core = { path = "crates/common/xai-computer-hub-core" }

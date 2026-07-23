@@ -100,17 +100,9 @@ fn has_usable_token_covers_memory_and_disk() {
 }
 
 #[test]
-fn auth_scope_uses_oauth2_when_present() {
+fn default_auth_scope_is_local() {
     let cfg = AtelierComConfig::default();
-    // Default config always has oauth2 set to the xAI defaults.
-    assert_eq!(
-        cfg.auth_scope(),
-        format!(
-            "{}::{}",
-            crate::auth::config::XAI_OAUTH2_ISSUER,
-            obfstr::obfstr!("b1a00492-073a-47ea-816f-4c329264a828"),
-        )
-    );
+    assert_eq!(cfg.auth_scope(), "atelier::default");
 }
 
 #[test]
@@ -536,21 +528,6 @@ fn manager_collection_predicates_fail_directions() {
         !mgr.allows_data_collection(),
         "cleared credentials must close the collection gate"
     );
-}
-
-// -- token_suffix ----------------------------------------------------------------
-
-#[test]
-fn token_suffix_matrix() {
-    let cases: &[(&str, &str)] = &[
-        ("abcdefghijklmnop", "efghijklmnop"), // takes last 12
-        ("short", "short"),                   // short unchanged
-        ("", ""),                             // empty
-        ("123456789012", "123456789012"),     // exact 12
-    ];
-    for (input, expected) in cases {
-        assert_eq!(token_suffix(input), *expected, "input={input:?}");
-    }
 }
 
 // -- read_disk_auth ----------------------------------------------------------
@@ -3009,7 +2986,7 @@ fn oidc_session_for_team(principal_id: &str) -> AtelierAuth {
         auth_mode: AuthMode::Oidc,
         refresh_token: Some("rt".into()),
         expires_at: Some(Utc::now() + Duration::hours(1)),
-        oidc_issuer: Some(crate::auth::config::XAI_OAUTH2_ISSUER.to_string()),
+        oidc_issuer: Some(crate::auth::XAI_OAUTH2_ISSUER.to_string()),
         oidc_client_id: Some("client".into()),
         ..AtelierAuth::test_default()
     }

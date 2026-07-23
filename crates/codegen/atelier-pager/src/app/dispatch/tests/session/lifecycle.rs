@@ -135,7 +135,7 @@ fn session_created_sets_session_id() {
         }),
         &mut app,
     );
-    assert_eq!(effects.len(), 7);
+    assert_eq!(effects.len(), 6);
     assert!(
         matches!(& effects[0], Effect::FetchPromptHistory { session_id, .. } if
         session_id == "new-session-123")
@@ -150,11 +150,7 @@ fn session_created_sets_session_id() {
         Effect::CheckMarketplaceUpdates { .. }
     ));
     assert!(matches!(&effects[4], Effect::FetchPluginCtaCatalog { .. }));
-    assert!(matches!(
-        &effects[5],
-        Effect::FetchBilling { silent: true, .. }
-    ));
-    assert!(matches!(&effects[6], Effect::RegisterActiveSession { .. }));
+    assert!(matches!(&effects[5], Effect::RegisterActiveSession { .. }));
     assert_eq!(
         app.agents[&id]
             .session
@@ -312,11 +308,6 @@ fn worktree_session_created_sets_session_and_cwd() {
         effects
             .iter()
             .any(|e| matches!(e, Effect::FetchSessionAgentName { .. }))
-    );
-    assert!(
-        effects
-            .iter()
-            .any(|e| matches!(e, Effect::FetchBilling { silent: true, .. }))
     );
     assert!(
         effects
@@ -593,6 +584,12 @@ fn session_failed_clears_flag_no_fetches() {
         a.session.session_id = None;
         a.pending_extensions_fetch = true;
         a.extensions_modal = Some(ExtensionsModalState::new(ExtensionsTab::Hooks));
+        a.mcp_init_progress = Some(crate::app::agent_view::McpInitProgress {
+            total: 0,
+            connected: 0,
+            started_at: std::time::Instant::now(),
+        });
+        a.session.prompt_history_loading = true;
     }
     let effects = dispatch(
         Action::TaskComplete(TaskResult::SessionFailed {
@@ -603,6 +600,44 @@ fn session_failed_clears_flag_no_fetches() {
     );
     assert_eq!(count_extension_fetches(&effects), 0);
     assert!(!app.agents[&id].pending_extensions_fetch);
+    assert!(
+        app.agents[&id].mcp_init_progress.is_none(),
+        "a failed session must not leave the Starting session overlay active"
+    );
+    assert!(!app.agents[&id].session.prompt_history_loading);
+    assert!(
+        (0..app.agents[&id].scrollback.len()).any(|index| {
+            matches!(
+                &app.agents[&id].scrollback.get(index).unwrap().block,
+                RenderBlock::System(block) if block.text.contains("Session failed to start: boom")
+            )
+        }),
+        "the startup failure must be visible in the conversation"
+    );
+}
+
+#[test]
+fn dashboard_session_failure_opens_the_failed_agent_with_the_full_error() {
+    let mut app = test_app_with_agent();
+    let id = AgentId(0);
+    app.active_view = ActiveView::AgentDashboard;
+
+    dispatch(
+        Action::TaskComplete(TaskResult::SessionFailed {
+            agent_id: id,
+            error: "configured main role model is unavailable".to_owned(),
+        }),
+        &mut app,
+    );
+
+    assert_eq!(app.active_view, ActiveView::Agent(id));
+    assert!((0..app.agents[&id].scrollback.len()).any(|index| {
+        matches!(
+            &app.agents[&id].scrollback.get(index).unwrap().block,
+            RenderBlock::System(block)
+                if block.text.contains("configured main role model is unavailable")
+        )
+    }));
 }
 #[test]
 fn switch_model_without_session_does_nothing() {

@@ -109,7 +109,7 @@ mod tests {
         // No gh in this dir yet.
         assert!(which::which_in("gh", Some(dir.path()), dir.path()).is_err());
         // Create an executable `gh`.
-        let gh = dir.path().join("gh");
+        let gh = dir.path().join(if cfg!(windows) { "gh.exe" } else { "gh" });
         std::fs::write(&gh, b"#!/bin/sh\nexit 0\n").unwrap();
         #[cfg(unix)]
         {

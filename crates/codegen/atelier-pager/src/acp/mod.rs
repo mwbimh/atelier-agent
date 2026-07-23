@@ -12,7 +12,7 @@ pub mod tracker;
 use anyhow::Result;
 use tokio_util::sync::CancellationToken;
 
-use crate::client_identity::{HEADLESS_CLIENT_TYPE, PAGER_CLIENT_TYPE, PAGER_CLIENT_VERSION};
+use crate::runtime_identity::{HEADLESS_CLIENT_TYPE, PAGER_CLIENT_TYPE, PAGER_CLIENT_VERSION};
 use agent_client_protocol as acp;
 use atelier_shell::agent::auth_method::AuthMethodKind;
 use atelier_shell::agent::config::Config as AgentConfig;

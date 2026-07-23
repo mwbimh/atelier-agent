@@ -25,7 +25,7 @@ impl SlashCommand for ProviderCommand {
     }
 
     fn usage(&self) -> &str {
-        "/provider [list|add|edit|enable|disable|refresh|delete] [id] ..."
+        "/provider [list|add|edit|enable|disable|test|refresh|delete] [id] ..."
     }
 
     fn takes_args(&self) -> bool {
@@ -33,14 +33,19 @@ impl SlashCommand for ProviderCommand {
     }
 
     fn suggest_args(&self, _ctx: &AppCtx, args_query: &str) -> Option<Vec<ArgItem>> {
+        let trailing_space = args_query.chars().last().is_some_and(char::is_whitespace);
         let query = args_query.trim_end();
         let mut parts = query.split_whitespace();
         let command = parts.next();
         let has_argument = parts.next().is_some();
 
+        if command == Some("edit") && has_argument && trailing_space {
+            return None;
+        }
+
         if command.is_some() && !has_argument {
             match command.unwrap_or_default() {
-                "edit" | "enable" | "disable" | "delete" | "refresh" => {
+                "edit" | "enable" | "disable" | "test" | "delete" | "refresh" => {
                     let path = atelier_config::atelier_home().join("providers.toml");
                     let registry = ProviderRegistry::load_or_create(path).ok()?;
                     let prefix = command.unwrap_or_default();
@@ -62,7 +67,7 @@ impl SlashCommand for ProviderCommand {
 
         Some(
             [
-                "list", "add ", "edit ", "enable ", "disable ", "refresh ", "delete ",
+                "list", "add ", "edit ", "enable ", "disable ", "test ", "refresh ", "delete ",
             ]
             .into_iter()
             .map(|command| ArgItem {
@@ -85,73 +90,104 @@ impl SlashCommand for ProviderCommand {
         let command = parts.next().unwrap_or("list");
         let provider_id = parts.next();
 
-        let path = atelier_config::atelier_home().join("providers.toml");
-        let mut registry = match ProviderRegistry::load_or_create(path) {
-            Ok(registry) => registry,
-            Err(error) => return CommandResult::Error(error.to_string()),
-        };
-
         match command {
-            "list" => CommandResult::Message(format_snapshot(&registry)),
+            "list" => {
+                if provider_id.is_some() {
+                    return CommandResult::Error("Usage: /provider list".into());
+                }
+                runtime_extension("_atelier/provider/list", serde_json::json!({}))
+            }
             "add" | "edit" => {
-                let spec = parts.collect::<Vec<_>>().join(" ");
                 let Some(provider_id) = provider_id else {
                     return CommandResult::Error(format!(
                         "Usage: /provider {command} <id> <protocol> <base-url> [credential]"
                     ));
                 };
-                if command == "edit" && registry.provider(provider_id).is_none() {
-                    return CommandResult::Error(format!("Provider not found: {provider_id}"));
+                let fields = parts.collect::<Vec<_>>();
+                if fields.len() < 2 {
+                    return CommandResult::Error(format!(
+                        "Usage: /provider {command} <id> <protocol> <base-url> [credential]"
+                    ));
                 }
+                let credential_provided = fields.len() >= 3;
+                let spec = fields.join(" ");
                 let config = match parse_provider_spec(provider_id, &spec) {
                     Ok(config) => config,
                     Err(error) => return CommandResult::Error(error),
                 };
-                if let Err(error) = registry.upsert_provider(config) {
-                    return CommandResult::Error(error.to_string());
+                let mut params = serde_json::json!({ "provider": config });
+                if command == "edit" {
+                    params["preserveExisting"] = serde_json::Value::Bool(true);
+                    params["preserveExistingCredential"] =
+                        serde_json::Value::Bool(!credential_provided);
                 }
-                if let Err(error) = registry.save() {
-                    return CommandResult::Error(error.to_string());
-                }
-                CommandResult::Message(format_snapshot(&registry))
+                runtime_extension(
+                    if command == "add" {
+                        "_atelier/provider/create"
+                    } else {
+                        "_atelier/provider/update"
+                    },
+                    params,
+                )
             }
             "enable" | "disable" => {
                 let Some(provider_id) = provider_id else {
                     return CommandResult::Error(format!("Usage: /provider {command} <id>"));
                 };
-                if let Err(error) = registry.set_provider_enabled(provider_id, command == "enable")
-                {
-                    return CommandResult::Error(error.to_string());
+                if parts.next().is_some() {
+                    return CommandResult::Error(format!("Usage: /provider {command} <id>"));
                 }
-                if let Err(error) = registry.save() {
-                    return CommandResult::Error(error.to_string());
-                }
-                CommandResult::Message(format_snapshot(&registry))
+                runtime_extension(
+                    "_atelier/provider/enable",
+                    serde_json::json!({
+                        "providerId": provider_id,
+                        "enabled": command == "enable",
+                    }),
+                )
             }
             "delete" => {
                 let Some(provider_id) = provider_id else {
                     return CommandResult::Error("Usage: /provider delete <id>".into());
                 };
-                if let Err(error) = registry.remove_provider(provider_id) {
-                    return CommandResult::Error(error.to_string());
+                if parts.next().is_some() {
+                    return CommandResult::Error("Usage: /provider delete <id>".into());
                 }
-                if let Err(error) = registry.save() {
-                    return CommandResult::Error(error.to_string());
+                runtime_extension(
+                    "_atelier/provider/delete",
+                    serde_json::json!({ "providerId": provider_id }),
+                )
+            }
+            "test" => {
+                let Some(provider_id) = provider_id else {
+                    return CommandResult::Error("Usage: /provider test <id>".into());
+                };
+                if parts.next().is_some() {
+                    return CommandResult::Error("Usage: /provider test <id>".into());
                 }
-                CommandResult::Message(format_snapshot(&registry))
+                runtime_extension(
+                    "_atelier/provider/test",
+                    serde_json::json!({ "providerId": provider_id }),
+                )
             }
             "refresh" => {
                 let Some(provider_id) = provider_id else {
                     return CommandResult::Error("Usage: /provider refresh <id>".into());
                 };
-                if registry.provider(provider_id).is_none() {
-                    return CommandResult::Error(format!("Provider not found: {provider_id}"));
+                if parts.next().is_some() {
+                    return CommandResult::Error("Usage: /provider refresh <id>".into());
                 }
                 CommandResult::Action(Action::RefreshProviderModels(provider_id.to_owned()))
             }
             _ => CommandResult::Error(format!("Usage: {}", self.usage())),
         }
     }
+}
+
+fn runtime_extension(method: &str, params: serde_json::Value) -> CommandResult {
+    CommandResult::Action(Action::RuntimeExtension {
+        method: method.to_owned(),
+        params,
+    })
 }
 
 /// Provider commands that need a free-form tail leave a trailing space after
@@ -214,34 +250,6 @@ fn parse_provider_spec(provider_id: &str, spec: &str) -> Result<ProviderConfig, 
     Ok(config)
 }
 
-fn format_snapshot(registry: &ProviderRegistry) -> String {
-    let snapshot = registry.snapshot();
-    let mut output = String::from("Providers:\n");
-    if snapshot.providers.is_empty() {
-        output.push_str("  (none)\n");
-    } else {
-        for provider in snapshot.providers {
-            output.push_str(&format!(
-                "  {} [{}] {}\n",
-                provider.id,
-                if provider.enabled {
-                    "enabled"
-                } else {
-                    "disabled"
-                },
-                provider.display_name
-            ));
-        }
-    }
-    output.push_str(&format!("Models: {}\n", snapshot.models.len()));
-    if let Some(default_model) = snapshot.default_model {
-        output.push_str(&format!("Default: {default_model}"));
-    } else {
-        output.push_str("Default: (none)");
-    }
-    output
-}
-
 #[cfg(test)]
 mod tests {
     use super::{ProviderCommand, parse_provider_spec};
@@ -283,7 +291,8 @@ mod tests {
         let mut ctx = empty_ctx();
         assert!(matches!(
             ProviderCommand.run(&mut ctx, "list"),
-            CommandResult::Message(message) if message.starts_with("Providers:")
+            CommandResult::Action(Action::RuntimeExtension { method, .. })
+                if method == "_atelier/provider/list"
         ));
     }
 
@@ -292,8 +301,100 @@ mod tests {
         let mut ctx = empty_ctx();
         assert!(matches!(
             ProviderCommand.run(&mut ctx, "refresh missing-provider"),
-            CommandResult::Error(message) if message == "Provider not found: missing-provider"
+            CommandResult::Action(Action::RefreshProviderModels(provider_id))
+                if provider_id == "missing-provider"
         ));
+    }
+
+    #[test]
+    fn provider_add_uses_the_live_runtime_service() {
+        let mut ctx = empty_ctx();
+        let result = ProviderCommand.run(
+            &mut ctx,
+            "add allm chat https://example.test/v1 env:ALLM_API_KEY",
+        );
+        let CommandResult::Action(Action::RuntimeExtension { method, params }) = result else {
+            panic!("provider add must use the live runtime service");
+        };
+        assert_eq!(method, "_atelier/provider/create");
+        assert_eq!(params["provider"]["id"], "allm");
+        assert_eq!(params["provider"]["protocol"], "open_ai_chat_completions");
+    }
+
+    #[test]
+    fn provider_edit_requests_merge_semantics() {
+        let mut ctx = empty_ctx();
+        let result = ProviderCommand.run(
+            &mut ctx,
+            "edit allm chat https://example.test/v1 env:ALLM_API_KEY",
+        );
+        let CommandResult::Action(Action::RuntimeExtension { method, params }) = result else {
+            panic!("provider edit must use the live runtime service");
+        };
+        assert_eq!(method, "_atelier/provider/update");
+        assert_eq!(params["preserveExisting"], true);
+    }
+
+    #[test]
+    fn provider_edit_without_credential_preserves_existing_credential() {
+        let mut ctx = empty_ctx();
+        let result = ProviderCommand.run(&mut ctx, "edit allm chat https://example.test/v1");
+        let CommandResult::Action(Action::RuntimeExtension { method, params }) = result else {
+            panic!("provider edit must use the live runtime service");
+        };
+        assert_eq!(method, "_atelier/provider/update");
+        assert_eq!(params["preserveExistingCredential"], true);
+    }
+
+    #[test]
+    fn provider_edit_with_explicit_none_clears_existing_credential() {
+        let mut ctx = empty_ctx();
+        let result = ProviderCommand.run(&mut ctx, "edit allm chat https://example.test/v1 none");
+        let CommandResult::Action(Action::RuntimeExtension { method, params }) = result else {
+            panic!("provider edit must use the live runtime service");
+        };
+        assert_eq!(method, "_atelier/provider/update");
+        assert_eq!(params["preserveExistingCredential"], false);
+    }
+
+    #[test]
+    fn provider_test_uses_runtime_probe() {
+        let mut ctx = empty_ctx();
+        let result = ProviderCommand.run(&mut ctx, "test allm");
+        assert!(matches!(
+            result,
+            CommandResult::Action(Action::RuntimeExtension { method, params })
+                if method == "_atelier/provider/test" && params["providerId"] == "allm"
+        ));
+    }
+
+    #[test]
+    fn provider_commands_reject_trailing_arguments() {
+        let mut ctx = empty_ctx();
+        for args in [
+            "list extra",
+            "enable allm extra",
+            "disable allm extra",
+            "delete allm extra",
+            "test allm extra",
+            "refresh allm extra",
+        ] {
+            assert!(
+                matches!(ProviderCommand.run(&mut ctx, args), CommandResult::Error(error) if error.starts_with("Usage:")),
+                "{args} must fail with Usage"
+            );
+        }
+    }
+
+    #[test]
+    fn provider_add_and_edit_report_usage_when_required_fields_are_missing() {
+        let mut ctx = empty_ctx();
+        for args in ["add allm", "add allm chat", "edit allm", "edit allm chat"] {
+            assert!(
+                matches!(ProviderCommand.run(&mut ctx, args), CommandResult::Error(error) if error.starts_with("Usage:")),
+                "{args} must fail with Usage"
+            );
+        }
     }
 
     #[test]
@@ -305,6 +406,25 @@ mod tests {
         assert_eq!(
             super::provider_id_insert_text("refresh", "proxy"),
             "refresh proxy"
+        );
+    }
+
+    #[test]
+    fn provider_add_and_edit_picker_handoff_to_free_form_fields() {
+        let models = crate::acp::model_state::ModelState::default();
+        let app_ctx = crate::slash::command::AppCtx {
+            models: &models,
+            cwd: std::path::Path::new("."),
+            has_session_announcements: false,
+            screen_mode: crate::app::ScreenMode::Inline,
+        };
+
+        assert!(ProviderCommand.suggest_args(&app_ctx, "add ").is_none());
+        assert!(
+            ProviderCommand
+                .suggest_args(&app_ctx, "edit proxy ")
+                .is_none(),
+            "after choosing a Provider, edit must return the partial command to the composer"
         );
     }
 

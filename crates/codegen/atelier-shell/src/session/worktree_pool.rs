@@ -1857,10 +1857,9 @@ pool_size = 3
         let base = pool_base_directory();
         let instance_dir = base.join("test-instance-uuid");
         assert!(instance_dir.starts_with(&base));
-        assert!(
-            instance_dir
-                .to_string_lossy()
-                .contains("worktree_pool/test-instance-uuid")
+        assert_eq!(
+            instance_dir.strip_prefix(&base).unwrap(),
+            Path::new("test-instance-uuid")
         );
     }
 

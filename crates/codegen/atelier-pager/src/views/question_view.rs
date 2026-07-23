@@ -105,21 +105,6 @@ pub enum LocalQuestionKind {
     /// On submit, the selected option index is translated into an
     /// [`crate::app::actions::Action::NewSessionAnswered`].
     NewSession,
-    /// Modal shown when the user hits the credit/rate limit (403).
-    /// Options map to upsell URLs: upgrade tier or enable on-demand.
-    /// `choices` maps each option index to a telemetry choice variant.
-    CreditLimitUpsell {
-        choices: Vec<atelier_telemetry::events::CreditLimitChoice>,
-    },
-    /// SuperAtelier upsell modal: the free-usage paywall (429 +
-    /// `subscription:free-usage-exhausted`) or a tier-restricted slash
-    /// command invocation. Upgrade options carry their URL in the option
-    /// `id`.
-    FreeUsageUpsell {
-        /// Telemetry source for `SuperAtelierUpsellClicked` — distinguishes
-        /// the paywall from the restricted-command upsell.
-        source: atelier_telemetry::events::SuperAtelierUpsell,
-    },
     /// Modal shown when the shell rejects a model switch due to agent
     /// type incompatibility. Carries the target model + effort so the
     /// answer handler can create a new session with it.

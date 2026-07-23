@@ -120,30 +120,6 @@ const PERMISSION_MODE_CHOICES: &[EnumChoice] = &[
 ];
 
 // ---------------------------------------------------------------------------
-// Coding-data-sharing catalog.
-//
-// Persisted in auth metadata (`AuthEntry::coding_data_retention_opt_out`),
-// NOT config.toml. Two choices only — the pager has no `Option`/`Unset`
-// representation for this field.
-//
-// `supports_preview: false` — toggling fires an async ACP call that
-// can fail. Commit on Enter only.
-// ---------------------------------------------------------------------------
-
-const CODING_DATA_SHARING_CHOICES: &[EnumChoice] = &[
-    EnumChoice {
-        canonical: "opt-in",
-        display: "Opt in",
-        description: "Allow SpaceXAI to retain and use coding session data for training and product improvement.",
-    },
-    EnumChoice {
-        canonical: "opt-out",
-        display: "Opt out",
-        description: "Do not retain coding session data. Code requests will not be used for training.",
-    },
-];
-
-// ---------------------------------------------------------------------------
 // Plan-mode catalog.
 //
 // PAGER-owned, per-session, ACP-mediated via `session/set_mode`.
@@ -810,13 +786,14 @@ pub fn default_settings() -> Vec<SettingMeta> {
         },
         // SHELL-owned. Reads from `pager.current_model_name` (not
         // `cfg.models.default`) so the modal reflects `/model` switches.
-        // Empty-string default = "no opinion" / use shell's resolution.
+        // Empty-string reset deletes obsolete default fields while preserving
+        // the current model as the explicit main Role.
         SettingMeta {
             key: "default_model",
             category: SettingCategory::Models,
             owner: SettingOwner::Shell,
             label: "Default model",
-            description: "Model used for new sessions. Changing this also switches the active session. Pick `(no override)` to clear.",
+            description: "Model used for new sessions. Changing this also switches the active session. Reset keeps the current model as the explicit main Role.",
             keywords: &["model", "default", "agent", "llm", "atelier", "switch"],
             kind: SettingKind::DynamicEnum {
                 default: "",
@@ -1104,35 +1081,6 @@ pub fn default_settings() -> Vec<SettingMeta> {
             restart_required: false,
             hidden_in_minimal: false,
         },
-        // SHELL-owned. Persisted in auth metadata (not config.toml).
-        // Reads from `PagerLocalSnapshot.coding_data_sharing_opt_out`.
-        // Default "opt-in" matches `AuthEntry::coding_data_retention_opt_out = false`.
-        // ZDR / non-admin guards are enforced at dispatch time.
-        SettingMeta {
-            key: "coding_data_sharing",
-            category: SettingCategory::Privacy,
-            owner: SettingOwner::Shell,
-            label: "Coding data sharing",
-            description: "Controls whether SpaceXAI may retain and train on coding session data.",
-            keywords: &[
-                "privacy",
-                "data",
-                "sharing",
-                "coding",
-                "retention",
-                "telemetry",
-                "training",
-                "opt-in",
-                "opt-out",
-            ],
-            kind: SettingKind::Enum {
-                default: "opt-in",
-                choices: CODING_DATA_SHARING_CHOICES,
-                supports_preview: false,
-            },
-            restart_required: false,
-            hidden_in_minimal: false,
-        },
         // SHELL-owned, persisted to `[ui].default_selected_permission` in
         // config.toml. Read by the pager via `appearance::permission_cursor`.
         // Canonical `always_allow_all_sessions` (the effective default) lands
@@ -1273,20 +1221,6 @@ pub fn default_settings() -> Vec<SettingMeta> {
                 children: CONTEXTUAL_HINTS_CHILDREN,
             },
             restart_required: false,
-            hidden_in_minimal: false,
-        },
-        SettingMeta {
-            key: "auto_update",
-            category: SettingCategory::Advanced,
-            owner: SettingOwner::Shell,
-            label: "Auto-update",
-            description: "Automatically download and install pager updates on startup. \
-                          Restart required.",
-            keywords: &[
-                "auto", "update", "updates", "upgrade", "version", "install", "channel",
-            ],
-            kind: SettingKind::Bool { default: true },
-            restart_required: true,
             hidden_in_minimal: false,
         },
         // SHELL-owned, persisted to `[ui].hunk_tracker_mode`. Restart-required:
