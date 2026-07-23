@@ -21,9 +21,9 @@ use windows_sys::Win32::System::JobObjects::{
 };
 use windows_sys::Win32::System::Pipes::CreatePipe;
 use windows_sys::Win32::System::Threading::{
-    CREATE_NO_WINDOW, CREATE_UNICODE_ENVIRONMENT, CreateProcessAsUserW,
+    CREATE_NO_WINDOW, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateProcessAsUserW,
     EXTENDED_STARTUPINFO_PRESENT, GetExitCodeProcess, InitializeProcThreadAttributeList,
-    PROCESS_INFORMATION, STARTF_USESTDHANDLES, STARTUPINFOEXW, TerminateProcess,
+    PROCESS_INFORMATION, ResumeThread, STARTF_USESTDHANDLES, STARTUPINFOEXW, TerminateProcess,
     UpdateProcThreadAttribute, WaitForSingleObject,
 };
 
@@ -218,7 +218,10 @@ pub fn run_as_user(
             ptr::null_mut(),
             ptr::null_mut(),
             1,
-            CREATE_UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT | CREATE_NO_WINDOW,
+            CREATE_UNICODE_ENVIRONMENT
+                | EXTENDED_STARTUPINFO_PRESENT
+                | CREATE_NO_WINDOW
+                | CREATE_SUSPENDED,
             environment.as_ptr().cast::<c_void>(),
             cwd_wide.as_ptr(),
             &startup.StartupInfo,
@@ -254,10 +257,31 @@ pub fn run_as_user(
         }
     };
     if let Err(error) = job.assign(process_info.hProcess) {
-        // The process may already be in an inherited parent job. It is still
-        // protected by that job's lifecycle, so retain the sandboxed target;
-        // only fail if the target itself could not be terminated during setup.
-        let _ = error;
+        unsafe { TerminateProcess(process_info.hProcess, 1) };
+        let _ = unsafe { WaitForSingleObject(process_info.hProcess, 5_000) };
+        close(process_info.hThread);
+        close(process_info.hProcess);
+        close(stdin_read);
+        close(stdin_write);
+        close(stdout_read);
+        close(stdout_write);
+        close(stderr_read);
+        close(stderr_write);
+        return Err(error);
+    }
+    if unsafe { ResumeThread(process_info.hThread) } == u32::MAX {
+        let error = win_error("ResumeThread");
+        unsafe { TerminateProcess(process_info.hProcess, 1) };
+        let _ = unsafe { WaitForSingleObject(process_info.hProcess, 5_000) };
+        close(process_info.hThread);
+        close(process_info.hProcess);
+        close(stdin_read);
+        close(stdin_write);
+        close(stdout_read);
+        close(stdout_write);
+        close(stderr_read);
+        close(stderr_write);
+        return Err(error);
     }
 
     close(process_info.hThread);
@@ -299,5 +323,216 @@ pub fn run_as_user(
         stdout: stdout_thread.join().unwrap_or_default(),
         stderr: stderr_thread.join().unwrap_or_default(),
         timed_out,
+    })
+}
+
+/// Restricted child with live stdin/stdout/stderr pipes. The process is
+/// created suspended, attached to a kill-on-close Job Object, and only then
+/// resumed, so no child code can run outside the Job boundary.
+pub struct RestrictedPipedProcess {
+    process: HANDLE,
+    _job: KillOnCloseJob,
+    stdin: Option<File>,
+    stdout: Option<File>,
+    stderr: Option<File>,
+}
+
+unsafe impl Send for RestrictedPipedProcess {}
+
+impl RestrictedPipedProcess {
+    pub fn take_stdin(&mut self) -> Option<File> {
+        self.stdin.take()
+    }
+
+    pub fn take_stdout(&mut self) -> Option<File> {
+        self.stdout.take()
+    }
+
+    pub fn take_stderr(&mut self) -> Option<File> {
+        self.stderr.take()
+    }
+
+    pub fn try_wait(&mut self) -> Result<Option<i32>> {
+        let mut exit_code = 0u32;
+        if unsafe { GetExitCodeProcess(self.process, &mut exit_code) } == 0 {
+            return Err(win_error("GetExitCodeProcess"));
+        }
+        if exit_code == 259 {
+            Ok(None)
+        } else {
+            Ok(Some(exit_code as i32))
+        }
+    }
+
+    pub fn wait(&mut self) -> Result<i32> {
+        if unsafe { WaitForSingleObject(self.process, u32::MAX) } == u32::MAX {
+            return Err(win_error("WaitForSingleObject"));
+        }
+        self.try_wait()?
+            .ok_or_else(|| anyhow::anyhow!("restricted child remained active after wait"))
+    }
+
+    pub fn kill(&mut self) -> Result<()> {
+        if self.try_wait()?.is_none() {
+            if unsafe { TerminateProcess(self.process, 1) } == 0 {
+                return Err(win_error("TerminateProcess"));
+            }
+            let _ = unsafe { WaitForSingleObject(self.process, 5_000) };
+        }
+        Ok(())
+    }
+}
+
+impl Drop for RestrictedPipedProcess {
+    fn drop(&mut self) {
+        let _ = self.kill();
+        close(self.process);
+    }
+}
+
+pub fn spawn_as_user_piped(
+    token: HANDLE,
+    program: &Path,
+    args: &[std::ffi::OsString],
+    cwd: &Path,
+    environment: &[u16],
+) -> Result<RestrictedPipedProcess> {
+    let mut stdin_read = ptr::null_mut();
+    let mut stdin_write = ptr::null_mut();
+    let mut stdout_read = ptr::null_mut();
+    let mut stdout_write = ptr::null_mut();
+    let mut stderr_read = ptr::null_mut();
+    let mut stderr_write = ptr::null_mut();
+    unsafe {
+        if CreatePipe(&mut stdin_read, &mut stdin_write, ptr::null(), 0) == 0 {
+            return Err(win_error("CreatePipe stdin"));
+        }
+        if CreatePipe(&mut stdout_read, &mut stdout_write, ptr::null(), 0) == 0 {
+            close(stdin_read);
+            close(stdin_write);
+            return Err(win_error("CreatePipe stdout"));
+        }
+        if CreatePipe(&mut stderr_read, &mut stderr_write, ptr::null(), 0) == 0 {
+            close(stdin_read);
+            close(stdin_write);
+            close(stdout_read);
+            close(stdout_write);
+            return Err(win_error("CreatePipe stderr"));
+        }
+        for handle in [stdin_read, stdout_write, stderr_write] {
+            if SetHandleInformation(handle, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT) == 0 {
+                for handle in [
+                    stdin_read,
+                    stdin_write,
+                    stdout_read,
+                    stdout_write,
+                    stderr_read,
+                    stderr_write,
+                ] {
+                    close(handle);
+                }
+                return Err(win_error("SetHandleInformation"));
+            }
+        }
+    }
+
+    let child_handles = [stdin_read, stdout_write, stderr_write];
+    let mut attributes = ProcThreadAttributes::new(&child_handles)?;
+    let mut startup = STARTUPINFOEXW::default();
+    startup.StartupInfo.cb = std::mem::size_of::<STARTUPINFOEXW>() as u32;
+    startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+    startup.StartupInfo.hStdInput = stdin_read;
+    startup.StartupInfo.hStdOutput = stdout_write;
+    startup.StartupInfo.hStdError = stderr_write;
+    startup.lpAttributeList = attributes.as_ptr();
+
+    let app = path_to_wide(program);
+    let mut command_line = crate::winutil::to_wide(argv_to_command_line(program, args));
+    let cwd_wide = path_to_wide(cwd);
+    let mut process_info = PROCESS_INFORMATION::default();
+    let created = unsafe {
+        CreateProcessAsUserW(
+            token,
+            app.as_ptr(),
+            command_line.as_mut_ptr(),
+            ptr::null_mut(),
+            ptr::null_mut(),
+            1,
+            CREATE_UNICODE_ENVIRONMENT
+                | EXTENDED_STARTUPINFO_PRESENT
+                | CREATE_NO_WINDOW
+                | CREATE_SUSPENDED,
+            environment.as_ptr().cast::<c_void>(),
+            cwd_wide.as_ptr(),
+            &startup.StartupInfo,
+            &mut process_info,
+        )
+    };
+    if created == 0 {
+        for handle in [
+            stdin_read,
+            stdin_write,
+            stdout_read,
+            stdout_write,
+            stderr_read,
+            stderr_write,
+        ] {
+            close(handle);
+        }
+        return Err(win_error("CreateProcessAsUserW"));
+    }
+
+    let job = match KillOnCloseJob::new().and_then(|job| {
+        job.assign(process_info.hProcess)?;
+        Ok(job)
+    }) {
+        Ok(job) => job,
+        Err(error) => {
+            unsafe { TerminateProcess(process_info.hProcess, 1) };
+            let _ = unsafe { WaitForSingleObject(process_info.hProcess, 5_000) };
+            close(process_info.hThread);
+            close(process_info.hProcess);
+            for handle in [
+                stdin_read,
+                stdin_write,
+                stdout_read,
+                stdout_write,
+                stderr_read,
+                stderr_write,
+            ] {
+                close(handle);
+            }
+            return Err(error);
+        }
+    };
+    if unsafe { ResumeThread(process_info.hThread) } == u32::MAX {
+        let error = win_error("ResumeThread");
+        unsafe { TerminateProcess(process_info.hProcess, 1) };
+        let _ = unsafe { WaitForSingleObject(process_info.hProcess, 5_000) };
+        close(process_info.hThread);
+        close(process_info.hProcess);
+        for handle in [
+            stdin_read,
+            stdin_write,
+            stdout_read,
+            stdout_write,
+            stderr_read,
+            stderr_write,
+        ] {
+            close(handle);
+        }
+        return Err(error);
+    }
+
+    close(process_info.hThread);
+    close(stdin_read);
+    close(stdout_write);
+    close(stderr_write);
+    Ok(RestrictedPipedProcess {
+        process: process_info.hProcess,
+        _job: job,
+        stdin: Some(unsafe { File::from_raw_handle(stdin_write.cast()) }),
+        stdout: Some(unsafe { File::from_raw_handle(stdout_read.cast()) }),
+        stderr: Some(unsafe { File::from_raw_handle(stderr_read.cast()) }),
     })
 }

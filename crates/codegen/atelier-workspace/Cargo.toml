@@ -122,11 +122,17 @@ path = "src/bin/workspace_server.rs"
 name = "workspace-server-probe"
 path = "src/bin/workspace_server_probe.rs"
 
+[[bin]]
+name = "ate-workspace-worker"
+path = "src/bin/atelier_workspace_worker.rs"
+required-features = ["embedded-worker-build"]
+
 [features]
 default = ["sandbox-enforce"]
 compression = []
 sandbox-enforce = ["atelier-sandbox/enforce"]
 test-support = ["atelier-tools/test-unsafe-exec"]
+embedded-worker-build = []
 default-bazel = [
     "sandbox-enforce",
     ]

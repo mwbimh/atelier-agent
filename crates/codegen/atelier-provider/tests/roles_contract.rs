@@ -13,15 +13,28 @@ fn role_config(provider: &str, model: &str) -> RoleConfig {
 }
 
 #[test]
-fn default_registry_contains_exactly_the_eight_fixed_roles() {
+fn default_registry_contains_exactly_the_eleven_fixed_roles() {
     let registry = RoleRegistry::default();
 
-    assert_eq!(registry.len(), 8);
+    assert_eq!(registry.len(), 11);
     for role_id in RoleId::ALL {
         let role = registry.find(role_id).expect("default role is present");
         role.validate().unwrap();
     }
     assert!(registry.find_by_name("custom").is_none());
+}
+
+#[test]
+fn goal_roles_have_stable_public_names() {
+    for (name, role) in [
+        ("planner", RoleId::Planner),
+        ("strategist", RoleId::Strategist),
+        ("skeptic", RoleId::Skeptic),
+    ] {
+        assert_eq!(name.parse::<RoleId>().unwrap(), role);
+        assert_eq!(role.as_str(), name);
+        assert_eq!(role.to_string(), name);
+    }
 }
 
 #[test]
@@ -201,7 +214,7 @@ fn old_provider_registry_without_roles_gets_default_roles_and_persists_them() {
     std::fs::write(&path, "schema_version = 1\n\n[providers]\n\n[models]\n").unwrap();
 
     let mut registry = ProviderRegistry::load_or_create(&path).unwrap();
-    assert_eq!(registry.roles().len(), 8);
+    assert_eq!(registry.roles().len(), 11);
     registry
         .update_role(RoleId::Main, role_config("proxy", "main-model"))
         .unwrap();
@@ -211,7 +224,7 @@ fn old_provider_registry_without_roles_gets_default_roles_and_persists_them() {
     assert!(text.contains("[roles.main]"));
     let loaded = ProviderRegistry::load_or_create(&path).unwrap();
     assert_eq!(loaded.role(RoleId::Main).unwrap().model, "main-model");
-    assert_eq!(loaded.roles().len(), 8);
+    assert_eq!(loaded.roles().len(), 11);
 }
 
 #[test]

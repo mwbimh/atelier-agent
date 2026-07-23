@@ -4,7 +4,9 @@ use atelier_windows_sandbox::CommandRequest;
 use atelier_windows_sandbox::SandboxMode;
 use atelier_windows_sandbox::SandboxSession;
 use atelier_windows_sandbox::run_command;
+use atelier_windows_sandbox::spawn_piped_command;
 use std::ffi::OsString;
+use std::io::{Read, Write};
 use std::path::PathBuf;
 
 fn command_request(mode: SandboxMode, root: &std::path::Path) -> CommandRequest {
@@ -177,4 +179,31 @@ fn read_only_runner_cannot_create_a_file_under_the_root() {
     let output = run_command(request).expect("read-only command runner");
     assert_ne!(output.exit_code, 0);
     assert!(!blocked.exists());
+}
+
+#[test]
+fn restricted_piped_process_round_trips_streaming_stdio() {
+    if !restricted_token_supported_or_skip() {
+        return;
+    }
+    let temp = tempfile::tempdir().expect("tempdir");
+    let mut request = command_request(SandboxMode::ReadOnly, temp.path());
+    request.args = vec![
+        OsString::from("/D"),
+        OsString::from("/Q"),
+        OsString::from("/K"),
+    ];
+
+    let mut child = spawn_piped_command(request).expect("spawn restricted piped command");
+    let mut stdin = child.take_stdin().expect("child stdin");
+    let mut stdout = child.take_stdout().expect("child stdout");
+    stdin.write_all(b"echo worker-marker\r\nexit\r\n").unwrap();
+    drop(stdin);
+
+    let status = child.wait().expect("wait restricted child");
+    let mut output = String::new();
+    stdout.read_to_string(&mut output).unwrap();
+
+    assert_eq!(status, 0, "output={output:?}");
+    assert!(output.contains("worker-marker"), "output={output:?}");
 }

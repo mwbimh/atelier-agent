@@ -15,6 +15,7 @@
 
 pub mod campaigns;
 pub mod config_override;
+pub mod defaults;
 mod fs_atomic;
 mod loader;
 mod macos_managed;

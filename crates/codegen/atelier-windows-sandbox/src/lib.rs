@@ -22,7 +22,7 @@ pub use path_normalization::canonical_path_key;
 pub use path_normalization::ensure_no_reparse_points;
 pub use path_normalization::normalize_existing_path;
 pub use path_normalization::path_is_within;
-pub use runner::{SandboxSession, run_command};
+pub use runner::{SandboxSession, SandboxedPipedChild, run_command, spawn_piped_command};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 

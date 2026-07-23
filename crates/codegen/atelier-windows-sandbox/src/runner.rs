@@ -4,7 +4,7 @@ use crate::env::make_environment_block;
 use crate::path_normalization::{
     ensure_no_reparse_points, normalize_existing_path, path_is_within,
 };
-use crate::process::run_as_user;
+use crate::process::{RestrictedPipedProcess, run_as_user, spawn_as_user_piped};
 use crate::token::{RestrictedToken, create_restricted_token, new_capability_sid};
 use anyhow::Result;
 use std::collections::HashSet;
@@ -157,6 +157,69 @@ impl SandboxSession {
         )
         .map_err(SandboxError::Operation)
     }
+
+    pub fn spawn_piped(
+        mut self,
+        request: crate::CommandRequest,
+    ) -> Result<SandboxedPipedChild, SandboxError> {
+        let validated = validate_request(&request)?;
+        let restricting_sids = self.token.restricting_sids(self.capability.as_ptr());
+        let access_mask = access_mask_for_mode(request.mode);
+        for root in &validated.roots {
+            let grant = grant_restricted_sids(root, &restricting_sids, access_mask)
+                .map_err(SandboxError::Operation)?;
+            self.grants.push(grant);
+        }
+        let environment = make_environment_block(&request.env, request.atelier_home.as_deref());
+        let child = spawn_as_user_piped(
+            self.token.raw(),
+            &validated.program,
+            &request.args,
+            &validated.cwd,
+            &environment,
+        )
+        .map_err(SandboxError::Operation)?;
+        Ok(SandboxedPipedChild {
+            child,
+            _session: self,
+        })
+    }
+}
+
+pub struct SandboxedPipedChild {
+    child: RestrictedPipedProcess,
+    _session: SandboxSession,
+}
+
+// The object owns Windows kernel handles and heap-backed SID/ACL state. It is
+// moved as one unit and all mutation is externally serialized by the Worker
+// connection mutex; none of its raw pointers borrow thread-local storage.
+unsafe impl Send for SandboxedPipedChild {}
+
+impl SandboxedPipedChild {
+    pub fn take_stdin(&mut self) -> Option<std::fs::File> {
+        self.child.take_stdin()
+    }
+
+    pub fn take_stdout(&mut self) -> Option<std::fs::File> {
+        self.child.take_stdout()
+    }
+
+    pub fn take_stderr(&mut self) -> Option<std::fs::File> {
+        self.child.take_stderr()
+    }
+
+    pub fn try_wait(&mut self) -> anyhow::Result<Option<i32>> {
+        self.child.try_wait()
+    }
+
+    pub fn wait(&mut self) -> anyhow::Result<i32> {
+        self.child.wait()
+    }
+
+    pub fn kill(&mut self) -> anyhow::Result<()> {
+        self.child.kill()
+    }
 }
 
 impl Drop for SandboxSession {
@@ -168,6 +231,12 @@ impl Drop for SandboxSession {
 
 pub fn run_command(request: crate::CommandRequest) -> Result<crate::RunOutput, SandboxError> {
     SandboxSession::new()?.run(request)
+}
+
+pub fn spawn_piped_command(
+    request: crate::CommandRequest,
+) -> Result<SandboxedPipedChild, SandboxError> {
+    SandboxSession::new()?.spawn_piped(request)
 }
 
 fn restore_grants(grants: Vec<ScopedAclGrant>) -> Result<()> {

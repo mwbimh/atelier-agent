@@ -17,11 +17,14 @@ pub enum RoleId {
     Compact,
     Summary,
     Title,
+    Planner,
+    Strategist,
+    Skeptic,
 }
 
 impl RoleId {
     /// The supported roles in their stable public order.
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 11] = [
         Self::Main,
         Self::Explore,
         Self::Implement,
@@ -30,6 +33,9 @@ impl RoleId {
         Self::Compact,
         Self::Summary,
         Self::Title,
+        Self::Planner,
+        Self::Strategist,
+        Self::Skeptic,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -42,6 +48,9 @@ impl RoleId {
             Self::Compact => "compact",
             Self::Summary => "summary",
             Self::Title => "title",
+            Self::Planner => "planner",
+            Self::Strategist => "strategist",
+            Self::Skeptic => "skeptic",
         }
     }
 }
@@ -71,6 +80,9 @@ impl FromStr for RoleId {
             "compact" => Ok(Self::Compact),
             "summary" => Ok(Self::Summary),
             "title" => Ok(Self::Title),
+            "planner" => Ok(Self::Planner),
+            "strategist" => Ok(Self::Strategist),
+            "skeptic" => Ok(Self::Skeptic),
             value => Err(RoleError::UnknownRole(value.into())),
         }
     }

@@ -282,7 +282,10 @@ fn ensure_user_derived_role(role_id: atelier_provider::RoleId) -> Result<(), acp
         | atelier_provider::RoleId::Test => Ok(()),
         atelier_provider::RoleId::Compact
         | atelier_provider::RoleId::Summary
-        | atelier_provider::RoleId::Title => Err(acp::Error::invalid_params().data(format!(
+        | atelier_provider::RoleId::Title
+        | atelier_provider::RoleId::Planner
+        | atelier_provider::RoleId::Strategist
+        | atelier_provider::RoleId::Skeptic => Err(acp::Error::invalid_params().data(format!(
             "role {role_id} is an internal runtime role and cannot be spawned as a derived agent"
         ))),
     }

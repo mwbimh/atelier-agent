@@ -17,8 +17,10 @@ use base64::Engine;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use tokio::{
-    io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader, BufWriter},
-    process::{Child, ChildStdin, ChildStdout, Command},
+    io::{
+        AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader, BufWriter,
+    },
+    process::{Child, Command},
     sync::Mutex,
 };
 
@@ -148,10 +150,49 @@ where
     Ok(())
 }
 
+enum WorkerProcess {
+    Tokio(Child),
+    #[cfg(windows)]
+    Restricted(atelier_windows_sandbox::SandboxedPipedChild),
+}
+
+impl WorkerProcess {
+    async fn kill(&mut self) -> io::Result<()> {
+        match self {
+            Self::Tokio(child) => child.kill().await,
+            #[cfg(windows)]
+            Self::Restricted(child) => child.kill().map_err(io::Error::other),
+        }
+    }
+
+    fn try_wait(&mut self) -> io::Result<Option<i32>> {
+        match self {
+            Self::Tokio(child) => child
+                .try_wait()
+                .map(|status| status.map(|status| status.code().unwrap_or(1))),
+            #[cfg(windows)]
+            Self::Restricted(child) => child.try_wait().map_err(io::Error::other),
+        }
+    }
+
+    async fn wait(&mut self) -> io::Result<i32> {
+        loop {
+            if let Some(status) = self.try_wait()? {
+                return Ok(status);
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    }
+}
+
+type WorkerStdin = BufWriter<Box<dyn AsyncWrite + Unpin + Send>>;
+type WorkerStdout = BufReader<Box<dyn AsyncRead + Unpin + Send>>;
+
 struct WorkerConnection {
-    child: Child,
-    stdin: BufWriter<ChildStdin>,
-    stdout: BufReader<ChildStdout>,
+    child: WorkerProcess,
+    stdin: WorkerStdin,
+    stdout: WorkerStdout,
+    _stderr_task: Option<tokio::task::JoinHandle<()>>,
     nonce: String,
     next_request_id: u64,
     root: PathBuf,
@@ -169,26 +210,72 @@ impl WorkspaceWorkerClient {
         let root = canonical_root(&root).await?;
         let nonce = uuid::Uuid::new_v4().to_string();
         let (program, args) = worker_process_command(&root, &worker_path)?;
-        let mut command = Command::new(program);
-        command
-            .args(args)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .kill_on_drop(true);
-        let mut child = command
-            .spawn()
-            .map_err(|e| WorkspaceError::HubError(format!("spawn workspace worker: {e}")))?;
-        let stdin = child.stdin.take().ok_or_else(|| {
-            WorkspaceError::HubError("workspace worker stdin was not piped".into())
-        })?;
-        let stdout = child.stdout.take().ok_or_else(|| {
-            WorkspaceError::HubError("workspace worker stdout was not piped".into())
-        })?;
+
+        #[cfg(windows)]
+        let (child, stdin, stdout, stderr_task) = {
+            let request = atelier_windows_sandbox::CommandRequest::new(
+                atelier_windows_sandbox::SandboxMode::WorkspaceWrite,
+                vec![root.clone()],
+                root.clone(),
+                program,
+                args,
+            );
+            let mut child =
+                atelier_windows_sandbox::spawn_piped_command(request).map_err(|error| {
+                    WorkspaceError::HubError(format!("spawn restricted workspace worker: {error}"))
+                })?;
+            let stdin = child.take_stdin().ok_or_else(|| {
+                WorkspaceError::HubError("restricted workspace worker stdin was not piped".into())
+            })?;
+            let stdout = child.take_stdout().ok_or_else(|| {
+                WorkspaceError::HubError("restricted workspace worker stdout was not piped".into())
+            })?;
+            let stderr = child.take_stderr().ok_or_else(|| {
+                WorkspaceError::HubError("restricted workspace worker stderr was not piped".into())
+            })?;
+            let stderr_task = tokio::spawn(async move {
+                let mut stderr = tokio::fs::File::from_std(stderr);
+                let mut sink = tokio::io::stderr();
+                let _ = tokio::io::copy(&mut stderr, &mut sink).await;
+            });
+            (
+                WorkerProcess::Restricted(child),
+                Box::new(tokio::fs::File::from_std(stdin)) as Box<dyn AsyncWrite + Unpin + Send>,
+                Box::new(tokio::fs::File::from_std(stdout)) as Box<dyn AsyncRead + Unpin + Send>,
+                Some(stderr_task),
+            )
+        };
+
+        #[cfg(not(windows))]
+        let (child, stdin, stdout, stderr_task) = {
+            let mut command = Command::new(program);
+            command
+                .args(args)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::inherit())
+                .kill_on_drop(true);
+            let mut child = command
+                .spawn()
+                .map_err(|e| WorkspaceError::HubError(format!("spawn workspace worker: {e}")))?;
+            let stdin = child.stdin.take().ok_or_else(|| {
+                WorkspaceError::HubError("workspace worker stdin was not piped".into())
+            })?;
+            let stdout = child.stdout.take().ok_or_else(|| {
+                WorkspaceError::HubError("workspace worker stdout was not piped".into())
+            })?;
+            (
+                WorkerProcess::Tokio(child),
+                Box::new(stdin) as Box<dyn AsyncWrite + Unpin + Send>,
+                Box::new(stdout) as Box<dyn AsyncRead + Unpin + Send>,
+                None,
+            )
+        };
         let mut connection = WorkerConnection {
             child,
             stdin: BufWriter::new(stdin),
             stdout: BufReader::new(stdout),
+            _stderr_task: stderr_task,
             nonce: nonce.clone(),
             next_request_id: 0,
             root: root.clone(),
@@ -222,9 +309,7 @@ impl WorkspaceWorkerClient {
                 )));
             }
             None => {
-                return Err(WorkspaceError::HubError(
-                    "workspace worker exited during handshake".into(),
-                ));
+                return Err(worker_crashed(&mut connection.child).await);
             }
         }
         Ok(Self {
@@ -595,10 +680,10 @@ where
     root.ok_or_else(|| WorkspaceError::HubError("workspace worker requires --root PATH".into()))
 }
 
-async fn worker_crashed(child: &mut Child) -> WorkspaceError {
+async fn worker_crashed(child: &mut WorkerProcess) -> WorkspaceError {
     match child.try_wait() {
         Ok(Some(status)) => WorkspaceError::HubError(format!(
-            "workspace worker exited unexpectedly with {status}"
+            "workspace worker exited unexpectedly with status {status}"
         )),
         Ok(None) => WorkspaceError::HubError("workspace worker pipe closed".into()),
         Err(error) => WorkspaceError::HubError(format!(

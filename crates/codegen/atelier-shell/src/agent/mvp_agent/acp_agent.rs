@@ -3717,6 +3717,9 @@ fn role_for_new_session(
         atelier_provider::RoleId::Compact
             | atelier_provider::RoleId::Summary
             | atelier_provider::RoleId::Title
+            | atelier_provider::RoleId::Planner
+            | atelier_provider::RoleId::Strategist
+            | atelier_provider::RoleId::Skeptic
     ) {
         return Err(acp::Error::invalid_params().data(format!(
             "role {role_id} is an internal runtime role and cannot own a user session"

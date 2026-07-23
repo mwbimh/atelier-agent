@@ -1323,6 +1323,16 @@ fn main() {
     if let Some(code) = run_internal_submode() {
         std::process::exit(code);
     }
+    let atelier_home = atelier_config::atelier_home();
+    if let Err(error) =
+        atelier_config::defaults::ensure_user_defaults(&atelier_home, env!("CARGO_PKG_VERSION"))
+    {
+        eprintln!(
+            "Couldn't initialize Atelier defaults in {}: {error}",
+            atelier_home.display()
+        );
+        std::process::exit(2);
+    }
     atelier_pager_minimal::install();
     #[cfg(all(feature = "jemalloc", unix))]
     atelier_pager::memory_release::install_release_hook(purge_jemalloc_retained_pages);

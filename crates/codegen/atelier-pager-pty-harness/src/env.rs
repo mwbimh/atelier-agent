@@ -26,7 +26,7 @@ fn target_dir() -> Result<PathBuf> {
 fn local_pager_binary_path() -> Result<PathBuf> {
     Ok(target_dir()?
         .join("debug")
-        .join(format!("atelier-pager{}", std::env::consts::EXE_SUFFIX)))
+        .join(format!("ate{}", std::env::consts::EXE_SUFFIX)))
 }
 
 fn ensure_local_pager_binary(binary: &std::path::Path) -> Result<()> {
@@ -37,17 +37,17 @@ fn ensure_local_pager_binary(binary: &std::path::Path) -> Result<()> {
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned());
     let mut cmd = Command::new(&cargo);
     cmd.current_dir(workspace_root()?)
-        .args(["build", "-p", "atelier-pager-bin", "--bin", "atelier-pager"])
+        .args(["build", "-p", "atelier-pager-bin", "--bin", "ate"])
         .stdin(Stdio::null())
         .envs(xai_tty_utils::pager_env());
     xai_tty_utils::detach_std_command(&mut cmd);
     let output = cmd
         .output()
-        .with_context(|| format!("failed to spawn {cargo} to build atelier-pager"))?;
+        .with_context(|| format!("failed to spawn {cargo} to build ate"))?;
 
     if !output.status.success() {
         bail!(
-            "failed to build atelier-pager (exit {:?})\nstdout:\n{}\nstderr:\n{}",
+            "failed to build ate (exit {:?})\nstdout:\n{}\nstderr:\n{}",
             output.status.code(),
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr),
@@ -55,7 +55,7 @@ fn ensure_local_pager_binary(binary: &std::path::Path) -> Result<()> {
     }
     if !binary.exists() {
         bail!(
-            "atelier-pager build completed but binary missing at {}",
+            "ate build completed but binary missing at {}",
             binary.display()
         );
     }
@@ -66,7 +66,7 @@ fn ensure_local_pager_binary(binary: &std::path::Path) -> Result<()> {
 ///
 /// Resolution order:
 /// 1. `PAGER_BINARY` env var (for CI / explicit override)
-/// 2. `CARGO_BIN_EXE_atelier-pager` (set by `cargo test`)
+/// 2. `CARGO_BIN_EXE_ate` (set by `cargo test`)
 /// 3. Build locally via `cargo build -p atelier-pager-bin` (the composition-
 ///    root package that owns the `atelier-pager` binary)
 pub fn pager_binary() -> Result<PathBuf> {
@@ -81,7 +81,7 @@ pub fn pager_binary() -> Result<PathBuf> {
             .with_context(|| format!("failed to absolutize PAGER_BINARY: {}", p.display()));
     }
 
-    if let Ok(path) = std::env::var("CARGO_BIN_EXE_atelier-pager") {
+    if let Ok(path) = std::env::var("CARGO_BIN_EXE_ate") {
         let p = PathBuf::from(path);
         if p.exists() {
             return Ok(p);
