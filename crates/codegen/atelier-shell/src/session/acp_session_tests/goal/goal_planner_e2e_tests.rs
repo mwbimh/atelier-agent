@@ -41,6 +41,7 @@ struct PlannerSpawnCapture {
     fork_context: StdArc<std::sync::Mutex<Vec<bool>>>,
     surface_completion: StdArc<std::sync::Mutex<Vec<bool>>>,
     model: StdArc<std::sync::Mutex<Vec<Option<String>>>>,
+    fixed_role: StdArc<std::sync::Mutex<Vec<Option<String>>>>,
 }
 
 /// Stand up a coordinator that handles exactly the spawn behaviours
@@ -72,6 +73,7 @@ fn spawn_planner_coordinator_capturing(
     let fork_log = StdArc::clone(&capture.fork_context);
     let surface_log = StdArc::clone(&capture.surface_completion);
     let model_log = StdArc::clone(&capture.model);
+    let role_log = StdArc::clone(&capture.fixed_role);
     tokio::task::spawn_local(async move {
         while let Some(ev) = rx.recv().await {
             if let SubagentEvent::Spawn(req) = ev {
@@ -82,6 +84,10 @@ fn spawn_planner_coordinator_capturing(
                     .lock()
                     .unwrap()
                     .push(req.runtime_overrides.model.clone());
+                role_log
+                    .lock()
+                    .unwrap()
+                    .push(req.runtime_overrides.fixed_role.clone());
                 // The prompt embeds the path several times; we
                 // just need any one. Walk left from the first
                 // `/plan.md` occurrence to find the absolute path.
@@ -252,6 +258,10 @@ async fn planner_spawn_sets_harness_only_fork_context() {
             actor.maybe_run_goal_planner("do X").await;
 
             assert_eq!(spawn_count.load(SeqOrd::SeqCst), 1);
+            assert_eq!(
+                capture.fixed_role.lock().unwrap().as_slice(),
+                &[Some("planner".to_string())]
+            );
             let forks = capture.fork_context.lock().unwrap().clone();
             let surfaces = capture.surface_completion.lock().unwrap().clone();
             assert_eq!(forks, vec![true], "planner must request chat-prefix fork");

@@ -195,6 +195,7 @@ impl ChannelSpawner {
             resume_from: None,
             cwd: self.cwd.clone(),
             runtime_overrides: SubagentRuntimeOverrides {
+                fixed_role: Some(atelier_provider::RoleId::Strategist.as_str().to_owned()),
                 model,
                 harness_agent_type,
                 ..Default::default()
@@ -654,6 +655,10 @@ mod tests {
         assert_eq!(
             request.runtime_overrides.model.as_deref(),
             Some("cfg-model")
+        );
+        assert_eq!(
+            request.runtime_overrides.fixed_role.as_deref(),
+            Some("strategist")
         );
         // Reply SUCCESS so the explicit pair does NOT trigger a fail-open retry.
         let _ = request.result_tx.send(SubagentResult {

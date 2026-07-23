@@ -123,6 +123,7 @@ pub fn resolve_effective_overrides(
         .unwrap_or(SubagentIsolationMode::None);
 
     EffectiveRuntimeConfig {
+        fixed_role: overrides.fixed_role.clone(),
         model,
         reasoning_effort,
         capability_mode,
@@ -216,6 +217,7 @@ mod tests {
         reasoning_effort: Option<&str>,
     ) -> SubagentRuntimeOverrides {
         SubagentRuntimeOverrides {
+            fixed_role: None,
             model: model.map(String::from),
             model_override_provenance: ModelOverrideProvenance::Harness,
             reasoning_effort: reasoning_effort.map(String::from),

@@ -83,6 +83,10 @@ pub enum ModelOverrideProvenance {
 
 #[derive(Debug, Clone, Default)]
 pub struct SubagentRuntimeOverrides {
+    /// Internal fixed runtime Role. Goal harness stages use this to select
+    /// planner/strategist/skeptic/summary independently of the generic
+    /// subagent toolset name.
+    pub fixed_role: Option<String>,
     /// Override the model (e.g. "test-model").
     pub model: Option<String>,
     /// Whether `model` came from a model-facing Task call or internal harness logic.

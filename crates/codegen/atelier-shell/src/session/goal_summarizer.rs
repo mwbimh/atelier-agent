@@ -170,6 +170,7 @@ impl ChannelSpawner {
             resume_from: None,
             cwd: self.cwd.clone(),
             runtime_overrides: SubagentRuntimeOverrides {
+                fixed_role: Some(atelier_provider::RoleId::Summary.as_str().to_owned()),
                 model,
                 harness_agent_type,
                 capability_mode: Some(SubagentCapabilityMode::ReadOnly),
@@ -668,6 +669,10 @@ mod tests {
             request.runtime_overrides.capability_mode,
             Some(SubagentCapabilityMode::ReadOnly),
             "summarizer must spawn with a read-only toolset",
+        );
+        assert_eq!(
+            request.runtime_overrides.fixed_role.as_deref(),
+            Some("summary")
         );
         let _ = request.result_tx.send(SubagentResult::default());
         handle.await.unwrap();

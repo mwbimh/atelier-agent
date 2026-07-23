@@ -608,6 +608,7 @@ impl ChannelSpawner {
             resume_from: resume_from.map(str::to_string),
             cwd: self.cwd.clone(),
             runtime_overrides: SubagentRuntimeOverrides {
+                fixed_role: Some(atelier_provider::RoleId::Skeptic.as_str().to_owned()),
                 model,
                 harness_agent_type,
                 ..Default::default()
@@ -2537,6 +2538,10 @@ mod tests {
             request.runtime_overrides.model.as_deref(),
             Some("pool-0-model"),
             "skeptic 0 must carry pool[0]'s model on the request",
+        );
+        assert_eq!(
+            request.runtime_overrides.fixed_role.as_deref(),
+            Some("skeptic")
         );
         assert_eq!(
             request.subagent_type, GOAL_CLASSIFIER_SUBAGENT_TYPE,

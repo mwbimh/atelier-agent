@@ -417,10 +417,14 @@ pub(crate) async fn handle_subagent_request(
             prune_orphaned_background_task_tools(&mut definition.tool_config);
         }
     }
-    if request.fork_context {
+    if request.fork_context && effective_runtime.fixed_role.is_none() {
         effective_runtime.model = Some(ctx.model_id.0.to_string());
     }
-    let fixed_role_resolution = match resolve_fixed_runtime_role(&request.subagent_type, &ctx) {
+    let fixed_role_resolution = match resolve_fixed_runtime_role_for_request(
+        effective_runtime.fixed_role.as_deref(),
+        &request.subagent_type,
+        &ctx,
+    ) {
         Ok(resolution) => resolution,
         Err(error) => {
             send_failure(request, &error);

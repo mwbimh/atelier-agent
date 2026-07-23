@@ -887,6 +887,19 @@ fn fixed_role_for_subagent_type(subagent_type: &str) -> Option<atelier_provider:
     }
 }
 
+fn fixed_role_for_request(
+    explicit_role: Option<&str>,
+    subagent_type: &str,
+) -> Result<Option<atelier_provider::RoleId>, String> {
+    explicit_role
+        .map(|role| {
+            role.parse::<atelier_provider::RoleId>()
+                .map(Some)
+                .map_err(|error| format!("invalid fixed runtime role '{role}': {error}"))
+        })
+        .unwrap_or_else(|| Ok(fixed_role_for_subagent_type(subagent_type)))
+}
+
 /// Resolve a configured fixed role through the live model catalog and apply
 /// its small set of model options. Built-in roles are mandatory and never
 /// inherit the parent model or legacy subagent pins.
@@ -897,6 +910,24 @@ fn resolve_fixed_runtime_role(
     let Some(role_id) = fixed_role_for_subagent_type(subagent_type) else {
         return Ok(None);
     };
+    resolve_fixed_runtime_role_id(role_id, ctx).map(Some)
+}
+
+fn resolve_fixed_runtime_role_for_request(
+    explicit_role: Option<&str>,
+    subagent_type: &str,
+    ctx: &SubagentSpawnContext,
+) -> Result<Option<(atelier_sampler::SamplerConfig, acp::ModelId)>, String> {
+    let Some(role_id) = fixed_role_for_request(explicit_role, subagent_type)? else {
+        return Ok(None);
+    };
+    resolve_fixed_runtime_role_id(role_id, ctx).map(Some)
+}
+
+fn resolve_fixed_runtime_role_id(
+    role_id: atelier_provider::RoleId,
+    ctx: &SubagentSpawnContext,
+) -> Result<(atelier_sampler::SamplerConfig, acp::ModelId), String> {
     let registry_path = ctx
         .role_registry_path
         .clone()
@@ -921,7 +952,7 @@ fn resolve_fixed_runtime_role(
             format!("configured {role_id} role effort is invalid ({raw_effort}): {error}")
         })?);
     }
-    Ok(Some((config, model_id)))
+    Ok((config, model_id))
 }
 /// Emit a unified log entry recording which model and credentials a subagent
 /// resolved to, and how they compare to the parent's.

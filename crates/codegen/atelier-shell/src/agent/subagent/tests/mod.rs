@@ -21,6 +21,27 @@ fn fixed_runtime_roles_cover_builtin_subagent_types() {
     assert_eq!(fixed_role_for_subagent_type("custom-agent"), None);
 }
 
+#[test]
+fn explicit_runtime_role_overrides_the_generic_subagent_type() {
+    assert_eq!(
+        fixed_role_for_request(Some("planner"), "general-purpose").unwrap(),
+        Some(RoleId::Planner)
+    );
+    assert_eq!(
+        fixed_role_for_request(Some("strategist"), "general-purpose").unwrap(),
+        Some(RoleId::Strategist)
+    );
+    assert_eq!(
+        fixed_role_for_request(Some("skeptic"), "general-purpose").unwrap(),
+        Some(RoleId::Skeptic)
+    );
+    assert_eq!(
+        fixed_role_for_request(Some("summary"), "general-purpose").unwrap(),
+        Some(RoleId::Summary)
+    );
+    assert!(fixed_role_for_request(Some("unknown"), "general-purpose").is_err());
+}
+
 #[tokio::test(flavor = "current_thread")]
 #[serial_test::serial]
 async fn configured_fixed_role_model_unavailable_is_returned_instead_of_inheriting_parent() {

@@ -20,6 +20,8 @@ pub enum ContextSource {
 /// Precedence: explicit spawn-time override > role default > persona default > parent inheritance (None).
 #[derive(Debug, Clone, Default)]
 pub struct EffectiveRuntimeConfig {
+    /// Explicit fixed Atelier runtime Role selected by an internal harness.
+    pub fixed_role: Option<String>,
     /// Resolved model ID override (if any).
     pub model: Option<String>,
     /// Resolved reasoning effort (e.g. "low", "medium", "high").
@@ -99,6 +101,7 @@ mod tests {
     #[test]
     fn effective_runtime_config_default_values() {
         let config = EffectiveRuntimeConfig::default();
+        assert!(config.fixed_role.is_none());
         assert!(config.model.is_none());
         assert!(config.reasoning_effort.is_none());
         assert!(config.capability_mode.is_none());
