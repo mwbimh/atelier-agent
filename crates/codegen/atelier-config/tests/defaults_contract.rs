@@ -10,7 +10,11 @@ fn first_run_writes_the_split_atelier_config_tree() {
         "providers.toml",
         "roles.toml",
         "request-agents.toml",
-        "models/default/common.toml",
+        "models/default/openai.toml",
+        "models/default/anthropic.toml",
+        "models/default/google.toml",
+        "models/default/deepseek.toml",
+        "models/default/xai.toml",
         "contexts/default/main.md",
         "contexts/default/subagent.md",
         "contexts/default/apply_patch.md",
@@ -18,6 +22,13 @@ fn first_run_writes_the_split_atelier_config_tree() {
         "contexts/default/goal/strategist.md",
         "contexts/default/goal/skeptic.md",
         "contexts/default/goal/summary.md",
+        "contexts/default/roles/explore.md",
+        "contexts/default/roles/implement.md",
+        "contexts/default/roles/review.md",
+        "contexts/default/roles/test.md",
+        "contexts/default/roles/compact.md",
+        "contexts/default/roles/summary.md",
+        "contexts/default/roles/title.md",
         "contexts/default/compaction/developer.md",
         "contexts/default/compaction/user.md",
         "branding/logo.txt",
@@ -46,6 +57,91 @@ fn first_run_writes_the_split_atelier_config_tree() {
     assert!(agents.contains("[agents.pi]"));
     assert!(agents.contains("[agents.codex]"));
     assert!(agents.contains("[agents.opencode]"));
+    assert!(agents.contains("version = \"0.82.1\""));
+    assert!(agents.contains("version = \"0.145.0\""));
+    assert!(agents.contains("version = \"1.18.5\""));
+    assert!(agents.contains("user_agent = \"pi/0.82.1 ("));
+    assert!(agents.contains("user_agent = \"codex_cli_rs/0.145.0 ("));
+    #[cfg(target_os = "windows")]
+    assert!(!agents.contains("Windows unknown"), "{agents}");
+    assert!(agents.contains("user_agent = \"opencode/1.18.5\""));
+
+    for vendor in ["openai", "anthropic", "google", "deepseek", "xai"] {
+        let source =
+            std::fs::read_to_string(home.path().join(format!("models/default/{vendor}.toml")))
+                .unwrap();
+        assert!(
+            source.starts_with("# Verified"),
+            "missing source note: {vendor}"
+        );
+        assert!(source.contains("schema_version = 2"));
+        assert!(!source.contains('*'), "wildcard model preset in {vendor}");
+    }
+
+    let openai = std::fs::read_to_string(home.path().join("models/default/openai.toml")).unwrap();
+    for model in ["o3", "o3-deep-research", "o3-mini", "o3-pro"] {
+        assert!(
+            openai.contains(&format!("[models.\"{model}\"]")),
+            "missing exact preset for {model}"
+        );
+    }
+    let openai: toml::Value = toml::from_str(&openai).unwrap();
+    assert_eq!(
+        openai["models"]["gpt-5"]["reasoning_efforts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(toml::Value::as_str)
+            .collect::<Vec<_>>(),
+        ["minimal", "low", "medium", "high"]
+    );
+    assert_eq!(
+        openai["models"]["gpt-5.4"]["reasoning_efforts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(toml::Value::as_str)
+            .collect::<Vec<_>>(),
+        ["none", "low", "medium", "high", "xhigh"]
+    );
+    assert_eq!(
+        openai["models"]["gpt-5.6-sol"]["reasoning_efforts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(toml::Value::as_str)
+            .collect::<Vec<_>>(),
+        ["none", "low", "medium", "high", "xhigh", "max"]
+    );
+
+    let anthropic =
+        std::fs::read_to_string(home.path().join("models/default/anthropic.toml")).unwrap();
+    let anthropic: toml::Value = toml::from_str(&anthropic).unwrap();
+    assert_eq!(
+        anthropic["models"]["claude-opus-4-7"]["reasoning_efforts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(toml::Value::as_str)
+            .collect::<Vec<_>>(),
+        ["low", "medium", "high", "xhigh", "max"]
+    );
+
+    for relative in [
+        "contexts/default/main.md",
+        "contexts/default/subagent.md",
+        "contexts/default/goal/planner.md",
+        "contexts/default/compaction/developer.md",
+    ] {
+        let prompt = std::fs::read_to_string(home.path().join(relative)).unwrap();
+        let lowercase = prompt.to_ascii_lowercase();
+        assert!(!lowercase.contains("xai"), "xAI branding in {relative}");
+        assert!(!lowercase.contains("x.ai"), "x.ai branding in {relative}");
+        assert!(
+            !lowercase.contains("grok build"),
+            "Grok branding in {relative}"
+        );
+    }
 }
 
 #[test]
@@ -99,13 +195,18 @@ fn reset_restores_only_built_in_model_and_context_defaults() {
     std::fs::write(home.path().join("providers.toml"), "user providers\n").unwrap();
     std::fs::write(home.path().join("roles.toml"), "user roles\n").unwrap();
     std::fs::write(
-        home.path().join("models/default/common.toml"),
+        home.path().join("models/default/openai.toml"),
         "user default models\n",
     )
     .unwrap();
     std::fs::write(
         home.path().join("contexts/default/main.md"),
         "user default context\n",
+    )
+    .unwrap();
+    std::fs::write(
+        home.path().join("models/default/stale-user-file.toml"),
+        "stale default preset\n",
     )
     .unwrap();
     std::fs::create_dir_all(home.path().join("models/providers/allm")).unwrap();
@@ -151,10 +252,17 @@ fn reset_restores_only_built_in_model_and_context_defaults() {
         "user roles\n"
     );
     let default_models =
-        std::fs::read_to_string(home.path().join("models/default/common.toml")).unwrap();
-    assert!(default_models.contains("[[models]]"));
+        std::fs::read_to_string(home.path().join("models/default/openai.toml")).unwrap();
+    assert!(default_models.contains("[models.\"gpt-5.4\"]"));
     assert!(default_models.contains("context_window"));
     assert_ne!(default_models, "user default models\n");
+    assert!(
+        !home
+            .path()
+            .join("models/default/stale-user-file.toml")
+            .exists(),
+        "reset must replace the owned default model preset directory"
+    );
     let default_context =
         std::fs::read_to_string(home.path().join("contexts/default/main.md")).unwrap();
     assert_ne!(default_context, "user default context\n");
@@ -174,6 +282,23 @@ fn reset_restores_only_built_in_model_and_context_defaults() {
     assert_eq!(
         std::fs::read_to_string(home.path().join("cache/providers/allm/models.json")).unwrap(),
         "user cache\n"
+    );
+}
+
+#[test]
+fn reset_preflights_all_owned_directories_before_removing_anything() {
+    let home = tempfile::tempdir().unwrap();
+    ensure_user_defaults(home.path(), "1.0.0").unwrap();
+    let marker = home.path().join("models/default/keep-on-error.toml");
+    std::fs::write(&marker, "keep\n").unwrap();
+    std::fs::remove_dir_all(home.path().join("contexts/default")).unwrap();
+    std::fs::write(home.path().join("contexts/default"), "not a directory\n").unwrap();
+
+    let error = reset_user_defaults(home.path()).unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+    assert!(
+        marker.exists(),
+        "preflight failure must not partially reset models"
     );
 }
 

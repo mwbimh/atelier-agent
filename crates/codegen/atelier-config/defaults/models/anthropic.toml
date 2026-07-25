@@ -1,0 +1,132 @@
+# Verified 2026-07-25 against Anthropic SDK 0.115.0 model types/capabilities and Pi AI 0.82.1.
+schema_version = 2
+
+[models."claude-haiku-4-5"]
+display_name = "Claude Haiku 4.5 (latest)"
+wire_api = "messages"
+context_window = 200000
+fast_mode = false
+[models."claude-haiku-4-5".capabilities]
+text_input = true
+image_input = true
+tool_calls = true
+parallel_tool_calls = true
+reasoning_effort = false
+web_search = false
+image_generation = false
+server_compaction = false
+
+[models."claude-opus-4-5"]
+display_name = "Claude Opus 4.5 (latest)"
+wire_api = "messages"
+context_window = 200000
+fast_mode = false
+[models."claude-opus-4-5".capabilities]
+text_input = true
+image_input = true
+tool_calls = true
+parallel_tool_calls = true
+reasoning_effort = false
+web_search = false
+image_generation = false
+server_compaction = false
+
+[models."claude-opus-4-6"]
+display_name = "Claude Opus 4.6"
+wire_api = "messages"
+context_window = 1000000
+reasoning_efforts = ["low", "medium", "high", "max"]
+default_effort = "medium"
+fast_mode = false
+[models."claude-opus-4-6".capabilities]
+text_input = true
+image_input = true
+tool_calls = true
+parallel_tool_calls = true
+reasoning_effort = true
+web_search = false
+image_generation = false
+server_compaction = false
+
+[models."claude-opus-4-7"]
+display_name = "Claude Opus 4.7"
+wire_api = "messages"
+context_window = 1000000
+reasoning_efforts = ["low", "medium", "high", "xhigh", "max"]
+default_effort = "medium"
+fast_mode = false
+[models."claude-opus-4-7".capabilities]
+text_input = true
+image_input = true
+tool_calls = true
+parallel_tool_calls = true
+reasoning_effort = true
+web_search = false
+image_generation = false
+server_compaction = false
+
+[models."claude-opus-4-8"]
+display_name = "Claude Opus 4.8"
+wire_api = "messages"
+context_window = 1000000
+reasoning_efforts = ["low", "medium", "high", "xhigh", "max"]
+default_effort = "medium"
+fast_mode = false
+[models."claude-opus-4-8".capabilities]
+text_input = true
+image_input = true
+tool_calls = true
+parallel_tool_calls = true
+reasoning_effort = true
+web_search = false
+image_generation = false
+server_compaction = false
+
+[models."claude-sonnet-4-5"]
+display_name = "Claude Sonnet 4.5 (latest)"
+wire_api = "messages"
+context_window = 1000000
+fast_mode = false
+[models."claude-sonnet-4-5".capabilities]
+text_input = true
+image_input = true
+tool_calls = true
+parallel_tool_calls = true
+reasoning_effort = false
+web_search = false
+image_generation = false
+server_compaction = false
+
+[models."claude-sonnet-4-6"]
+display_name = "Claude Sonnet 4.6"
+wire_api = "messages"
+context_window = 1000000
+reasoning_efforts = ["low", "medium", "high", "max"]
+default_effort = "medium"
+fast_mode = false
+[models."claude-sonnet-4-6".capabilities]
+text_input = true
+image_input = true
+tool_calls = true
+parallel_tool_calls = true
+reasoning_effort = true
+web_search = false
+image_generation = false
+server_compaction = false
+
+[models."claude-sonnet-5"]
+display_name = "Claude Sonnet 5"
+wire_api = "messages"
+context_window = 1000000
+reasoning_efforts = ["low", "medium", "high", "xhigh", "max"]
+default_effort = "medium"
+fast_mode = false
+[models."claude-sonnet-5".capabilities]
+text_input = true
+image_input = true
+tool_calls = true
+parallel_tool_calls = true
+reasoning_effort = true
+web_search = false
+image_generation = false
+server_compaction = false

@@ -55,14 +55,12 @@ pub struct RequestAgentIdentity {
     pub id: String,
     pub name: String,
     pub version: Option<String>,
+    pub user_agent: String,
 }
 
 impl RequestAgentIdentity {
     pub fn user_agent_value(&self) -> String {
-        match self.version.as_deref() {
-            Some(version) => format!("{}/{}", self.name, version),
-            None => self.name.clone(),
-        }
+        self.user_agent.clone()
     }
 }
 
@@ -93,6 +91,8 @@ struct RequestAgentEntry {
     name: String,
     #[serde(default)]
     version: Option<String>,
+    #[serde(default)]
+    user_agent: Option<String>,
 }
 
 pub fn resolve_runtime_defaults_at(home: &Path) -> io::Result<RuntimeDefaults> {
@@ -137,6 +137,16 @@ pub fn resolve_runtime_defaults_at(home: &Path) -> io::Result<RuntimeDefaults> {
         )));
     }
 
+    let user_agent =
+        selected
+            .user_agent
+            .clone()
+            .unwrap_or_else(|| match selected.version.as_deref() {
+                Some(version) => format!("{}/{version}", selected.name),
+                None => selected.name.clone(),
+            });
+    validate_user_agent(&user_agent, &main.request_agent, &request_agents_path)?;
+
     Ok(RuntimeDefaults {
         model,
         context: main.context,
@@ -145,6 +155,7 @@ pub fn resolve_runtime_defaults_at(home: &Path) -> io::Result<RuntimeDefaults> {
             id: main.request_agent,
             name: selected.name.clone(),
             version: selected.version.clone(),
+            user_agent,
         },
     })
 }
@@ -197,6 +208,51 @@ pub fn runtime_context_prompt(kind: ContextPrompt, embedded_default: &str) -> St
         .unwrap_or_else(|error| panic!("failed to load context prompt {}: {error}", path.display()))
 }
 
+pub fn load_context_role_prompt_at(
+    home: &Path,
+    preset: &str,
+    role: &str,
+) -> io::Result<Option<String>> {
+    validate_component("context preset", preset)?;
+    validate_component("context role", role)?;
+    let path = home
+        .join("contexts")
+        .join(preset)
+        .join("roles")
+        .join(format!("{role}.md"));
+    match std::fs::read_to_string(path) {
+        Ok(prompt) => Ok(Some(prompt)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+pub fn runtime_context_role_prompt(role: &str) -> io::Result<Option<String>> {
+    validate_component("context role", role)?;
+    let Some(directory) = RUNTIME_CONTEXT_DIR.get() else {
+        return Ok(None);
+    };
+    let path = directory.join("roles").join(format!("{role}.md"));
+    match std::fs::read_to_string(path) {
+        Ok(prompt) => Ok(Some(prompt)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+pub fn merge_role_prompts(
+    context_role: Option<&str>,
+    configured_role: Option<&str>,
+) -> Option<String> {
+    let parts = [context_role, configured_role]
+        .into_iter()
+        .flatten()
+        .map(str::trim)
+        .filter(|prompt| !prompt.is_empty())
+        .collect::<Vec<_>>();
+    (!parts.is_empty()).then(|| format!("{}\n", parts.join("\n\n")))
+}
+
 pub fn load_logo_at(home: &Path) -> io::Result<String> {
     std::fs::read_to_string(home.join("branding/logo.txt"))
 }
@@ -225,6 +281,21 @@ fn validate_component(label: &str, value: &str) -> io::Result<()> {
         Ok(())
     } else {
         Err(invalid_data(format!("invalid {label}: {value:?}")))
+    }
+}
+
+fn validate_user_agent(value: &str, id: &str, path: &Path) -> io::Result<()> {
+    let valid = !value.trim().is_empty()
+        && value
+            .bytes()
+            .all(|byte| matches!(byte, b' '..=b'~') && byte != b'\r' && byte != b'\n');
+    if valid {
+        Ok(())
+    } else {
+        Err(invalid_data(format!(
+            "request agent '{id}' has an invalid user_agent in {}",
+            path.display()
+        )))
     }
 }
 

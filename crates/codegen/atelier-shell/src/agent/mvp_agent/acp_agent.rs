@@ -1193,10 +1193,9 @@ impl acp::Agent for MvpAgent {
                         managed_mcp_expires_at,
                         model_agent_type: persisted_agent_name.as_deref(),
                         session_model_id: summary.current_model_id.clone(),
-                        session_role: Some((
-                            atelier_provider::RoleId::Main,
-                            self.required_role(atelier_provider::RoleId::Main)?,
-                        )),
+                        session_role: self
+                            .configured_role(atelier_provider::RoleId::Main)?
+                            .map(|role| (atelier_provider::RoleId::Main, role)),
                         session_yolo_mode,
                         session_auto_mode: session_auto_mode && !session_yolo_mode,
                         prompt_display_cwd,
@@ -1894,7 +1893,7 @@ impl acp::Agent for MvpAgent {
             .and_then(|value| value.as_str())
             .and_then(|value| value.parse::<atelier_provider::RoleId>().ok())
             .unwrap_or(atelier_provider::RoleId::Main);
-        let active_role = Some(self.required_role(role_id)?);
+        let active_role = self.configured_role(role_id)?;
         self.runtime_begin_request(
             &arguments.session_id,
             &prompt_id,

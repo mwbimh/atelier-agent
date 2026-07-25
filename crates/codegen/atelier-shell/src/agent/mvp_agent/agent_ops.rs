@@ -338,9 +338,10 @@ impl MvpAgent {
             .unwrap_or(crate::models::default_image_description_model())
             .to_owned()
     }
-    /// Read one of the fixed Provider roles. Bootstrap placeholder values are
-    /// treated as unset; callers that execute role-owned work must use
-    /// [`Self::required_role`] so no request silently inherits another model.
+    /// Read one of the fixed Provider Roles. Missing entries are intentionally
+    /// absent; ordinary main turns and unconfigured subagent Roles may inherit
+    /// the active model, while explicitly Role-owned helper flows can use
+    /// [`Self::required_role`] to require a configured assignment.
     pub(crate) fn configured_role(
         &self,
         role_id: atelier_provider::RoleId,

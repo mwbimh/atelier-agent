@@ -23,6 +23,19 @@ Location: `$ATELIER_HOME/config.toml` (default: `~/.atelier/config.toml`)
 
 If the file does not exist, Atelier uses built-in defaults. Specify only the values you want to override.
 
+### Runtime Selection
+
+```toml
+model = "provider/model" # optional; omit it until a Provider/model is selected
+context = "default"
+request_agent = "atelier"
+```
+
+`model` is a top-level Provider/model composite key. Atelier does not select the
+first discovered model automatically. Context selection and Request Agent
+selection are also top-level runtime settings; they do not belong in
+`providers.toml`, `roles.toml`, or a `[models]` table.
+
 ### General Settings
 
 ```toml
@@ -56,11 +69,21 @@ load_envrc = true                      # load .envrc environment variables
 respect_gitignore = false              # default: false; set true to make every tool skip gitignored files
 ```
 
-Provider connections are stored in `$ATELIER_HOME/providers.toml`. Fixed Role
-assignments live in `roles.toml`; common model metadata lives under
-`models/default/`; Provider-specific model and experimental endpoint settings
-live under `models/providers/<provider>/`. Use `/provider`, `/model`,
-`/wire-api`, and `/roles` for normal runtime changes.
+Provider connections are stored in `$ATELIER_HOME/providers.toml`. That file is
+connection-only: it may contain endpoints, protocols, discovery, credential
+references, and safe extra headers, but no model, Role, or runtime-selection
+tables. Fixed Role assignments live in `roles.toml` and are written only after
+the user configures them. Exact model-ID metadata lives under `models/default/`;
+family wildcards such as `gpt-5*` or `claude-*` are rejected. Provider-specific
+model and experimental endpoint settings live under
+`models/providers/<provider>/`, while discovery results live under
+`cache/providers/<provider>/`. Use `/provider`, `/model`, `/wire-api`, and
+`/roles` for normal runtime changes.
+
+Each Context always supplies `subagent.md` as the generic subagent system
+prompt. Optional `contexts/<preset>/roles/<role>.md` files add Context-specific
+Role instructions; a configured subagent Role `prompt_file` is appended after
+the Context Role prompt. Goal harness prompts remain under `goal/`.
 
 #### Input Mode
 
@@ -711,10 +734,11 @@ In that example, only `ALLM_API_KEY` is read for Provider `allm`.
 | `$ATELIER_HOME/config.toml` | Main configuration file |
 | `$ATELIER_HOME/providers.toml` | Provider API/OAuth connection registry |
 | `$ATELIER_HOME/roles.toml` | Fixed Role to Provider/model assignments |
-| `$ATELIER_HOME/request-agents.toml` | Selectable outbound request identities |
-| `$ATELIER_HOME/models/default/` | Editable common model defaults: effort, fast mode, context window, and Wire API |
+| `$ATELIER_HOME/request-agents.toml` | Selectable outbound identities with explicit User-Agent strings |
+| `$ATELIER_HOME/models/default/` | Exact model-ID defaults: effort, fast mode, context window, capabilities, and Wire API |
 | `$ATELIER_HOME/models/providers/<provider>/` | Provider-specific model overrides and experimental endpoints |
-| `$ATELIER_HOME/contexts/<preset>/` | Editable prompt preset files |
+| `$ATELIER_HOME/cache/providers/<provider>/` | Provider discovery cache; never stored in `providers.toml` |
+| `$ATELIER_HOME/contexts/<preset>/` | Editable generic, Goal, compaction, and Role prompt files |
 | `$ATELIER_HOME/branding/logo.txt` | TUI ASCII logo |
 | `$ATELIER_HOME/credentials/oauth/providers/` | Provider OAuth credentials |
 | `$ATELIER_HOME/credentials/oauth/mcp/` | MCP OAuth credentials |

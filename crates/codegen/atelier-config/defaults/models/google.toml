@@ -1,0 +1,182 @@
+# Verified 2026-07-25 against Google Gen AI SDK 2.13.0 and Pi AI 0.82.1.
+schema_version = 2
+
+[models."gemini-2.0-flash"]
+display_name = "Gemini 2.0 Flash"
+wire_api = "chat_completions"
+context_window = 1048576
+fast_mode = false
+[models."gemini-2.0-flash".capabilities]
+text_input = true
+image_input = true
+tool_calls = true
+parallel_tool_calls = true
+reasoning_effort = false
+web_search = false
+image_generation = false
+server_compaction = false
+
+[models."gemini-2.0-flash-lite"]
+display_name = "Gemini 2.0 Flash-Lite"
+wire_api = "chat_completions"
+context_window = 1048576
+fast_mode = false
+[models."gemini-2.0-flash-lite".capabilities]
+text_input = true
+image_input = true
+tool_calls = true
+parallel_tool_calls = true
+reasoning_effort = false
+web_search = false
+image_generation = false
+server_compaction = false
+
+[models."gemini-2.5-flash"]
+display_name = "Gemini 2.5 Flash"
+wire_api = "chat_completions"
+context_window = 1048576
+fast_mode = false
+[models."gemini-2.5-flash".capabilities]
+text_input = true
+image_input = true
+tool_calls = true
+parallel_tool_calls = true
+reasoning_effort = false
+web_search = false
+image_generation = false
+server_compaction = false
+
+[models."gemini-2.5-flash-lite"]
+display_name = "Gemini 2.5 Flash-Lite"
+wire_api = "chat_completions"
+context_window = 1048576
+fast_mode = false
+[models."gemini-2.5-flash-lite".capabilities]
+text_input = true
+image_input = true
+tool_calls = true
+parallel_tool_calls = true
+reasoning_effort = false
+web_search = false
+image_generation = false
+server_compaction = false
+
+[models."gemini-2.5-pro"]
+display_name = "Gemini 2.5 Pro"
+wire_api = "chat_completions"
+context_window = 1048576
+fast_mode = false
+[models."gemini-2.5-pro".capabilities]
+text_input = true
+image_input = true
+tool_calls = true
+parallel_tool_calls = true
+reasoning_effort = false
+web_search = false
+image_generation = false
+server_compaction = false
+
+[models."gemini-3-flash-preview"]
+display_name = "Gemini 3 Flash Preview"
+wire_api = "chat_completions"
+context_window = 1048576
+fast_mode = false
+[models."gemini-3-flash-preview".capabilities]
+text_input = true
+image_input = true
+tool_calls = true
+parallel_tool_calls = true
+reasoning_effort = false
+web_search = false
+image_generation = false
+server_compaction = false
+
+[models."gemini-3-pro-preview"]
+display_name = "Gemini 3 Pro Preview"
+wire_api = "chat_completions"
+context_window = 1048576
+fast_mode = false
+[models."gemini-3-pro-preview".capabilities]
+text_input = true
+image_input = true
+tool_calls = true
+parallel_tool_calls = true
+reasoning_effort = false
+web_search = false
+image_generation = false
+server_compaction = false
+
+[models."gemini-3.1-flash-lite"]
+display_name = "Gemini 3.1 Flash Lite"
+wire_api = "chat_completions"
+context_window = 1048576
+fast_mode = false
+[models."gemini-3.1-flash-lite".capabilities]
+text_input = true
+image_input = true
+tool_calls = true
+parallel_tool_calls = true
+reasoning_effort = false
+web_search = false
+image_generation = false
+server_compaction = false
+
+[models."gemini-3.1-pro-preview"]
+display_name = "Gemini 3.1 Pro Preview"
+wire_api = "chat_completions"
+context_window = 1048576
+fast_mode = false
+[models."gemini-3.1-pro-preview".capabilities]
+text_input = true
+image_input = true
+tool_calls = true
+parallel_tool_calls = true
+reasoning_effort = false
+web_search = false
+image_generation = false
+server_compaction = false
+
+[models."gemini-3.5-flash"]
+display_name = "Gemini 3.5 Flash"
+wire_api = "chat_completions"
+context_window = 1048576
+fast_mode = false
+[models."gemini-3.5-flash".capabilities]
+text_input = true
+image_input = true
+tool_calls = true
+parallel_tool_calls = true
+reasoning_effort = false
+web_search = false
+image_generation = false
+server_compaction = false
+
+[models."gemini-3.5-flash-lite"]
+display_name = "Gemini 3.5 Flash Lite"
+wire_api = "chat_completions"
+context_window = 1048576
+fast_mode = false
+[models."gemini-3.5-flash-lite".capabilities]
+text_input = true
+image_input = true
+tool_calls = true
+parallel_tool_calls = true
+reasoning_effort = false
+web_search = false
+image_generation = false
+server_compaction = false
+
+[models."gemini-3.6-flash"]
+display_name = "Gemini 3.6 Flash"
+wire_api = "chat_completions"
+context_window = 1048576
+fast_mode = false
+[models."gemini-3.6-flash".capabilities]
+text_input = true
+image_input = true
+tool_calls = true
+parallel_tool_calls = true
+reasoning_effort = false
+web_search = false
+image_generation = false
+server_compaction = false

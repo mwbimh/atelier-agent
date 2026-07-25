@@ -165,9 +165,11 @@ Important files include:
 
 | Path | Purpose |
 |---|---|
-| `$ATELIER_HOME/providers.toml` | Provider API and OAuth connection registry |
-| `$ATELIER_HOME/roles.toml` | Fixed Role to Provider/model assignments |
-| `$ATELIER_HOME/models/` | Common model defaults and Provider-specific overrides |
+| `$ATELIER_HOME/providers.toml` | Provider connection/OAuth registry only; no models or Roles |
+| `$ATELIER_HOME/roles.toml` | User-configured fixed Role to Provider/model assignments |
+| `$ATELIER_HOME/models/default/` | Exact model-ID defaults |
+| `$ATELIER_HOME/models/providers/` | Provider-specific model overrides |
+| `$ATELIER_HOME/cache/providers/` | Provider discovery results |
 | `$ATELIER_HOME/credentials/oauth/providers/` | Provider OAuth credentials |
 | `$ATELIER_HOME/config.toml` | General Runtime and TUI settings |
 | `$ATELIER_HOME/sessions/` | Session data grouped by workspace |

@@ -13,13 +13,12 @@ fn role_config(provider: &str, model: &str) -> RoleConfig {
 }
 
 #[test]
-fn default_registry_contains_exactly_the_eleven_fixed_roles() {
+fn default_registry_contains_no_placeholder_role_assignments() {
     let registry = RoleRegistry::default();
 
-    assert_eq!(registry.len(), 11);
+    assert!(registry.is_empty());
     for role_id in RoleId::ALL {
-        let role = registry.find(role_id).expect("default role is present");
-        role.validate().unwrap();
+        assert!(registry.find(role_id).is_none());
     }
     assert!(registry.find_by_name("custom").is_none());
 }
@@ -185,12 +184,13 @@ fn role_fast_mode_false_overrides_provider_default_true() {
 }
 
 #[test]
-fn default_placeholder_roles_are_not_configured() {
-    let registry = RoleRegistry::default();
+fn every_persisted_role_assignment_is_configured() {
+    let mut registry = RoleRegistry::default();
+    registry
+        .update(RoleId::Main, role_config("default", "default"))
+        .unwrap();
 
-    for role_id in RoleId::ALL {
-        assert!(!registry.find(role_id).unwrap().is_configured());
-    }
+    assert!(registry.find(RoleId::Main).unwrap().is_configured());
     assert!(role_config("provider", "model").is_configured());
 }
 
@@ -208,13 +208,13 @@ fn role_config_and_registry_round_trip_through_toml() {
 }
 
 #[test]
-fn missing_roles_file_gets_defaults_and_persists_separately() {
+fn missing_roles_file_stays_empty_until_a_role_is_configured() {
     let directory = tempdir().unwrap();
     let path = directory.path().join("providers.toml");
     std::fs::write(&path, "schema_version = 2\n\n[providers]\n").unwrap();
 
     let mut registry = ProviderRegistry::load_or_create(&path).unwrap();
-    assert_eq!(registry.roles().len(), 11);
+    assert!(registry.roles().is_empty());
     registry
         .update_role(RoleId::Main, role_config("proxy", "main-model"))
         .unwrap();
@@ -224,7 +224,9 @@ fn missing_roles_file_gets_defaults_and_persists_separately() {
     assert!(text.contains("[roles.main]"));
     let loaded = ProviderRegistry::load_or_create(&path).unwrap();
     assert_eq!(loaded.role(RoleId::Main).unwrap().model, "main-model");
-    assert_eq!(loaded.roles().len(), 11);
+    assert_eq!(loaded.roles().len(), 1);
+    assert!(!text.contains("provider = \"default\""));
+    assert!(!text.contains("model = \"default\""));
 }
 
 #[test]

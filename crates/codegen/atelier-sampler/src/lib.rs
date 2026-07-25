@@ -41,7 +41,7 @@ pub use attribution::{
 };
 pub use client::{
     ApiBackend, SamplingClient, request_agent_user_agent_string, set_request_agent_identity,
-    user_agent_string_for,
+    set_request_agent_identity_with_user_agent, user_agent_string_for,
 };
 pub use compaction::{
     CompactClient, CompactFailureAction, CompactRequest, CompactResponse, classify_compact_failure,

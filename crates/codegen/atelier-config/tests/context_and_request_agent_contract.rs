@@ -1,6 +1,7 @@
 use atelier_config::runtime_defaults::{
-    ContextPrompt, install_runtime_defaults_at, load_context_prompt_at, load_logo_at,
-    resolve_runtime_defaults_at, runtime_context_prompt, runtime_logo, update_default_model_at,
+    ContextPrompt, install_runtime_defaults_at, load_context_prompt_at,
+    load_context_role_prompt_at, load_logo_at, merge_role_prompts, resolve_runtime_defaults_at,
+    runtime_context_prompt, runtime_logo, update_default_model_at,
 };
 
 #[test]
@@ -46,7 +47,46 @@ fn selected_context_preset_loads_each_prompt_kind() {
     assert_eq!(resolved.context, "custom");
     assert_eq!(resolved.request_agent.id, "pi");
     assert_eq!(resolved.request_agent.name, "pi");
-    assert_eq!(resolved.request_agent.version.as_deref(), Some("1.0"));
+    assert_eq!(resolved.request_agent.version.as_deref(), Some("0.82.1"));
+    assert!(
+        resolved
+            .request_agent
+            .user_agent_value()
+            .starts_with("pi/0.82.1 (")
+    );
+}
+
+#[test]
+fn context_role_prompt_is_optional_safe_and_merged_after_the_generic_subagent_prompt() {
+    let home = tempfile::tempdir().unwrap();
+    atelier_config::defaults::ensure_user_defaults(home.path(), "1.0.0").unwrap();
+
+    assert_eq!(
+        load_context_role_prompt_at(home.path(), "default", "review")
+            .unwrap()
+            .as_deref(),
+        Some(
+            "Review the assigned change for correctness, regressions, security issues, and missing verification. Report concrete findings first.\n"
+        )
+    );
+    assert_eq!(
+        load_context_role_prompt_at(home.path(), "default", "custom").unwrap(),
+        None
+    );
+    let merged = merge_role_prompts(
+        Some("Context review instructions.\n"),
+        Some("Workspace-specific review instructions.\n"),
+    )
+    .unwrap();
+    assert_eq!(
+        merged,
+        "Context review instructions.\n\nWorkspace-specific review instructions.\n"
+    );
+
+    let error = load_context_role_prompt_at(home.path(), "default", "../outside")
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("invalid context role"), "{error}");
 }
 
 #[test]
@@ -170,7 +210,12 @@ fn installed_runtime_uses_the_selected_context_logo_and_request_agent() {
 
     let installed = install_runtime_defaults_at(home.path()).unwrap();
     assert_eq!(installed.context, "custom");
-    assert_eq!(installed.request_agent.user_agent_value(), "pi/1.0");
+    assert!(
+        installed
+            .request_agent
+            .user_agent_value()
+            .starts_with("pi/0.82.1 (")
+    );
     assert_eq!(
         runtime_context_prompt(ContextPrompt::Main, "embedded"),
         "CUSTOM RUNTIME MAIN\n"

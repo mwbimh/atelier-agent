@@ -1,0 +1,34 @@
+# Verified 2026-07-25 against the current xAI catalog in Pi AI 0.82.1.
+schema_version = 2
+
+[models."grok-4.3"]
+display_name = "Grok 4.3"
+wire_api = "chat_completions"
+context_window = 1000000
+fast_mode = false
+[models."grok-4.3".capabilities]
+text_input = true
+image_input = true
+tool_calls = true
+parallel_tool_calls = true
+reasoning_effort = false
+web_search = false
+image_generation = false
+server_compaction = false
+
+[models."grok-4.5"]
+display_name = "Grok 4.5"
+wire_api = "responses"
+context_window = 500000
+reasoning_efforts = ["low", "medium", "high"]
+default_effort = "medium"
+fast_mode = false
+[models."grok-4.5".capabilities]
+text_input = true
+image_input = true
+tool_calls = true
+parallel_tool_calls = true
+reasoning_effort = true
+web_search = false
+image_generation = false
+server_compaction = false

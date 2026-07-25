@@ -3,7 +3,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
 const ROLES_SCHEMA_VERSION: u32 = 1;
-const MODELS_SCHEMA_VERSION: u32 = 1;
+const PROVIDER_MODELS_SCHEMA_VERSION: u32 = 1;
+const COMMON_MODELS_SCHEMA_VERSION: u32 = 2;
 const CACHE_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Debug, Clone)]
@@ -32,6 +33,7 @@ impl RegistryPaths {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ProvidersFile {
     schema_version: u32,
     #[serde(default)]
@@ -39,6 +41,7 @@ struct ProvidersFile {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ProviderConfigDisk {
     display_name: String,
     protocol: ProviderProtocol,
@@ -121,6 +124,41 @@ impl ModelProfileDisk {
     fn is_empty(&self) -> bool {
         self == &Self::default()
     }
+
+    fn validate(&self, label: &str) -> Result<(), ProviderError> {
+        if self.context_window == Some(0) {
+            return Err(ProviderError::InvalidProvider(format!(
+                "model profile {label} has a zero context_window"
+            )));
+        }
+
+        let mut seen = BTreeSet::new();
+        for effort in &self.reasoning_efforts {
+            if !matches!(
+                effort.as_str(),
+                "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"
+            ) {
+                return Err(ProviderError::InvalidProvider(format!(
+                    "model profile {label} has unsupported reasoning effort {effort:?}"
+                )));
+            }
+            if !seen.insert(effort.as_str()) {
+                return Err(ProviderError::InvalidProvider(format!(
+                    "model profile {label} repeats reasoning effort {effort:?}"
+                )));
+            }
+        }
+
+        if let Some(default_effort) = self.default_effort.as_deref()
+            && !seen.contains(default_effort)
+        {
+            return Err(ProviderError::InvalidProvider(format!(
+                "model profile {label} default reasoning effort {default_effort:?} is not present in reasoning_efforts"
+            )));
+        }
+
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -131,18 +169,11 @@ struct ProviderModelsFile {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct CommonModelsFile {
     schema_version: u32,
     #[serde(default)]
-    models: Vec<CommonModelPreset>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct CommonModelPreset {
-    #[serde(rename = "match")]
-    pattern: String,
-    #[serde(flatten)]
-    profile: ModelProfileDisk,
+    models: BTreeMap<String, ModelProfileDisk>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -184,7 +215,7 @@ pub(crate) fn load(paths: &RegistryPaths) -> Result<RegistryFile, ProviderError>
         RoleRegistry::default()
     };
 
-    let presets = load_common_presets(&paths.default_models)?;
+    let presets = load_common_profiles(&paths.default_models)?;
     let profiles = load_provider_profiles(&paths.provider_models, providers.keys())?;
     let caches = load_provider_caches(&paths.provider_cache, providers.keys())?;
 
@@ -199,7 +230,7 @@ pub(crate) fn load(paths: &RegistryPaths) -> Result<RegistryFile, ProviderError>
         for model_id in ids {
             let key = ModelKey::new(provider_id.clone(), model_id.clone())?;
             let exact_profile = exact.get(&model_id).cloned().unwrap_or_default();
-            let common = matching_common_profile(&presets, &model_id);
+            let common = presets.get(&model_id).cloned();
             let remote_descriptor = remote.get(&model_id).cloned();
             let descriptor = resolve_descriptor(
                 key.clone(),
@@ -273,7 +304,7 @@ pub(crate) fn save(paths: &RegistryPaths, state: &RegistryFile) -> Result<(), Pr
     for provider_id in state.providers.keys() {
         let path = paths.provider_models.join(provider_id).join("models.toml");
         let file = ProviderModelsFile {
-            schema_version: MODELS_SCHEMA_VERSION,
+            schema_version: PROVIDER_MODELS_SCHEMA_VERSION,
             models: profiles_by_provider.remove(provider_id).unwrap_or_default(),
         };
         write_toml(&path, &file)?;
@@ -305,9 +336,11 @@ pub(crate) fn save(paths: &RegistryPaths, state: &RegistryFile) -> Result<(), Pr
     Ok(())
 }
 
-fn load_common_presets(directory: &Path) -> Result<Vec<CommonModelPreset>, ProviderError> {
+fn load_common_profiles(
+    directory: &Path,
+) -> Result<BTreeMap<String, ModelProfileDisk>, ProviderError> {
     if !directory.exists() {
-        return Ok(Vec::new());
+        return Ok(BTreeMap::new());
     }
     let mut paths = std::fs::read_dir(directory)?
         .filter_map(Result::ok)
@@ -315,28 +348,39 @@ fn load_common_presets(directory: &Path) -> Result<Vec<CommonModelPreset>, Provi
         .filter(|path| path.extension().and_then(|value| value.to_str()) == Some("toml"))
         .collect::<Vec<_>>();
     paths.sort();
-    let mut presets = Vec::new();
+    let mut profiles = BTreeMap::new();
     for path in paths {
         let source = std::fs::read_to_string(&path)?;
         let file: CommonModelsFile = toml::from_str(&source)?;
         require_schema(
             &path.display().to_string(),
             file.schema_version,
-            MODELS_SCHEMA_VERSION,
+            COMMON_MODELS_SCHEMA_VERSION,
         )?;
-        if file
-            .models
-            .iter()
-            .any(|preset| !preset.profile.experimental.is_empty())
-        {
-            return Err(ProviderError::InvalidProvider(format!(
-                "experimental model endpoints are provider-specific and cannot be set in {}",
-                path.display()
-            )));
+        for (model_id, profile) in file.models {
+            validate_identifier(&model_id, "default model id")?;
+            if model_id.contains('*') {
+                return Err(ProviderError::InvalidProvider(format!(
+                    "default model profiles must use exact model ids, found {model_id:?} in {}",
+                    path.display()
+                )));
+            }
+            profile.validate(&format!("{model_id:?} in {}", path.display()))?;
+            if !profile.experimental.is_empty() {
+                return Err(ProviderError::InvalidProvider(format!(
+                    "experimental model endpoints are provider-specific and cannot be set in {}",
+                    path.display()
+                )));
+            }
+            if profiles.insert(model_id.clone(), profile).is_some() {
+                return Err(ProviderError::InvalidProvider(format!(
+                    "duplicate default model profile {model_id:?} in {}",
+                    path.display()
+                )));
+            }
         }
-        presets.extend(file.models);
     }
-    Ok(presets)
+    Ok(profiles)
 }
 
 fn load_provider_profiles<'a>(
@@ -354,9 +398,17 @@ fn load_provider_profiles<'a>(
         require_schema(
             &path.display().to_string(),
             file.schema_version,
-            MODELS_SCHEMA_VERSION,
+            PROVIDER_MODELS_SCHEMA_VERSION,
         )?;
-        for profile in file.models.values() {
+        for (model_id, profile) in &file.models {
+            validate_identifier(model_id, "provider model id")?;
+            if model_id.contains('*') {
+                return Err(ProviderError::InvalidProvider(format!(
+                    "provider model profiles must use exact model ids, found {model_id:?} in {}",
+                    path.display()
+                )));
+            }
+            profile.validate(&format!("{provider_id}/{model_id} in {}", path.display()))?;
             if let Some(key) = find_sensitive_payload_key(&profile.payload) {
                 return Err(ProviderError::InvalidProvider(format!(
                     "model profile payload contains credential-like key: {key}"
@@ -409,31 +461,15 @@ fn load_provider_caches<'a>(
     Ok(result)
 }
 
-fn matching_common_profile(
-    presets: &[CommonModelPreset],
-    model_id: &str,
-) -> Option<ModelProfileDisk> {
-    presets
-        .iter()
-        .find(|preset| wildcard_match(&preset.pattern, model_id))
-        .map(|preset| preset.profile.clone())
-}
-
-fn wildcard_match(pattern: &str, value: &str) -> bool {
-    let Some((prefix, suffix)) = pattern.split_once('*') else {
-        return pattern == value;
-    };
-    value.starts_with(prefix)
-        && value.ends_with(suffix)
-        && value.len() >= prefix.len() + suffix.len()
-}
-
 fn resolve_descriptor(
     key: ModelKey,
     remote: Option<ModelDescriptor>,
     common: Option<&ModelProfileDisk>,
     exact: &ModelProfileDisk,
 ) -> ModelDescriptor {
+    let apply_common_capabilities = remote
+        .as_ref()
+        .is_none_or(|descriptor| descriptor.capabilities == ModelCapabilities::default());
     let mut descriptor = remote.unwrap_or_else(|| ModelDescriptor {
         key: key.clone(),
         display_name: key.model_id.clone(),
@@ -449,13 +485,17 @@ fn resolve_descriptor(
     });
     descriptor.key = key;
     if let Some(common) = common {
-        apply_missing_profile(&mut descriptor, common);
+        apply_missing_profile(&mut descriptor, common, apply_common_capabilities);
     }
     apply_exact_profile(&mut descriptor, exact);
     descriptor
 }
 
-fn apply_missing_profile(descriptor: &mut ModelDescriptor, profile: &ModelProfileDisk) {
+fn apply_missing_profile(
+    descriptor: &mut ModelDescriptor,
+    profile: &ModelProfileDisk,
+    apply_capabilities: bool,
+) {
     if descriptor.wire_api.is_none() {
         descriptor.wire_api = profile.wire_api;
     }
@@ -471,9 +511,11 @@ fn apply_missing_profile(descriptor: &mut ModelDescriptor, profile: &ModelProfil
     if !descriptor.fast_mode {
         descriptor.fast_mode = profile.fast_mode.unwrap_or(false);
     }
-    descriptor.capabilities = profile
-        .capabilities
-        .apply_to(descriptor.capabilities.clone());
+    if apply_capabilities {
+        descriptor.capabilities = profile
+            .capabilities
+            .apply_to(descriptor.capabilities.clone());
+    }
     if !descriptor.reasoning_efforts.is_empty() {
         descriptor.capabilities.reasoning_effort = true;
     }

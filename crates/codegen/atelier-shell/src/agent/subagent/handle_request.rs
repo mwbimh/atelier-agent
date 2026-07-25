@@ -149,6 +149,26 @@ pub(crate) async fn handle_subagent_request(
         role_key,
     );
     let mut effective_runtime = effective_runtime;
+    let context_role_name = context_role_name(
+        effective_runtime.fixed_role.as_deref(),
+        effective_runtime.role_name.as_deref(),
+        &request.subagent_type,
+    );
+    match atelier_config::runtime_defaults::runtime_context_role_prompt(&context_role_name) {
+        Ok(context_role_prompt) => {
+            effective_runtime.role_prompt = atelier_config::runtime_defaults::merge_role_prompts(
+                context_role_prompt.as_deref(),
+                effective_runtime.role_prompt.as_deref(),
+            );
+        }
+        Err(error) => {
+            tracing::warn!(
+                role = %context_role_name,
+                error = %error,
+                "Failed to load Context role prompt; continuing without it"
+            );
+        }
+    }
     if effective_runtime.reasoning_effort.is_none() {
         effective_runtime.reasoning_effort = definition
             .effort

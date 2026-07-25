@@ -22,6 +22,21 @@ fn fixed_runtime_roles_cover_builtin_subagent_types() {
 }
 
 #[test]
+fn context_role_names_follow_fixed_role_aliases() {
+    assert_eq!(
+        context_role_name(None, None, "general-purpose"),
+        "implement"
+    );
+    assert_eq!(context_role_name(None, None, "reviewer"), "review");
+    assert_eq!(context_role_name(None, None, "plan"), "planner");
+    assert_eq!(context_role_name(None, Some("custom"), "explore"), "custom");
+    assert_eq!(
+        context_role_name(Some("skeptic"), Some("custom"), "explore"),
+        "skeptic"
+    );
+}
+
+#[test]
 fn explicit_runtime_role_overrides_the_generic_subagent_type() {
     assert_eq!(
         fixed_role_for_request(Some("planner"), "general-purpose").unwrap(),
@@ -85,7 +100,7 @@ async fn configured_fixed_role_model_unavailable_is_returned_instead_of_inheriti
 
 #[tokio::test(flavor = "current_thread")]
 #[serial_test::serial]
-async fn unconfigured_fixed_role_is_returned_instead_of_inheriting_parent() {
+async fn unconfigured_fixed_role_inherits_the_parent_model() {
     use atelier_agent::config::ModelOverride;
     use atelier_test_support::EnvGuard;
 
@@ -96,16 +111,17 @@ async fn unconfigured_fixed_role_is_returned_instead_of_inheriting_parent() {
     ctx.sampling_config.model = "parent-model".into();
     ctx.model_id = acp::ModelId::new("parent-model");
 
-    let error = resolve_effective_model_config(
+    let (config, model_id) = resolve_effective_model_config(
         None,
         "review",
         &ModelOverride::Inherit,
         &ctx,
     )
     .await
-    .expect_err("an unconfigured fixed Role must not inherit the parent model");
+    .expect("an unconfigured fixed Role inherits the active parent model");
 
-    assert!(error.contains("role review is not configured"), "{error}");
+    assert_eq!(config.model, "parent-model");
+    assert_eq!(model_id.0.as_ref(), "parent-model");
 }
 
 #[test]

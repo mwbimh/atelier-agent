@@ -100,6 +100,14 @@ pub fn set_request_agent_identity(name: String, version: Option<String>) -> Resu
     atelier_sampler::set_request_agent_identity(name, version)
 }
 
+pub fn set_request_agent_identity_with_user_agent(
+    name: String,
+    version: Option<String>,
+    user_agent: String,
+) -> Result<(), String> {
+    atelier_sampler::set_request_agent_identity_with_user_agent(name, version, Some(user_agent))
+}
+
 pub fn process_user_agent_string() -> String {
     atelier_sampler::request_agent_user_agent_string()
 }

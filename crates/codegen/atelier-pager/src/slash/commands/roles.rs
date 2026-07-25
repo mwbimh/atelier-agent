@@ -19,7 +19,7 @@ impl SlashCommand for RolesCommand {
     }
 
     fn description(&self) -> &str {
-        "Manage the eight fixed runtime Roles"
+        "Manage the fixed runtime Roles"
     }
 
     fn usage(&self) -> &str {

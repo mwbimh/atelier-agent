@@ -1349,9 +1349,10 @@ fn main() {
                 std::process::exit(2);
             }
         };
-    if let Err(error) = atelier_shell::http::set_request_agent_identity(
+    if let Err(error) = atelier_shell::http::set_request_agent_identity_with_user_agent(
         runtime_defaults.request_agent.name.clone(),
         runtime_defaults.request_agent.version.clone(),
+        runtime_defaults.request_agent.user_agent_value(),
     ) {
         eprintln!("Couldn't configure Atelier request agent: {error}");
         std::process::exit(2);

@@ -175,10 +175,10 @@ impl RoleConfig {
         Ok(())
     }
 
-    /// Whether this role names a real Provider/model pair rather than the
-    /// bootstrap placeholder written for a newly-created registry.
+    /// Every persisted role assignment is configured. Unconfigured roles are
+    /// represented by the absence of an entry in [`RoleRegistry`].
     pub fn is_configured(&self) -> bool {
-        self.provider.trim() != "default" && self.model.trim() != "default"
+        true
     }
 
     /// Return Provider defaults overlaid by this role's payload.
@@ -199,16 +199,6 @@ impl RoleConfig {
         let mut payload = self.payload.clone();
         payload.insert("fast_mode".into(), Value::Bool(self.fast_mode));
         payload
-    }
-
-    fn default_for(_role_id: RoleId) -> Self {
-        Self {
-            provider: "default".into(),
-            model: "default".into(),
-            effort: None,
-            fast_mode: false,
-            payload: Map::new(),
-        }
     }
 }
 
@@ -323,11 +313,9 @@ pub struct RoleRegistry {
 
 impl Default for RoleRegistry {
     fn default() -> Self {
-        let roles = RoleId::ALL
-            .into_iter()
-            .map(|role_id| (role_id, RoleConfig::default_for(role_id)))
-            .collect();
-        Self { roles }
+        Self {
+            roles: BTreeMap::new(),
+        }
     }
 }
 

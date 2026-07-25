@@ -101,10 +101,9 @@ async fn set_fast_mode(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
 
 fn list() -> ExtResult {
     let registry = registry()?;
-    let roles: Vec<_> = registry
-        .roles()
-        .iter()
-        .map(|(role, config)| role_list_entry(role, config))
+    let roles: Vec<_> = RoleId::ALL
+        .into_iter()
+        .map(|role| role_list_entry(role, registry.role(role)))
         .collect();
     to_raw_response(&serde_json::json!({ "roles": roles }))
 }
@@ -211,11 +210,11 @@ fn configured_role(
         })
 }
 
-fn role_list_entry(role_id: RoleId, config: &RoleConfig) -> serde_json::Value {
+fn role_list_entry(role_id: RoleId, config: Option<&RoleConfig>) -> serde_json::Value {
     serde_json::json!({
         "roleId": role_id,
-        "configured": config.is_configured(),
-        "config": redacted_role_config(config),
+        "configured": config.is_some(),
+        "config": config.map(redacted_role_config),
     })
 }
 
@@ -262,18 +261,18 @@ mod tests {
     }
 
     #[test]
-    fn role_list_reports_default_placeholder_as_unconfigured() {
+    fn role_list_reports_missing_assignment_as_unconfigured() {
         let registry = ProviderRegistry::in_memory();
-        let config = registry.role(RoleId::Main).unwrap();
 
-        let value = role_list_entry(RoleId::Main, config);
+        let value = role_list_entry(RoleId::Main, registry.role(RoleId::Main));
 
         assert_eq!(value["roleId"], "main");
         assert_eq!(value["configured"], false);
+        assert!(value["config"].is_null());
     }
 
     #[test]
-    fn role_get_rejects_default_placeholder_as_unconfigured() {
+    fn role_get_rejects_missing_assignment_as_unconfigured() {
         let registry = ProviderRegistry::in_memory();
 
         let error = configured_role(&registry, RoleId::Main).unwrap_err();

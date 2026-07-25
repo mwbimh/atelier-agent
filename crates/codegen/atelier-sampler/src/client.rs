@@ -1,4 +1,4 @@
-//! HTTP client for the xAI sampling APIs.
+//! HTTP client for the sampling APIs supported by Atelier.
 //!
 //! Owns the `reqwest::Client`, default request headers, and per-method
 //! defaults. Talks to three backend shapes:
@@ -44,6 +44,7 @@ const ANTHROPIC_DEFAULT_MAX_TOKENS: u32 = 128_000;
 struct RequestAgentIdentity {
     name: String,
     version: Option<String>,
+    user_agent: Option<String>,
 }
 
 static REQUEST_AGENT_IDENTITY: OnceLock<RequestAgentIdentity> = OnceLock::new();
@@ -83,6 +84,14 @@ pub fn set_request_agent_identity(
     name: String,
     version: Option<String>,
 ) -> std::result::Result<(), String> {
+    set_request_agent_identity_with_user_agent(name, version, None)
+}
+
+pub fn set_request_agent_identity_with_user_agent(
+    name: String,
+    version: Option<String>,
+    user_agent: Option<String>,
+) -> std::result::Result<(), String> {
     let name = name.trim().to_owned();
     validate_request_agent_token(&name, "name")?;
     let version = version
@@ -92,8 +101,23 @@ pub fn set_request_agent_identity(
             Ok::<String, String>(version)
         })
         .transpose()?;
+    let user_agent = user_agent
+        .map(|value| value.trim().to_owned())
+        .map(|value| {
+            HeaderValue::from_str(&value)
+                .map_err(|_| "request agent user_agent must be a valid HTTP header value")?;
+            if value.is_empty() {
+                return Err("request agent user_agent must not be empty".to_owned());
+            }
+            Ok(value)
+        })
+        .transpose()?;
     REQUEST_AGENT_IDENTITY
-        .set(RequestAgentIdentity { name, version })
+        .set(RequestAgentIdentity {
+            name,
+            version,
+            user_agent,
+        })
         .map_err(|_| "request agent identity was already initialized".to_owned())
 }
 
@@ -101,6 +125,7 @@ fn request_agent_identity() -> &'static RequestAgentIdentity {
     REQUEST_AGENT_IDENTITY.get_or_init(|| RequestAgentIdentity {
         name: "Atelier".to_owned(),
         version: Some(agent_version()),
+        user_agent: None,
     })
 }
 
@@ -391,6 +416,7 @@ struct ClientDefaults {
     max_completion_tokens: Option<u32>,
     temperature: Option<f32>,
     top_p: Option<f32>,
+    reasoning_effort: Option<atelier_sampling_types::ReasoningEffort>,
     request_payload: Map<String, Value>,
     api_backend: ApiBackend,
     auth_scheme: AuthScheme,
@@ -406,6 +432,7 @@ impl std::fmt::Debug for ClientDefaults {
             .field("max_completion_tokens", &self.max_completion_tokens)
             .field("temperature", &self.temperature)
             .field("top_p", &self.top_p)
+            .field("reasoning_effort", &self.reasoning_effort)
             .field(
                 "request_payload",
                 &format_args!("REDACTED ({} entries)", self.request_payload.len()),
@@ -496,6 +523,23 @@ mod request_payload_tests {
     }
 
     #[test]
+    fn responses_preview_preserves_max_as_a_distinct_wire_effort() {
+        let config = SamplerConfig {
+            base_url: "http://127.0.0.1:1/v1".to_owned(),
+            model: "gpt-5.6-sol".to_owned(),
+            api_backend: ApiBackend::Responses,
+            reasoning_effort: Some(atelier_sampling_types::ReasoningEffort::Max),
+            ..Default::default()
+        };
+        let client = SamplingClient::new(config).expect("valid preview client");
+        let body = client
+            .preview_streaming_request_body(ConversationRequest::default())
+            .expect("preview body");
+
+        assert_eq!(body["reasoning"]["effort"], "max");
+    }
+
+    #[test]
     fn preview_body_contains_the_actual_backend_shape_and_merged_role_payload() {
         let config = SamplerConfig {
             base_url: "http://127.0.0.1:1/v1".to_owned(),
@@ -519,6 +563,17 @@ mod request_payload_tests {
         assert_eq!(body["fast_mode"], false);
         assert_eq!(body["provider_option"]["budget"], 123);
         assert!(body.get("messages").is_some());
+    }
+}
+
+fn patch_responses_reasoning_effort(
+    body: &mut Value,
+    effort: Option<atelier_sampling_types::ReasoningEffort>,
+) {
+    if effort == Some(atelier_sampling_types::ReasoningEffort::Max)
+        && let Some(reasoning) = body.get_mut("reasoning").and_then(Value::as_object_mut)
+    {
+        reasoning.insert("effort".to_owned(), Value::String("max".to_owned()));
     }
 }
 
@@ -575,14 +630,16 @@ fn agent_version() -> String {
     atelier_version::VERSION.to_string()
 }
 
-/// Render a User-Agent string for the given origin client.
+/// Render the process-wide Request Agent User-Agent.
 ///
-/// Mirrors the shell's `user_agent_string_for` but uses sampler-local
-/// constants. The session typically owns the canonical User-Agent
-/// rendering for process-wide HTTP clients; this helper is for
-/// per-session sampling clients that want to override it.
+/// Built-in client presets provide their complete native header format. The
+/// generic rendering below is only a fallback for custom entries that omit an
+/// explicit `user_agent`.
 pub fn request_agent_user_agent_string() -> String {
     let identity = request_agent_identity();
+    if let Some(user_agent) = identity.user_agent.as_ref() {
+        return user_agent.clone();
+    }
     let platform = PlatformInfo::current();
     match identity.version.as_deref() {
         Some(version) => format!(
@@ -729,6 +786,7 @@ impl SamplingClient {
             max_completion_tokens: config.max_completion_tokens,
             temperature: config.temperature,
             top_p: config.top_p,
+            reasoning_effort: config.reasoning_effort,
             request_payload: config.request_payload,
             api_backend: config.api_backend,
             auth_scheme: config.auth_scheme,
@@ -1325,6 +1383,7 @@ impl SamplingClient {
         // it in post-serialize. This is the last surviving piece of the
         // old raw_output machinery.
         atelier_sampling_types::patch_reasoning_text_types(&mut request_body);
+        patch_responses_reasoning_effort(&mut request_body, request.reasoning_effort);
         apply_request_payload(&mut request_body, &self.defaults.request_payload);
         let http_request = self.post(self.endpoint("responses")).json(&request_body);
 
@@ -1456,6 +1515,7 @@ impl SamplingClient {
             }
         }
         atelier_sampling_types::patch_reasoning_text_types(&mut request_body);
+        patch_responses_reasoning_effort(&mut request_body, request.reasoning_effort);
         apply_request_payload(&mut request_body, &self.defaults.request_payload);
         // Fresh per attempt so signals never leak across retries; `None`
         // (check disabled) sends no header and does no peek work per event.
@@ -1926,6 +1986,10 @@ impl SamplingClient {
             request.max_output_tokens = self.defaults.max_completion_tokens;
         }
 
+        if request.reasoning_effort.is_none() {
+            request.reasoning_effort = self.defaults.reasoning_effort;
+        }
+
         Ok(())
     }
 
@@ -1969,6 +2033,7 @@ impl SamplingClient {
                 let extra_tools = atelier_sampling_types::extra_raw_tools(&request.hosted_tools);
                 let responses_request: rs::CreateResponse = (&request).into();
                 let mut wrapper = CreateResponseWrapper::new(responses_request);
+                wrapper.reasoning_effort = request.reasoning_effort;
                 wrapper.x_atelier_conv_id = x_atelier_conv_id;
                 wrapper.x_atelier_req_id = x_atelier_req_id;
                 wrapper.x_atelier_session_id = x_atelier_session_id;
@@ -1993,6 +2058,7 @@ impl SamplingClient {
                     }
                 }
                 atelier_sampling_types::patch_reasoning_text_types(&mut body);
+                patch_responses_reasoning_effort(&mut body, wrapper.reasoning_effort);
                 apply_request_payload(&mut body, &self.defaults.request_payload);
                 Ok(body)
             }
@@ -2090,6 +2156,7 @@ impl SamplingClient {
         let responses_request: rs::CreateResponse = (&request).into();
 
         let mut wrapper = CreateResponseWrapper::new(responses_request);
+        wrapper.reasoning_effort = request.reasoning_effort;
         wrapper.x_atelier_conv_id = x_atelier_conv_id;
         wrapper.x_atelier_req_id = x_atelier_req_id;
         wrapper.x_atelier_session_id = x_atelier_session_id;
@@ -2123,6 +2190,7 @@ impl SamplingClient {
         let responses_request: rs::CreateResponse = (&request).into();
 
         let mut wrapper = CreateResponseWrapper::new(responses_request);
+        wrapper.reasoning_effort = request.reasoning_effort;
         wrapper.x_atelier_conv_id = x_atelier_conv_id;
         wrapper.x_atelier_req_id = x_atelier_req_id;
         wrapper.x_atelier_session_id = x_atelier_session_id;

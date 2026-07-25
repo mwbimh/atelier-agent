@@ -833,8 +833,9 @@ async fn resolve_subagent_sampling_config(
 /// [`resolve_subagent_sampling_config`] (where the user `[subagents.models]`
 /// pin and `AgentDefinition.model` apply). So a goal/persona override WINS
 /// over a user per-agent pin. An override that does not resolve to a known
-/// model fails closed. Built-in fixed-role subagents also fail when their role
-/// is unconfigured; custom subagent names retain the legacy pin path.
+/// model fails closed. A configured fixed Role overrides the active model;
+/// an unconfigured Role is absent and therefore follows the normal inherited
+/// model path.
 ///
 /// Extracted from `handle_subagent_request` so the precedence is unit-testable
 /// without spawning a child session.
@@ -882,6 +883,25 @@ fn fixed_role_for_subagent_type(subagent_type: &str) -> Option<atelier_provider:
     }
 }
 
+fn context_role_name(
+    explicit_role: Option<&str>,
+    configured_role_name: Option<&str>,
+    subagent_type: &str,
+) -> String {
+    if let Some(role) = explicit_role.or(configured_role_name) {
+        return match role {
+            "plan" => "planner".to_owned(),
+            other => other.to_owned(),
+        };
+    }
+    fixed_role_for_subagent_type(subagent_type)
+        .map(|role| role.as_str().to_owned())
+        .unwrap_or_else(|| match subagent_type {
+            "plan" => "planner".to_owned(),
+            other => other.to_owned(),
+        })
+}
+
 fn fixed_role_for_request(
     explicit_role: Option<&str>,
     subagent_type: &str,
@@ -895,9 +915,9 @@ fn fixed_role_for_request(
         .unwrap_or_else(|| Ok(fixed_role_for_subagent_type(subagent_type)))
 }
 
-/// Resolve a configured fixed role through the live model catalog and apply
-/// its small set of model options. Built-in roles are mandatory and never
-/// inherit the parent model or legacy subagent pins.
+/// Resolve a configured fixed Role through the live model catalog and apply
+/// its model options. Missing Role entries are intentionally absent and allow
+/// the normal inherited model path to continue.
 fn resolve_fixed_runtime_role(
     subagent_type: &str,
     ctx: &SubagentSpawnContext,
@@ -905,7 +925,7 @@ fn resolve_fixed_runtime_role(
     let Some(role_id) = fixed_role_for_subagent_type(subagent_type) else {
         return Ok(None);
     };
-    resolve_fixed_runtime_role_id(role_id, ctx).map(Some)
+    resolve_fixed_runtime_role_id(role_id, ctx)
 }
 
 fn resolve_fixed_runtime_role_for_request(
@@ -916,13 +936,13 @@ fn resolve_fixed_runtime_role_for_request(
     let Some(role_id) = fixed_role_for_request(explicit_role, subagent_type)? else {
         return Ok(None);
     };
-    resolve_fixed_runtime_role_id(role_id, ctx).map(Some)
+    resolve_fixed_runtime_role_id(role_id, ctx)
 }
 
 fn resolve_fixed_runtime_role_id(
     role_id: atelier_provider::RoleId,
     ctx: &SubagentSpawnContext,
-) -> Result<(atelier_sampler::SamplerConfig, acp::ModelId), String> {
+) -> Result<Option<(atelier_sampler::SamplerConfig, acp::ModelId)>, String> {
     let registry_path = ctx
         .role_registry_path
         .clone()
@@ -930,11 +950,8 @@ fn resolve_fixed_runtime_role_id(
     let registry = atelier_provider::ProviderRegistry::load_or_create(registry_path)
         .map_err(|error| format!("failed to load {role_id} role configuration: {error}"))?;
     let Some(role) = registry.role(role_id) else {
-        return Err(format!("role {role_id} is not configured"));
+        return Ok(None);
     };
-    if role.provider == "default" || role.model == "default" {
-        return Err(format!("role {role_id} is not configured"));
-    }
     let model_key = format!("{}/{}", role.provider, role.model);
     let Some((mut config, model_id)) = resolve_model_override_to_config(&model_key, ctx) else {
         return Err(format!(
@@ -947,7 +964,7 @@ fn resolve_fixed_runtime_role_id(
             format!("configured {role_id} role effort is invalid ({raw_effort}): {error}")
         })?);
     }
-    Ok((config, model_id))
+    Ok(Some((config, model_id)))
 }
 /// Emit a unified log entry recording which model and credentials a subagent
 /// resolved to, and how they compare to the parent's.

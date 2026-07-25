@@ -1,0 +1,461 @@
+# Verified 2026-07-25 against OpenAI SDK 6.49.0, Codex 0.145.0 model metadata, and Pi AI 0.82.1.
+schema_version = 2
+
+[models."gpt-5"]
+display_name = "GPT-5"
+wire_api = "responses"
+context_window = 400000
+reasoning_efforts = ["minimal", "low", "medium", "high"]
+default_effort = "medium"
+fast_mode = false
+[models."gpt-5".capabilities]
+text_input = true
+image_input = true
+tool_calls = true
+parallel_tool_calls = true
+reasoning_effort = true
+web_search = false
+image_generation = false
+server_compaction = false
+
+[models."gpt-5-mini"]
+display_name = "GPT-5 Mini"
+wire_api = "responses"
+context_window = 400000
+reasoning_efforts = ["minimal", "low", "medium", "high"]
+default_effort = "medium"
+fast_mode = false
+[models."gpt-5-mini".capabilities]
+text_input = true
+image_input = true
+tool_calls = true
+parallel_tool_calls = true
+reasoning_effort = true
+web_search = false
+image_generation = false
+server_compaction = false
+
+[models."gpt-5-nano"]
+display_name = "GPT-5 Nano"
+wire_api = "responses"
+context_window = 400000
+reasoning_efforts = ["minimal", "low", "medium", "high"]
+default_effort = "medium"
+fast_mode = false
+[models."gpt-5-nano".capabilities]
+text_input = true
+image_input = true
+tool_calls = true
+parallel_tool_calls = true
+reasoning_effort = true
+web_search = false
+image_generation = false
+server_compaction = false
+
+[models."gpt-5-pro"]
+display_name = "GPT-5 Pro"
+wire_api = "responses"
+context_window = 400000
+reasoning_efforts = ["high"]
+default_effort = "high"
+fast_mode = false
+[models."gpt-5-pro".capabilities]
+text_input = true
+image_input = true
+tool_calls = true
+parallel_tool_calls = true
+reasoning_effort = true
+web_search = false
+image_generation = false
+server_compaction = false
+
+[models."gpt-5-codex"]
+display_name = "GPT-5-Codex"
+wire_api = "responses"
+context_window = 400000
+reasoning_efforts = ["low", "medium", "high"]
+default_effort = "medium"
+fast_mode = false
+[models."gpt-5-codex".capabilities]
+text_input = true
+image_input = true
+tool_calls = true
+parallel_tool_calls = true
+reasoning_effort = true
+web_search = false
+image_generation = false
+server_compaction = false
+
+[models."gpt-5.1"]
+display_name = "GPT-5.1"
+wire_api = "responses"
+context_window = 400000
+reasoning_efforts = ["none", "low", "medium", "high"]
+default_effort = "medium"
+fast_mode = false
+[models."gpt-5.1".capabilities]
+text_input = true
+image_input = true
+tool_calls = true
+parallel_tool_calls = true
+reasoning_effort = true
+web_search = false
+image_generation = false
+server_compaction = false
+
+[models."gpt-5.1-codex"]
+display_name = "GPT-5.1 Codex"
+wire_api = "responses"
+context_window = 400000
+reasoning_efforts = ["low", "medium", "high"]
+default_effort = "medium"
+fast_mode = false
+[models."gpt-5.1-codex".capabilities]
+text_input = true
+image_input = true
+tool_calls = true
+parallel_tool_calls = true
+reasoning_effort = true
+web_search = false
+image_generation = false
+server_compaction = false
+
+[models."gpt-5.1-codex-max"]
+display_name = "GPT-5.1 Codex Max"
+wire_api = "responses"
+context_window = 400000
+reasoning_efforts = ["low", "medium", "high", "xhigh"]
+default_effort = "medium"
+fast_mode = false
+[models."gpt-5.1-codex-max".capabilities]
+text_input = true
+image_input = true
+tool_calls = true
+parallel_tool_calls = true
+reasoning_effort = true
+web_search = false
+image_generation = false
+server_compaction = false
+
+[models."gpt-5.1-codex-mini"]
+display_name = "GPT-5.1 Codex mini"
+wire_api = "responses"
+context_window = 400000
+reasoning_efforts = ["low", "medium", "high"]
+default_effort = "medium"
+fast_mode = false
+[models."gpt-5.1-codex-mini".capabilities]
+text_input = true
+image_input = true
+tool_calls = true
+parallel_tool_calls = true
+reasoning_effort = true
+web_search = false
+image_generation = false
+server_compaction = false
+
+[models."gpt-5.2"]
+display_name = "GPT-5.2"
+wire_api = "responses"
+context_window = 400000
+reasoning_efforts = ["none", "low", "medium", "high", "xhigh"]
+default_effort = "medium"
+fast_mode = false
+[models."gpt-5.2".capabilities]
+text_input = true
+image_input = true
+tool_calls = true
+parallel_tool_calls = true
+reasoning_effort = true
+web_search = false
+image_generation = false
+server_compaction = false
+
+[models."gpt-5.2-codex"]
+display_name = "GPT-5.2 Codex"
+wire_api = "responses"
+context_window = 400000
+reasoning_efforts = ["low", "medium", "high", "xhigh"]
+default_effort = "medium"
+fast_mode = false
+[models."gpt-5.2-codex".capabilities]
+text_input = true
+image_input = true
+tool_calls = true
+parallel_tool_calls = true
+reasoning_effort = true
+web_search = false
+image_generation = false
+server_compaction = false
+
+[models."gpt-5.2-pro"]
+display_name = "GPT-5.2 Pro"
+wire_api = "responses"
+context_window = 400000
+reasoning_efforts = ["medium", "high", "xhigh"]
+default_effort = "medium"
+fast_mode = false
+[models."gpt-5.2-pro".capabilities]
+text_input = true
+image_input = true
+tool_calls = true
+parallel_tool_calls = true
+reasoning_effort = true
+web_search = false
+image_generation = false
+server_compaction = false
+
+[models."gpt-5.3-codex"]
+display_name = "GPT-5.3 Codex"
+wire_api = "responses"
+context_window = 400000
+reasoning_efforts = ["none", "low", "medium", "high", "xhigh"]
+default_effort = "medium"
+fast_mode = false
+[models."gpt-5.3-codex".capabilities]
+text_input = true
+image_input = true
+tool_calls = true
+parallel_tool_calls = true
+reasoning_effort = true
+web_search = false
+image_generation = false
+server_compaction = false
+
+[models."gpt-5.3-codex-spark"]
+display_name = "GPT-5.3 Codex Spark"
+wire_api = "responses"
+context_window = 128000
+reasoning_efforts = ["low", "medium", "high", "xhigh"]
+default_effort = "medium"
+fast_mode = false
+[models."gpt-5.3-codex-spark".capabilities]
+text_input = true
+image_input = true
+tool_calls = true
+parallel_tool_calls = true
+reasoning_effort = true
+web_search = false
+image_generation = false
+server_compaction = false
+
+[models."gpt-5.4"]
+display_name = "GPT-5.4"
+wire_api = "responses"
+context_window = 272000
+reasoning_efforts = ["none", "low", "medium", "high", "xhigh"]
+default_effort = "medium"
+fast_mode = false
+[models."gpt-5.4".capabilities]
+text_input = true
+image_input = true
+tool_calls = true
+parallel_tool_calls = true
+reasoning_effort = true
+web_search = false
+image_generation = false
+server_compaction = false
+
+[models."gpt-5.4-mini"]
+display_name = "GPT-5.4 mini"
+wire_api = "responses"
+context_window = 400000
+reasoning_efforts = ["none", "low", "medium", "high", "xhigh"]
+default_effort = "medium"
+fast_mode = false
+[models."gpt-5.4-mini".capabilities]
+text_input = true
+image_input = true
+tool_calls = true
+parallel_tool_calls = true
+reasoning_effort = true
+web_search = false
+image_generation = false
+server_compaction = false
+
+[models."gpt-5.4-nano"]
+display_name = "GPT-5.4 nano"
+wire_api = "responses"
+context_window = 400000
+reasoning_efforts = ["none", "low", "medium", "high", "xhigh"]
+default_effort = "medium"
+fast_mode = false
+[models."gpt-5.4-nano".capabilities]
+text_input = true
+image_input = true
+tool_calls = true
+parallel_tool_calls = true
+reasoning_effort = true
+web_search = false
+image_generation = false
+server_compaction = false
+
+[models."gpt-5.4-pro"]
+display_name = "GPT-5.4 Pro"
+wire_api = "responses"
+context_window = 1050000
+reasoning_efforts = ["medium", "high", "xhigh"]
+default_effort = "medium"
+fast_mode = false
+[models."gpt-5.4-pro".capabilities]
+text_input = true
+image_input = true
+tool_calls = true
+parallel_tool_calls = true
+reasoning_effort = true
+web_search = false
+image_generation = false
+server_compaction = false
+
+[models."gpt-5.5"]
+display_name = "GPT-5.5"
+wire_api = "responses"
+context_window = 272000
+reasoning_efforts = ["none", "low", "medium", "high", "xhigh"]
+default_effort = "medium"
+fast_mode = false
+[models."gpt-5.5".capabilities]
+text_input = true
+image_input = true
+tool_calls = true
+parallel_tool_calls = true
+reasoning_effort = true
+web_search = false
+image_generation = false
+server_compaction = false
+
+[models."gpt-5.5-pro"]
+display_name = "GPT-5.5 Pro"
+wire_api = "responses"
+context_window = 1050000
+reasoning_efforts = ["medium", "high", "xhigh"]
+default_effort = "medium"
+fast_mode = false
+[models."gpt-5.5-pro".capabilities]
+text_input = true
+image_input = true
+tool_calls = true
+parallel_tool_calls = true
+reasoning_effort = true
+web_search = false
+image_generation = false
+server_compaction = false
+
+[models."gpt-5.6-luna"]
+display_name = "GPT-5.6 Luna"
+wire_api = "responses"
+context_window = 272000
+reasoning_efforts = ["none", "low", "medium", "high", "xhigh", "max"]
+default_effort = "medium"
+fast_mode = false
+[models."gpt-5.6-luna".capabilities]
+text_input = true
+image_input = true
+tool_calls = true
+parallel_tool_calls = true
+reasoning_effort = true
+web_search = false
+image_generation = false
+server_compaction = false
+
+[models."gpt-5.6-sol"]
+display_name = "GPT-5.6 Sol"
+wire_api = "responses"
+context_window = 272000
+reasoning_efforts = ["none", "low", "medium", "high", "xhigh", "max"]
+default_effort = "medium"
+fast_mode = false
+[models."gpt-5.6-sol".capabilities]
+text_input = true
+image_input = true
+tool_calls = true
+parallel_tool_calls = true
+reasoning_effort = true
+web_search = false
+image_generation = false
+server_compaction = false
+
+[models."gpt-5.6-terra"]
+display_name = "GPT-5.6 Terra"
+wire_api = "responses"
+context_window = 272000
+reasoning_efforts = ["none", "low", "medium", "high", "xhigh", "max"]
+default_effort = "medium"
+fast_mode = false
+[models."gpt-5.6-terra".capabilities]
+text_input = true
+image_input = true
+tool_calls = true
+parallel_tool_calls = true
+reasoning_effort = true
+web_search = false
+image_generation = false
+server_compaction = false
+
+[models."o3"]
+display_name = "o3"
+wire_api = "responses"
+context_window = 200000
+reasoning_efforts = ["low", "medium", "high"]
+default_effort = "medium"
+fast_mode = false
+[models."o3".capabilities]
+text_input = true
+image_input = true
+tool_calls = true
+parallel_tool_calls = true
+reasoning_effort = true
+web_search = false
+image_generation = false
+server_compaction = false
+
+[models."o3-deep-research"]
+display_name = "o3 Deep Research"
+wire_api = "responses"
+context_window = 200000
+reasoning_efforts = ["medium"]
+default_effort = "medium"
+fast_mode = false
+[models."o3-deep-research".capabilities]
+text_input = true
+image_input = true
+tool_calls = true
+parallel_tool_calls = true
+reasoning_effort = true
+web_search = false
+image_generation = false
+server_compaction = false
+
+[models."o3-mini"]
+display_name = "o3-mini"
+wire_api = "responses"
+context_window = 200000
+reasoning_efforts = ["low", "medium", "high"]
+default_effort = "medium"
+fast_mode = false
+[models."o3-mini".capabilities]
+text_input = true
+image_input = false
+tool_calls = true
+parallel_tool_calls = true
+reasoning_effort = true
+web_search = false
+image_generation = false
+server_compaction = false
+
+[models."o3-pro"]
+display_name = "o3-pro"
+wire_api = "responses"
+context_window = 200000
+reasoning_efforts = ["low", "medium", "high"]
+default_effort = "medium"
+fast_mode = false
+[models."o3-pro".capabilities]
+text_input = true
+image_input = true
+tool_calls = true
+parallel_tool_calls = true
+reasoning_effort = true
+web_search = false
+image_generation = false
+server_compaction = false

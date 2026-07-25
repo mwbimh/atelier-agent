@@ -47,6 +47,35 @@ fast_mode = true
 }
 
 #[test]
+fn providers_file_rejects_models_roles_and_other_non_connection_sections() {
+    for forbidden in [
+        "[models.\"gpt-5.4\"]\ncontext_window = 272000\n",
+        "[roles.main]\nprovider = \"openai\"\nmodel = \"gpt-5.4\"\n",
+        "[runtime]\nmodel = \"openai/gpt-5.4\"\n",
+    ] {
+        let home = tempdir().unwrap();
+        write(
+            &home.path().join("providers.toml"),
+            &format!(
+                r#"schema_version = 2
+
+[providers.openai]
+display_name = "OpenAI"
+protocol = "open_ai_responses"
+base_url = "https://api.openai.com/v1"
+enabled = true
+
+{forbidden}"#
+            ),
+        );
+
+        let error = ProviderRegistry::load_or_create(home.path().join("providers.toml"))
+            .expect_err("providers.toml must contain connection configuration only");
+        assert!(error.to_string().contains("unknown field"), "{error}");
+    }
+}
+
+#[test]
 fn model_wire_api_is_provider_scoped_and_falls_back_to_provider_protocol() {
     let home = tempdir().unwrap();
     write(
@@ -98,7 +127,7 @@ context_window = 100000
 }
 
 #[test]
-fn common_model_preset_supplies_context_effort_and_fast_mode() {
+fn exact_common_model_preset_supplies_context_effort_and_fast_mode_without_family_matching() {
     let home = tempdir().unwrap();
     write(
         &home.path().join("providers.toml"),
@@ -113,15 +142,14 @@ enabled = true
     );
     write(
         &home.path().join("models/default/deepseek.toml"),
-        r#"schema_version = 1
+        r#"schema_version = 2
 
-[[models]]
-match = "deepseek-*"
+[models."deepseek-v4-flash"]
 wire_api = "chat_completions"
-context_window = 131072
-reasoning_efforts = ["low", "medium", "high"]
-default_effort = "medium"
-fast_mode = true
+context_window = 1000000
+reasoning_efforts = ["high", "max"]
+default_effort = "high"
+fast_mode = false
 "#,
     );
     write(
@@ -136,10 +164,143 @@ fast_mode = true
     let model = registry
         .model(&ModelKey::new("allm", "deepseek-v4-flash").unwrap())
         .unwrap();
-    assert_eq!(model.context_window, Some(131072));
-    assert_eq!(model.reasoning_efforts, ["low", "medium", "high"]);
-    assert_eq!(model.default_effort.as_deref(), Some("medium"));
-    assert!(model.fast_mode);
+    assert_eq!(model.context_window, Some(1_000_000));
+    assert_eq!(model.reasoning_efforts, ["high", "max"]);
+    assert_eq!(model.default_effort.as_deref(), Some("high"));
+    assert!(!model.fast_mode);
+
+    write(
+        &home.path().join("models/providers/allm/models.toml"),
+        r#"schema_version = 1
+
+[models."deepseek-v4-pro"]
+"#,
+    );
+    let registry = ProviderRegistry::load_or_create(home.path().join("providers.toml")).unwrap();
+    let unmatched = registry
+        .model(&ModelKey::new("allm", "deepseek-v4-pro").unwrap())
+        .unwrap();
+    assert_eq!(unmatched.context_window, None);
+    assert!(unmatched.reasoning_efforts.is_empty());
+}
+
+#[test]
+fn explicit_remote_metadata_takes_precedence_over_common_model_defaults() {
+    let home = tempdir().unwrap();
+    write(
+        &home.path().join("providers.toml"),
+        r#"schema_version = 2
+
+[providers.openai]
+display_name = "OpenAI"
+protocol = "open_ai_responses"
+base_url = "https://api.openai.com/v1"
+enabled = true
+"#,
+    );
+    write(
+        &home.path().join("models/default/openai.toml"),
+        r#"schema_version = 2
+
+[models."gpt-5.4"]
+context_window = 272000
+
+[models."gpt-5.4".capabilities]
+image_input = true
+tool_calls = true
+"#,
+    );
+    write(
+        &home.path().join("cache/providers/openai/models.json"),
+        r#"{
+  "schema_version": 1,
+  "provider_id": "openai",
+  "models": [{
+    "key": {"provider_id": "openai", "model_id": "gpt-5.4"},
+    "display_name": "Remote GPT-5.4",
+    "context_window": 128000,
+    "capabilities": {
+      "text_input": true,
+      "image_input": false,
+      "tool_calls": false,
+      "parallel_tool_calls": false,
+      "reasoning_effort": false,
+      "web_search": true,
+      "image_generation": false,
+      "server_compaction": false
+    },
+    "source": "remote",
+    "enabled": true
+  }]
+}"#,
+    );
+
+    let registry = ProviderRegistry::load_or_create(home.path().join("providers.toml")).unwrap();
+    let model = registry
+        .model(&ModelKey::new("openai", "gpt-5.4").unwrap())
+        .unwrap();
+    assert_eq!(model.context_window, Some(128_000));
+    assert!(!model.capabilities.image_input);
+    assert!(!model.capabilities.tool_calls);
+    assert!(model.capabilities.web_search);
+}
+
+#[test]
+fn generic_remote_discovery_is_enriched_by_exact_common_capabilities() {
+    let home = tempdir().unwrap();
+    write(
+        &home.path().join("providers.toml"),
+        r#"schema_version = 2
+
+[providers.allm]
+display_name = "AllM"
+protocol = "open_ai_chat_completions"
+base_url = "https://allm.example/v1"
+enabled = true
+"#,
+    );
+    write(
+        &home.path().join("models/default/deepseek.toml"),
+        r#"schema_version = 2
+
+[models."deepseek-v4-flash".capabilities]
+text_input = true
+tool_calls = true
+parallel_tool_calls = true
+reasoning_effort = true
+"#,
+    );
+    write(
+        &home.path().join("cache/providers/allm/models.json"),
+        r#"{
+  "schema_version": 1,
+  "provider_id": "allm",
+  "models": [{
+    "key": {"provider_id": "allm", "model_id": "deepseek-v4-flash"},
+    "display_name": "deepseek-v4-flash",
+    "capabilities": {
+      "text_input": true,
+      "image_input": false,
+      "tool_calls": false,
+      "parallel_tool_calls": false,
+      "reasoning_effort": false,
+      "web_search": false,
+      "image_generation": false,
+      "server_compaction": false
+    },
+    "source": "remote",
+    "enabled": true
+  }]
+}"#,
+    );
+
+    let registry = ProviderRegistry::load_or_create(home.path().join("providers.toml")).unwrap();
+    let model = registry
+        .model(&ModelKey::new("allm", "deepseek-v4-flash").unwrap())
+        .unwrap();
+    assert!(model.capabilities.tool_calls);
+    assert!(model.capabilities.parallel_tool_calls);
+    assert!(model.capabilities.reasoning_effort);
 }
 
 #[test]
@@ -444,6 +605,51 @@ endpoint = {endpoint:?}
 }
 
 #[test]
+fn common_defaults_reject_wildcards_and_inconsistent_effort_menus() {
+    for models in [
+        r#"[models."gpt-5*"]
+context_window = 400000
+"#,
+        r#"[models."gpt-5.4"]
+reasoning_efforts = ["low", "high"]
+default_effort = "medium"
+"#,
+        r#"[models."gpt-5.4"]
+reasoning_efforts = ["high", "high"]
+default_effort = "high"
+"#,
+    ] {
+        let home = tempdir().unwrap();
+        write(
+            &home.path().join("providers.toml"),
+            r#"schema_version = 2
+
+[providers.openai]
+display_name = "OpenAI"
+protocol = "open_ai_responses"
+base_url = "https://api.openai.com/v1"
+enabled = true
+"#,
+        );
+        write(
+            &home.path().join("models/default/openai.toml"),
+            &format!("schema_version = 2\n\n{models}"),
+        );
+        write(
+            &home.path().join("models/providers/openai/models.toml"),
+            "schema_version = 1\n\n[models.\"gpt-5.4\"]\n",
+        );
+
+        let error = ProviderRegistry::load_or_create(home.path().join("providers.toml"))
+            .expect_err("invalid exact model preset must fail closed");
+        assert!(
+            error.to_string().contains("default model") || error.to_string().contains("reasoning"),
+            "{error}"
+        );
+    }
+}
+
+#[test]
 fn common_defaults_cannot_enable_experimental_provider_endpoints() {
     let home = tempdir().unwrap();
     write(
@@ -459,12 +665,11 @@ enabled = true
     );
     write(
         &home.path().join("models/default/openai.toml"),
-        r#"schema_version = 1
+        r#"schema_version = 2
 
-[[models]]
-match = "gpt-*"
+[models."gpt-5.4"]
 
-[models.experimental.remote_compaction]
+[models."gpt-5.4".experimental.remote_compaction]
 enabled = true
 endpoint = "responses/compact"
 "#,
