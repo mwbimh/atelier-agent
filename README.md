@@ -20,7 +20,8 @@ The release binary is `target/release-dist/ate.exe` on Windows. Configure a
 Provider through `/provider` or the Atelier ACP extensions.
 
 Windows 上建议使用隔离目标目录构建最终发行版，避免继续膨胀仓库的
-`target/`。脚本会验证发布目录只包含 `ate.exe`：
+`target/`。脚本会验证发布目录只包含 `ate.exe` 和离线安装脚本
+`install-windows.ps1`：
 
 ```powershell
 .\tools\build-release.ps1 -CleanOutput
@@ -36,6 +37,17 @@ Release packaging keeps the Worker and Windows command-runner process
 boundaries, but embeds both implementations in `ate.exe`. The runtime
 starts them through hidden internal modes, so a normal release directory does
 not need `atelier-command-runner.exe` or `atelier-workspace-worker.exe`.
+
+To install the packaged executable into `%USERPROFILE%\.atelier\bin` and add it
+to User PATH, run:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\release\install-windows.ps1
+```
+
+Pass `-NoPathUpdate` to leave PATH unchanged, `-InstallDir <path>` to choose a
+different destination, or `-SetupSandbox` to run the explicit UAC sandbox setup
+after installation.
 
 ## Documentation
 

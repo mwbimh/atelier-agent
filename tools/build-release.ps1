@@ -19,6 +19,21 @@ if ($outputPath -eq $repoRoot) {
     throw "OutputDir must not be the repository root"
 }
 
+$installerSource = Join-Path $repoRoot "crates\codegen\atelier-pager\scripts\install-windows.ps1"
+if (-not (Test-Path -LiteralPath $installerSource -PathType Leaf)) {
+    throw "Windows installer script is missing: $installerSource"
+}
+$tokens = $null
+$parseErrors = $null
+[void][System.Management.Automation.Language.Parser]::ParseFile(
+    $installerSource,
+    [ref]$tokens,
+    [ref]$parseErrors
+)
+if ($parseErrors.Count -gt 0) {
+    throw "Windows installer script failed to parse: $($parseErrors[0].Message)"
+}
+
 if (Test-Path -LiteralPath $outputPath) {
     $entries = @(Get-ChildItem -LiteralPath $outputPath -Force)
     if ($entries.Count -gt 0 -and -not $CleanOutput) {
@@ -43,11 +58,22 @@ if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
 }
 
 $destination = Join-Path $outputPath "ate.exe"
+$installerDestination = Join-Path $outputPath "install-windows.ps1"
 Copy-Item -LiteralPath $source -Destination $destination -Force
+Copy-Item -LiteralPath $installerSource -Destination $installerDestination -Force
 
 $outputEntries = @(Get-ChildItem -LiteralPath $outputPath -Force)
-if ($outputEntries.Count -ne 1 -or $outputEntries[0].Name -ne "ate.exe" -or $outputEntries[0].PSIsContainer) {
-    throw "Release output contract violated: $outputPath must contain only ate.exe"
+$expectedNames = @("ate.exe", "install-windows.ps1")
+$unexpectedEntries = @($outputEntries | Where-Object {
+    $_.PSIsContainer -or $_.Name -notin $expectedNames
+})
+$missingEntries = @($expectedNames | Where-Object {
+    -not (Test-Path -LiteralPath (Join-Path $outputPath $_) -PathType Leaf)
+})
+if ($outputEntries.Count -ne $expectedNames.Count -or
+    $unexpectedEntries.Count -gt 0 -or
+    $missingEntries.Count -gt 0) {
+    throw "Release output contract violated: $outputPath must contain only ate.exe and install-windows.ps1"
 }
 
 & $destination --version
@@ -63,3 +89,4 @@ if ($CleanTargetAfterCopy) {
 }
 
 Write-Host "Release ready: $destination"
+Write-Host "Windows installer: $installerDestination"

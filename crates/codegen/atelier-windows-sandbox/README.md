@@ -14,7 +14,8 @@ The active process chain is:
   for the `AtelierSandboxNoNet` account SID. Setup and status verify the rule
   shape and SID binding; WFP failure leaves setup unavailable (fail-closed).
 - The current `ate.exe` is materialized under `~/.atelier/.sandbox-bin`; the
-  release directory still contains only the public `ate.exe`.
+  release directory contains the public `ate.exe` and the offline
+  `install-windows.ps1` installer, but no standalone helper executable.
 - The parent starts the materialized binary with `CreateProcessWithLogonW` and
   exchanges the spawn request and raw standard streams through sandbox-user
   scoped named pipes.

@@ -20,9 +20,19 @@ Or build the release binary from source:
 cargo build -p atelier-pager-bin --bin ate --profile release-dist
 ```
 
-The user-facing release contains one executable. On Windows this is
-`ate.exe`; the Workspace Worker and command runner are embedded and start
-as hidden child-process modes of the same executable.
+The user-facing Windows release contains one executable, `ate.exe`, plus the
+offline `install-windows.ps1` installer. The Workspace Worker and command runner
+are embedded and start as hidden child-process modes of the same executable;
+the script does not install additional helper binaries.
+
+From an extracted Windows release directory, install with:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install-windows.ps1
+```
+
+Use `-NoPathUpdate` to keep User PATH unchanged or `-SetupSandbox` to run the
+explicit UAC sandbox setup after installation.
 
 The npm package installs the executable under `~/.atelier/bin`
 (`%USERPROFILE%\.atelier\bin` on Windows). `ATELIER_HOME` controls Runtime
