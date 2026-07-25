@@ -1377,7 +1377,7 @@ impl Default for Config {
         let endpoints = EndpointsConfig::default();
         let mut cfg = Self {
             features: Features::default(),
-            model: Some(atelier_config::runtime_defaults::DEFAULT_NEW_SESSION_MODEL.to_owned()),
+            model: None,
             context: None,
             request_agent: None,
             goal: GoalConfig::default(),
@@ -4870,6 +4870,21 @@ reasoning_effort = "low"
             headers.get("X-XAI-Token-Auth").map(String::as_str),
             Some("caller-set"),
         );
+    }
+
+    #[test]
+    fn new_from_toml_cfg_without_model_remains_unconfigured() {
+        let raw_config: toml::Value = toml::from_str(
+            r#"
+            context = "default"
+            request_agent = "atelier"
+            "#,
+        )
+        .unwrap();
+
+        let cfg = Config::new_from_toml_cfg(&raw_config).expect("config should parse");
+
+        assert_eq!(cfg.model, None);
     }
 
     #[test]

@@ -42,7 +42,7 @@ fn selected_context_preset_loads_each_prompt_kind() {
     }
 
     let resolved = resolve_runtime_defaults_at(home.path()).unwrap();
-    assert_eq!(resolved.model, "proxy/custom");
+    assert_eq!(resolved.model.as_deref(), Some("proxy/custom"));
     assert_eq!(resolved.context, "custom");
     assert_eq!(resolved.request_agent.id, "pi");
     assert_eq!(resolved.request_agent.name, "pi");
@@ -85,19 +85,15 @@ fn logo_is_loaded_from_the_user_branding_file() {
 }
 
 #[test]
-fn missing_model_is_an_explicit_configuration_error() {
+fn missing_model_keeps_first_run_unconfigured() {
     let home = tempfile::tempdir().unwrap();
     atelier_config::defaults::ensure_user_defaults(home.path(), "1.0.0").unwrap();
-    std::fs::write(
-        home.path().join("config.toml"),
-        "context = \"default\"\nrequest_agent = \"atelier\"\n",
-    )
-    .unwrap();
-    let error = resolve_runtime_defaults_at(home.path())
-        .unwrap_err()
-        .to_string();
-    assert!(error.contains("model"), "{error}");
-    assert!(error.contains("provider/model"), "{error}");
+
+    let resolved = resolve_runtime_defaults_at(home.path()).unwrap();
+
+    assert_eq!(resolved.model, None);
+    assert_eq!(resolved.context, "default");
+    assert_eq!(resolved.request_agent.id, "atelier");
 }
 
 #[test]
@@ -129,7 +125,8 @@ fn updating_default_model_is_atomic_and_preserves_other_config() {
         "model = \"old/model\"\ncontext = \"default\"\nrequest_agent = \"atelier\"\n\n[ui]\ntheme = \"ateliernight\"\n",
     )
     .unwrap();
-    update_default_model_at(home.path(), "new/model").unwrap();
+    let resolved = update_default_model_at(home.path(), "new/model").unwrap();
+    assert_eq!(resolved.model.as_deref(), Some("new/model"));
     let parsed: toml::Value =
         toml::from_str(&std::fs::read_to_string(home.path().join("config.toml")).unwrap()).unwrap();
     assert_eq!(parsed["model"].as_str(), Some("new/model"));

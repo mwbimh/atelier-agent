@@ -59,7 +59,7 @@ fn update_config(args: &acp::ExtRequest) -> ExtResult {
 
 async fn reset_defaults(agent: &MvpAgent) -> ExtResult {
     let home = atelier_config::atelier_home();
-    atelier_config::defaults::reset_user_defaults(&home, env!("CARGO_PKG_VERSION"))
+    atelier_config::defaults::reset_user_defaults(&home)
         .map_err(|error| acp::Error::internal_error().data(error.to_string()))?;
     agent
         .reload_local_provider_catalog_and_reconcile_sessions()

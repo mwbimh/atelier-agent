@@ -4,42 +4,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 const PROVIDERS_TOML: &str = "schema_version = 2\n\n[providers]\n";
-const ROLES_TOML: &str = r#"schema_version = 1
-
-[roles.main]
-provider = "allm"
-model = "deepseek-v4-flash"
-[roles.explore]
-provider = "allm"
-model = "deepseek-v4-flash"
-[roles.implement]
-provider = "allm"
-model = "deepseek-v4-flash"
-[roles.review]
-provider = "allm"
-model = "deepseek-v4-flash"
-[roles.test]
-provider = "allm"
-model = "deepseek-v4-flash"
-[roles.compact]
-provider = "allm"
-model = "deepseek-v4-flash"
-[roles.summary]
-provider = "allm"
-model = "deepseek-v4-flash"
-[roles.title]
-provider = "allm"
-model = "deepseek-v4-flash"
-[roles.planner]
-provider = "allm"
-model = "deepseek-v4-flash"
-[roles.strategist]
-provider = "allm"
-model = "deepseek-v4-flash"
-[roles.skeptic]
-provider = "allm"
-model = "deepseek-v4-flash"
-"#;
+const ROLES_TOML: &str = "schema_version = 1\n\n[roles]\n";
 const COMMON_MODELS_TOML: &str = r#"schema_version = 1
 
 [[models]]
@@ -103,7 +68,7 @@ struct DefaultFile {
     content: &'static str,
 }
 
-const RESETTABLE_DEFAULT_FILES: &[DefaultFile] = &[
+const FIRST_RUN_ONLY_DEFAULT_FILES: &[DefaultFile] = &[
     DefaultFile {
         relative: "providers.toml",
         content: PROVIDERS_TOML,
@@ -112,6 +77,13 @@ const RESETTABLE_DEFAULT_FILES: &[DefaultFile] = &[
         relative: "roles.toml",
         content: ROLES_TOML,
     },
+    DefaultFile {
+        relative: "branding/logo.txt",
+        content: LOGO,
+    },
+];
+
+const RESETTABLE_DEFAULT_FILES: &[DefaultFile] = &[
     DefaultFile {
         relative: "models/default/common.toml",
         content: COMMON_MODELS_TOML,
@@ -160,10 +132,6 @@ const RESETTABLE_DEFAULT_FILES: &[DefaultFile] = &[
             "../../../common/atelier-compaction/src/templates/compaction_user_prompt.txt"
         ),
     },
-    DefaultFile {
-        relative: "branding/logo.txt",
-        content: LOGO,
-    },
 ];
 const USER_OWNED_DIRECTORIES: &[&str] = &[
     "models/providers",
@@ -182,51 +150,28 @@ pub fn ensure_user_defaults(home: &Path, version: &str) -> io::Result<()> {
         home.join("request-agents.toml"),
         &default_request_agents(version),
     )?;
+    for file in FIRST_RUN_ONLY_DEFAULT_FILES {
+        write_if_missing(home.join(file.relative), file.content)?;
+    }
     for file in RESETTABLE_DEFAULT_FILES {
         write_if_missing(home.join(file.relative), file.content)?;
     }
     Ok(())
 }
 
-pub fn reset_user_defaults(home: &Path, version: &str) -> io::Result<()> {
+/// Restore only the built-in model presets and the `default` context preset.
+///
+/// All user selections and other configuration files remain untouched.
+pub fn reset_user_defaults(home: &Path) -> io::Result<()> {
     std::fs::create_dir_all(home)?;
-    for directory in USER_OWNED_DIRECTORIES {
-        std::fs::create_dir_all(home.join(directory))?;
-    }
-    reset_main_config(home.join("config.toml"))?;
-    write_owned(
-        home.join("request-agents.toml"),
-        &default_request_agents(version),
-    )?;
     for file in RESETTABLE_DEFAULT_FILES {
         write_owned(home.join(file.relative), file.content)?;
     }
     Ok(())
 }
 
-fn reset_main_config(path: PathBuf) -> io::Result<()> {
-    let mut document = match std::fs::read_to_string(&path) {
-        Ok(source) => source.parse::<toml_edit::DocumentMut>().map_err(|error| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("failed to parse {}: {error}", path.display()),
-            )
-        })?,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => toml_edit::DocumentMut::new(),
-        Err(error) => return Err(error),
-    };
-
-    document["model"] = toml_edit::value(super::runtime_defaults::DEFAULT_NEW_SESSION_MODEL);
-    document["context"] = toml_edit::value("default");
-    document["request_agent"] = toml_edit::value("atelier");
-    write_owned(path, &document.to_string())
-}
-
 fn default_config(_version: &str) -> String {
-    format!(
-        "model = {:?}\ncontext = \"default\"\nrequest_agent = \"atelier\"\n",
-        super::runtime_defaults::DEFAULT_NEW_SESSION_MODEL
-    )
+    "context = \"default\"\nrequest_agent = \"atelier\"\n".to_owned()
 }
 
 fn default_request_agents(version: &str) -> String {

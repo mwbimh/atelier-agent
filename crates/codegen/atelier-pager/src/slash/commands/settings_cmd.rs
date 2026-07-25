@@ -46,7 +46,7 @@ impl SlashCommand for SettingsCommand {
                 display: "reset-defaults".to_owned(),
                 match_text: "reset defaults restore".to_owned(),
                 insert_text: "reset-defaults".to_owned(),
-                description: "Restore Atelier-owned default config files".to_owned(),
+                description: "Restore built-in model and context default presets".to_owned(),
             },
         ])
     }

@@ -214,7 +214,6 @@ impl ModelsManager {
         prefetched_models: Option<IndexMap<String, ModelEntry>>,
         auth_manager: Arc<AuthManager>,
     ) -> Result<Self, String> {
-        validate_required_default_model(cfg)?;
         let has_session = auth_manager.current_or_expired().is_some();
         let is_session_auth = auth_manager
             .current_or_expired()
@@ -274,13 +273,9 @@ impl ModelsManager {
 
     /// Swap config, rebuild catalog, and reselect the model.
     ///
-    /// Calls `reselect_default_model` when the preferred model changed
-    /// (and is `Some`); otherwise `reselect_current_model_if_missing`.
+    /// Calls `reselect_default_model` whenever the preferred model changes;
+    /// removing the preference returns the runtime to an unconfigured state.
     pub fn apply_config(&self, new_config: config::Config) {
-        if let Err(error) = validate_required_default_model(&new_config) {
-            tracing::error!(%error, "ignoring config reload: invalid new-session model");
-            return;
-        }
         // Reject an invalid reload instead of mutating live state: bad globs or
         // (once a real catalog exists) an allowlist that excludes everything.
         if let Err(e) = new_config.validate_model_filters() {
@@ -318,7 +313,7 @@ impl ModelsManager {
         }
         *self.inner.models.write() = new_catalog;
 
-        let preferred_changed = new_preferred != old_preferred && new_preferred.is_some();
+        let preferred_changed = new_preferred != old_preferred;
         if preferred_changed {
             self.reselect_default_model(&new_config);
         } else {
@@ -1354,25 +1349,6 @@ pub(crate) fn selectable_catalog_key_for_persisted(
     resolve_catalog_key(models, id).filter(|key| available.contains_key(key))
 }
 
-const MISSING_DEFAULT_MODEL_ERROR: &str =
-    "config.toml is missing required `model`; expected model = \"provider/model\"";
-
-fn validate_required_default_model(cfg: &config::Config) -> Result<(), String> {
-    if cfg
-        .default_model_override
-        .as_deref()
-        .is_some_and(|model| !model.trim().is_empty())
-        || cfg
-            .model
-            .as_deref()
-            .is_some_and(|model| !model.trim().is_empty())
-    {
-        Ok(())
-    } else {
-        Err(MISSING_DEFAULT_MODEL_ERROR.to_owned())
-    }
-}
-
 /// Pick the UI/initial model without selecting an unrelated catalog entry.
 /// CLI is the only override above top-level `config.toml:model`.
 pub(crate) fn resolve_default_model(
@@ -1380,20 +1356,22 @@ pub(crate) fn resolve_default_model(
     catalog: &IndexMap<String, ModelEntry>,
     _is_session_auth: bool,
 ) -> (String, ModelEntry, config::ConfigSource) {
-    let (preferred, source) = cfg
+    let preferred = cfg
         .default_model_override
         .as_deref()
-        .filter(|model| !model.is_empty())
+        .filter(|model| !model.trim().is_empty())
         .map(|model| (model, config::ConfigSource::Cli))
-        .unwrap_or_else(|| {
-            (
-                cfg.model
-                    .as_deref()
-                    .filter(|model| !model.trim().is_empty())
-                    .expect("Config.model is validated before model resolution"),
-                config::ConfigSource::Config,
-            )
+        .or_else(|| {
+            cfg.model
+                .as_deref()
+                .filter(|model| !model.trim().is_empty())
+                .map(|model| (model, config::ConfigSource::Config))
         });
+    let Some((preferred, source)) = preferred else {
+        let mut entry = ModelEntry::fallback("", &cfg.endpoints);
+        entry.info.user_selectable = false;
+        return (String::new(), entry, config::ConfigSource::Default);
+    };
     if let Some((key, entry)) = catalog
         .get_key_value(preferred)
         .or_else(|| catalog.iter().find(|(_, entry)| entry.model == preferred))
@@ -1647,17 +1625,16 @@ mod tests {
     }
 
     #[test]
-    fn from_config_rejects_missing_new_session_model() {
-        let mut cfg = config::Config::default();
-        cfg.model = None;
-        cfg.default_model_override = None;
+    fn from_config_keeps_missing_new_session_model_unconfigured() {
+        let cfg = config::Config::default();
         let tmp = std::env::temp_dir().join("atelier-test-models-manager-missing-model");
         let auth_manager = Arc::new(AuthManager::new(&tmp, AtelierComConfig::default()));
-        let error = match ModelsManager::from_config(&cfg, Some(IndexMap::new()), auth_manager) {
-            Ok(_) => panic!("missing model must be rejected"),
-            Err(error) => error,
-        };
-        assert_eq!(error, MISSING_DEFAULT_MODEL_ERROR);
+
+        let manager = ModelsManager::from_config(&cfg, Some(IndexMap::new()), auth_manager)
+            .expect("first-run configuration should initialize without selecting a model");
+
+        assert_eq!(manager.current_model_id().0.as_ref(), "");
+        assert!(manager.available().is_empty());
     }
 
     #[test]
@@ -1867,7 +1844,7 @@ mod tests {
         assert_eq!(args.request.method.as_ref(), "atelier/models/update");
         let body: serde_json::Value =
             serde_json::from_str(args.request.params.get()).expect("valid model state");
-        assert_eq!(body["currentModelId"], "allm/deepseek-v4-flash");
+        assert_eq!(body["currentModelId"], "");
         assert!(body["availableModels"].as_array().is_some_and(|models| {
             models
                 .iter()
@@ -2486,25 +2463,23 @@ mod tests {
     }
 
     #[test]
-    fn apply_config_rejects_missing_model_and_preserves_current() {
+    fn apply_config_removing_model_returns_to_unconfigured() {
         let mgr = test_manager();
         let mut cfg = config::Config::default();
         cfg.model = Some("atelier-3".to_string());
+        mgr.apply_config(cfg.clone());
 
         let prefetched = make_prefetched(&["atelier-3", "atelier-4"]);
         mgr.apply_refresh_result(&cfg, Some(prefetched), None);
         assert_eq!(mgr.current_model_id().0.as_ref(), "atelier-3");
 
         mgr.set_current_model_id(acp::ModelId::new("atelier-4"));
-
-        let mut new_cfg = config::Config::default();
-        new_cfg.model = None;
-        mgr.apply_config(new_cfg);
+        mgr.apply_config(config::Config::default());
 
         assert_eq!(
             mgr.current_model_id().0.as_ref(),
-            "atelier-4",
-            "invalid reload must not reset the current Session model"
+            "",
+            "removing config.toml:model must require an explicit model selection again"
         );
     }
 

@@ -487,17 +487,15 @@ impl acp::Agent for MvpAgent {
             && session_role.is_none()
             && cli_default_model.is_none()
         {
-            Some(
-                atelier_config::runtime_defaults::resolve_runtime_defaults_at(
-                    &atelier_config::atelier_home(),
-                )
-                .map_err(|error| {
-                    acp::Error::invalid_params().data(format!(
-                        "invalid new-session default model configuration: {error}"
-                    ))
-                })?
-                .model,
+            atelier_config::runtime_defaults::resolve_runtime_defaults_at(
+                &atelier_config::atelier_home(),
             )
+            .map_err(|error| {
+                acp::Error::invalid_params().data(format!(
+                    "invalid new-session default model configuration: {error}"
+                ))
+            })?
+            .model
         } else {
             None
         };
@@ -629,7 +627,7 @@ impl acp::Agent for MvpAgent {
                     .map(str::to_owned)
                     .or(resolved_role_model)
                     .map(acp::ModelId::new)
-                    .unwrap_or_else(|| self.models_manager.current_model_id())
+                    .unwrap_or_else(|| acp::ModelId::new(String::new()))
             }
         };
         let session_model_id = model_id.clone();
@@ -1585,6 +1583,9 @@ impl acp::Agent for MvpAgent {
             .session_handle_waiting_for_load(&arguments.session_id)
             .await
             .ok_or_else(|| acp::Error::invalid_params().data("unknown session id"))?;
+        if handle.model_id.0.trim().is_empty() {
+            return Err(acp::Error::invalid_params().data(UNCONFIGURED_MODEL_MESSAGE));
+        }
         if self.models_manager.allowlist_excludes_all() {
             self.send_model_auto_switched(
                     &arguments.session_id,
@@ -3537,6 +3538,9 @@ fn role_for_new_session(
     Ok(Some((role_id, load_role(role_id)?)))
 }
 
+const UNCONFIGURED_MODEL_MESSAGE: &str =
+    "no model configured; configure a Provider and select a model with /model before sending a prompt";
+
 fn configured_model_unavailable_message(model: &str) -> String {
     let provider = model
         .split_once('/')
@@ -3616,9 +3620,9 @@ mod vendorless_extension_tests {
     use crate::agent::auth_method;
 
     use super::{
-        configured_model_unavailable_message, inspector_model_key, is_removed_vendor_extension,
-        resolve_inspector_wire_api, role_for_new_session, title_backend_for_session,
-        vendorless_auth_method_allowed,
+        UNCONFIGURED_MODEL_MESSAGE, configured_model_unavailable_message, inspector_model_key,
+        is_removed_vendor_extension, resolve_inspector_wire_api, role_for_new_session,
+        title_backend_for_session, vendorless_auth_method_allowed,
     };
 
     #[test]
@@ -3652,6 +3656,12 @@ mod vendorless_extension_tests {
         .unwrap();
 
         assert!(resolved.is_none());
+    }
+
+    #[test]
+    fn first_prompt_without_a_selected_model_explains_setup() {
+        assert!(UNCONFIGURED_MODEL_MESSAGE.contains("configure a Provider"));
+        assert!(UNCONFIGURED_MODEL_MESSAGE.contains("/model"));
     }
 
     #[test]

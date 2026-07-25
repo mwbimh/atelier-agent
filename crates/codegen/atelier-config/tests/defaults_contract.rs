@@ -31,8 +31,12 @@ fn first_run_writes_the_split_atelier_config_tree() {
     let config = std::fs::read_to_string(home.path().join("config.toml")).unwrap();
     assert_eq!(
         config,
-        "model = \"allm/deepseek-v4-flash\"\ncontext = \"default\"\nrequest_agent = \"atelier\"\n"
+        "context = \"default\"\nrequest_agent = \"atelier\"\n"
     );
+
+    let roles = std::fs::read_to_string(home.path().join("roles.toml")).unwrap();
+    assert_eq!(roles, "schema_version = 1\n\n[roles]\n");
+    assert!(!roles.contains("deepseek-v4-flash"));
 
     let agents = std::fs::read_to_string(home.path().join("request-agents.toml")).unwrap();
     assert!(agents.contains("schema_version = 1"));
@@ -82,7 +86,7 @@ fn ensure_preserves_user_owned_files() {
 }
 
 #[test]
-fn reset_restores_owned_defaults() {
+fn reset_restores_only_built_in_model_and_context_defaults() {
     let home = tempfile::tempdir().unwrap();
     ensure_user_defaults(home.path(), "1.0.0").unwrap();
     std::fs::write(
@@ -124,39 +128,28 @@ fn reset_restores_owned_defaults() {
     )
     .unwrap();
 
-    reset_user_defaults(home.path(), "2.0.0").unwrap();
+    reset_user_defaults(home.path()).unwrap();
 
     assert_eq!(
         std::fs::read_to_string(home.path().join("config.toml")).unwrap(),
-        "model = \"allm/deepseek-v4-flash\"\ncontext = \"default\"\nrequest_agent = \"atelier\"\n"
+        "model = \"proxy/custom\"\ncontext = \"custom\"\nrequest_agent = \"pi\"\n"
     );
-    let agents = std::fs::read_to_string(home.path().join("request-agents.toml")).unwrap();
-    assert!(agents.contains("version = \"2.0.0\""));
-    let logo = std::fs::read_to_string(home.path().join("branding/logo.txt")).unwrap();
-    assert!(logo.contains("A T E L I E R"));
+    assert_eq!(
+        std::fs::read_to_string(home.path().join("request-agents.toml")).unwrap(),
+        "custom\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(home.path().join("branding/logo.txt")).unwrap(),
+        "custom logo\n"
+    );
     assert_eq!(
         std::fs::read_to_string(home.path().join("providers.toml")).unwrap(),
-        "schema_version = 2\n\n[providers]\n"
+        "user providers\n"
     );
-    let roles = std::fs::read_to_string(home.path().join("roles.toml")).unwrap();
-    for role in [
-        "main",
-        "explore",
-        "implement",
-        "review",
-        "test",
-        "compact",
-        "summary",
-        "title",
-        "planner",
-        "strategist",
-        "skeptic",
-    ] {
-        assert!(
-            roles.contains(&format!("[roles.{role}]")),
-            "reset roles.toml is missing {role}"
-        );
-    }
+    assert_eq!(
+        std::fs::read_to_string(home.path().join("roles.toml")).unwrap(),
+        "user roles\n"
+    );
     let default_models =
         std::fs::read_to_string(home.path().join("models/default/common.toml")).unwrap();
     assert!(default_models.contains("[[models]]"));
@@ -185,7 +178,7 @@ fn reset_restores_owned_defaults() {
 }
 
 #[test]
-fn reset_only_replaces_atelier_managed_root_keys_in_main_config() {
+fn reset_does_not_modify_main_config_or_other_settings() {
     let home = tempfile::tempdir().unwrap();
     ensure_user_defaults(home.path(), "1.0.0").unwrap();
     std::fs::write(
@@ -214,13 +207,13 @@ payload = { answer = 42 }
     )
     .unwrap();
 
-    reset_user_defaults(home.path(), "2.0.0").unwrap();
+    reset_user_defaults(home.path()).unwrap();
 
     let config: toml::Value =
         toml::from_str(&std::fs::read_to_string(home.path().join("config.toml")).unwrap()).unwrap();
-    assert_eq!(config["model"].as_str(), Some("allm/deepseek-v4-flash"));
-    assert_eq!(config["context"].as_str(), Some("default"));
-    assert_eq!(config["request_agent"].as_str(), Some("atelier"));
+    assert_eq!(config["model"].as_str(), Some("proxy/custom"));
+    assert_eq!(config["context"].as_str(), Some("custom"));
+    assert_eq!(config["request_agent"].as_str(), Some("pi"));
     assert_eq!(config["user_root_key"].as_str(), Some("keep-me"));
     assert_eq!(config["ui"]["theme"].as_str(), Some("ateliernight"));
     assert_eq!(config["ui"]["animations"].as_bool(), Some(false));

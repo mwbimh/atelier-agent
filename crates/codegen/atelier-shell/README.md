@@ -42,12 +42,16 @@ The user configuration root is `~/.atelier/`:
 └─ sessions/
 ```
 
-`config.toml` selects the default `provider/model`, context preset and request
-agent identity. Provider connection and authentication settings live in
+`config.toml` selects the context preset and request-agent identity. It does not
+select a model on first run: users must configure a Provider and choose their
+own default model. Provider connection and authentication settings live in
 `providers.toml`. Model-specific `wire_api`, context window, effort levels,
 fast-mode support, payload and experimental endpoints live under `models/`.
 
-First run creates all built-in defaults. In the TUI, use:
+First run creates the built-in files without a default model. `/settings
+reset-defaults` restores only `models/default/` and `contexts/default/`; it does
+not change `config.toml`, Providers, Roles, request agents, branding, or other
+user settings. In the TUI, use:
 
 ```text
 /settings reset-defaults

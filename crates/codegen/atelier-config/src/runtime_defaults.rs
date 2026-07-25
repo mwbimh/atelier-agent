@@ -8,7 +8,6 @@ use std::sync::OnceLock;
 
 static RUNTIME_HOME: OnceLock<PathBuf> = OnceLock::new();
 static RUNTIME_CONTEXT_DIR: OnceLock<PathBuf> = OnceLock::new();
-pub const DEFAULT_NEW_SESSION_MODEL: &str = "allm/deepseek-v4-flash";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ContextPrompt {
@@ -69,7 +68,7 @@ impl RequestAgentIdentity {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct RuntimeDefaults {
-    pub model: String,
+    pub model: Option<String>,
     pub context: String,
     pub context_dir: PathBuf,
     pub request_agent: RequestAgentIdentity,
@@ -98,10 +97,10 @@ struct RequestAgentEntry {
 
 pub fn resolve_runtime_defaults_at(home: &Path) -> io::Result<RuntimeDefaults> {
     let main: MainConfig = parse_toml(&home.join("config.toml"))?;
-    let model = main.model.ok_or_else(|| {
-        invalid_data("config.toml is missing required `model`; expected model = \"provider/model\"")
-    })?;
-    validate_model_key(&model)?;
+    let model = main.model;
+    if let Some(model) = model.as_deref() {
+        validate_model_key(model)?;
+    }
     validate_component("context preset", &main.context)?;
     let context_dir = home.join("contexts").join(&main.context);
     if !context_dir.is_dir() {
