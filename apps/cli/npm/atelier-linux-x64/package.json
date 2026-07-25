@@ -1,0 +1,20 @@
+{
+    "name": "@atelier/atelier-linux-x64",
+    "private": true,
+  "version": "0.1.220-alpha.4",
+    "description": "Unpublished linux-x64 packaging scaffold for the Atelier CLI",
+    "license": "Apache-2.0",
+    "files": [
+        "bin/",
+        "THIRD_PARTY_NOTICES.md"
+    ],
+    "os": [
+        "linux"
+    ],
+    "cpu": [
+        "x64"
+    ],
+    "publishConfig": {
+        "access": "public"
+    }
+}

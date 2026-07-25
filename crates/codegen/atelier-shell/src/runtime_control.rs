@@ -32,7 +32,7 @@ pub struct RuntimeStatus {
     pub diagnostic_message: Option<String>,
 }
 
-/// Stable task identity exposed by the third-batch runtime control plane.
+/// Stable task identity exposed by the runtime control plane.
 ///
 /// `RuntimeStatus` is intentionally a live per-session view.  This separate
 /// record keeps completed and detached work queryable after a later request

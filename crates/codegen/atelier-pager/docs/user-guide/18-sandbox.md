@@ -10,13 +10,13 @@ Sandbox mode is off by default.
 
 ```bash
 # Run with workspace sandbox (read everywhere, write to CWD + temp dirs + ~/.atelier/)
-atelier --sandbox workspace
+ate --sandbox workspace
 
 # Read-only mode (read everywhere, write only to ~/.atelier/ + temp dirs)
-atelier --sandbox read-only
+ate --sandbox read-only
 
 # Most restrictive profile (read CWD + system paths, write CWD + temp dirs + ~/.atelier/, no child network)
-atelier --sandbox strict
+ate --sandbox strict
 ```
 
 ---
@@ -70,7 +70,7 @@ deny = ["/data/shared-secrets", "**/.env", "**/*.pem"]
 Use the custom profile:
 
 ```bash
-atelier --sandbox project
+ate --sandbox project
 ```
 
 A custom profile can't reuse a built-in name. `--sandbox devbox` always runs the built-in `devbox` profile, shadowing any `[profiles.devbox]` you define.
@@ -133,7 +133,7 @@ When the global and per-project files define the same custom profile name, the u
 
 ## How It Works
 
-The sandbox is applied to the **entire atelier process** at startup using kernel primitives -- not per-command wrapping. This means all tool operations are covered:
+The sandbox is applied to the **entire ate process** at startup using kernel primitives -- not per-command wrapping. This means all tool operations are covered:
 
 - `read_file`, `search_replace`, `list_dir` -- restricted by Landlock/Seatbelt in-process
 - `bash` commands, `grep` (rg) -- child processes inherit FS restrictions automatically
@@ -146,8 +146,8 @@ The sandbox is **irreversible** once applied. The agent cannot relax restriction
 ## Resuming Sessions
 
 The profile a session was started with is saved with the session and is **fixed
-for the life of the session**. When you resume it (`atelier --resume <id>`,
-`atelier --continue`, or `atelier -r`), Atelier restores that same profile automatically —
+for the life of the session**. When you resume it (`ate --resume <id>`,
+`ate --continue`, or `ate -r`), Atelier restores that same profile automatically —
 so a session started with `--sandbox workspace` won't silently come back under a
 stricter default and break commands that previously worked.
 

@@ -1,6 +1,55 @@
-/target
+# Rust build output
+/target/
 **/*.rs.bk
-.DS_Store
 
-# Local source provenance is machine-specific and must never be committed.
+# Local project planning and reference material
+/.project/
+/.agents/
 local-repos.toml
+
+# Test runs, diagnostics, and generated development state
+/.tmp-tests/
+/.tmp-cargo-check-ate.log
+/crates/codegen/atelier-pager/crates/
+*.log
+*.tmp
+*.temp
+
+# Release artifacts stay at the repository root but are published through
+# GitHub Releases rather than committed to source control.
+/release/
+
+# JavaScript / TypeScript
+**/node_modules/
+**/.contract-dist/
+**/dist/
+
+# .NET
+**/bin/
+**/obj/
+
+# Source-controlled executable launchers are not .NET build output.
+!/bin/
+!/bin/**
+!/apps/cli/npm/atelier/bin/
+!/apps/cli/npm/atelier/bin/**
+
+# Coverage and profiling output
+**/coverage/
+**/*.profraw
+**/*.profdata
+
+# Local environment and editor state
+.env
+.env.*
+!.env.example
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Native debug sidecars
+*.pdb
+*.dSYM/

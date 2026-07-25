@@ -9,8 +9,10 @@ use atelier_protocol::{
 use serde_json::{Value, json};
 
 fn contract_fixture() -> Value {
-    serde_json::from_str(include_str!("../../../../sdk/fixtures/rpc-contract.json"))
-        .expect("rpc-contract.json must be valid JSON")
+    serde_json::from_str(include_str!(
+        "../../../../packages/sdk/fixtures/rpc-contract.json"
+    ))
+    .expect("rpc-contract.json must be valid JSON")
 }
 
 #[test]

@@ -1,6 +1,6 @@
 # Agent Mode (ACP) and IDE Integration
 
-Agent mode runs Atelier as an ACP (Agent Client Protocol) server for integration with IDEs, editors, and custom tooling. Unlike single-prompt mode (`atelier -p`, which prints one response and exits), agent mode keeps a persistent process running and communicates through structured JSON-RPC messages.
+Agent mode runs Atelier as an ACP (Agent Client Protocol) server for integration with IDEs, editors, and custom tooling. Unlike single-prompt mode (`ate -p`, which prints one response and exits), agent mode keeps a persistent process running and communicates through structured JSON-RPC messages.
 
 ---
 
@@ -52,17 +52,9 @@ ate agent serve --bind 127.0.0.1:2419 --secret <token>
 
 Clients connect over WebSocket and authenticate with the secret token. If you omit `--secret`, the agent generates a token and prints it at startup; you can also supply one through the `ATELIER_AGENT_SECRET` environment variable. The agent persists across reconnections, so a client can disconnect and later resume in-flight work.
 
----
-
-## WebSocket relay
-
-To reach the agent over the internet instead of the local network, run a WebSocket relay server and have the agent connect to it:
-
-```bash
-ate agent headless --atelier-ws-url wss://your-relay.example.com/ws
-```
-
-The agent connects out to your relay, and your web clients connect to the same relay. This is useful for building web UIs where browsers cannot spawn local processes.
+The server binds to loopback by default. Exposing it beyond the local machine is
+an explicit deployment decision and requires an external authentication,
+transport-security, and network-boundary review.
 
 ---
 
@@ -125,7 +117,7 @@ Beyond base ACP, Atelier defines versioned Runtime extensions under the
 | Fixed Roles | `_atelier/role/*` | `list`, `get`, `update`, `update_payload`, `test` |
 | Context and request inspection | `_atelier/context/*`, `_atelier/request/*` | `current`, `list`, `get` |
 | Runtime diagnostics | `_atelier/runtime/*` | `status`, `doctor`, `cancel`, `retry`, `recover`, `tasks` |
-| Third-batch task control | `_atelier/task/*` | create, list, attach, stop, and replay operations |
+| Runtime task control | `_atelier/task/*` | create, list, attach, stop, and replay operations |
 
 Use protocol version/capability negotiation instead of assuming every
 extension exists. Provider credentials remain local references; ACP clients do
@@ -195,7 +187,7 @@ class AtelierACPChat {
   constructor(private cwd = ".") {}
 
   async init() {
-    this.proc = spawn("atelier", ["agent", "stdio"]);
+    this.proc = spawn("ate", ["agent", "stdio"]);
     this.rl = readline.createInterface({ input: this.proc.stdout! });
 
     // Initialize

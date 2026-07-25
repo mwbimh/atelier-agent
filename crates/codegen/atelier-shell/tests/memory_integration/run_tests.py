@@ -671,7 +671,7 @@ def test_fts_special_characters():
 * Use C++ for performance-critical code
 * Configure with --enable-feature=fast_path
 * Email: dev@example.com
-* Path: /usr/local/bin/atelier
+* Path: /usr/local/bin/ate
 * Version >= 2.0.0
 """)
         client = env.spawn_agent()

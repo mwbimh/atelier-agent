@@ -155,7 +155,7 @@ my-monorepo/
 To add rules for a single session without editing files, pass `--rules` (alias `--append-system-prompt`):
 
 ```bash
-atelier --rules "Always use TypeScript. Prefer functional components."
+ate --rules "Always use TypeScript. Prefer functional components."
 ```
 
 Atelier appends this text to the session's system prompt. Use it for session-specific customization.

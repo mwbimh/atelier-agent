@@ -8,47 +8,32 @@ You can use it interactively as a full-screen TUI, run it headlessly for scripti
 
 ## Installation
 
-Install the packaged release with npm:
+Build the release binary from source:
 
 ```bash
-npm install -g @atelier/atelier
+cargo build --locked -p atelier-pager-bin --bin ate --profile release-dist
 ```
 
-Or build the release binary from source:
-
-```bash
-cargo build -p atelier-pager-bin --bin ate --profile release-dist
-```
-
-The user-facing Windows release contains one executable, `ate.exe`, plus the
-offline `install-windows.ps1` installer. The Workspace Worker and command runner
-are embedded and start as hidden child-process modes of the same executable;
-the script does not install additional helper binaries.
-
-From an extracted Windows release directory, install with:
+On Windows, the repository release script creates a top-level package containing
+one executable, `ate.exe`, plus the offline `install-windows.ps1` installer:
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install-windows.ps1
+.\tools\build-release.ps1 -CleanOutput
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\release\install-windows.ps1
 ```
 
-Use `-NoPathUpdate` to keep User PATH unchanged or `-SetupSandbox` to run the
-explicit UAC sandbox setup after installation.
-
-The npm package installs the executable under `~/.atelier/bin`
-(`%USERPROFILE%\.atelier\bin` on Windows). `ATELIER_HOME` controls Runtime
-state after launch; it does not relocate the npm-installed executable.
+The Workspace Worker and command runner are embedded hidden modes of the same
+executable. Use `-NoPathUpdate` to keep User PATH unchanged or `-SetupSandbox`
+to run the explicit UAC sandbox setup after installation.
 
 Verify the installation:
 
 ```bash
-atelier --version
+ate --version
 ```
 
-Update npm installations through npm:
-
-```bash
-npm install -g @atelier/atelier@latest
-```
+The monorepo also contains npm packaging under `apps/cli/npm/`. Install from npm
+only after the matching platform package has been published and verified.
 
 ---
 
@@ -57,17 +42,18 @@ npm install -g @atelier/atelier@latest
 Start Atelier by running:
 
 ```bash
-atelier
+ate
 ```
 
 Atelier does not include a hosted default model or product login. Configure a
-Provider and assign the required Roles before sending a prompt.
+Provider and select a model before sending a prompt. Role-specific models are
+optional and can be configured later.
 
 Set the Provider credential in the environment, then start the TUI:
 
 ```bash
 export ALLM_API_KEY="..."
-atelier
+ate
 ```
 
 Inside Atelier, run either the interactive commands or their complete forms:
@@ -81,7 +67,7 @@ Inside Atelier, run either the interactive commands or their complete forms:
 ```
 
 The current directory becomes the workspace. To use another directory, launch
-with `atelier --cwd <path>`.
+with `ate --cwd <path>`.
 
 See [Provider Credentials](02-authentication.md) and
 [Providers, Models, and Roles](11-custom-models.md).
@@ -121,7 +107,7 @@ The `@` operator opens a fuzzy file picker. By default it respects `.gitignore` 
 By default, Atelier asks for permission before executing shell commands or editing files. You can approve individually or toggle always-approve mode:
 
 - Press `Ctrl+O` to toggle always-approve mode
-- Use the `--yolo` flag at launch: `atelier --yolo`
+- Use the `--yolo` flag at launch: `ate --yolo`
 - Type `/always-approve` in the prompt to toggle the mode
 
 ---
@@ -134,7 +120,7 @@ Every conversation is a **session**. Sessions are automatically saved to `~/.ate
 
 - Start a new session: `Ctrl+N` or `/new`
 - Resume a previous session: `/resume` in the TUI, or `--resume <ID>` from the CLI
-- Continue the most recent session: `atelier -c`
+- Continue the most recent session: `ate -c`
 
 ### Scrollback
 
@@ -186,44 +172,44 @@ See [Slash Commands](04-slash-commands.md) for the complete reference.
 
 ```bash
 # Launch the interactive TUI and submit an initial prompt as the first turn
-atelier "fix the failing auth test and run it"
+ate "fix the failing auth test and run it"
 
 # Initial prompt in a new git worktree. Use --worktree=<name> (with `=`) so the
-# prompt isn't swallowed as the worktree name — `atelier -w "refactor module X"`
+# prompt isn't swallowed as the worktree name — `ate -w "refactor module X"`
 # would treat "refactor module X" as the worktree label, not the prompt.
-atelier --worktree=feat "refactor module X"
+ate --worktree=feat "refactor module X"
 
 # Base the worktree on a specific branch (e.g. main) instead of the current HEAD:
-atelier -w --ref main "implement feature from main"
+ate -w --ref main "implement feature from main"
 
 
 # Start in a specific project directory
-atelier --cwd ~/projects/my-app
+ate --cwd ~/projects/my-app
 
 # Add project-specific rules
-atelier --rules "Always use TypeScript. Prefer functional components."
+ate --rules "Always use TypeScript. Prefer functional components."
 
 # Auto-approve all tool executions
-atelier --yolo
+ate --yolo
 
 # Use a specific model
-atelier -m allm/deepseek-v4-flash
+ate -m allm/deepseek-v4-flash
 
 # Resume a previous session
-atelier --resume <session-id>
+ate --resume <session-id>
 
 # Continue the most recent session
-atelier -c
+ate -c
 
-# Experimental scrollback-native render mode. Sticky: plain `atelier` reopens in
+# Experimental scrollback-native render mode. Sticky: plain `ate` reopens in
 # the mode last chosen via --minimal/--fullscreen (or /minimal//fullscreen).
-atelier --minimal
+ate --minimal
 
 # Back to the standard fullscreen TUI (and make it sticky again)
-atelier --fullscreen
+ate --fullscreen
 
 # Headless mode (for scripts)
-atelier -p "Explain this codebase"
+ate -p "Explain this codebase"
 ```
 
 ---
@@ -233,7 +219,7 @@ atelier -p "Explain this codebase"
 Run Atelier non-interactively for scripting, CI/CD, and automation:
 
 ```bash
-atelier -p "Your prompt here"
+ate -p "Your prompt here"
 ```
 
 Output formats:
@@ -247,7 +233,7 @@ Output formats:
 Example CI/CD usage:
 
 ```bash
-atelier -p "Review changes for bugs" --output-format json --yolo | jq -r '.text'
+ate -p "Review changes for bugs" --output-format json --yolo | jq -r '.text'
 ```
 
 ---

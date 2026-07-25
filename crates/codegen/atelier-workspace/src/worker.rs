@@ -1229,7 +1229,7 @@ mod tests {
     fn worker_binary_discovery_rejects_missing_explicit_override() {
         let temp = tempfile::tempdir().unwrap();
         let missing = temp.path().join("missing-worker");
-        let current_exe = temp.path().join("atelier.exe");
+        let current_exe = temp.path().join("ate.exe");
         let error = find_worker_binary(&current_exe, Some(missing.as_os_str())).unwrap_err();
         assert!(
             error

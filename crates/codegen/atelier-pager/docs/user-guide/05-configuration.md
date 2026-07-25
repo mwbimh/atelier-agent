@@ -150,7 +150,7 @@ navigation, while `simple_mode` controls editing in the prompt.
 #### Screen Mode
 
 The `screen_mode` setting under `[ui]` is the **default render mode** for plain
-`atelier` launches. Configure it from `/settings` → **Default screen mode**
+`ate` launches. Configure it from `/settings` → **Default screen mode**
 (restart required), or edit `config.toml` by hand. Both choices write
 `config.toml`. CLI flags (`--minimal` / `--fullscreen`) and slash commands
 (`/minimal` / `/fullscreen`) are session-scoped and do **not** write this key —
@@ -403,7 +403,7 @@ progress_bar = true       # show tab progress bar (OSC 9;4)
 
 [ui.notifications.title]
 enabled = true
-items = ["action-required", "spinner", "activity", "session-name", "atelier"]
+items = ["action-required", "spinner", "activity", "session-name", "ate"]
 ```
 
 | Option | Type | Default | Description |
@@ -415,7 +415,7 @@ items = ["action-required", "spinner", "activity", "session-name", "atelier"]
 | `sleep_prevention` | bool | `true` | Keep the display awake while the agent is working (macOS/Linux). |
 | `progress_bar` | bool | `true` | Show a progress indicator in the terminal tab (OSC 9;4). |
 | `title.enabled` | bool | `true` | Set the terminal title to reflect agent state. |
-| `title.items` | array | (see above) | Items shown in the title bar. Options: `action-required`, `spinner`, `activity`, `session-name`, `cwd`, `model`, `turn-timer`, `atelier`. |
+| `title.items` | array | (see above) | Items shown in the title bar. Options: `action-required`, `spinner`, `activity`, `session-name`, `cwd`, `model`, `turn-timer`, `ate`. |
 
 #### Terminal Support Matrix
 

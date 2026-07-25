@@ -154,7 +154,7 @@ fn runtime_has_no_remote_settings_transport() {
         "crates/codegen/atelier-http/src",
         "crates/codegen/atelier-shell/src",
         "crates/codegen/atelier-pager/src",
-        "crates/codegen/atelier-pager-bin/src",
+        "apps/cli/src",
     ];
     let forbidden = [
         "/v1/settings",

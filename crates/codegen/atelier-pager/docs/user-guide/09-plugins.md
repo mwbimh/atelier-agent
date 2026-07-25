@@ -39,14 +39,14 @@ Atelier discovers plugins from these locations, in priority order:
 | Location | Scope | Trust |
 |----------|-------|-------|
 | `_meta.pluginDirs` (`session/new` / `session/load`) | Session -- loaded for that session only | Trusted automatically |
-| `--plugin-dir` (CLI flag, `atelier agent`) | Process -- loaded for that agent process only | Trusted automatically |
+| `--plugin-dir` (CLI flag, `ate agent`) | Process -- loaded for that agent process only | Trusted automatically |
 | `.atelier/plugins/` | Project -- shared with the team through version control | Requires trust |
 | `~/.atelier/plugins/` | User -- personal plugins for every project | Trusted automatically |
 | `[plugins].paths` (config) | Custom directories you add in `config.toml` | Depends on location |
 
 Atelier also reads the `.claude/plugins/` equivalents for compatibility. When two plugins share a name, the higher-priority location wins.
 
-The Agent SDKs load per-session plugins through `AtelierOptions.plugins`, which arrives as `_meta.pluginDirs` on `session/new` and `session/load`; because the caller controls the directory, these plugins are always trusted -- their hooks and MCP servers activate without a prompt, and they never persist beyond the session. The `--plugin-dir` flag is the process-wide equivalent for direct CLI use (repeatable: `atelier agent --no-leader --plugin-dir A --plugin-dir B stdio`); it applies to dedicated agent processes only and is ignored in leader mode (the shared leader discovers its own plugins).
+The Agent SDKs load per-session plugins through `AtelierOptions.plugins`, which arrives as `_meta.pluginDirs` on `session/new` and `session/load`; because the caller controls the directory, these plugins are always trusted -- their hooks and MCP servers activate without a prompt, and they never persist beyond the session. The `--plugin-dir` flag is the process-wide equivalent for direct CLI use (repeatable: `ate agent --no-leader --plugin-dir A --plugin-dir B stdio`); it applies to dedicated agent processes only and is ignored in leader mode (the shared leader discovers its own plugins).
 
 ---
 

@@ -138,7 +138,7 @@ This approves only the listed commands. Always-approve mode, by contrast, approv
 ### 1. CLI Flags
 
 ```bash
-atelier -p "Review the API changes" \
+ate -p "Review the API changes" \
   --allow 'Bash(git *)' \
   --allow 'Bash(gh *)' \
   --allow 'Read' \
@@ -410,7 +410,7 @@ For hook installation, the JSON format, the trust model for project hooks, and o
 ### Headless git and gh Only (CI and Automation)
 
 ```bash
-atelier -p "Implement the feature using only git and GitHub CLI" \
+ate -p "Implement the feature using only git and GitHub CLI" \
   --allow 'Read' \
   --allow 'Grep' \
   --allow 'Bash(git *)' \

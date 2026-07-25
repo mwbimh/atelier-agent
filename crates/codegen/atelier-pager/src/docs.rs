@@ -119,7 +119,7 @@ pub static USER_GUIDE: &[Doc] = &[
     guide!(
         "15-agent-mode.md",
         "Agent Mode and IDE Integration",
-        "ACP stdio transport, WebSocket relay, SDK integration"
+        "ACP stdio transport, local WebSocket server, SDK integration"
     ),
     guide!(
         "16-subagents.md",

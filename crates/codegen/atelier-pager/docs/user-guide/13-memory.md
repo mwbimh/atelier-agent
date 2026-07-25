@@ -22,14 +22,14 @@ Memory is experimental and disabled by default.
 ### Per-Session Flag
 
 ```bash
-atelier --experimental-memory
+ate --experimental-memory
 ```
 
 ### Environment Variable
 
 ```bash
 export ATELIER_MEMORY=1
-atelier
+ate
 ```
 
 ### Config File (Persistent)
@@ -45,7 +45,7 @@ enabled = true
 To disable memory even when other settings enable it:
 
 ```bash
-atelier --no-memory
+ate --no-memory
 ```
 
 Or:
@@ -451,7 +451,7 @@ enabled = true    # default
 ### Memory Not Working
 
 1. Verify memory is enabled: check `ate inspect` output.
-2. Check the flag: `atelier --experimental-memory` or `ATELIER_MEMORY=1`.
+2. Check the flag: `ate --experimental-memory` or `ATELIER_MEMORY=1`.
 3. Check for `--no-memory` or `ATELIER_MEMORY=0` overriding your config.
 
 ### Memory Not Appearing in Sessions
@@ -471,6 +471,6 @@ $EDITOR ~/.atelier/memory/MEMORY.md
 ### Debug Logging
 
 ```bash
-RUST_LOG=debug ATELIER_LOG_FILE=/tmp/atelier.log atelier
+RUST_LOG=debug ATELIER_LOG_FILE=/tmp/atelier.log ate
 grep "memory" /tmp/atelier.log
 ```

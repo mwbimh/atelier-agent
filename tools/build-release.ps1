@@ -19,7 +19,7 @@ if ($outputPath -eq $repoRoot) {
     throw "OutputDir must not be the repository root"
 }
 
-$installerSource = Join-Path $repoRoot "crates\codegen\atelier-pager\scripts\install-windows.ps1"
+$installerSource = Join-Path $repoRoot "apps\cli\scripts\install-windows.ps1"
 if (-not (Test-Path -LiteralPath $installerSource -PathType Leaf)) {
     throw "Windows installer script is missing: $installerSource"
 }

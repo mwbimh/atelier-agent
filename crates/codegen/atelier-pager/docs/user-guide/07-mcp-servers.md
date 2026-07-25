@@ -342,7 +342,7 @@ ate inspect --json   # Machine-readable
 ### Debug Logging
 
 ```bash
-RUST_LOG=debug ATELIER_LOG_FILE=/tmp/atelier.log atelier
+RUST_LOG=debug ATELIER_LOG_FILE=/tmp/atelier.log ate
 tail -f /tmp/atelier.log
 ```
 

@@ -84,14 +84,14 @@ To switch between, rename, or close the sessions that are currently active (the 
 Resume a specific session by ID:
 
 ```bash
-atelier --resume <session-id>
+ate --resume <session-id>
 ```
 
-Run `atelier --resume` without an ID to resume the most recent session for the current directory.
+Run `ate --resume` without an ID to resume the most recent session for the current directory.
 
 ### From the Welcome Screen
 
-When you launch `atelier`, the welcome screen lists recent sessions for the current directory. Select one to resume it.
+When you launch `ate`, the welcome screen lists recent sessions for the current directory. Select one to resume it.
 
 ---
 
@@ -183,13 +183,13 @@ In headless mode, you manage sessions through command-line flags:
 
 ```bash
 # New session each time (default)
-atelier -p "Hello"
+ate -p "Hello"
 
 # Resume an existing session by ID (errors if it does not exist)
-atelier -p "Continue where we left off" -r <session-id>
+ate -p "Continue where we left off" -r <session-id>
 
 # Continue the most recent session in the current directory
-atelier -p "What were we doing?" -c
+ate -p "What were we doing?" -c
 ```
 
 In headless mode, resume an existing session with `-r`/`--resume`, which errors if the session does not exist, or continue the most recent session in the current directory with `-c`/`--continue`. Pass the session ID from JSON output (see below) to `-r`.
@@ -199,7 +199,7 @@ Use `-s`/`--session-id` only to **create** a new session with a **UUID** (errors
 To read the session ID back, request JSON output:
 
 ```bash
-atelier -p "Hello" --output-format json | jq -r '.sessionId'
+ate -p "Hello" --output-format json | jq -r '.sessionId'
 ```
 
 ---
@@ -259,7 +259,7 @@ Worktree sessions are managed internally through the `atelier/git/worktree/*` ex
 - **Apply**: Merge worktree changes back into the main working directory
 - **Remove**: Clean up a worktree when the session is done
 
-Resume a session in a fresh worktree with `atelier -w -r <session-id>`.
+Resume a session in a fresh worktree with `ate -w -r <session-id>`.
 
 ---
 

@@ -138,11 +138,9 @@ downgrades the confirmed press to a cancel instead of closing.
 binding, the cheatsheet stays reachable via `Ctrl+.` inside the
 details view.)
 
-For the full behavioural specification (including the registry-lookup
-rules and the mouse-event intercept matrix) see plan
-[§3.10](../../plan/agent-dashboard.md) "Keybindings (v1)" — the user
-guide here is intentionally short and cross-references the plan as
-the source of truth.
+Dashboard input follows the keybindings shown in this guide and the active
+`When::DashboardFocused` keybinding registry. Mouse events are intercepted by
+the dashboard only while that view is focused.
 
 All shortcuts are registered under `When::DashboardFocused` and can be
 rebound via `~/.atelier/config.toml`.
@@ -343,9 +341,7 @@ friendly toast.
 
 ---
 
-## Phase 4 (out of scope for v1)
+## Process lifetime
 
-The current dashboard lists only agents owned by **this** pager
-process. The plan's Phase 4 ("supervisor / `atelier --bg`") would list
-sessions that survive pager exit — that's a separate roadmap and not
-shipped yet.
+The current dashboard lists only agents owned by **this** pager process. It
+does not promise that sessions continue running after the pager exits.

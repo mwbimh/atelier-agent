@@ -50,13 +50,9 @@ pub fn user_atelier_home() -> Option<PathBuf> {
     resolvable.then(atelier_home)
 }
 
-/// Canonical Atelier application path: `$ATELIER_HOME/bin/atelier`.
+/// Canonical Atelier application path: `$ATELIER_HOME/bin/ate`.
 pub fn atelier_application() -> PathBuf {
-    let name = if cfg!(windows) {
-        "atelier.exe"
-    } else {
-        "atelier"
-    };
+    let name = if cfg!(windows) { "ate.exe" } else { "ate" };
     atelier_home().join("bin").join(name)
 }
 
@@ -297,6 +293,12 @@ mod tests {
             std::fs::create_dir_all(&dir).unwrap();
             assert_eq!(decode_cwd_from_dirname(&dir).as_deref(), Some(cwd));
         }
+    }
+
+    #[test]
+    fn canonical_application_uses_public_ate_binary_name() {
+        let expected = if cfg!(windows) { "ate.exe" } else { "ate" };
+        assert_eq!(atelier_application().file_name().unwrap(), expected);
     }
 
     #[test]

@@ -1,0 +1,43 @@
+{
+    "name": "@atelier/atelier",
+    "private": true,
+    "version": "0.1.220-alpha.4",
+    "description": "Unpublished npm packaging scaffold for the Atelier CLI",
+    "license": "Apache-2.0",
+    "bin": {
+        "ate": "bin/ate"
+    },
+    "files": [
+        "bin/"
+    ],
+    "os": [
+        "darwin",
+        "linux",
+        "win32"
+    ],
+    "cpu": [
+        "arm64",
+        "x64"
+    ],
+    "scripts": {
+        "postinstall": "node bin/postinstall.js",
+        "test": "node scripts/test-postinstall.js"
+    },
+    "publishConfig": {
+        "access": "public"
+    },
+    "engines": {
+        "node": ">=20"
+    },
+    "dependencies": {
+        "@iarna/toml": "^3.0.0"
+    },
+    "optionalDependencies": {
+        "@atelier/atelier-darwin-arm64": "0.1.220-alpha.4",
+        "@atelier/atelier-darwin-x64": "0.1.220-alpha.4",
+        "@atelier/atelier-linux-arm64": "0.1.220-alpha.4",
+        "@atelier/atelier-linux-x64": "0.1.220-alpha.4",
+        "@atelier/atelier-win32-arm64": "0.1.220-alpha.4",
+        "@atelier/atelier-win32-x64": "0.1.220-alpha.4"
+    }
+}

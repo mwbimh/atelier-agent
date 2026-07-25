@@ -378,4 +378,4 @@ echo '{"decision": "allow"}'
 - **Hook not running?** Press `Ctrl+L` on non–VS Code family (or run `/hooks` anywhere) to see if it is loaded and matched.
 - **Project hooks ignored?** The folder may be untrusted. Run `/hooks-trust` (or relaunch with `--trust`).
 - **Script not found?** Check the path is relative to the `.json` file and executable (`chmod +x`).
-- **See errors?** Capture logs by launching with `RUST_LOG=debug ATELIER_LOG_FILE=/tmp/atelier.log atelier`, then check `/tmp/atelier.log`.
+- **See errors?** Capture logs by launching with `RUST_LOG=debug ATELIER_LOG_FILE=/tmp/atelier.log ate`, then check `/tmp/atelier.log`.

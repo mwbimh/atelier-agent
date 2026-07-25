@@ -33,7 +33,7 @@ members = [
     "crates/codegen/atelier-mermaid",
     "crates/codegen/atelier-models",
     "crates/codegen/atelier-pager",
-    "crates/codegen/atelier-pager-bin",
+    "apps/cli",
     "crates/codegen/atelier-pager-minimal",
     "crates/codegen/atelier-pager-pty-harness",
     "crates/codegen/atelier-pager-render",

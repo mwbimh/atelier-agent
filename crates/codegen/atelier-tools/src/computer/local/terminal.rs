@@ -2836,7 +2836,7 @@ fn spawn_shell_command(
         {
             // Bare execution is available only through the explicit unsafe
             // backend. Unit tests also use it because their test-harness EXE
-            // cannot service atelier.exe's hidden command-runner sub-mode.
+            // cannot service ate.exe's hidden command-runner sub-mode.
             // Production builds still fail closed when the native sandbox is
             // unavailable.
             let mut cmd = tokio::process::Command::new(&inv.program);

@@ -94,7 +94,7 @@ pub enum SandboxMode {
 
 /// Resolve the executable used by the async terminal adapter.
 ///
-/// Release builds reuse `atelier.exe` through the hidden
+/// Release builds reuse `ate.exe` through the hidden
 /// `--internal-command-runner` sub-mode, so the release directory no longer
 /// needs a second executable. `ATELIER_COMMAND_RUNNER` remains an explicit
 /// development/packaging override for a standalone runner.
@@ -109,7 +109,7 @@ pub fn command_runner_path() -> Result<PathBuf, SandboxError> {
         })?;
         // The command runner is an internal mode of the main executable.
         // Aliases and versioned npm filenames must behave exactly like
-        // `atelier.exe`, so the filename is deliberately not inspected.
+        // `ate.exe`, so the filename is deliberately not inspected.
         current_exe
     };
 
@@ -159,7 +159,7 @@ pub fn command_runner_args(
 }
 
 /// Build runner arguments and add the hidden marker when the runner is the
-/// current `atelier.exe`. Keeping this separate preserves compatibility with
+/// current `ate.exe`. Keeping this separate preserves compatibility with
 /// an explicitly configured standalone `atelier-command-runner.exe`.
 pub fn command_runner_args_for(
     runner: &Path,
@@ -202,7 +202,7 @@ pub struct CommandRunnerArgs {
 }
 
 /// Parse the arguments accepted by both the standalone runner binary and the
-/// hidden runner mode in `atelier.exe`.
+/// hidden runner mode in `ate.exe`.
 pub fn parse_command_runner_args<I, T>(args: I) -> anyhow::Result<CommandRunnerArgs>
 where
     I: IntoIterator<Item = T>,
@@ -435,8 +435,8 @@ mod contract_tests {
     #[test]
     fn embedded_runner_args_have_a_hidden_internal_marker() {
         let args = super::command_runner_args_for(
-            PathBuf::from(r"C:\bin\atelier.exe").as_path(),
-            PathBuf::from(r"C:\bin\atelier.exe").as_path(),
+            PathBuf::from(r"C:\bin\ate.exe").as_path(),
+            PathBuf::from(r"C:\bin\ate.exe").as_path(),
             SandboxMode::ReadOnly,
             &[PathBuf::from(r"C:\workspace")],
             PathBuf::from(r"C:\workspace").as_path(),
@@ -484,7 +484,7 @@ mod contract_tests {
     fn external_runner_args_do_not_have_the_embedded_marker() {
         let args = super::command_runner_args_for(
             PathBuf::from(r"C:\bin\atelier-command-runner.exe").as_path(),
-            PathBuf::from(r"C:\bin\atelier.exe").as_path(),
+            PathBuf::from(r"C:\bin\ate.exe").as_path(),
             SandboxMode::ReadOnly,
             &[PathBuf::from(r"C:\workspace")],
             PathBuf::from(r"C:\workspace").as_path(),

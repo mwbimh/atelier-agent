@@ -1,90 +1,132 @@
 # Atelier
 
-Atelier is a local-first terminal coding agent built around a modular local
-agent runtime. It provides a TUI, headless agent, and ACP service, with model access
-through explicitly configured Providers.
+[Chinese documentation](README.zh-CN.md)
 
-The private build does not use vendor telemetry, remote settings, automatic
-updates, or vendor authentication. Configure a Provider before sending a
-prompt.
+Atelier is a local-first coding agent for the terminal. The repository contains
+the `ate` CLI, reusable runtime crates, language SDKs, release tooling, and a
+reserved home for a future desktop GUI.
 
-## Build and run
+Atelier is developed from the Grok Build codebase. It is an independent
+derivative project and is not affiliated with or endorsed by xAI. Upstream
+attribution and modification records are maintained in
+[Third-party notices](THIRD_PARTY_NOTICES.md) and [`docs/upstream/`](docs/upstream/).
+
+## Status
+
+Atelier is alpha software. The Windows x64 single-binary release and sandbox
+flow are currently the fully verified distribution target. Linux and macOS
+support are represented in the codebase but still require native release
+pipelines and platform E2E verification before official distribution.
+
+Atelier has not published a CLI or SDK package to npm. The npm manifests in this
+repository are private development scaffolding, not an available distribution.
+
+## Principles
+
+- **Local first:** sessions, logs, traces, metrics, and artifacts remain local.
+- **Explicit model ownership:** first run does not select a Provider or model.
+- **Vendor independent:** model access is configured through user-owned
+  Providers; there is no built-in vendor account or model fallback.
+- **No remote telemetry:** Atelier does not ship telemetry upload, remote
+  settings, automatic updates, or session sharing services.
+- **Single CLI binary:** the Workspace Worker and command runner are internal
+  modes of `ate` rather than separately distributed executables.
+
+## Quick start
+
+The pinned Rust toolchain is declared in [`rust-toolchain.toml`](rust-toolchain.toml).
 
 ```sh
 cargo run -p atelier-pager-bin --bin ate
-cargo build -p atelier-pager-bin --profile release-dist --bin ate -j 1
-cargo check -p atelier-pager-bin
 ```
 
-The release binary is `target/release-dist/ate.exe` on Windows. Configure a
-Provider through `/provider` or the Atelier ACP extensions.
+On first run, configure a Provider and select a model before sending a prompt:
 
-Windows 上建议使用隔离目标目录构建最终发行版，避免继续膨胀仓库的
-`target/`。脚本会验证发布目录只包含 `ate.exe` 和离线安装脚本
-`install-windows.ps1`：
+```text
+/provider
+/model
+```
+
+Atelier never silently chooses the first available Provider or model.
+
+Useful development commands:
+
+```sh
+cargo check --locked -p atelier-pager-bin
+cargo test --locked -p atelier-pager-bin
+cargo fmt --all -- --check
+```
+
+## Windows release
+
+The release output remains at the repository root in `release/`. The directory
+is intentionally ignored by Git; publish binaries through GitHub Releases
+instead of committing them to source control.
 
 ```powershell
 .\tools\build-release.ps1 -CleanOutput
 ```
 
-确认复制完成后，可同时删除隔离的 Cargo 构建产物：
+The Windows package contains exactly:
 
-```powershell
-.\tools\build-release.ps1 -CleanOutput -CleanTargetAfterCopy
+```text
+release/
+├── ate.exe
+└── install-windows.ps1
 ```
 
-Release packaging keeps the Worker and Windows command-runner process
-boundaries, but embeds both implementations in `ate.exe`. The runtime
-starts them through hidden internal modes, so a normal release directory does
-not need `atelier-command-runner.exe` or `atelier-workspace-worker.exe`.
-
-To install the packaged executable into `%USERPROFILE%\.atelier\bin` and add it
-to User PATH, run:
+Install for the current user:
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\release\install-windows.ps1
 ```
 
-Pass `-NoPathUpdate` to leave PATH unchanged, `-InstallDir <path>` to choose a
-different destination, or `-SetupSandbox` to run the explicit UAC sandbox setup
-after installation.
+The installer supports `-InstallDir`, `-NoPathUpdate`, and `-SetupSandbox`.
+
+## Monorepo layout
+
+| Path | Purpose |
+| --- | --- |
+| [`apps/cli/`](apps/cli/) | `ate` composition root, integration tests, installers, and unpublished npm packaging scaffolding |
+| [`apps/gui/`](apps/gui/) | Reserved workspace for the future desktop GUI |
+| [`packages/sdk/`](packages/sdk/) | TypeScript and C# SDKs plus shared wire-contract fixtures |
+| [`crates/`](crates/) | Reusable Rust runtime, TUI, Provider, sandbox, tool, and protocol crates |
+| [`docs/`](docs/) | Repository architecture and upstream source records |
+| [`third_party/`](third_party/) | Vendored third-party source and notices |
+| [`tools/`](tools/) | Build and release automation |
+| `release/` | Local top-level release output; never committed |
+
+See [Repository layout](docs/REPOSITORY_LAYOUT.md) for ownership and placement
+rules.
+
+## SDKs
+
+- [TypeScript SDK](packages/sdk/typescript/README.md)
+- [C# SDK](packages/sdk/csharp/README.md)
+
+The SDKs share fixtures under [`packages/sdk/fixtures/`](packages/sdk/fixtures/)
+with the Rust protocol contract tests.
 
 ## Documentation
 
-- [Project documents](docs/)
-- [User guide](crates/codegen/atelier-pager/docs/user-guide/)
-- [TypeScript SDK](sdk/typescript/README.md) / [C# SDK](sdk/csharp/README.md)
-- [Third-party notices](THIRD_PARTY_NOTICES.md)
+- [CLI user guide](crates/codegen/atelier-pager/docs/user-guide/README.md)
+- [CLI application](apps/cli/README.md)
+- [Runtime architecture](crates/codegen/atelier-shell/README.md)
+- [Windows sandbox](crates/codegen/atelier-windows-sandbox/README.md)
+- [Contribution guide](CONTRIBUTING.md)
+- [Security policy](SECURITY.md)
 
-## Repository layout
+## Contributing
 
-| Path | Contents |
-|------|----------|
-| `crates/codegen/atelier-pager-bin` | Composition root and `ate` binary |
-| `crates/codegen/atelier-pager` | TUI and ACP client |
-| `crates/codegen/atelier-shell` | Agent runtime and session services |
-| `crates/codegen/atelier-provider` | Local Provider registry and model catalog |
-| `crates/codegen/atelier-windows-sandbox` | Windows restricted-token command runner |
-| `crates/codegen/atelier-tools` | File, terminal, search, and other tools |
-| `crates/codegen/atelier-workspace` | Workspace filesystem, VCS, and checkpoints |
-
-The `atelier-*` crate paths, user-facing product, storage, CLI, and ACP
-extension namespace are Atelier-specific.
-
-## Development
-
-```sh
-cargo check -p <crate>
-cargo test -p <crate>
-cargo clippy -p <crate>
-cargo fmt --all
-```
-
-The root `Cargo.toml` is generated by the source tree; prefer editing the
-individual crate manifests when adding dependencies.
+External contributions are welcome. Bug reports, documentation improvements,
+tests, Provider integrations, SDK changes, and focused runtime changes can be
+submitted through GitHub issues and pull requests. Read
+[`CONTRIBUTING.md`](CONTRIBUTING.md) before starting substantial work.
 
 ## License
 
-First-party code is licensed under the Apache License, Version 2.0. Original
-upstream notices and third-party source licenses are retained in
-`THIRD_PARTY_NOTICES.md` and crate-local notice files.
+First-party Atelier changes are licensed under the Apache License, Version 2.0.
+The project retains the original Grok Build license and notices, together with
+notices for other adapted or vendored code. See [`LICENSE`](LICENSE),
+[`THIRD-PARTY-NOTICES`](THIRD-PARTY-NOTICES), and
+[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).

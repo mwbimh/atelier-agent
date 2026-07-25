@@ -260,10 +260,10 @@ The full event envelope is POSTed as JSON. Useful for webhooks, analytics, or se
 
 See the built-in examples in the `atelier-hooks` crate:
 
-- [Safe Shell Guard](../../../atelier-hooks/examples/hooks/safe-shell.json)
-- [No Recursive Grep](../../../atelier-hooks/examples/hooks/no-recursive-grep.json) — hard-blocks `grep -r`/`grep -R`/`rgrep` (OOM guard)
-- [Session Audit Log](../../../atelier-hooks/examples/hooks/session-log.json)
-- [Tool Activity Logger](../../../atelier-hooks/examples/hooks/tool-logger.json)
+- [Safe Shell Guard](../../atelier-hooks/examples/hooks/safe-shell.json)
+- [No Recursive Grep](../../atelier-hooks/examples/hooks/no-recursive-grep.json) — hard-blocks `grep -r`/`grep -R`/`rgrep` (OOM guard)
+- [Session Audit Log](../../atelier-hooks/examples/hooks/session-log.json)
+- [Tool Activity Logger](../../atelier-hooks/examples/hooks/tool-logger.json)
 
 Copy them to `~/.atelier/hooks/` and customize.
 

@@ -157,7 +157,7 @@ Add this after `config = wezterm.config_builder()` in `~/.config/wezterm/wezterm
 config.enable_kitty_keyboard = true
 ```
 
-Reload (`Cmd+Shift+R` or restart WezTerm) and restart `atelier`.
+Reload (`Cmd+Shift+R` or restart WezTerm) and restart `ate`.
 
 **Verify**: Run `/terminal-setup` inside Atelier. While a turn is active, you see the interject hint, and `Ctrl+Enter` interjects.
 
