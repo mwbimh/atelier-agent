@@ -3,9 +3,9 @@
 use std::rc::Rc;
 use std::time::Duration;
 
-use xai_agent_lifecycle::LocalExtensionRegistryBuilder;
-use xai_agent_lifecycle::{LocalSessionLifecycleContributor, LocalTurnLifecycleContributor};
-use xai_agent_lifecycle::{
+use atelier_agent_lifecycle::LocalExtensionRegistryBuilder;
+use atelier_agent_lifecycle::{LocalSessionLifecycleContributor, LocalTurnLifecycleContributor};
+use atelier_agent_lifecycle::{
     SessionIdleInput, TurnAbortInput, TurnDoneInput, TurnErrorInput, TurnStartInput,
 };
 

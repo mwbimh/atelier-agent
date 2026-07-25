@@ -19,18 +19,18 @@ async fn create_test_actor(
     total_tokens: u64,
     context_window: u64,
     threshold_percent: u8,
-    gateway_tx: mpsc::UnboundedSender<xai_acp_lib::AcpClientMessage>,
+    gateway_tx: mpsc::UnboundedSender<atelier_acp_runtime::AcpClientMessage>,
     persistence_tx: mpsc::UnboundedSender<PersistenceMsg>,
 ) -> SessionActor {
     let cwd = AbsPathBuf::new(std::env::temp_dir()).unwrap();
     let fs = Arc::new(MockFs::new(cwd.to_path_buf()));
     let terminal = Arc::new(DummyTerminal {});
     let (hunk_tx, _hunk_rx) = tokio::sync::mpsc::unbounded_channel();
-    let hunk_tracker_handle = xai_hunk_tracker::HunkTrackerActor::spawn(
+    let hunk_tracker_handle = atelier_hunk_tracker::HunkTrackerActor::spawn(
         "test-auto-compact".to_string(),
         cwd.to_path_buf(),
         hunk_tx,
-        xai_hunk_tracker::TrackingMode::AgentOnly,
+        atelier_hunk_tracker::TrackingMode::AgentOnly,
         tokio_util::sync::CancellationToken::new(),
     );
     let tool_context = ToolContext::new(cwd.clone(), None, None, fs, terminal, hunk_tracker_handle);
@@ -43,7 +43,7 @@ async fn create_test_actor(
         nudges_used_this_session: 0,
     });
     let (event_tx, _event_rx) = tokio::sync::mpsc::unbounded_channel();
-    let chat_state_handle = xai_chat_state::ChatStateActor::spawn(
+    let chat_state_handle = atelier_chat_state::ChatStateActor::spawn(
         vec![],
         atelier_sampling_types::SamplingConfig {
             base_url: "http://localhost".to_string(),
@@ -58,7 +58,7 @@ async fn create_test_actor(
             reasoning_effort: None,
             stream_tool_calls: None,
         },
-        Box::new(xai_chat_state::NullChatPersistence),
+        Box::new(atelier_chat_state::NullChatPersistence),
         event_tx,
         tokio_util::sync::CancellationToken::new(),
     );
@@ -95,6 +95,8 @@ async fn create_test_actor(
         telemetry_enabled: false,
         role_request_payload: std::cell::RefCell::new(serde_json::Map::new()),
         supports_backend_search: std::cell::Cell::new(false),
+        remote_compaction_endpoint: std::cell::RefCell::new(None),
+        image_generation_endpoint: std::cell::RefCell::new(None),
         compactions_remaining: std::cell::Cell::new(None),
         compaction_at_tokens: std::cell::Cell::new(None),
         doom_loop_recovery: None,
@@ -110,7 +112,7 @@ async fn create_test_actor(
             count: std::sync::atomic::AtomicU64::new(0),
             auto_compact_suppressed: std::sync::atomic::AtomicU8::new(0),
             previous_model: std::cell::Cell::new(None),
-            compaction_mode: xai_chat_state::CompactionMode::Transcript,
+            compaction_mode: atelier_chat_state::CompactionMode::Transcript,
             verbatim_input: true,
             prefire: crate::session::compaction_config::PrefireState::default(),
             prefix_released: std::sync::atomic::AtomicBool::new(false),
@@ -154,7 +156,6 @@ async fn create_test_actor(
         client_identifier: None,
         origin_client: None,
         feedback_manager: Arc::new(FeedbackManager::local_only("test-session")),
-        upload_queue: Arc::new(OnceLock::new()),
         sync_loop_cancel: None,
         agent: std::cell::RefCell::new(test_agent_default().await),
         last_reported_branch: std::sync::Arc::new(parking_lot::Mutex::new(None)),
@@ -207,7 +208,7 @@ async fn create_test_actor(
         user_input_generation: std::sync::atomic::AtomicU64::new(0),
         laziness_debug_log: None,
         deferred_prefix: TaskSlot::new(),
-        extension_registry: xai_agent_lifecycle::LocalExtensionRegistry::default(),
+        extension_registry: atelier_agent_lifecycle::LocalExtensionRegistry::default(),
         last_announced_local_date: std::cell::Cell::new(chrono::Local::now().date_naive()),
         last_search_prompt_index: std::sync::atomic::AtomicI64::new(-1),
         last_api_request_at: std::sync::atomic::AtomicI64::new(0),
@@ -233,7 +234,6 @@ async fn create_test_actor(
         subagent_spawn_info: parking_lot::Mutex::new(HashMap::new()),
         subagent_token_records: parking_lot::Mutex::new(HashMap::new()),
         workspace_ops: atelier_workspace::WorkspaceOps::for_test(),
-        trace_config_template: std::cell::RefCell::new(None),
     }
 }
 /// Test that should_auto_compact returns correct trigger info.
@@ -243,7 +243,7 @@ async fn test_should_auto_compact_triggers_at_threshold() {
     local
         .run_until(async {
             let (gateway_tx, _gateway_rx) =
-                mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                mpsc::unbounded_channel::<atelier_acp_runtime::AcpClientMessage>();
             let (persistence_tx, _persistence_rx) = mpsc::unbounded_channel::<PersistenceMsg>();
             let actor = create_test_actor(85_000, 100_000, 85, gateway_tx, persistence_tx).await;
             let result =
@@ -263,7 +263,7 @@ async fn test_should_auto_compact_below_threshold() {
     local
         .run_until(async {
             let (gateway_tx, _gateway_rx) =
-                mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                mpsc::unbounded_channel::<atelier_acp_runtime::AcpClientMessage>();
             let (persistence_tx, _persistence_rx) = mpsc::unbounded_channel::<PersistenceMsg>();
             let actor = create_test_actor(84_000, 100_000, 85, gateway_tx, persistence_tx).await;
             let result =
@@ -279,7 +279,7 @@ async fn test_check_auto_compact_needed_uses_state() {
     local
         .run_until(async {
             let (gateway_tx, _gateway_rx) =
-                mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                mpsc::unbounded_channel::<atelier_acp_runtime::AcpClientMessage>();
             let (persistence_tx, _persistence_rx) = mpsc::unbounded_channel::<PersistenceMsg>();
             let actor = create_test_actor(90_000, 100_000, 85, gateway_tx, persistence_tx).await;
             let result = actor.check_auto_compact_needed().await;
@@ -299,7 +299,7 @@ async fn test_context_window_override_affects_auto_compact() {
     local
         .run_until(async {
             let (gateway_tx, _gateway_rx) =
-                mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                mpsc::unbounded_channel::<atelier_acp_runtime::AcpClientMessage>();
             let (persistence_tx, _persistence_rx) = mpsc::unbounded_channel::<PersistenceMsg>();
             let actor = create_test_actor(86_000, 100_000, 85, gateway_tx, persistence_tx).await;
             let result = actor.check_auto_compact_needed().await;
@@ -325,7 +325,7 @@ async fn test_context_window_override_to_smaller_triggers_compact() {
     local
         .run_until(async {
             let (gateway_tx, _gateway_rx) =
-                mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                mpsc::unbounded_channel::<atelier_acp_runtime::AcpClientMessage>();
             let (persistence_tx, _persistence_rx) = mpsc::unbounded_channel::<PersistenceMsg>();
             let actor = create_test_actor(86_000, 200_000, 85, gateway_tx, persistence_tx).await;
             let result = actor.check_auto_compact_needed().await;
@@ -352,7 +352,7 @@ async fn test_response_header_context_window_downgrade_rejected() {
     local
         .run_until(async {
             let (gateway_tx, _gateway_rx) =
-                mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                mpsc::unbounded_channel::<atelier_acp_runtime::AcpClientMessage>();
             let (persistence_tx, _persistence_rx) = mpsc::unbounded_channel::<PersistenceMsg>();
             let actor = create_test_actor(200_000, 500_000, 85, gateway_tx, persistence_tx).await;
             let cfg_before = actor.chat_state_handle.get_sampling_config().await.unwrap();
@@ -445,7 +445,7 @@ async fn create_test_actor_with_memory(
     total_tokens: u64,
     context_window: u64,
     threshold_percent: u8,
-    gateway_tx: mpsc::UnboundedSender<xai_acp_lib::AcpClientMessage>,
+    gateway_tx: mpsc::UnboundedSender<atelier_acp_runtime::AcpClientMessage>,
     persistence_tx: mpsc::UnboundedSender<PersistenceMsg>,
     memory_config: Option<crate::config::MemoryConfig>,
 ) -> SessionActor {
@@ -455,11 +455,11 @@ async fn create_test_actor_with_memory(
     let fs = Arc::new(MockFs::new(cwd.to_path_buf()));
     let terminal = Arc::new(DummyTerminal {});
     let (hunk_tx, _) = tokio::sync::mpsc::unbounded_channel();
-    let hunk_tracker_handle = xai_hunk_tracker::HunkTrackerActor::spawn(
+    let hunk_tracker_handle = atelier_hunk_tracker::HunkTrackerActor::spawn(
         "test-memory".to_string(),
         cwd.to_path_buf(),
         hunk_tx,
-        xai_hunk_tracker::TrackingMode::AgentOnly,
+        atelier_hunk_tracker::TrackingMode::AgentOnly,
         tokio_util::sync::CancellationToken::new(),
     );
     let tool_context = ToolContext::new(cwd.clone(), None, None, fs, terminal, hunk_tracker_handle);
@@ -476,7 +476,7 @@ async fn create_test_actor_with_memory(
         nudges_used_this_session: 0,
     });
     let (event_tx, _event_rx) = tokio::sync::mpsc::unbounded_channel();
-    let chat_state_handle = xai_chat_state::ChatStateActor::spawn(
+    let chat_state_handle = atelier_chat_state::ChatStateActor::spawn(
         vec![],
         atelier_sampling_types::SamplingConfig {
             base_url: "http://localhost".to_string(),
@@ -491,7 +491,7 @@ async fn create_test_actor_with_memory(
             reasoning_effort: None,
             stream_tool_calls: None,
         },
-        Box::new(xai_chat_state::NullChatPersistence),
+        Box::new(atelier_chat_state::NullChatPersistence),
         event_tx,
         tokio_util::sync::CancellationToken::new(),
     );
@@ -529,6 +529,8 @@ async fn create_test_actor_with_memory(
         telemetry_enabled: false,
         role_request_payload: std::cell::RefCell::new(serde_json::Map::new()),
         supports_backend_search: std::cell::Cell::new(false),
+        remote_compaction_endpoint: std::cell::RefCell::new(None),
+        image_generation_endpoint: std::cell::RefCell::new(None),
         compactions_remaining: std::cell::Cell::new(None),
         compaction_at_tokens: std::cell::Cell::new(None),
         doom_loop_recovery: None,
@@ -544,7 +546,7 @@ async fn create_test_actor_with_memory(
             count: std::sync::atomic::AtomicU64::new(0),
             auto_compact_suppressed: std::sync::atomic::AtomicU8::new(0),
             previous_model: std::cell::Cell::new(None),
-            compaction_mode: xai_chat_state::CompactionMode::Transcript,
+            compaction_mode: atelier_chat_state::CompactionMode::Transcript,
             verbatim_input: true,
             prefire: crate::session::compaction_config::PrefireState::default(),
             prefix_released: std::sync::atomic::AtomicBool::new(false),
@@ -598,7 +600,6 @@ async fn create_test_actor_with_memory(
         client_identifier: None,
         origin_client: None,
         feedback_manager: Arc::new(FeedbackManager::local_only("test-memory")),
-        upload_queue: Arc::new(OnceLock::new()),
         sync_loop_cancel: None,
         agent: std::cell::RefCell::new(test_agent_default().await),
         last_reported_branch: std::sync::Arc::new(parking_lot::Mutex::new(None)),
@@ -654,7 +655,7 @@ async fn create_test_actor_with_memory(
         user_input_generation: std::sync::atomic::AtomicU64::new(0),
         laziness_debug_log: None,
         deferred_prefix: TaskSlot::new(),
-        extension_registry: xai_agent_lifecycle::LocalExtensionRegistry::default(),
+        extension_registry: atelier_agent_lifecycle::LocalExtensionRegistry::default(),
         last_announced_local_date: std::cell::Cell::new(chrono::Local::now().date_naive()),
         last_search_prompt_index: std::sync::atomic::AtomicI64::new(-1),
         last_api_request_at: std::sync::atomic::AtomicI64::new(0),
@@ -680,7 +681,6 @@ async fn create_test_actor_with_memory(
         subagent_spawn_info: parking_lot::Mutex::new(HashMap::new()),
         subagent_token_records: parking_lot::Mutex::new(HashMap::new()),
         workspace_ops: atelier_workspace::WorkspaceOps::for_test(),
-        trace_config_template: std::cell::RefCell::new(None),
     }
 }
 #[tokio::test(flavor = "current_thread")]
@@ -1152,7 +1152,8 @@ async fn test_compact_on_error_triggers_when_tokens_exceed_new_window() {
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
-            let (gateway_tx, _) = mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+            let (gateway_tx, _) =
+                mpsc::unbounded_channel::<atelier_acp_runtime::AcpClientMessage>();
             let (persistence_tx, _) = mpsc::unbounded_channel::<PersistenceMsg>();
             let actor = create_test_actor(214_000, 1_000_000, 85, gateway_tx, persistence_tx).await;
             let err = api_error_with_context_window(200_000);
@@ -1167,7 +1168,8 @@ async fn test_compact_on_error_no_trigger_when_tokens_within_new_window() {
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
-            let (gateway_tx, _) = mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+            let (gateway_tx, _) =
+                mpsc::unbounded_channel::<atelier_acp_runtime::AcpClientMessage>();
             let (persistence_tx, _) = mpsc::unbounded_channel::<PersistenceMsg>();
             let actor = create_test_actor(150_000, 1_000_000, 85, gateway_tx, persistence_tx).await;
             let err = api_error_with_context_window(200_000);
@@ -1199,7 +1201,8 @@ async fn test_idle_resume_does_not_fetch_vendor_model_metadata() {
                 axum::serve(listener, app).await.unwrap();
             });
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-            let (gateway_tx, _) = mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+            let (gateway_tx, _) =
+                mpsc::unbounded_channel::<atelier_acp_runtime::AcpClientMessage>();
             let (persistence_tx, _) = mpsc::unbounded_channel::<PersistenceMsg>();
             let cwd = atelier_paths::AbsPathBuf::new(std::env::temp_dir()).unwrap();
             let fs = Arc::new(atelier_workspace::file_system::MockFs::new(
@@ -1207,11 +1210,11 @@ async fn test_idle_resume_does_not_fetch_vendor_model_metadata() {
             ));
             let terminal = Arc::new(DummyTerminal {});
             let (hunk_tx, _) = tokio::sync::mpsc::unbounded_channel();
-            let hunk_tracker_handle = xai_hunk_tracker::HunkTrackerActor::spawn(
+            let hunk_tracker_handle = atelier_hunk_tracker::HunkTrackerActor::spawn(
                 "test-idle-resume".to_string(),
                 cwd.to_path_buf(),
                 hunk_tx,
-                xai_hunk_tracker::TrackingMode::AgentOnly,
+                atelier_hunk_tracker::TrackingMode::AgentOnly,
                 tokio_util::sync::CancellationToken::new(),
             );
             let tool_context =
@@ -1225,7 +1228,7 @@ async fn test_idle_resume_does_not_fetch_vendor_model_metadata() {
                 nudges_used_this_session: 0,
             });
             let (event_tx, _) = tokio::sync::mpsc::unbounded_channel();
-            let chat_state_handle = xai_chat_state::ChatStateActor::spawn(
+            let chat_state_handle = atelier_chat_state::ChatStateActor::spawn(
                 vec![],
                 atelier_sampling_types::SamplingConfig {
                     base_url: mock_url,
@@ -1239,11 +1242,11 @@ async fn test_idle_resume_does_not_fetch_vendor_model_metadata() {
                     reasoning_effort: None,
                     stream_tool_calls: None,
                 },
-                Box::new(xai_chat_state::NullChatPersistence),
+                Box::new(atelier_chat_state::NullChatPersistence),
                 event_tx,
                 tokio_util::sync::CancellationToken::new(),
             );
-            chat_state_handle.update_credentials(xai_chat_state::types::Credentials {
+            chat_state_handle.update_credentials(atelier_chat_state::types::Credentials {
                 api_key: Some("test-key".to_string()),
                 auth_type: Default::default(),
                 alpha_test_key: None,
@@ -1295,6 +1298,8 @@ async fn test_idle_resume_does_not_fetch_vendor_model_metadata() {
                 telemetry_enabled: false,
                 role_request_payload: std::cell::RefCell::new(serde_json::Map::new()),
                 supports_backend_search: std::cell::Cell::new(false),
+                remote_compaction_endpoint: std::cell::RefCell::new(None),
+                image_generation_endpoint: std::cell::RefCell::new(None),
                 compactions_remaining: std::cell::Cell::new(None),
                 compaction_at_tokens: std::cell::Cell::new(None),
                 doom_loop_recovery: None,
@@ -1310,7 +1315,7 @@ async fn test_idle_resume_does_not_fetch_vendor_model_metadata() {
                     count: std::sync::atomic::AtomicU64::new(0),
                     auto_compact_suppressed: std::sync::atomic::AtomicU8::new(0),
                     previous_model: std::cell::Cell::new(None),
-                    compaction_mode: xai_chat_state::CompactionMode::Transcript,
+                    compaction_mode: atelier_chat_state::CompactionMode::Transcript,
                     verbatim_input: true,
                     prefire: crate::session::compaction_config::PrefireState::default(),
                     prefix_released: std::sync::atomic::AtomicBool::new(false),
@@ -1354,7 +1359,6 @@ async fn test_idle_resume_does_not_fetch_vendor_model_metadata() {
                 client_identifier: None,
                 origin_client: None,
                 feedback_manager: Arc::new(FeedbackManager::local_only("test-session")),
-                upload_queue: Arc::new(OnceLock::new()),
                 sync_loop_cancel: None,
                 agent: std::cell::RefCell::new(test_agent_default().await),
                 last_reported_branch: std::sync::Arc::new(parking_lot::Mutex::new(None)),
@@ -1412,7 +1416,7 @@ async fn test_idle_resume_does_not_fetch_vendor_model_metadata() {
                 user_input_generation: std::sync::atomic::AtomicU64::new(0),
                 laziness_debug_log: None,
                 deferred_prefix: TaskSlot::new(),
-                extension_registry: xai_agent_lifecycle::LocalExtensionRegistry::default(),
+                extension_registry: atelier_agent_lifecycle::LocalExtensionRegistry::default(),
                 last_announced_local_date: std::cell::Cell::new(chrono::Local::now().date_naive()),
                 last_search_prompt_index: std::sync::atomic::AtomicI64::new(-1),
                 last_api_request_at: std::sync::atomic::AtomicI64::new(0),
@@ -1441,7 +1445,6 @@ async fn test_idle_resume_does_not_fetch_vendor_model_metadata() {
                 subagent_spawn_info: parking_lot::Mutex::new(HashMap::new()),
                 subagent_token_records: parking_lot::Mutex::new(HashMap::new()),
                 workspace_ops: atelier_workspace::WorkspaceOps::for_test(),
-                trace_config_template: std::cell::RefCell::new(None),
             };
             let eleven_minutes_ago_ms = chrono::Utc::now().timestamp_millis() - (11 * 60 * 1000);
             actor
@@ -1473,7 +1476,8 @@ async fn test_idle_resume_noop_when_not_idle_enough() {
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
-            let (gateway_tx, _) = mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+            let (gateway_tx, _) =
+                mpsc::unbounded_channel::<atelier_acp_runtime::AcpClientMessage>();
             let (persistence_tx, _) = mpsc::unbounded_channel::<PersistenceMsg>();
             let actor = create_test_actor(50_000, 200_000, 85, gateway_tx, persistence_tx).await;
             let five_minutes_ago_ms = chrono::Utc::now().timestamp_millis() - (5 * 60 * 1000);
@@ -1497,7 +1501,8 @@ async fn test_compact_on_error_noop_without_model_metadata() {
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
-            let (gateway_tx, _) = mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+            let (gateway_tx, _) =
+                mpsc::unbounded_channel::<atelier_acp_runtime::AcpClientMessage>();
             let (persistence_tx, _) = mpsc::unbounded_channel::<PersistenceMsg>();
             let actor = create_test_actor(500_000, 200_000, 85, gateway_tx, persistence_tx).await;
             let err = atelier_sampler::SamplingErrorInfo {

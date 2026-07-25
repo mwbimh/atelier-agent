@@ -26,7 +26,7 @@ pub fn resolve_system_prompt_label(
         user_per_model,
         cfg.agent.system_prompt_label.clone(),
         model.and_then(|m| m.system_prompt_label.clone()),
-        cfg.remote_settings
+        cfg.local_runtime_settings
             .as_ref()
             .and_then(|r| r.system_prompt_label.clone()),
     )

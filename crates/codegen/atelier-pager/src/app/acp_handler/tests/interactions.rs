@@ -126,7 +126,7 @@
             "mode": "default",
         }))
         .unwrap();
-        let msg = AcpClientMessage::ExtMethod(xai_acp_lib::AcpArgs {
+        let msg = AcpClientMessage::ExtMethod(atelier_acp_runtime::AcpArgs {
             request: acp::ExtRequest::new("atelier/ask_user_question", raw.into()),
             response_tx: tx,
         });
@@ -167,7 +167,7 @@
             "mode": "default",
         }))
         .unwrap();
-        let msg = AcpClientMessage::ExtMethod(xai_acp_lib::AcpArgs {
+        let msg = AcpClientMessage::ExtMethod(atelier_acp_runtime::AcpArgs {
             request: acp::ExtRequest::new("atelier/ask_user_question", raw.into()),
             response_tx: tx,
         });
@@ -269,7 +269,7 @@
         };
         let raw = serde_json::value::to_raw_value(&ext_req).unwrap();
         handle(
-            AcpClientMessage::ExtMethod(xai_acp_lib::AcpArgs {
+            AcpClientMessage::ExtMethod(atelier_acp_runtime::AcpArgs {
                 request: acp::ExtRequest::new("atelier/exit_plan_mode", raw.into()),
                 response_tx: tx,
             }),
@@ -316,7 +316,7 @@
         };
         let raw = serde_json::value::to_raw_value(&ext_req).unwrap();
         handle(
-            AcpClientMessage::ExtMethod(xai_acp_lib::AcpArgs {
+            AcpClientMessage::ExtMethod(atelier_acp_runtime::AcpArgs {
                 request: acp::ExtRequest::new("atelier/exit_plan_mode", raw.into()),
                 response_tx: tx,
             }),
@@ -354,7 +354,7 @@
         };
         let raw = serde_json::value::to_raw_value(&ext_req).unwrap();
         handle(
-            AcpClientMessage::ExtMethod(xai_acp_lib::AcpArgs {
+            AcpClientMessage::ExtMethod(atelier_acp_runtime::AcpArgs {
                 request: acp::ExtRequest::new("atelier/exit_plan_mode", raw.into()),
                 response_tx: tx,
             }),

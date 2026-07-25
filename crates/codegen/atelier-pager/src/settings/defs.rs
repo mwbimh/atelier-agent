@@ -784,25 +784,6 @@ pub fn default_settings() -> Vec<SettingMeta> {
             restart_required: false,
             hidden_in_minimal: false,
         },
-        // SHELL-owned. Reads from `pager.current_model_name` (not
-        // `cfg.models.default`) so the modal reflects `/model` switches.
-        // Empty-string reset deletes obsolete default fields while preserving
-        // the current model as the explicit main Role.
-        SettingMeta {
-            key: "default_model",
-            category: SettingCategory::Models,
-            owner: SettingOwner::Shell,
-            label: "Default model",
-            description: "Model used for new sessions. Changing this also switches the active session. Reset keeps the current model as the explicit main Role.",
-            keywords: &["model", "default", "agent", "llm", "atelier", "switch"],
-            kind: SettingKind::DynamicEnum {
-                default: "",
-                source: DynamicEnumSource::ActiveModelCatalog,
-                supports_preview: false,
-            },
-            restart_required: false,
-            hidden_in_minimal: false,
-        },
         // SHARED. `u16` in UiConfig, widened to `i64` for registry.
         // Width changes apply on the next render frame.
         SettingMeta {

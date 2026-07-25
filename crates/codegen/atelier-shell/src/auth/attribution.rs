@@ -19,7 +19,6 @@
 //!   "expires_at_seconds_from_now": <i64; auth.expires_at minus now,
 //!                                 or 0 when no current token>,
 //!   "consumer": "OaiCompatClient.<endpoint>" | "StorageClient.<op>"
-//!             | "FeedbackClient.<op>" | "SessionRegistryClient.<op>"
 //!             | "IdleResumeModelRefresh",
 //!   "is_stale_snapshot": <bool; true iff two full in-memory credentials differ>
 //! }
@@ -32,8 +31,8 @@
 //! its six 401 arms; this module provides [`ShellAttribution`], the
 //! concrete impl that the shell wires into
 //! [`atelier_sampler::SamplerConfig::attribution_callback`] at every
-//! sampler-construction site. Non-sampler sites (storage / feedback /
-//! registry / idle-resume) call [`record_consumer_401`]
+//! sampler-construction site. Non-sampler sites (storage / idle-resume)
+//! call [`record_consumer_401`]
 //! directly with their `(consumer_kind, op)` pair.
 
 use std::sync::Arc;
@@ -182,11 +181,6 @@ pub(crate) enum ConsumerKind {
     OaiCompatClient,
     /// Storage upload / batch / check sites in `upload/storage_client.rs`.
     StorageClient,
-    /// Feedback collection sites in `agent/feedback_client.rs`.
-    FeedbackClient,
-    /// Session registry register/update sites in
-    /// `agent/session_registry_client.rs`.
-    SessionRegistryClient,
     /// Idle-resume model-metadata refresh in
     /// `session/acp_session.rs::maybe_refresh_model_metadata_on_resume`.
     /// No per-op discriminator -- the consumer string is just
@@ -213,8 +207,6 @@ impl ConsumerKind {
         match self {
             Self::OaiCompatClient => "OaiCompatClient",
             Self::StorageClient => "StorageClient",
-            Self::FeedbackClient => "FeedbackClient",
-            Self::SessionRegistryClient => "SessionRegistryClient",
             Self::IdleResumeModelRefresh => "IdleResumeModelRefresh",
             Self::ImageGen => "ImageGen",
             Self::VideoGen => "VideoGen",
@@ -247,11 +239,9 @@ fn format_consumer(kind: ConsumerKind, op: &str) -> String {
 /// Emit a single `auth 401 attribution` event for a per-consumer 401.
 ///
 /// Wraps [`record_auth_401`] with the design-doc `consumer` formatting
-/// (e.g., `"StorageClient.upload"`, `"FeedbackClient.submit"`).
+/// (e.g., `"StorageClient.upload"`).
 /// All 401 emit sites in `atelier-shell` go through this helper -- the
-/// per-client `record_401_attribution` wrappers in
-/// `agent/feedback_client.rs`, `agent/session_registry_client.rs`,
-/// and `upload/storage_client.rs` each
+/// storage client wrappers each
 /// resolve their bearer and call this with the right `(kind, op)`.
 ///
 /// The optional marker is used only to record credential presence. When a

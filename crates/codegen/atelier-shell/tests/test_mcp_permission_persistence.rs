@@ -9,6 +9,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 
 use agent_client_protocol as acp;
+use atelier_acp_runtime::{AcpAgentGatewaySender, AcpClientMessage};
 use atelier_paths::AbsPathBuf;
 use atelier_workspace::permission::types::{
     PatternMode, PermissionConfig, PermissionRule, RuleAction, ToolFilter,
@@ -19,7 +20,6 @@ use atelier_workspace::permission::{
 };
 use serial_test::serial;
 use tokio::sync::{mpsc, oneshot};
-use xai_acp_lib::{AcpAgentGatewaySender, AcpClientMessage};
 
 /// Shared `ATELIER_HOME` for the entire test binary. The `OnceLock` in
 /// `atelier-config` only allows one value per process, so all tests share

@@ -9,7 +9,7 @@ use crate::register_resource;
 // Safety-boundary constants. Not configurable.
 pub const MAX_URL_LENGTH: usize = 2_000;
 pub const MAX_REDIRECTS: usize = 10;
-pub const USER_AGENT_STRING: &str = "Mozilla/5.0 (compatible; atelier-agent/1.0; +https://x.ai)";
+pub const USER_AGENT_STRING: &str = "Mozilla/5.0 (compatible; atelier-agent/1.0)";
 
 /// Runtime-configurable parameters for the `web_fetch` tool.
 ///
@@ -187,3 +187,14 @@ pub static DEFAULT_ALLOWED_DOMAINS: &[&str] = &[
     "nginx.org",
     "httpd.apache.org",
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn user_agent_uses_atelier_identity_without_xai_url() {
+        assert!(USER_AGENT_STRING.contains("atelier-agent/"));
+        assert!(!USER_AGENT_STRING.contains("x.ai"));
+    }
+}

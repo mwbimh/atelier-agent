@@ -3,16 +3,16 @@
 use super::setters::{
     pr13_effective_default, set_ask_user_question_timeout_enabled_inner, set_auto_dark_theme_inner,
     set_auto_light_theme_inner, set_collapsed_edit_blocks_inner, set_compact_mode,
-    set_compact_mode_inner, set_contextual_hint_inner, set_default_model_inner,
-    set_default_selected_permission_inner, set_display_refresh_auto_cadence_inner,
-    set_fork_secondary_model_inner, set_group_tool_verbs_inner, set_hunk_tracker_mode_inner,
-    set_invert_scroll_inner, set_keep_text_selection_inner, set_max_thoughts_width_inner,
-    set_multiline_mode, set_prompt_suggestions_inner, set_remember_tool_approvals_inner,
-    set_render_mermaid_inner, set_respect_manual_folds_inner, set_screen_mode_inner,
-    set_scroll_lines_inner, set_scroll_mode_inner, set_scroll_speed_inner,
-    set_show_thinking_blocks_inner, set_show_tips_inner, set_simple_mode_inner, set_theme_inner,
-    set_timeline_inner, set_timestamps, set_timestamps_inner, set_vim_mode_inner,
-    set_voice_capture_mode_inner, set_voice_stt_language_inner,
+    set_compact_mode_inner, set_contextual_hint_inner, set_default_selected_permission_inner,
+    set_display_refresh_auto_cadence_inner, set_fork_secondary_model_inner,
+    set_group_tool_verbs_inner, set_hunk_tracker_mode_inner, set_invert_scroll_inner,
+    set_keep_text_selection_inner, set_max_thoughts_width_inner, set_multiline_mode,
+    set_prompt_suggestions_inner, set_remember_tool_approvals_inner, set_render_mermaid_inner,
+    set_respect_manual_folds_inner, set_screen_mode_inner, set_scroll_lines_inner,
+    set_scroll_mode_inner, set_scroll_speed_inner, set_show_thinking_blocks_inner,
+    set_show_tips_inner, set_simple_mode_inner, set_theme_inner, set_timeline_inner,
+    set_timestamps, set_timestamps_inner, set_vim_mode_inner, set_voice_capture_mode_inner,
+    set_voice_stt_language_inner,
 };
 use crate::app::actions::{Action, Effect};
 use crate::app::app_view::{ActiveView, AppView};
@@ -68,7 +68,6 @@ pub(crate) fn refresh_open_settings_modals(app: &mut AppView) {
                 multiline_mode: agent.multiline_mode,
                 yolo_mode: agent.session.is_yolo(),
                 auto_mode: agent.session.is_auto(),
-                current_model_name: agent.session.models.current_model_name(),
                 available_models: agent
                     .session
                     .models
@@ -177,7 +176,6 @@ pub(in crate::app::dispatch) fn dispatch_open_settings(app: &mut AppView) -> Vec
         multiline_mode: agent.multiline_mode,
         yolo_mode: agent.session.is_yolo(),
         auto_mode: agent.session.is_auto(),
-        current_model_name: agent.session.models.current_model_name(),
         available_models: agent
             .session
             .models
@@ -610,21 +608,6 @@ fn agent_plan_mode(app: &AppView) -> bool {
     false
 }
 
-/// Helper to read the active agent's currently-selected model
-/// display name. Returns `None` when no agent is active OR when the
-/// catalog hasn't loaded yet (e.g. early startup). See
-/// [`agent_multiline_mode`] for the no-agent fallback rationale.
-///
-/// Used by the `default_model` row's `current_value_for`.
-fn agent_current_model_name(app: &AppView) -> Option<String> {
-    if let ActiveView::Agent(id) = app.active_view
-        && let Some(agent) = app.agents.get(&id)
-    {
-        return agent.session.models.current_model_name();
-    }
-    None
-}
-
 /// Helper to clone the `(display_name, ModelId)` pairs from the
 /// active agent's catalog. Returns an empty `Vec` when no agent is
 /// active OR when the catalog is empty.
@@ -652,7 +635,6 @@ pub(crate) fn build_pager_snapshot(app: &AppView) -> crate::settings::PagerLocal
         multiline_mode: agent_multiline_mode(app),
         yolo_mode: agent_yolo_mode(app),
         auto_mode: agent_auto_mode(app),
-        current_model_name: agent_current_model_name(app),
         available_models: agent_available_models(app),
         plan_mode_active: agent_plan_mode(app),
         show_tips: app.show_tips,
@@ -772,21 +754,6 @@ pub(in crate::app::dispatch) fn action_for_reset(
         ("permission_mode", SettingValue::Enum("default")) => Some(Action::SetPermissionMode(
             crate::app::actions::PermissionModeKind::Default,
         )),
-        // default_model: empty string → ClearDefaultModel; non-empty
-        // is a registry/dispatch skew guard.
-        ("default_model", SettingValue::String(s)) => {
-            if s.is_empty() {
-                Some(Action::ClearDefaultModel)
-            } else {
-                tracing::error!(
-                    target: "settings",
-                    value = %s,
-                    "action_for_reset(default_model) received non-empty default — \
-                     registry/dispatch skew (default should be empty string)",
-                );
-                None
-            }
-        }
         // max_thoughts_width: direct round-trip.
         ("max_thoughts_width", SettingValue::Int(i)) => Some(Action::SetMaxThoughtsWidth(*i)),
         // coding_data_sharing: "opt-in" / "opt-out" → bool.
@@ -942,13 +909,6 @@ pub(in crate::app::dispatch) fn apply_setting_rollback(
             // other rollback arms must not clobber it from the global canonical.
             sync_active_auto_flag(app);
         }
-        // `default_model` no longer uses PersistSetting, so this arm is only a
-        // defensive guard for stale queued results from an older pager build.
-        ("default_model", SettingValue::String(_)) => tracing::warn!(
-            target: "settings",
-            key = "default_model",
-            "ignored rollback for retired default_model setting; roles.main remains authoritative",
-        ),
         // max_thoughts_width: direct inner call.
         ("max_thoughts_width", SettingValue::Int(i)) => set_max_thoughts_width_inner(app, *i),
         // scroll_speed: direct inner call (clamp handled by inner).

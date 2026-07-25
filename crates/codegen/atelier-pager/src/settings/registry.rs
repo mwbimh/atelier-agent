@@ -240,9 +240,6 @@ pub struct PagerLocalSnapshot {
     /// Mutually exclusive with `yolo_mode` in practice (yolo wins); read by
     /// `/auto` so it can toggle off when already on.
     pub auto_mode: bool,
-    /// Currently-selected model's display name, or `None` if no catalog
-    /// has loaded yet.
-    pub current_model_name: Option<String>,
     /// `(display_name, ModelId)` pairs from the active session's catalog.
     /// Cloned into the snapshot so the modal's validator/resolver is
     /// self-contained (the modal outlives the borrow on `app.agents`).
@@ -284,7 +281,6 @@ impl Default for PagerLocalSnapshot {
             multiline_mode: false,
             yolo_mode: false,
             auto_mode: false,
-            current_model_name: None,
             available_models: Vec::new(),
             plan_mode_active: false,
             show_tips: None,
@@ -628,11 +624,6 @@ pub fn current_value_for(
             )
             .as_canonical(),
         )),
-        // default_model: reads from pager snapshot (not UiConfig).
-        // None (no catalog yet) → empty string.
-        "default_model" => Some(SettingValue::String(
-            pager.current_model_name.clone().unwrap_or_default(),
-        )),
         // max_thoughts_width: `u16` widened to `i64`.
         "max_thoughts_width" => Some(SettingValue::Int(ui.max_thoughts_width as i64)),
         // coding_data_sharing: inverts the `_opt_out` bool.
@@ -824,16 +815,6 @@ mod tests {
                         *default, expected,
                         "permission_mode default drifts from UiConfig::default()'s \
                          None → 'ask' fallback (load_permission_mode contract)",
-                    );
-                }
-                // default_model: no UiConfig mirror, resolved dynamically.
-                // The empty value invokes the legacy-source cleanup action;
-                // it never asks the shell to choose another model.
-                ("default_model", SettingKind::DynamicEnum { default, .. }) => {
-                    assert_eq!(
-                        *default, "",
-                        "default_model registry default must be empty string — \
-                         reset must retain the current model as roles.main",
                     );
                 }
                 // max_thoughts_width: `u16` widened to `i64`.

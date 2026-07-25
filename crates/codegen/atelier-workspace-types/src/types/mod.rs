@@ -1,7 +1,7 @@
 //! Supporting structs/enums referenced from requests, chunks, and events.
 //!
 //! Every type in this module is a **placeholder**: the canonical
-//! implementations live in other crates today (`xai-hunk-tracker`,
+//! implementations live in other crates today (`atelier-hunk-tracker`,
 //! `atelier-shell`, `atelier-tools`, ...). We define minimal
 //! serializable shapes here so the wire-types crate's API surface
 //! compiles end-to-end. Each type carries a

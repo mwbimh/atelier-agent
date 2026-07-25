@@ -47,7 +47,7 @@ enum PluginEntry {
         has_agents: bool,
         has_mcp: bool,
         #[serde(skip_serializing_if = "Option::is_none")]
-        components: Option<xai_hooks_plugins_types::PluginComponents>,
+        components: Option<atelier_hooks_plugins_types::PluginComponents>,
     },
 }
 
@@ -229,7 +229,7 @@ fn trust_prompt(subject: &str, source_arg: &str) -> String {
         "Installing {subject} requires confirmation.\n\
          Plugins can run hooks, MCP servers, and skills on your machine, so installation needs explicit trust.\n\
          \n\
-         To proceed, re-run with --trust:\n  atelier plugin install {source_arg} --trust"
+         To proceed, re-run with --trust:\n  ate plugin install {source_arg} --trust"
     )
 }
 
@@ -272,7 +272,7 @@ fn cmd_list(json: bool, available: bool) -> Result<()> {
         }
         println!("{}", serde_json::to_string_pretty(&entries)?);
     } else if repos.is_empty() {
-        println!("No plugins installed. Run `atelier plugin install --help` to get started.");
+        println!("No plugins installed. Run `ate plugin install --help` to get started.");
     } else {
         for (repo_key, repo) in &repos {
             let mp = repo
@@ -494,7 +494,7 @@ fn cmd_install_marketplace(
                     .unwrap_or(&mref.name);
                 println!(
                     "Plugin \"{}\" is already installed from {}. \
-                     Run `atelier plugin update {}` to update it.",
+                     Run `ate plugin update {}` to update it.",
                     mref.name, outcome.source_display_name, update_name,
                 );
                 return Ok(());
@@ -549,7 +549,7 @@ fn cmd_uninstall(name: &str, confirm: bool, keep_data: bool) -> Result<()> {
             "Plugin \"{name}\" belongs to repo \"{repo_key}\" which also contains:\n\
              {}\n\n\
              Uninstalling will remove all {total} plugin(s). To proceed:\n\
-               atelier plugin uninstall {name} --confirm",
+               ate plugin uninstall {name} --confirm",
             other_plugins
                 .iter()
                 .map(|p| format!("  - {p}"))
@@ -603,7 +603,7 @@ fn cmd_enable(name: &str) -> Result<()> {
     if registry.find_plugin(name).is_none() {
         bail!(
             "Plugin \"{name}\" not found.\n\
-               Run `atelier plugin list` to see installed plugins."
+               Run `ate plugin list` to see installed plugins."
         );
     }
     if let Err(e) = atelier_shell::config::remove_disabled_plugin(name) {
@@ -620,7 +620,7 @@ fn cmd_disable(name: &str) -> Result<()> {
     if registry.find_plugin(name).is_none() {
         bail!(
             "Plugin \"{name}\" not found.\n\
-               Run `atelier plugin list` to see installed plugins."
+               Run `ate plugin list` to see installed plugins."
         );
     }
     if let Err(e) = atelier_shell::config::remove_enabled_plugin(name) {
@@ -637,7 +637,7 @@ fn cmd_details(name: &str) -> Result<()> {
     let (repo_key, repo, _) = registry.find_plugin(name).ok_or_else(|| {
         anyhow::anyhow!(
             "Plugin \"{name}\" not found.\n\
-             Run `atelier plugin list` to see installed plugins."
+             Run `ate plugin list` to see installed plugins."
         )
     })?;
 
@@ -717,7 +717,7 @@ fn cmd_tag(path: &str, push: bool, force: bool, dry_run: bool) -> Result<()> {
     let version = match load_manifest(&root) {
         Ok(ManifestLoadResult::Found(m)) => m.version.ok_or_else(|| {
             anyhow::anyhow!(
-                "No `version` field in plugin.json. Set a version to use `atelier plugin tag`."
+                "No `version` field in plugin.json. Set a version to use `ate plugin tag`."
             )
         })?,
         Ok(ManifestLoadResult::NotFound) => bail!("No plugin.json found in {path}."),
@@ -827,7 +827,7 @@ fn marketplace_list(
     } else if sources.is_empty() {
         println!(
             "No marketplace sources configured.\n\
-             Run `atelier plugin marketplace add --help` to get started."
+             Run `ate plugin marketplace add --help` to get started."
         );
     } else {
         for s in sources {
@@ -1077,18 +1077,18 @@ mod tests {
     #[test]
     fn trust_prompt_marketplace_has_no_error_framing() {
         let msg = trust_prompt(
-            "\"sentry\" from marketplace \"xAI Official\"",
-            "sentry@xai-org/plugin-marketplace",
+            "\"sentry\" from marketplace \"Atelier Official\"",
+            "sentry@atelier-org/plugin-marketplace",
         );
         assert!(
             msg.starts_with(
-                "Installing \"sentry\" from marketplace \"xAI Official\" requires confirmation."
+                "Installing \"sentry\" from marketplace \"Atelier Official\" requires confirmation."
             ),
             "{msg}"
         );
         assert!(msg.contains("hooks, MCP servers, and skills"));
         assert!(msg.contains(
-            "To proceed, re-run with --trust:\n  atelier plugin install sentry@xai-org/plugin-marketplace --trust"
+            "To proceed, re-run with --trust:\n  ate plugin install sentry@atelier-org/plugin-marketplace --trust"
         ));
         assert!(!msg.contains("Error"));
         assert!(!msg.contains("Failed"));
@@ -1104,10 +1104,7 @@ mod tests {
             ),
             "{git}"
         );
-        assert!(
-            git.ends_with("  atelier plugin install u/r --trust"),
-            "{git}"
-        );
+        assert!(git.ends_with("  ate plugin install u/r --trust"), "{git}");
         let local = trust_prompt("from directory /tmp/p", "./p");
         assert!(
             local.starts_with("Installing from directory /tmp/p requires confirmation."),

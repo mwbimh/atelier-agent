@@ -110,7 +110,7 @@ fn protocol_info(args: &acp::ExtRequest) -> ExtResult {
     let requested = requested_protocol_versions(args);
     let base = protocol_info_document();
     let negotiated = (!requested.is_empty())
-        .then(|| xai_acp_lib::ProtocolInfo::negotiate(&requested, &base.supported_versions))
+        .then(|| atelier_acp_runtime::ProtocolInfo::negotiate(&requested, &base.supported_versions))
         .flatten();
     let protocol = base.with_negotiated_version(negotiated);
     to_raw_response(&protocol)
@@ -138,13 +138,15 @@ fn requested_protocol_versions(args: &acp::ExtRequest) -> Vec<String> {
     .unwrap_or_default()
 }
 
-fn protocol_info_document() -> xai_acp_lib::ProtocolInfo {
-    xai_acp_lib::ProtocolInfo::new(
-        xai_acp_lib::ATELIER_PROTOCOL_VERSION,
-        xai_acp_lib::ATELIER_SUPPORTED_PROTOCOL_VERSIONS
+fn protocol_info_document() -> atelier_acp_runtime::ProtocolInfo {
+    atelier_acp_runtime::ProtocolInfo::new(
+        atelier_acp_runtime::ATELIER_PROTOCOL_VERSION,
+        atelier_acp_runtime::ATELIER_SUPPORTED_PROTOCOL_VERSIONS
             .iter()
             .copied(),
-        xai_acp_lib::ATELIER_PROTOCOL_CAPABILITIES.iter().copied(),
+        atelier_acp_runtime::ATELIER_PROTOCOL_CAPABILITIES
+            .iter()
+            .copied(),
         [
             PROTOCOL_INFO,
             RUNTIME_STATUS,
@@ -195,6 +197,9 @@ fn protocol_info_document() -> xai_acp_lib::ProtocolInfo {
             crate::extensions::provider::PROVIDER_TEST,
             crate::extensions::provider::PROVIDER_REFRESH_MODELS,
             crate::extensions::provider::PROVIDER_ENABLE,
+            crate::extensions::provider::PROVIDER_OAUTH_BEGIN,
+            crate::extensions::provider::PROVIDER_OAUTH_COMPLETE,
+            crate::extensions::provider::PROVIDER_OAUTH_LOGOUT,
             crate::extensions::provider::MODEL_LIST,
             crate::extensions::provider::MODEL_GET,
             crate::extensions::provider::MODEL_UPDATE,
@@ -203,11 +208,12 @@ fn protocol_info_document() -> xai_acp_lib::ProtocolInfo {
             crate::extensions::provider::MODEL_PROVIDER_OVERRIDE_SET,
             crate::extensions::provider::MODEL_PROVIDER_OVERRIDE_DELETE,
             crate::extensions::provider::MODEL_PROVIDER_OVERRIDE_TEST,
-            crate::extensions::provider::MODEL_SET_DEFAULT,
             crate::extensions::provider::MODEL_SET_CAPABILITIES,
             crate::extensions::provider::CREDENTIAL_STATUS,
             crate::extensions::provider::CREDENTIAL_SET,
             crate::extensions::provider::CREDENTIAL_DELETE,
+            crate::extensions::configuration::CONFIG_GET,
+            crate::extensions::configuration::CONFIG_UPDATE,
         ],
     )
 }
@@ -234,7 +240,7 @@ fn runtime_status(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
         statuses
     };
     to_raw_response(&serde_json::json!({
-        "protocolVersion": xai_acp_lib::ATELIER_PROTOCOL_VERSION,
+        "protocolVersion": atelier_acp_runtime::ATELIER_PROTOCOL_VERSION,
         "statuses": statuses,
     }))
 }
@@ -947,10 +953,13 @@ mod tests {
     fn protocol_info_advertises_version_capabilities_and_methods() {
         let info = protocol_info_document();
 
-        assert_eq!(info.protocol_version, xai_acp_lib::ATELIER_PROTOCOL_VERSION);
+        assert_eq!(
+            info.protocol_version,
+            atelier_acp_runtime::ATELIER_PROTOCOL_VERSION
+        );
         assert_eq!(
             info.supported_versions,
-            xai_acp_lib::ATELIER_SUPPORTED_PROTOCOL_VERSIONS
+            atelier_acp_runtime::ATELIER_SUPPORTED_PROTOCOL_VERSIONS
                 .iter()
                 .map(|version| (*version).to_owned())
                 .collect::<Vec<_>>()
@@ -983,7 +992,7 @@ mod tests {
     #[test]
     fn protocol_info_negotiates_versions_from_client_params() {
         let raw = serde_json::value::to_raw_value(&serde_json::json!({
-            "supportedVersions": ["1.0", xai_acp_lib::ATELIER_PROTOCOL_VERSION]
+            "supportedVersions": ["1.0", atelier_acp_runtime::ATELIER_PROTOCOL_VERSION]
         }))
         .unwrap();
         let request = acp::ExtRequest::new(PROTOCOL_INFO, std::sync::Arc::from(raw));
@@ -991,7 +1000,7 @@ mod tests {
         let value: Value = serde_json::from_str(response.0.get()).unwrap();
         assert_eq!(
             value["negotiatedVersion"],
-            xai_acp_lib::ATELIER_PROTOCOL_VERSION
+            atelier_acp_runtime::ATELIER_PROTOCOL_VERSION
         );
 
         let raw = serde_json::value::to_raw_value(&serde_json::json!({

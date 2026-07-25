@@ -1,8 +1,8 @@
-use super::RemoteSettings;
+use super::LocalRuntimeSettings;
 use super::mcp::use_leader_from_toml;
+use atelier_fast_worktree::CreationMode;
 use serde::{Deserialize, Serialize};
 use toml::Value as TomlValue;
-use xai_fast_worktree::CreationMode;
 
 /// Worktree creation type configuration.
 ///
@@ -79,7 +79,7 @@ pub fn worktree_type_from_toml(root: &TomlValue) -> WorktreeType {
 /// Returns the resolved type and its provenance (`"local"`, `"remote"`, or `"default"`).
 pub fn resolve_worktree_type(
     raw_config: &TomlValue,
-    remote: Option<&RemoteSettings>,
+    remote: Option<&LocalRuntimeSettings>,
 ) -> (WorktreeType, &'static str) {
     if let Some(wt) = worktree_type_from_toml_opt(raw_config) {
         return (wt, "local");
@@ -112,7 +112,7 @@ pub fn restore_code_from_toml(root: &TomlValue) -> Option<bool> {
 }
 
 /// Resolve restore_code: local config > remote settings > default (`false`).
-pub fn resolve_restore_code(raw_config: &TomlValue, remote: Option<&RemoteSettings>) -> bool {
+pub fn resolve_restore_code(raw_config: &TomlValue, remote: Option<&LocalRuntimeSettings>) -> bool {
     restore_code_from_toml(raw_config)
         .or(remote.and_then(|r| r.restore_code))
         .unwrap_or(false)
@@ -132,7 +132,7 @@ pub fn use_leader_sync() -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::RemoteSettings;
+    use super::LocalRuntimeSettings;
     use super::*;
     use toml::Value as TomlValue;
 
@@ -239,7 +239,7 @@ worktree_type = "invalid"
     #[test]
     fn test_resolve_worktree_type_local_wins_over_remote() {
         let root: TomlValue = toml::from_str("[cli]\nworktree_type = \"git\"").unwrap();
-        let remote = RemoteSettings {
+        let remote = LocalRuntimeSettings {
             worktree_type: Some("standalone".to_owned()),
             ..Default::default()
         };
@@ -252,7 +252,7 @@ worktree_type = "invalid"
     #[test]
     fn test_resolve_worktree_type_remote_fallback() {
         let root: TomlValue = toml::from_str("[cli]\nauto_update = true").unwrap();
-        let remote = RemoteSettings {
+        let remote = LocalRuntimeSettings {
             worktree_type: Some("standalone".to_owned()),
             ..Default::default()
         };
@@ -274,7 +274,7 @@ worktree_type = "invalid"
     #[test]
     fn test_resolve_worktree_type_invalid_remote_falls_back_to_default() {
         let root: TomlValue = toml::from_str("[cli]\nauto_update = true").unwrap();
-        let remote = RemoteSettings {
+        let remote = LocalRuntimeSettings {
             worktree_type: Some("bogus".to_owned()),
             ..Default::default()
         };
@@ -287,7 +287,7 @@ worktree_type = "invalid"
     #[test]
     fn test_resolve_worktree_type_remote_none_field() {
         let root: TomlValue = toml::from_str("[cli]\nauto_update = true").unwrap();
-        let remote = RemoteSettings {
+        let remote = LocalRuntimeSettings {
             worktree_type: None,
             ..Default::default()
         };
@@ -332,7 +332,7 @@ worktree_type = "invalid"
     #[test]
     fn test_resolve_restore_code_local_wins_over_remote() {
         let root: TomlValue = toml::from_str("[cli]\nrestore_code = true").unwrap();
-        let remote = RemoteSettings {
+        let remote = LocalRuntimeSettings {
             restore_code: Some(false),
             ..Default::default()
         };
@@ -342,7 +342,7 @@ worktree_type = "invalid"
     #[test]
     fn test_resolve_restore_code_remote_fallback() {
         let root: TomlValue = toml::from_str("[cli]\nauto_update = true").unwrap();
-        let remote = RemoteSettings {
+        let remote = LocalRuntimeSettings {
             restore_code: Some(true),
             ..Default::default()
         };
@@ -358,7 +358,7 @@ worktree_type = "invalid"
     #[test]
     fn test_resolve_restore_code_remote_none_falls_to_default() {
         let root: TomlValue = toml::from_str("[cli]\nauto_update = true").unwrap();
-        let remote = RemoteSettings {
+        let remote = LocalRuntimeSettings {
             restore_code: None,
             ..Default::default()
         };
@@ -368,7 +368,7 @@ worktree_type = "invalid"
     #[test]
     fn test_resolve_restore_code_local_false_overrides_remote_true() {
         let root: TomlValue = toml::from_str("[cli]\nrestore_code = false").unwrap();
-        let remote = RemoteSettings {
+        let remote = LocalRuntimeSettings {
             restore_code: Some(true),
             ..Default::default()
         };

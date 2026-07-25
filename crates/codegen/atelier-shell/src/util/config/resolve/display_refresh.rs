@@ -1,6 +1,6 @@
 //! Display-refresh probe + auto-cadence policy resolve and pure cadence derivation.
 
-use crate::util::config::RemoteSettings;
+use crate::util::config::LocalRuntimeSettings;
 use atelier_config_types::DisplayRefreshSettings;
 use serde::Deserialize;
 use toml::Value as TomlValue;
@@ -155,7 +155,7 @@ pub fn resolve_display_refresh(
     requirements: Option<&TomlValue>,
     user: Option<&TomlValue>,
     managed: Option<&TomlValue>,
-    remote: Option<&RemoteSettings>,
+    remote: Option<&LocalRuntimeSettings>,
 ) -> DisplayRefreshPolicy {
     use crate::agent::config::BoolFlag;
 
@@ -357,10 +357,10 @@ mod tests {
         toml::from_str(&format!("[ui.display_refresh]\n{body}\n")).unwrap()
     }
 
-    fn remote_object(settings: DisplayRefreshSettings) -> RemoteSettings {
-        RemoteSettings {
+    fn remote_object(settings: DisplayRefreshSettings) -> LocalRuntimeSettings {
+        LocalRuntimeSettings {
             display_refresh: Some(settings),
-            ..RemoteSettings::default()
+            ..LocalRuntimeSettings::default()
         }
     }
 

@@ -563,10 +563,10 @@ pub(crate) struct SessionReload {
     /// Reconnect cursor as of window open, restored with the stash so a
     /// later reload doesn't skip events the restored transcript never got.
     last_seen_event_id: Option<String>,
-    /// Live dedup highwaters (ACP + xAI) as of window open (same restore
+    /// Live dedup highwaters (ACP + extension) as of window open (same restore
     /// rationale).
     last_applied_event_seq: Option<u64>,
-    last_applied_xai_event_seq: Option<u64>,
+    last_applied_extension_event_seq: Option<u64>,
     /// Whether any `isReplay` update applied during this window. False means
     /// the agent resolved the cursor and sent only a live post-cursor tail.
     saw_replay: bool,
@@ -620,7 +620,7 @@ impl CtaPhase {
 #[derive(Default)]
 pub struct PluginCtaState {
     /// Official-source, not-installed candidate plugins for CTA matching.
-    pub candidates: Vec<xai_hooks_plugins_types::MarketplacePluginEntry>,
+    pub candidates: Vec<atelier_hooks_plugins_types::MarketplacePluginEntry>,
     /// Whether the official marketplace source was present in the last catalog scan.
     pub official_source_present: bool,
     /// Current CTA phase (recomputed when the prompt debounce expires).
@@ -753,18 +753,18 @@ pub struct AgentView {
     /// are dropped so each event renders exactly once. `None` until the first
     /// `eventId`-bearing update.
     ///
-    /// ACP stream only — the xAI stream keeps its own highwater
-    /// ([`Self::last_applied_xai_event_seq`]) because the two streams are not
+    /// ACP stream only — the extension stream keeps its own highwater
+    /// ([`Self::last_applied_extension_event_seq`]) because the two streams are not
     /// delivered in one id order: ACP lines ride the agent's FIFO event
-    /// pipeline while xAI lines are emitted direct-to-gateway, so a fresh xAI
+    /// pipeline while extension lines are emitted direct-to-gateway, so a fresh extension
     /// id arriving ahead of queued lower-id ACP chunks must not make the
     /// chunks look stale (silent live-text loss).
     pub last_applied_event_seq: Option<u64>,
-    /// xAI-stream sibling of [`Self::last_applied_event_seq`] (see there for
+    /// Extension-stream sibling of [`Self::last_applied_event_seq`] (see there for
     /// why the highwaters are split). Same drop rule, replay-exempt.
-    pub last_applied_xai_event_seq: Option<u64>,
+    pub last_applied_extension_event_seq: Option<u64>,
     /// Raw `eventId` of the most recent update APPLIED to this root session —
-    /// replay or live, on both the ACP and xAI paths; dropped updates (dedup,
+    /// replay or live, on both the ACP and extension paths; dropped updates (dedup,
     /// promptId gate, unexpected replay) don't move it. Sent as `_meta.cursor`
     /// on a reconnect `session/load` so the agent replays only the post-cursor
     /// tail. Why the full string: see

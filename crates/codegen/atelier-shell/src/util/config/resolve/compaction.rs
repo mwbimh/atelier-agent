@@ -23,7 +23,7 @@ pub(crate) const ENV_AUTO_COMPACT_THRESHOLD_PERCENT: &str =
 ///      (populated from `atelier_build_models[i].auto_compact_threshold_percent`;
 ///      intentionally NOT collapsed via `ConfigModelOverride::apply` so the
 ///      user-vs-GB per-model distinction is preserved)
-///   5. remote settings global `RemoteSettings.auto_compact_threshold_percent`
+///   5. remote settings global `LocalRuntimeSettings.auto_compact_threshold_percent`
 ///      (populated from `atelier_build_settings.auto_compact_threshold_percent`)
 ///   6. default `DEFAULT_AUTO_COMPACT_THRESHOLD_PERCENT` (85)
 ///
@@ -41,7 +41,7 @@ pub fn resolve_auto_compact_threshold_percent(
             .and_then(|m| m.auto_compact_threshold_percent),
         cfg.session.auto_compact_threshold_percent,
         model.and_then(|m| m.auto_compact_threshold_percent),
-        cfg.remote_settings
+        cfg.local_runtime_settings
             .as_ref()
             .and_then(|r| r.auto_compact_threshold_percent),
     )
@@ -104,7 +104,7 @@ const ENV_COMPACTION_WALL_CLOCK_BUDGET_SECS: &str = "ATELIER_COMPACTION_WALL_CLO
 
 /// Resolve the per-compaction wall-clock budget (seconds). Precedence: env
 /// `ATELIER_COMPACTION_WALL_CLOCK_SECS` > remote settings global
-/// `RemoteSettings.compaction_wall_clock_budget_secs` >
+/// `LocalRuntimeSettings.compaction_wall_clock_budget_secs` >
 /// [`DEFAULT_COMPACTION_WALL_CLOCK_BUDGET_SECS`] (a per-model `ModelInfo` tier
 /// would slot in ahead of the global one).
 ///

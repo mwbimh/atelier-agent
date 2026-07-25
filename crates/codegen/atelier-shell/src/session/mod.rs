@@ -14,6 +14,7 @@ pub use self::acp_session::*;
 pub use self::acp_types::*;
 pub use self::commands::*;
 pub use self::context_snapshot::{ContextSnapshot, ContextSnapshotId};
+pub use self::feedback_types::{ClientType, FeedbackTerminalInfo, RatingType};
 pub use self::fork::{ForkSessionRequest, ForkSessionResponse, fork_session};
 pub use self::handle::*;
 pub use self::persistence::{
@@ -22,10 +23,9 @@ pub use self::persistence::{
 };
 pub use self::result::{Empty, ExtMethodResult};
 pub use self::share::{ShareSessionRequest, ShareSessionResponse};
-pub use prod_mc_cli_chat_proxy_types::feedback_types::{
-    ClientType, FeedbackTerminalInfo, RatingType,
+pub use atelier_fsnotify::{
+    FsConfig, FsEvent, FsEventKind, FsEventSource, FsNotifyError, GitMetaKind,
 };
-pub use xai_fsnotify::{FsConfig, FsEvent, FsEventKind, FsEventSource, FsNotifyError, GitMetaKind};
 /// `false` twin: this template is not compiled into this build, so no
 /// template matches. Keeps ungated call sites compiling in both
 /// configurations.
@@ -273,7 +273,7 @@ mod tests {
         );
     }
 }
-/// Client-requested fs notification mode (was xai_fsnotify::FsNotifyMode).
+/// Client-requested fs notification mode (was atelier_fsnotify::FsNotifyMode).
 /// Determines whether the session sends an initial file index to the client
 /// or just streams raw file events.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
@@ -301,15 +301,6 @@ pub mod share {
         pub share_url: String,
     }
 }
-/// Proxy config for the session registry client.
-/// Shared between `acp_session` (slash commands) and `persistence` (title generation).
-#[derive(Clone)]
-pub(crate) struct RegistryConfig {
-    pub base_url: String,
-    pub user_token: String,
-    pub deployment_key: Option<String>,
-    pub alpha_test_key: Option<String>,
-}
 pub mod acp_conversion;
 pub mod acp_mcp;
 pub(crate) mod acp_session;
@@ -319,6 +310,7 @@ pub(crate) mod events;
 pub mod export;
 pub mod feedback;
 pub mod feedback_manager;
+pub mod feedback_types;
 pub mod file_system;
 pub mod fork;
 pub(crate) mod fs_watch;
@@ -352,7 +344,6 @@ pub mod prompt_history;
 pub mod prompt_parser;
 pub(crate) mod prompt_timing;
 pub(crate) mod replay_events;
-pub mod repo_changes;
 #[path = "restore_stub.rs"]
 pub mod restore;
 pub mod result;

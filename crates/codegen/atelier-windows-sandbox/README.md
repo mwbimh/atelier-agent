@@ -1,47 +1,76 @@
 # Atelier Windows sandbox
 
-This crate is the first local Windows import based on the pinned
+This crate is the local Windows implementation based on the pinned
 `codex-rs/windows-sandbox-rs` source at commit
 `71448a29e7343b9613eaea620fcdbd196aed2af0`.
 
-The active surface is intentionally small and real:
+The active process chain is:
 
-- `run_command` validates existing roots and the command cwd, creates a
-  restricted primary token, grants a temporary capability SID through ACLs,
-  starts the child with `CreateProcessAsUserW`, captures stdout/stderr, and
-  restores the original ACLs.
-- `atelier-command-runner` exposes the same operation as a fail-closed helper
-  CLI. Release builds normally invoke the implementation through the hidden
-  `atelier.exe --internal-command-runner ...` mode, so the standalone helper
-  executable is not required beside `atelier.exe`.
+- `ate sandbox setup` launches the hidden elevated setup mode and creates
+  `AtelierSandbox` for network-allowed processes and `AtelierSandboxNoNet` for
+  network-disabled processes. Their random passwords are protected with
+  machine-scope DPAPI under `~/.atelier/.sandbox-secrets`.
+- Persistent WFP rules at `ALE_AUTH_CONNECT_V4/V6` block outbound TCP and UDP
+  for the `AtelierSandboxNoNet` account SID. Setup and status verify the rule
+  shape and SID binding; WFP failure leaves setup unavailable (fail-closed).
+- The current `ate.exe` is materialized under `~/.atelier/.sandbox-bin`; the
+  release directory still contains only the public `ate.exe`.
+- The parent starts the materialized binary with `CreateProcessWithLogonW` and
+  exchanges the spawn request and raw standard streams through sandbox-user
+  scoped named pipes.
+- The persistent-user runner derives a user-aware `WRITE_RESTRICTED` token,
+  starts the target with `CreateProcessAsUserW`, and remains in a parent-owned
+  kill-on-close Job Object.
+- Workspace roots receive temporary account and capability ACL entries. The
+  original ACLs are restored when the sandboxed process exits.
 - `ATELIER_HOME` is the only home-directory variable introduced by this
   crate. Telemetry is `None`/no-op and OTEL exporter variables are disabled in
   the child environment.
 
-The following upstream capabilities are deliberately not active in this
-first-stage import and must not be inferred from this crate:
+The following upstream capability is not implemented here:
 
-- elevated provisioning and its IPC protocol;
-- Windows Filtering Platform (WFP) network enforcement;
 - ConPTY/TTY session support.
 
 Those features require the larger product dependency graph and separate
 security review. This crate fails closed when roots, cwd, or the command path
 cannot be normalized, and it never falls back to an unsandboxed child.
 
-## Internal release entry point
+## Internal release entry points
 
-When `atelier-windows-sandbox` resolves the current executable as the Atelier
-main binary, it starts that same executable with:
+The single public binary hosts all helpers behind hidden markers:
 
 ```text
-atelier.exe --internal-command-runner \
-  --mode workspace-write \
-  --root <workspace-root> \
-  --cwd <cwd> \
-  -- <program> [args...]
+ate.exe --internal-windows-sandbox-setup <payload>
+ate.exe --internal-windows-sandbox-runner <pipe arguments>
+ate.exe --internal-command-runner ...
+ate.exe --internal-workspace-worker --root <workspace-root>
 ```
 
-The marker is handled before normal TUI startup. It is intentionally omitted
-from `atelier --help`. `ATELIER_COMMAND_RUNNER` can still point to the
-standalone `atelier-command-runner.exe` for tests or custom packaging.
+These markers are handled before TUI, configuration, logging, or telemetry
+startup and are intentionally omitted from `ate --help`.
+
+## Public management commands
+
+```text
+ate sandbox setup
+ate sandbox status
+ate sandbox status --json
+ate sandbox reset
+ate sandbox reset --yes
+```
+
+- `setup` is the only setup path and explicitly opens one UAC prompt.
+- `status` is read-only and never elevates.
+- `reset` removes the WFP provider/sublayer/filters, both sandbox accounts,
+  setup marker, and DPAPI credential file. Without `--yes`, the user must type
+  `reset` exactly before the UAC helper is launched.
+
+The WFP implementation is derived from the pinned Apache-2.0 Codex source
+listed above. Atelier uses its own stable WFP GUID namespace and removes the
+Codex telemetry path.
+
+After one-time setup, run the real OS-boundary test with:
+
+```powershell
+cargo test --locked -p atelier-windows-sandbox --test network_wfp_e2e -- --ignored --nocapture --test-threads=1
+```

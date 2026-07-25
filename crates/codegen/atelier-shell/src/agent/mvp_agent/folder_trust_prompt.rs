@@ -98,7 +98,7 @@ impl MvpAgent {
         &self,
         session_id: &acp::SessionId,
         cwd: &std::path::Path,
-        remote: Option<&crate::util::config::RemoteSettings>,
+        remote: Option<&crate::util::config::LocalRuntimeSettings>,
     ) {
         if !self.interactive_trust_client.get() {
             return;

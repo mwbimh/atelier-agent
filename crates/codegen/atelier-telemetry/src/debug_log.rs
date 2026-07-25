@@ -22,8 +22,8 @@ use tracing_subscriber::filter::{EnvFilter, LevelFilter};
 use tracing_subscriber::layer::{Context, Layer};
 use tracing_subscriber::registry::LookupSpan;
 
+use crate::home::atelier_home;
 use crate::session_ctx::SESSION_ID_FIELD;
-use atelier_config::atelier_home;
 
 /// Which env var requested a single-file debug log (drives filter and diagnostics).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,7 +64,7 @@ pub const RMCP_SSE_NOISE_TARGET: &str = "rmcp::transport::common::client_side_ss
 // crates at debug regardless of a narrowing RUST_LOG, with deps at info so they
 // don't flood. Curated first-party allowlist: new atelier crates default to `info`
 // until added here.
-const FIREHOSE_BASE_DIRECTIVES: &str = "info,atelier_pager=debug,atelier_shell=debug,atelier_tools=debug,atelier_telemetry=debug,atelier_agent=debug,atelier_mcp=debug,xai_acp_lib=debug,sampling_log=off";
+const FIREHOSE_BASE_DIRECTIVES: &str = "info,atelier_pager=debug,atelier_shell=debug,atelier_tools=debug,atelier_telemetry=debug,atelier_agent=debug,atelier_mcp=debug,atelier_acp_runtime=debug,sampling_log=off";
 
 // Full firehose directives: the curated crate list plus the pager's ACP
 // update target (built from the constant above, not a literal).

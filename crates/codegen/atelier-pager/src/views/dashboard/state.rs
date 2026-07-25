@@ -5508,7 +5508,7 @@ mod tests {
 
     fn peek_test_image() -> crate::prompt_images::PastedImage {
         crate::prompt_images::PastedImage {
-            element_id: xai_ratatui_textarea::ElementId::from_raw(0),
+            element_id: atelier_ratatui_textarea::ElementId::from_raw(0),
             display_number: 0,
             mime_type: "image/png".into(),
             dimensions: Some((10, 10)),
@@ -7816,7 +7816,7 @@ mod tests {
     fn pasted_image_chip_omits_full_path() {
         let mut state = DashboardState::new();
         let pasted = crate::prompt_images::PastedImage {
-            element_id: xai_ratatui_textarea::ElementId::from_raw(0),
+            element_id: atelier_ratatui_textarea::ElementId::from_raw(0),
             display_number: 0,
             mime_type: "image/png".into(),
             dimensions: Some((10, 10)),
@@ -8396,7 +8396,7 @@ mod tests {
         let completion = state.complete_clipboard_attachment_paste(
             completion_ctx(None, false),
             crate::app::actions::ProbedAttachment::NoRaster,
-            Some("file:///definitely/missing/xai-primary-paste.png".to_owned()),
+            Some("file:///definitely/missing/repo-primary-paste.png".to_owned()),
         );
 
         assert_eq!(

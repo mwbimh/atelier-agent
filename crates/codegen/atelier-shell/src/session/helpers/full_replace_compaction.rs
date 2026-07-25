@@ -33,7 +33,7 @@ use atelier_sampler::SamplerConfig as SamplingConfig;
 use atelier_sampling_types::{ConversationItem, HostedTool, ToolSpec};
 use atelier_telemetry::events::{CompactionRetryDegraded, CompactionTrigger};
 
-use xai_chat_state::compaction_utils::{
+use atelier_chat_state::compaction_utils::{
     CompactionAttempt, MAX_CAPTURED_SUMMARY_CHARS, bound_captured_output,
 };
 

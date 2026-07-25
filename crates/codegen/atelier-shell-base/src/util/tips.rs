@@ -1,6 +1,6 @@
 //! Tip of the Day — selection logic for tips served from remote settings.
 //!
-//! Tips are fetched at startup via `RemoteSettings.tips` (from `/v1/settings`).
+//! Tips are fetched at startup via `LocalRuntimeSettings.tips` (from `/v1/settings`).
 //! This module provides per-session rotation: each launch shows the next tip
 //! in sequence, cycling through all tips before repeating. The cursor is
 //! persisted to `~/.atelier/tip_cursor.json`.

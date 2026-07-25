@@ -188,7 +188,7 @@ fn grep_timeout_secs(is_wsl: bool) -> u64 {
 
 /// Grep's wall-clock timeout for the current platform.
 fn grep_timeout() -> Duration {
-    Duration::from_secs(grep_timeout_secs(xai_tty_utils::is_wsl()))
+    Duration::from_secs(grep_timeout_secs(atelier_tty_utils::is_wsl()))
 }
 
 /// Resolve the effective line/entry budget for this call.
@@ -219,11 +219,11 @@ pub fn max_head_limit(output_mode: &OutputMode) -> usize {
 /// grep streams the formatted card body (`PlainText` / `Append`), never raw
 /// stdout; the `<workspace_result …>` wrapper and "Found N …" summary are a
 /// terminal-only footer, so the stream is a faithful prefix of the card body.
-static GREP_CAPABILITIES: LazyLock<xai_tool_protocol::ToolCapabilities> =
-    LazyLock::new(|| xai_tool_protocol::ToolCapabilities {
+static GREP_CAPABILITIES: LazyLock<atelier_tool_protocol::ToolCapabilities> =
+    LazyLock::new(|| atelier_tool_protocol::ToolCapabilities {
         is_read_only: true,
-        tool_scope: Some(xai_tool_protocol::ToolScope::Read),
-        streaming: Some(xai_tool_protocol::StreamingSpec {
+        tool_scope: Some(atelier_tool_protocol::ToolScope::Read),
+        streaming: Some(atelier_tool_protocol::StreamingSpec {
             subkind: "grep_match_chunk".to_owned(),
             max_delta_bytes: None,
         }),
@@ -257,25 +257,25 @@ impl crate::types::tool_metadata::ToolMetadata for GrepTool {
     }
 }
 
-impl xai_tool_runtime::Tool for GrepTool {
+impl atelier_tool_runtime::Tool for GrepTool {
     type Args = GrepSearchInput;
     type Output = GrepSearchOutput;
 
-    fn id(&self) -> xai_tool_protocol::ToolId {
-        xai_tool_protocol::ToolId::new("grep").expect("valid tool id")
+    fn id(&self) -> atelier_tool_protocol::ToolId {
+        atelier_tool_protocol::ToolId::new("grep").expect("valid tool id")
     }
 
     fn description(
         &self,
-        _ctx: &::xai_tool_runtime::ListToolsContext,
-    ) -> xai_tool_types::ToolDescription {
-        xai_tool_types::ToolDescription::new(
+        _ctx: &::atelier_tool_runtime::ListToolsContext,
+    ) -> atelier_tool_types::ToolDescription {
+        atelier_tool_types::ToolDescription::new(
             "grep",
             crate::types::tool_metadata::ToolMetadata::description_template(self),
         )
     }
 
-    fn capabilities(&self) -> xai_tool_protocol::ToolCapabilities {
+    fn capabilities(&self) -> atelier_tool_protocol::ToolCapabilities {
         // Clone of `GREP_CAPABILITIES`; read at registration time only.
         GREP_CAPABILITIES.clone()
     }
@@ -288,14 +288,14 @@ impl xai_tool_runtime::Tool for GrepTool {
     /// `WorkspaceViewerContext::stream_tool_progress`.
     async fn execute(
         &self,
-        ctx: xai_tool_runtime::ToolCallContext,
+        ctx: atelier_tool_runtime::ToolCallContext,
         input: GrepSearchInput,
-    ) -> xai_tool_runtime::ToolStream<GrepSearchOutput> {
+    ) -> atelier_tool_runtime::ToolStream<GrepSearchOutput> {
         // Absent extension or spec ⇒ gate off. `Some(spec)` iff the gate is
         // on; the spec borrow is `'static` (LazyLock), so it moves straight
         // into the stream below.
         let admitted_spec = ctx
-            .get::<xai_tool_runtime::WorkspaceViewerContext>()
+            .get::<atelier_tool_runtime::WorkspaceViewerContext>()
             .zip(GREP_CAPABILITIES.streaming.as_ref())
             .filter(|(vctx, _)| vctx.stream_tool_progress)
             .map(|(_, spec)| spec);
@@ -303,7 +303,7 @@ impl xai_tool_runtime::Tool for GrepTool {
         // Fast path: gate off ⇒ run the blocking implementation and wrap its
         // single result. Identical to the pre-streaming contract.
         let Some(spec) = admitted_spec else {
-            return xai_tool_runtime::terminal_only(self.run(ctx, input).await);
+            return atelier_tool_runtime::terminal_only(self.run(ctx, input).await);
         };
 
         // `tool.grep` span matching `run`'s; a guard can't be held across
@@ -331,9 +331,9 @@ impl xai_tool_runtime::Tool for GrepTool {
     )]
     async fn run(
         &self,
-        ctx: xai_tool_runtime::ToolCallContext,
+        ctx: atelier_tool_runtime::ToolCallContext,
         input: GrepSearchInput,
-    ) -> Result<GrepSearchOutput, xai_tool_runtime::ToolError> {
+    ) -> Result<GrepSearchOutput, atelier_tool_runtime::ToolError> {
         let started = std::time::Instant::now();
         let GrepReady {
             mut child,
@@ -438,11 +438,11 @@ impl xai_tool_runtime::Tool for GrepTool {
 /// Streaming grep pipeline: spawn ripgrep, project each match line via
 /// `BodyStreamer`, and emit deltas before the terminal card.
 fn grep_progress_stream(
-    ctx: xai_tool_runtime::ToolCallContext,
+    ctx: atelier_tool_runtime::ToolCallContext,
     input: GrepSearchInput,
-    spec: &'static xai_tool_protocol::StreamingSpec,
+    spec: &'static atelier_tool_protocol::StreamingSpec,
     span: tracing::Span,
-) -> xai_tool_runtime::ToolStream<GrepSearchOutput> {
+) -> atelier_tool_runtime::ToolStream<GrepSearchOutput> {
     Box::pin(async_stream::stream! {
         let stream_started = std::time::Instant::now();
         let GrepReady {
@@ -457,7 +457,7 @@ fn grep_progress_stream(
                 // still populate the `tool.grep` span in the streaming (prod) path.
                 span.record("wall_ms", stream_started.elapsed().as_millis() as u64);
                 span.record("early_kill", false);
-                yield xai_tool_runtime::ToolStreamItem::Terminal(Ok(out));
+                yield atelier_tool_runtime::ToolStreamItem::Terminal(Ok(out));
                 return;
             }
             Ok(GrepStep::Backend(out)) => {
@@ -466,11 +466,11 @@ fn grep_progress_stream(
                 // can stream bytes that never leave the worker incrementally.
                 span.record("wall_ms", stream_started.elapsed().as_millis() as u64);
                 span.record("early_kill", false);
-                yield xai_tool_runtime::ToolStreamItem::Terminal(Ok(out));
+                yield atelier_tool_runtime::ToolStreamItem::Terminal(Ok(out));
                 return;
             }
             Err(e) => {
-                yield xai_tool_runtime::ToolStreamItem::Terminal(Err(e));
+                yield atelier_tool_runtime::ToolStreamItem::Terminal(Err(e));
                 return;
             }
         };
@@ -536,7 +536,7 @@ fn grep_progress_stream(
                         // rebuilt from `stdout_buf`, but streamed deltas must
                         // stay a faithful prefix of it).
                         for p in streamer.feed(&tmp[..accepted]) {
-                            yield xai_tool_runtime::ToolStreamItem::Progress(p);
+                            yield atelier_tool_runtime::ToolStreamItem::Progress(p);
                         }
 
                         if hit_cap {
@@ -594,10 +594,10 @@ fn grep_progress_stream(
             // explicit notice, so the stream isn't contradicted; with
             // nothing streamed, fall back to the timeout-only card.
             if stdout_buf.is_empty() {
-                yield xai_tool_runtime::ToolStreamItem::Terminal(Ok(grep_timeout_output(secs)));
+                yield atelier_tool_runtime::ToolStreamItem::Terminal(Ok(grep_timeout_output(secs)));
             } else {
                 if let Some(p) = streamer.finish() {
-                    yield xai_tool_runtime::ToolStreamItem::Progress(p);
+                    yield atelier_tool_runtime::ToolStreamItem::Progress(p);
                 }
                 let mut output = finalize_grep(stdout_buf, true, Vec::new(), 0, &config);
                 output.stdout.extend_from_slice(
@@ -609,7 +609,7 @@ fn grep_progress_stream(
                     .as_bytes(),
                 );
                 output.exit_code = -1;
-                yield xai_tool_runtime::ToolStreamItem::Terminal(Ok(output));
+                yield atelier_tool_runtime::ToolStreamItem::Terminal(Ok(output));
             }
             return;
         }
@@ -617,7 +617,7 @@ fn grep_progress_stream(
 
         // Flush the final non-terminated segment (see `BodyStreamer::finish`).
         if let Some(p) = streamer.finish() {
-            yield xai_tool_runtime::ToolStreamItem::Progress(p);
+            yield atelier_tool_runtime::ToolStreamItem::Progress(p);
         }
 
         // Kill the child **before** draining stderr when we stopped early
@@ -662,7 +662,7 @@ fn grep_progress_stream(
 
         let output =
             finalize_grep(stdout_buf, stdout_truncated, stderr_buf, exit_code, &config);
-        yield xai_tool_runtime::ToolStreamItem::Terminal(Ok(output));
+        yield atelier_tool_runtime::ToolStreamItem::Terminal(Ok(output));
     })
 }
 
@@ -707,9 +707,9 @@ enum GrepStep {
 /// Resolve resources, build the ripgrep command, and spawn it; `Early` for
 /// pre-read short-circuits. Shared by `run` and `execute`.
 async fn prepare_grep(
-    ctx: &xai_tool_runtime::ToolCallContext,
+    ctx: &atelier_tool_runtime::ToolCallContext,
     input: &GrepSearchInput,
-) -> Result<GrepStep, xai_tool_runtime::ToolError> {
+) -> Result<GrepStep, atelier_tool_runtime::ToolError> {
     use crate::types::tool_metadata::{resolve_cwd, shared_resources};
     let resources = shared_resources(ctx)?;
     let cwd = resolve_cwd(ctx, &resources).await?;
@@ -778,7 +778,7 @@ async fn prepare_grep(
 
     if let Some(filesystem) = filesystem {
         if let Some(output) = filesystem.grep(request.clone()).await.map_err(|error| {
-            xai_tool_runtime::ToolError::custom("grep_backend", error.to_string())
+            atelier_tool_runtime::ToolError::custom("grep_backend", error.to_string())
         })? {
             return Ok(GrepStep::Backend(output));
         }
@@ -1313,7 +1313,7 @@ fn finalize_grep(
 /// so the concatenated deltas equal the card body (prefix mode). Line
 /// splitting matches `str::lines()` exactly (incl. trailing-`\r` handling).
 struct BodyStreamer<'a> {
-    spec: &'a xai_tool_protocol::StreamingSpec,
+    spec: &'a atelier_tool_protocol::StreamingSpec,
     config: &'a GrepFormatConfig,
     /// Accumulated card body. Equals the body `finalize_grep` produces.
     body: String,
@@ -1330,7 +1330,7 @@ struct BodyStreamer<'a> {
 }
 
 impl<'a> BodyStreamer<'a> {
-    fn new(spec: &'a xai_tool_protocol::StreamingSpec, config: &'a GrepFormatConfig) -> Self {
+    fn new(spec: &'a atelier_tool_protocol::StreamingSpec, config: &'a GrepFormatConfig) -> Self {
         Self {
             spec,
             config,
@@ -1345,7 +1345,7 @@ impl<'a> BodyStreamer<'a> {
 
     /// Feed raw stdout; returns a delta per newly completed line. Partial
     /// trailing line is buffered. No-op once [`Self::done`].
-    fn feed(&mut self, bytes: &[u8]) -> Vec<xai_tool_runtime::ToolProgress> {
+    fn feed(&mut self, bytes: &[u8]) -> Vec<atelier_tool_runtime::ToolProgress> {
         let mut deltas = Vec::new();
         if self.done {
             return deltas;
@@ -1376,7 +1376,7 @@ impl<'a> BodyStreamer<'a> {
 
     /// Flush the final non-`\n`-terminated segment verbatim at EOF (matches
     /// `str::lines()`, which keeps a trailing `\r`).
-    fn finish(&mut self) -> Option<xai_tool_runtime::ToolProgress> {
+    fn finish(&mut self) -> Option<atelier_tool_runtime::ToolProgress> {
         if self.done || self.pending.is_empty() {
             return None;
         }
@@ -1386,7 +1386,7 @@ impl<'a> BodyStreamer<'a> {
 
     /// Project one line into the body; returns its delta. Sets [`Self::done`]
     /// at the head-limit or byte-cap.
-    fn push_line(&mut self, line: &[u8]) -> Option<xai_tool_runtime::ToolProgress> {
+    fn push_line(&mut self, line: &[u8]) -> Option<atelier_tool_runtime::ToolProgress> {
         // Head-limit (matches `finalize_grep`).
         if self.emitted_lines >= self.config.effective_head_limit {
             self.done = true;
@@ -1407,7 +1407,7 @@ impl<'a> BodyStreamer<'a> {
         self.body.push_str(&trimmed);
         self.cum_len += trimmed.len();
         self.emitted_lines += 1;
-        xai_tool_runtime::stream_chunk(
+        atelier_tool_runtime::stream_chunk(
             self.spec,
             self.body.as_bytes(),
             self.body.len() as u64,
@@ -1810,7 +1810,7 @@ mod tests {
     fn tool_name_and_description() {
         use crate::types::tool_metadata::ToolMetadata;
         let tool = GrepTool;
-        assert_eq!(xai_tool_runtime::Tool::id(&tool).as_str(), "grep");
+        assert_eq!(atelier_tool_runtime::Tool::id(&tool).as_str(), "grep");
         assert!(tool.description_template().contains("ripgrep"));
         assert!(tool.description_template().contains("regex"));
     }
@@ -1824,7 +1824,7 @@ mod tests {
         resources.insert(Cwd(tmp.path().to_path_buf()));
 
         let tool = GrepTool;
-        let output = xai_tool_runtime::Tool::run(
+        let output = atelier_tool_runtime::Tool::run(
             &tool,
             test_ctx(resources.into_shared()),
             make_grep_input("nonexistent_xyz_pattern"),
@@ -1850,7 +1850,7 @@ mod tests {
         resources.insert(Cwd(tmp.path().to_path_buf()));
 
         let tool = GrepTool;
-        let output = xai_tool_runtime::Tool::run(
+        let output = atelier_tool_runtime::Tool::run(
             &tool,
             test_ctx(resources.into_shared()),
             make_grep_input("main"),
@@ -1923,7 +1923,7 @@ mod tests {
             },
         )));
 
-        let output = xai_tool_runtime::Tool::run(
+        let output = atelier_tool_runtime::Tool::run(
             &GrepTool,
             test_ctx(resources.into_shared()),
             make_grep_input("backend_only"),
@@ -1955,10 +1955,13 @@ mod tests {
             (resources, input)
         };
         let run = |resources: Resources, input| async {
-            let out =
-                xai_tool_runtime::Tool::run(&GrepTool, test_ctx(resources.into_shared()), input)
-                    .await
-                    .unwrap();
+            let out = atelier_tool_runtime::Tool::run(
+                &GrepTool,
+                test_ctx(resources.into_shared()),
+                input,
+            )
+            .await
+            .unwrap();
             String::from_utf8_lossy(&out.stdout).into_owned()
         };
 
@@ -2019,7 +2022,7 @@ mod tests {
         resources.insert(Cwd(tmp.path().to_path_buf()));
         resources.insert(DenyReadGlobs(deny.iter().map(|s| s.to_string()).collect()));
         let out = String::from_utf8_lossy(
-            &xai_tool_runtime::Tool::run(
+            &atelier_tool_runtime::Tool::run(
                 &GrepTool,
                 test_ctx(resources.into_shared()),
                 make_grep_input("FAKE"),
@@ -2068,7 +2071,7 @@ mod tests {
         let mut input = make_grep_input("FAKE");
         input.path = Some("src".to_string());
         let out = String::from_utf8_lossy(
-            &xai_tool_runtime::Tool::run(&GrepTool, test_ctx(resources.into_shared()), input)
+            &atelier_tool_runtime::Tool::run(&GrepTool, test_ctx(resources.into_shared()), input)
                 .await
                 .unwrap()
                 .stdout,
@@ -2099,7 +2102,7 @@ mod tests {
         let mut resources = Resources::new();
         resources.insert(Cwd(tmp.path().to_path_buf()));
         let out = String::from_utf8_lossy(
-            &xai_tool_runtime::Tool::run(
+            &atelier_tool_runtime::Tool::run(
                 &GrepTool,
                 test_ctx(resources.into_shared()),
                 make_grep_input("FAKE"),
@@ -2129,7 +2132,7 @@ mod tests {
         resources.insert(Cwd(tmp.path().to_path_buf()));
 
         let tool = GrepTool;
-        let result = xai_tool_runtime::Tool::run(
+        let result = atelier_tool_runtime::Tool::run(
             &tool,
             test_ctx(resources.into_shared()),
             make_grep_input("findme"),
@@ -2157,7 +2160,7 @@ mod tests {
         }));
 
         let tool = GrepTool;
-        let output = xai_tool_runtime::Tool::run(
+        let output = atelier_tool_runtime::Tool::run(
             &tool,
             test_ctx(resources.into_shared()),
             make_grep_input("match_line"),
@@ -2188,7 +2191,7 @@ mod tests {
         input.head_limit = Some(5);
 
         let output =
-            xai_tool_runtime::Tool::run(&GrepTool, test_ctx(resources.into_shared()), input)
+            atelier_tool_runtime::Tool::run(&GrepTool, test_ctx(resources.into_shared()), input)
                 .await
                 .unwrap();
 
@@ -2226,7 +2229,7 @@ mod tests {
         input.head_limit = Some(6);
 
         let output =
-            xai_tool_runtime::Tool::run(&GrepTool, test_ctx(resources.into_shared()), input)
+            atelier_tool_runtime::Tool::run(&GrepTool, test_ctx(resources.into_shared()), input)
                 .await
                 .unwrap();
 
@@ -2250,7 +2253,7 @@ mod tests {
         resources.insert(Cwd(tmp.path().to_path_buf()));
 
         let tool = GrepTool;
-        let output = xai_tool_runtime::Tool::run(
+        let output = atelier_tool_runtime::Tool::run(
             &tool,
             test_ctx(resources.into_shared()),
             GrepSearchInput {
@@ -2288,7 +2291,7 @@ mod tests {
         resources.insert(Cwd(tmp.path().to_path_buf()));
 
         let tool = GrepTool;
-        let output = xai_tool_runtime::Tool::run(
+        let output = atelier_tool_runtime::Tool::run(
             &tool,
             test_ctx(resources.into_shared()),
             GrepSearchInput {
@@ -2327,7 +2330,7 @@ mod tests {
         resources.insert(Cwd(tmp.path().to_path_buf()));
 
         let tool = GrepTool;
-        let output = xai_tool_runtime::Tool::run(
+        let output = atelier_tool_runtime::Tool::run(
             &tool,
             test_ctx(resources.into_shared()),
             GrepSearchInput {
@@ -2359,9 +2362,9 @@ mod tests {
 
     /// Destructure a `grep_match_chunk` payload, asserting the canonical
     /// `plain_text` / `append` envelope. Returns the `delta`.
-    fn read_grep_delta(p: &xai_tool_runtime::ToolProgress) -> String {
+    fn read_grep_delta(p: &atelier_tool_runtime::ToolProgress) -> String {
         match p {
-            xai_tool_runtime::ToolProgress::Custom { subkind, payload } => {
+            atelier_tool_runtime::ToolProgress::Custom { subkind, payload } => {
                 assert_eq!(subkind, "grep_match_chunk", "unexpected subkind");
                 payload["delta"].as_str().unwrap().to_owned()
             }
@@ -2612,7 +2615,7 @@ mod tests {
         resources.insert(Cwd(tmp.path().to_path_buf()));
 
         let tool = GrepTool;
-        let mut stream = xai_tool_runtime::Tool::execute(
+        let mut stream = atelier_tool_runtime::Tool::execute(
             &tool,
             test_ctx(resources.into_shared()),
             make_grep_input("match"),
@@ -2621,15 +2624,15 @@ mod tests {
 
         let mut deltas = String::new();
         let mut progress = 0usize;
-        let mut terminal: Option<Result<GrepSearchOutput, xai_tool_runtime::ToolError>> = None;
+        let mut terminal: Option<Result<GrepSearchOutput, atelier_tool_runtime::ToolError>> = None;
         while let Some(item) = stream.next().await {
             match item {
-                xai_tool_runtime::ToolStreamItem::Progress(p) => {
+                atelier_tool_runtime::ToolStreamItem::Progress(p) => {
                     assert!(terminal.is_none(), "Progress arrived after Terminal");
                     deltas.push_str(&read_grep_delta(&p));
                     progress += 1;
                 }
-                xai_tool_runtime::ToolStreamItem::Terminal(r) => {
+                atelier_tool_runtime::ToolStreamItem::Terminal(r) => {
                     assert!(terminal.is_none(), "more than one Terminal yielded");
                     terminal = Some(r);
                 }
@@ -2686,19 +2689,19 @@ mod tests {
         resources.insert(Cwd(tmp.path().to_path_buf()));
 
         // No streaming gate stamped — exercises the default (gate-off) path.
-        let mut ctx = xai_tool_runtime::ToolCallContext::default();
+        let mut ctx = atelier_tool_runtime::ToolCallContext::default();
         ctx.extensions.insert(resources.into_shared());
 
         let tool = GrepTool;
         let mut stream =
-            xai_tool_runtime::Tool::execute(&tool, ctx, make_grep_input("findme")).await;
+            atelier_tool_runtime::Tool::execute(&tool, ctx, make_grep_input("findme")).await;
 
         let mut progress = 0usize;
-        let mut terminal: Option<Result<GrepSearchOutput, xai_tool_runtime::ToolError>> = None;
+        let mut terminal: Option<Result<GrepSearchOutput, atelier_tool_runtime::ToolError>> = None;
         while let Some(item) = stream.next().await {
             match item {
-                xai_tool_runtime::ToolStreamItem::Progress(_) => progress += 1,
-                xai_tool_runtime::ToolStreamItem::Terminal(r) => {
+                atelier_tool_runtime::ToolStreamItem::Progress(_) => progress += 1,
+                atelier_tool_runtime::ToolStreamItem::Terminal(r) => {
                     assert!(terminal.is_none(), "more than one Terminal yielded");
                     terminal = Some(r);
                 }
@@ -2742,17 +2745,18 @@ mod tests {
 
         let tool = GrepTool;
         let mut stream =
-            xai_tool_runtime::Tool::execute(&tool, test_ctx(resources.into_shared()), input).await;
+            atelier_tool_runtime::Tool::execute(&tool, test_ctx(resources.into_shared()), input)
+                .await;
 
         let mut deltas = String::new();
-        let mut terminal: Option<Result<GrepSearchOutput, xai_tool_runtime::ToolError>> = None;
+        let mut terminal: Option<Result<GrepSearchOutput, atelier_tool_runtime::ToolError>> = None;
         while let Some(item) = stream.next().await {
             match item {
-                xai_tool_runtime::ToolStreamItem::Progress(p) => {
+                atelier_tool_runtime::ToolStreamItem::Progress(p) => {
                     assert!(terminal.is_none(), "Progress arrived after Terminal");
                     deltas.push_str(&read_grep_delta(&p));
                 }
-                xai_tool_runtime::ToolStreamItem::Terminal(r) => {
+                atelier_tool_runtime::ToolStreamItem::Terminal(r) => {
                     assert!(terminal.is_none(), "more than one Terminal yielded");
                     terminal = Some(r);
                 }

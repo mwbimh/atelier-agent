@@ -167,13 +167,13 @@ const ENV_MCP_TIMEOUT_MS: &str = "MCP_TIMEOUT";
 const ENV_MCP_STARTUP_TIMEOUT_SECS: &str = "ATELIER_MCP_STARTUP_TIMEOUT_SECS";
 
 /// Cached remote settings `mcp_startup_timeout_secs` (`0` = unset). MCP servers start
-/// from free functions with no handle to the live `RemoteSettings`, so the
+/// from free functions with no handle to the live `LocalRuntimeSettings`, so the
 /// remote tier is cached here when settings are applied.
 static REMOTE_MCP_STARTUP_TIMEOUT_SECS: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 
 /// Record the remote settings `mcp_startup_timeout_secs` for the free-function
-/// resolver. Call wherever `RemoteSettings` is applied. `0` is treated as unset.
+/// resolver. Call wherever `LocalRuntimeSettings` is applied. `0` is treated as unset.
 pub fn cache_remote_mcp_startup_timeout_secs(value: Option<u64>) {
     REMOTE_MCP_STARTUP_TIMEOUT_SECS.store(value.unwrap_or(0), std::sync::atomic::Ordering::Relaxed);
 }
@@ -276,7 +276,7 @@ pub const DEFAULT_MAX_MCP_OUTPUT_BYTES: usize = atelier_tools::MCP_MAX_OUTPUT_BY
 
 /// Resolve the full stack for `remote` and seed the tools-crate effective limit.
 ///
-/// Call wherever `RemoteSettings` is applied (same sites as
+/// Call wherever `LocalRuntimeSettings` is applied (same sites as
 /// [`cache_remote_mcp_startup_timeout_secs`]). Unlike that helper — which only
 /// caches the remote tier for a free-function resolver still living in shell —
 /// this pushes the *fully resolved* value into tools (tools cannot re-read
@@ -302,7 +302,7 @@ fn max_mcp_output_bytes_from_toml(v: &toml::Value) -> Option<usize> {
 ///   2. env `ATELIER_MAX_MCP_OUTPUT_BYTES` / `MAX_MCP_OUTPUT_BYTES`
 ///      (Atelier-native wins when both set)
 ///   3. effective `config.toml [mcp] max_output_bytes`
-///   4. remote settings `RemoteSettings.max_mcp_output_bytes`
+///   4. remote settings `LocalRuntimeSettings.max_mcp_output_bytes`
 ///   5. [`DEFAULT_MAX_MCP_OUTPUT_BYTES`] (20_000)
 pub fn resolve_max_mcp_output_bytes(remote: Option<u64>) -> usize {
     let remote_usize = remote

@@ -591,15 +591,15 @@ fn marketplace_list_loaded_sanitizes_components_at_ingestion() {
         Some(ExtensionsModalState::new(ExtensionsTab::Marketplace));
 
     let mut entry = cta_entry("dirty", "not_installed");
-    entry.components = Some(xai_hooks_plugins_types::PluginComponents {
-        skills: vec![xai_hooks_plugins_types::ComponentItem {
+    entry.components = Some(atelier_hooks_plugins_types::PluginComponents {
+        skills: vec![atelier_hooks_plugins_types::ComponentItem {
             name: "evil\u{1b}[31mskill".into(),
             description: Some(format!("\u{7}{}", "d".repeat(300))),
         }],
         ..Default::default()
     });
-    let response = xai_hooks_plugins_types::MarketplaceListResponse {
-        sources: vec![xai_hooks_plugins_types::MarketplaceScanResult {
+    let response = atelier_hooks_plugins_types::MarketplaceListResponse {
+        sources: vec![atelier_hooks_plugins_types::MarketplaceScanResult {
             source_name: "s".into(),
             source_kind: "git".into(),
             source_url_or_path: "https://example.com/repo.git".into(),
@@ -645,8 +645,8 @@ fn plugins_action_success_sets_result_notice_and_autoreload_preserves_it() {
     dispatch(
         Action::TaskComplete(TaskResult::PluginsActionResult {
             agent_id: id,
-            result: Ok(xai_hooks_plugins_types::ActionOutcome {
-                status: xai_hooks_plugins_types::OutcomeStatus::Success,
+            result: Ok(atelier_hooks_plugins_types::ActionOutcome {
+                status: atelier_hooks_plugins_types::OutcomeStatus::Success,
                 message: "user/abcd1234/my-plugin: updated".into(),
                 requires_reload: true,
                 requires_restart: false,
@@ -669,8 +669,8 @@ fn plugins_action_success_sets_result_notice_and_autoreload_preserves_it() {
     dispatch(
         Action::TaskComplete(TaskResult::PluginsActionResult {
             agent_id: id,
-            result: Ok(xai_hooks_plugins_types::ActionOutcome {
-                status: xai_hooks_plugins_types::OutcomeStatus::Success,
+            result: Ok(atelier_hooks_plugins_types::ActionOutcome {
+                status: atelier_hooks_plugins_types::OutcomeStatus::Success,
                 message: "Plugin registry rebuilt: 5 plugin(s).".into(),
                 requires_reload: false,
                 requires_restart: false,
@@ -702,8 +702,8 @@ fn tab_wide_action_success_sets_tab_wide_result_notice() {
     dispatch(
         Action::TaskComplete(TaskResult::PluginsActionResult {
             agent_id: id,
-            result: Ok(xai_hooks_plugins_types::ActionOutcome {
-                status: xai_hooks_plugins_types::OutcomeStatus::Success,
+            result: Ok(atelier_hooks_plugins_types::ActionOutcome {
+                status: atelier_hooks_plugins_types::OutcomeStatus::Success,
                 message: "Plugin registry rebuilt: 7 plugin(s).".into(),
                 requires_reload: false,
                 requires_restart: false,
@@ -727,7 +727,7 @@ fn uninstall_result_notice_is_footer_only_not_row_anchored() {
         let mut modal = ExtensionsModalState::new(ExtensionsTab::Plugins);
         // A row action was in flight, but it's an uninstall — the row goes away.
         modal.pending_entry_index = Some(1);
-        modal.last_plugins_action = Some(xai_hooks_plugins_types::PluginsAction::Uninstall {
+        modal.last_plugins_action = Some(atelier_hooks_plugins_types::PluginsAction::Uninstall {
             plugin_id: "user/ab12/gone".into(),
             confirmed: true,
         });
@@ -737,8 +737,8 @@ fn uninstall_result_notice_is_footer_only_not_row_anchored() {
     dispatch(
         Action::TaskComplete(TaskResult::PluginsActionResult {
             agent_id: id,
-            result: Ok(xai_hooks_plugins_types::ActionOutcome {
-                status: xai_hooks_plugins_types::OutcomeStatus::Success,
+            result: Ok(atelier_hooks_plugins_types::ActionOutcome {
+                status: atelier_hooks_plugins_types::OutcomeStatus::Success,
                 message: "Uninstalled repo \"user/ab12/gone\" (1 plugin(s): gone)".into(),
                 requires_reload: true,
                 requires_restart: false,
@@ -883,16 +883,14 @@ fn switch_model_complete_success_updates_model_and_pushes_message() {
     );
     // Success message pushed to scrollback.
     assert_eq!(app.agents[&id].scrollback.len(), initial_scrollback + 1);
-    // PersistPreferredModel effect emitted.
-    assert_eq!(effects.len(), 1);
-    assert!(matches!(
-        &effects[0],
-        Effect::PersistPreferredModel { model_id: mid, .. } if *mid == model_id.clone()
-    ));
+    assert!(
+        effects.is_empty(),
+        "switching the current Session must not persist a new-Session default: {effects:?}"
+    );
 }
 
 #[test]
-fn switch_model_complete_skips_message_and_persist_when_unchanged() {
+fn switch_model_complete_skips_message_and_effects_when_unchanged() {
     let mut app = test_app_with_agent();
     let id = AgentId(0);
     let model_id = acp::ModelId::new(std::sync::Arc::from("atelier-4.5"));
@@ -921,15 +919,13 @@ fn switch_model_complete_skips_message_and_persist_when_unchanged() {
     assert!(!app.agents[&id].session.model_switch_pending);
     assert_eq!(app.agents[&id].scrollback.len(), before, "no message added");
     assert!(
-        !effects
-            .iter()
-            .any(|e| matches!(e, Effect::PersistPreferredModel { .. })),
-        "no persist effect for no-op switch"
+        effects.is_empty(),
+        "no effects for no-op switch: {effects:?}"
     );
 }
 
 #[test]
-fn switch_model_complete_persists_resolved_effort_from_catalog_meta() {
+fn switch_model_complete_applies_resolved_effort_without_persisting() {
     use atelier_shell::sampling::types::ReasoningEffort;
     let mut app = test_app_with_agent();
     let id = AgentId(0);
@@ -977,26 +973,14 @@ fn switch_model_complete_persists_resolved_effort_from_catalog_meta() {
         Some(ReasoningEffort::Xhigh)
     );
 
-    assert_eq!(effects.len(), 1);
-    match &effects[0] {
-        Effect::PersistPreferredModel {
-            model_id: mid,
-            reasoning_effort,
-        } => {
-            assert_eq!(*mid, model_id);
-            assert_eq!(
-                *reasoning_effort,
-                Some(ReasoningEffort::Xhigh),
-                "persisted effort must mirror the live UI effort so a \
-                     fresh chat does not reset reasoning to a stale default",
-            );
-        }
-        other => panic!("expected PersistPreferredModel, got {other:?}"),
-    }
+    assert!(
+        effects.is_empty(),
+        "resolved effort is Session-local and must not be persisted: {effects:?}"
+    );
 }
 
 #[test]
-fn switch_to_non_reasoning_model_clears_persisted_effort() {
+fn switch_to_non_reasoning_model_clears_session_effort_without_persisting() {
     use atelier_shell::sampling::types::ReasoningEffort;
     let mut app = test_app_with_agent();
     let id = AgentId(0);
@@ -1043,18 +1027,10 @@ fn switch_to_non_reasoning_model_clears_persisted_effort() {
         "reasoning_effort must be cleared when switching to a non-reasoning model",
     );
 
-    assert_eq!(effects.len(), 1);
-    match &effects[0] {
-        Effect::PersistPreferredModel {
-            reasoning_effort, ..
-        } => {
-            assert_eq!(
-                *reasoning_effort, None,
-                "persisted effort must be None so config.toml clears the stale value",
-            );
-        }
-        other => panic!("expected PersistPreferredModel, got {other:?}"),
-    }
+    assert!(
+        effects.is_empty(),
+        "clearing Session effort must not update the new-Session default: {effects:?}"
+    );
 }
 
 #[test]
@@ -1142,9 +1118,8 @@ fn switch_model_incompatible_agent_shows_question_modal() {
 
 #[test]
 fn incompatible_agent_rollback_restores_previous_model() {
-    // When SetDefaultModel optimistically updates models.current and the
-    // shell rejects with IncompatibleAgent, the handler must roll back
-    // models.current to the prev_model_id.
+    // When a caller optimistically updates models.current and the shell
+    // rejects with IncompatibleAgent, the handler must roll it back.
     let mut app = test_app_with_agent();
     let id = AgentId(0);
 
@@ -1161,7 +1136,7 @@ fn incompatible_agent_rollback_restores_previous_model() {
         new_model.clone(),
         acp::ModelInfo::new(new_model.clone(), "Cursor".to_string()),
     );
-    // Simulate the optimistic update that set_default_model_inner does.
+    // Simulate an optimistic model update.
     agent.session.models.set_current(new_model.clone(), None);
     agent.session.model_switch_pending = true;
 
@@ -1283,11 +1258,9 @@ fn same_agent_type_switch_no_modal() {
     // Model should be switched, no modal.
     assert_eq!(app.agents[&id].session.models.current, Some(model_b));
     assert!(app.agents[&id].question_view.is_none());
-    // Should emit PersistPreferredModel.
     assert!(
-        effects
-            .iter()
-            .any(|e| matches!(e, Effect::PersistPreferredModel { .. }))
+        effects.is_empty(),
+        "successful model switch must remain Session-local: {effects:?}"
     );
 }
 

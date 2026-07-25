@@ -5,10 +5,8 @@
 //!   from this crate and call sites spell it `crate::instrumentation_timer!`
 //!   (i.e. `atelier_shell::instrumentation_timer!`). Keeping the macro here
 //!   means downstream callers don't need to be edited.
-//! - [`finalize_and_exit`], because shell needs to log a terminal exit event
-//!   and shut down the shared OTel pipeline before the process exits. The
-//!   telemetry crate exposes the shutdown helper, so this thin wrapper just
-//!   plumbs it together with `process::exit`.
+//! - [`finalize_and_exit`], because shell needs to log a terminal exit event,
+//!   flush local diagnostics and terminate the process.
 
 pub use atelier_telemetry::instrumentation::{
     ChromeTraceOptions, InstrumentationFinalizer, InstrumentationMode, InstrumentationTimer,
@@ -18,8 +16,7 @@ pub use atelier_telemetry::instrumentation::{
 
 /// Final cleanup before terminating the process.
 ///
-/// Logs an exit event, flushes instrumentation guards, shuts down the
-/// OpenTelemetry pipeline, and exits with `code`.
+/// Logs an exit event, flushes local instrumentation guards and exits.
 ///
 /// Stays in shell so callers can keep calling `atelier_shell::instrumentation::finalize_and_exit`.
 pub fn finalize_and_exit(code: i32) -> ! {
@@ -35,7 +32,6 @@ pub fn finalize_and_exit(code: i32) -> ! {
         "Exiting process"
     );
     let _ = finalize();
-    atelier_telemetry::otel_layer::shutdown_otel();
     // Flush the --debug firehose; this exits via process::exit, bypassing main's flush.
     atelier_telemetry::debug_log::flush();
     std::process::exit(code);

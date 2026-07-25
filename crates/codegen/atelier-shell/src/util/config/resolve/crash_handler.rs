@@ -1,4 +1,4 @@
-use crate::util::config::RemoteSettings;
+use crate::util::config::LocalRuntimeSettings;
 use toml::Value as TomlValue;
 
 /// Env override for the full crash-handler install gate.
@@ -34,7 +34,7 @@ pub fn resolve_crash_handler_enabled(
     requirements: Option<&TomlValue>,
     user: Option<&TomlValue>,
     managed: Option<&TomlValue>,
-    remote: Option<&RemoteSettings>,
+    remote: Option<&LocalRuntimeSettings>,
 ) -> crate::agent::config::Resolved<bool> {
     resolve_crash_handler_enabled_layers(
         crash_handler_from_toml(requirements),
@@ -46,10 +46,10 @@ pub fn resolve_crash_handler_enabled(
 
 /// Process-global cache of the remote tier, read by
 /// [`load_crash_handler_enabled_sync`] at pre-Tokio install (no live
-/// `RemoteSettings` there). Fail-safe to `None` on lock poisoning.
+/// `LocalRuntimeSettings` there). Fail-safe to `None` on lock poisoning.
 static REMOTE_CRASH_HANDLER_ENABLED: std::sync::RwLock<Option<bool>> = std::sync::RwLock::new(None);
 
-/// Record the remote settings value; called when the agent applies `RemoteSettings`.
+/// Record the remote settings value; called when the agent applies `LocalRuntimeSettings`.
 pub fn cache_remote_crash_handler_enabled(value: Option<bool>) {
     if let Ok(mut guard) = REMOTE_CRASH_HANDLER_ENABLED.write() {
         *guard = value;
@@ -77,7 +77,7 @@ fn load_managed_toml_layers() -> Option<TomlValue> {
 }
 
 /// Free-function form of [`resolve_crash_handler_enabled`] for the pager-bin
-/// install path (no live `RemoteSettings`): env + requirements + user +
+/// install path (no live `LocalRuntimeSettings`): env + requirements + user +
 /// system/home managed from disk plus the cached remote tier. Defaults
 /// `false`.
 pub fn load_crash_handler_enabled_sync() -> bool {
@@ -111,10 +111,10 @@ mod crash_handler_gate_tests {
         toml::from_str(&format!("[diagnostics]\ncrash_handler = {v}\n")).unwrap()
     }
 
-    fn remote(v: Option<bool>) -> RemoteSettings {
-        RemoteSettings {
+    fn remote(v: Option<bool>) -> LocalRuntimeSettings {
+        LocalRuntimeSettings {
             crash_handler_enabled: v,
-            ..RemoteSettings::default()
+            ..LocalRuntimeSettings::default()
         }
     }
 

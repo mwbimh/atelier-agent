@@ -14,12 +14,12 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use agent_client_protocol as acp;
+use atelier_acp_runtime::AcpAgentGatewaySender as GatewaySender;
 use atelier_tools::computer::types::{
     BackgroundHandle, ComputerError, KillOutcome, TaskSnapshot, TerminalBackend,
     TerminalRunRequest, TerminalRunResult,
 };
 use atelier_tools::notification::types::ToolNotificationHandle;
-use xai_acp_lib::AcpAgentGatewaySender as GatewaySender;
 
 // ── Tracked task state ───────────────────────────────────────────────
 

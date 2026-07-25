@@ -83,7 +83,7 @@ async fn ask(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
         &side_query_id,
         session_id.0.as_ref(),
         atelier_provider::RoleId::Main.as_str(),
-        xai_acp_lib::RuntimeState::PreparingContext,
+        atelier_acp_runtime::RuntimeState::PreparingContext,
         false,
     );
     let (respond_to, response) = tokio::sync::oneshot::channel();
@@ -101,7 +101,7 @@ async fn ask(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
     {
         agent.runtime_finish_task(
             &side_query_id,
-            xai_acp_lib::RuntimeState::Failed,
+            atelier_acp_runtime::RuntimeState::Failed,
             Some("failed to dispatch side query".to_owned()),
         );
         return Err(acp::Error::internal_error().data("failed to dispatch side query"));
@@ -111,7 +111,7 @@ async fn ask(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
         Ok(Err(error)) => {
             agent.runtime_finish_task(
                 &side_query_id,
-                xai_acp_lib::RuntimeState::Failed,
+                atelier_acp_runtime::RuntimeState::Failed,
                 Some(error.clone()),
             );
             return Err(acp::Error::internal_error().data(error));
@@ -119,7 +119,7 @@ async fn ask(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
         Err(_) => {
             agent.runtime_finish_task(
                 &side_query_id,
-                xai_acp_lib::RuntimeState::Failed,
+                atelier_acp_runtime::RuntimeState::Failed,
                 Some("side query did not respond".to_owned()),
             );
             return Err(acp::Error::internal_error().data("side query did not respond"));
@@ -128,12 +128,16 @@ async fn ask(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
     if result.btw_id != side_query_id {
         agent.runtime_finish_task(
             &side_query_id,
-            xai_acp_lib::RuntimeState::Failed,
+            atelier_acp_runtime::RuntimeState::Failed,
             Some("side query returned a mismatched task id".to_owned()),
         );
         return Err(acp::Error::internal_error().data("side query returned a mismatched task id"));
     }
-    agent.runtime_finish_task(&side_query_id, xai_acp_lib::RuntimeState::Completed, None);
+    agent.runtime_finish_task(
+        &side_query_id,
+        atelier_acp_runtime::RuntimeState::Completed,
+        None,
+    );
     to_raw_response(&serde_json::json!({
         "sessionId": session_id,
         "btwId": result.btw_id,

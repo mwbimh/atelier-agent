@@ -25,7 +25,7 @@ atelier-config = { workspace = true }
 atelier-env = { workspace = true }
 atelier-shared = { workspace = true }
 atelier-version = { workspace = true }
-xai-tty-utils = { workspace = true }
+atelier-tty-utils = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }

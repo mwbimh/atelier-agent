@@ -12,7 +12,7 @@ which already shows when work is in flight.
 
 Three entry points, all opening the same view:
 
-- **`atelier dashboard`** — launches the TUI directly into the dashboard.
+- **`ate dashboard`** — launches the TUI directly into the dashboard.
 - **`/dashboard`** (aliases **`/agents-dashboard`**, **`/sessions`**) — open
   from inside an active session.
 - **Ctrl+\\** — same as the slash command, two keystrokes. Configurable

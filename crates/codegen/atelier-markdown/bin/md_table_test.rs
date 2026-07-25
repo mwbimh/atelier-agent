@@ -29,7 +29,7 @@ use atelier_markdown::{
     MarkdownBuffers, MarkdownStyle, StreamingMarkdownRenderer,
     render_markdown_ratatui_with_buffers_width,
 };
-use xai_ratatui_textarea::{TextArea, TextAreaState};
+use atelier_ratatui_textarea::{TextArea, TextAreaState};
 
 // ── Tokyo Night Storm palette (matches atelier-pager) ──────────────────────
 

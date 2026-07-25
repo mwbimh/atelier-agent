@@ -67,9 +67,9 @@ pub fn inference_request_count(content: &ContentController) -> usize {
         .count()
 }
 
-/// Seed a fake xAI OAuth entry into the isolated home's `auth.json` so the
-/// shell has session auth (the harness's `XAI_API_KEY` is ApiKey/BYOK mode
-/// and never enters the auth manager). Load-bearing details: the scope key
+/// Seed a fake xAI OAuth entry into the isolated home's `auth.json` for tests
+/// that explicitly exercise xAI OAuth behavior. This is opt-in and is not part
+/// of the harness's default Provider path. Load-bearing details: the scope key
 /// must be `<issuer>::<client_id>`, `auth_mode` must be `oidc`, and
 /// `expires_at` must be far-future so no network refresh is attempted; the
 /// mock server accepts any bearer. Pair with [`oauth_env_for_pager`].
@@ -97,11 +97,16 @@ pub fn seed_fake_oauth(content: &ContentController, user: &str) {
     .expect("seed fake oauth auth.json");
 }
 
-/// [`ContentController::env_for_pager`] minus `XAI_API_KEY`, so the entry
-/// written by [`seed_fake_oauth`] is the active credential.
+/// Environment for an explicit OAuth fixture. The default harness environment
+/// has no process-global API-key fallback, so the entry written by
+/// [`seed_fake_oauth`] is the only session credential. The legacy control-plane
+/// and storage endpoints are scoped to this opt-in path for the tests that
+/// explicitly exercise them.
 pub fn oauth_env_for_pager(content: &ContentController) -> Vec<(String, String)> {
     let mut env = content.env_for_pager();
-    env.retain(|(k, _)| k != "XAI_API_KEY");
+    let url = content.url();
+    env.push(("ATELIER_CLI_CHAT_PROXY_BASE_URL".into(), url.clone()));
+    env.push(("ATELIER_XAI_API_BASE_URL".into(), url));
     env
 }
 
@@ -120,5 +125,26 @@ pub fn wait_for_model_via_new_sessions(h: &mut PtyHarness, model: &str, timeout:
         }
         let _ = h.inject_keys(b"/new\r");
         h.update(Duration::from_millis(3000));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn explicit_oauth_env_scopes_mock_endpoints_without_api_key_fallback() {
+        let content = ContentController::start().await.unwrap();
+        let env = oauth_env_for_pager(&content);
+        let url = content.url();
+        let get = |key: &str| {
+            env.iter()
+                .find(|(candidate, _)| candidate == key)
+                .map(|(_, value)| value.as_str())
+        };
+
+        assert_eq!(get("ATELIER_CLI_CHAT_PROXY_BASE_URL"), Some(url.as_str()));
+        assert_eq!(get("ATELIER_XAI_API_BASE_URL"), Some(url.as_str()));
+        assert_eq!(get("XAI_API_KEY"), None);
     }
 }

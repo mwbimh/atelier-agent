@@ -1,6 +1,6 @@
 use crate::agent::auth_method::ModelByok;
 use crate::auth::{AtelierComConfig, AuthManager, OidcAuthConfig};
-use crate::remote::DEFAULT_CONTEXT_WINDOW;
+use crate::runtime_defaults::DEFAULT_CONTEXT_WINDOW;
 use crate::{config::StorageMode, sampling::ApiBackend, tools::config::ShellToolsetConfig};
 use agent_client_protocol as acp;
 use atelier_agent::prompt::skills::SkillsConfig;
@@ -47,8 +47,6 @@ pub fn default_agent_type() -> String {
 }
 /// There is no compiled vendor endpoint in the private build.
 pub const CLI_CHAT_PROXY_BASE_URL_DEFAULT: &str = "";
-/// There is no compiled public inference endpoint in the private build.
-pub const XAI_API_BASE_URL_DEFAULT: &str = "";
 /// There is no compiled asset server endpoint in the private build.
 pub const ASSET_SERVER_URL_DEFAULT: &str = "";
 /// One or more environment variable names that may hold a model API key.
@@ -149,8 +147,6 @@ pub struct EndpointsConfig {
     /// default value) lets an org pin the proxy to the default on purpose.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cli_chat_proxy_base_url: Option<String>,
-    /// Base URL for the public xAI API.
-    pub xai_api_base_url: String,
     /// Optional extra access-header value (applied only with the optional
     /// non-production feature, and only for matching first-party hosts).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -162,79 +158,10 @@ pub struct EndpointsConfig {
     /// Env: `ATELIER_MODELS_LIST_URL`. Overrides the default `{base}/models` list URL.
     #[serde(alias = "models_endpoint", skip_serializing_if = "Option::is_none")]
     pub models_list_url: Option<String>,
-    /// Env: `ATELIER_FEEDBACK_BASE_URL`. Where feedback submissions go.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub feedback_base_url: Option<String>,
-    /// Env: `ATELIER_TRACE_UPLOAD_URL`. Where trace uploads go.
-    #[serde(skip)]
-    pub trace_upload_url: Option<String>,
-    /// Env: `ATELIER_TRACE_UPLOAD_BUCKET`. Direct bucket (`gs://` or `s3://`), bypasses proxy.
-    #[serde(skip)]
-    pub trace_upload_bucket: Option<String>,
-    /// Env: `ATELIER_TRACE_UPLOAD_REGION`. AWS region (S3 only).
-    #[serde(skip)]
-    pub trace_upload_region: Option<String>,
-    /// Env: `ATELIER_TRACE_UPLOAD_CREDENTIALS_FILE`. Path to GCS SA key or AWS credentials file.
-    #[serde(skip)]
-    pub trace_upload_credentials_file: Option<String>,
-    /// Inline credentials (JSON/INI). Takes precedence over `credentials_file`.
-    #[serde(skip)]
-    pub trace_upload_credentials: Option<String>,
-    /// Env: `ATELIER_TRACE_UPLOAD_ENDPOINT_URL`. Custom S3-compatible endpoint.
-    #[serde(skip)]
-    pub trace_upload_endpoint_url: Option<String>,
     /// Env: `ATELIER_DEPLOYMENT_KEY`. Management API key for enterprise deployments.
     /// Sent on telemetry and service requests for deployment-level attribution.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub deployment_key: Option<String>,
-    /// Env: `OTEL_EXPORTER_OTLP_ENDPOINT`. OTLP collector base; `/v1/traces` is
-    /// appended. Legacy repoint of the INTERNAL trace pipeline — deprecated in
-    /// favor of `ATELIER_INTERNAL_OTLP_TRACES_ENDPOINT`, and ignored by the internal
-    /// pipeline when `ATELIER_EXTERNAL_OTEL` is set (the standard `OTEL_*` vars then
-    /// route the external stream only).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub otel_exporter_otlp_endpoint: Option<String>,
-    /// Env: `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`. Full traces endpoint, used
-    /// verbatim; overrides `otel_exporter_otlp_endpoint`. Same legacy/deprecation
-    /// semantics as `otel_exporter_otlp_endpoint`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub otel_exporter_otlp_traces_endpoint: Option<String>,
-    /// Env: `OTEL_EXPORTER_OTLP_HEADERS`. `k=v,k2=v2`; merged onto export headers.
-    /// Same legacy/deprecation semantics as `otel_exporter_otlp_endpoint`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub otel_exporter_otlp_headers: Option<String>,
-    /// Env: `ATELIER_INTERNAL_OTLP_TRACES_ENDPOINT`. Full INTERNAL traces endpoint,
-    /// used verbatim. Dev/debug repoint of the internal span firehose (replaces
-    /// the legacy `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` behavior; used by
-    /// local-ic-testing / internal dev flows). Wins over the legacy `OTEL_*` vars.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub atelier_internal_otlp_traces_endpoint: Option<String>,
-    /// Env: `ATELIER_INTERNAL_OTLP_HEADERS`. `k=v,k2=v2` extra headers for the
-    /// internal export (debug). Wins over the legacy `OTEL_EXPORTER_OTLP_HEADERS`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub atelier_internal_otlp_headers: Option<String>,
-    /// External-OTEL master switch, captured at construction via
-    /// [`external_otel_master_switch_resolved`] — the same layered resolution
-    /// (requirement pin > `ATELIER_EXTERNAL_OTEL` env > `[telemetry].otel_enabled`
-    /// config, managed layers included) that activates the external stream.
-    /// When set, the standard `OTEL_EXPORTER_OTLP_*` vars are reserved for the
-    /// external OTEL stream and the internal trace pipeline ignores them
-    /// entirely — an admin who opts in (by *any* layer, including an org
-    /// enable distributed via managed config with no env var) never receives
-    /// the internally-authed firehose. Held as a field (not re-read in the
-    /// resolvers) so the resolvers stay pure and testable without env races.
-    #[serde(skip)]
-    pub external_otel_master_switch: bool,
-    /// Env: `OTEL_TRACES_EXPORTER`. `otlp` (default) or `none` to disable spans.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub otel_traces_exporter: Option<String>,
-    /// Env: `OTEL_BSP_SCHEDULE_DELAY` (OTel) or `OTEL_TRACES_EXPORT_INTERVAL`
-    /// (Claude alias). Batch flush interval (ms).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub otel_traces_export_interval: Option<u64>,
-    /// Env: `OTEL_EXPORTER_OTLP_TIMEOUT`. Export HTTP timeout (ms).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub otel_exporter_otlp_timeout: Option<u64>,
     /// Base URL for the asset server (profile images, etc.).
     /// Env: `ATELIER_ASSET_SERVER_URL`.
     #[serde(default = "default_asset_server_url")]
@@ -242,9 +169,6 @@ pub struct EndpointsConfig {
     /// Read by `load_management_api_key_sync()`. Declared for `serde_ignored`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub management_api_key: Option<String>,
-    /// Read by `load_gcs_service_account_key_sync()`. Declared for `serde_ignored`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub gcs_service_account_key: Option<String>,
 }
 pub(crate) fn default_asset_server_url() -> String {
     std::env::var("ATELIER_ASSET_SERVER_URL")
@@ -256,18 +180,6 @@ fn blank_as_unset(opt: &Option<String>) -> Option<String> {
     opt.as_deref()
         .filter(|s| !s.trim().is_empty())
         .map(str::to_owned)
-}
-/// Parse a `k=v,k2=v2` OTLP header list (the `OTEL_EXPORTER_OTLP_HEADERS`
-/// format, shared with `ATELIER_INTERNAL_OTLP_HEADERS`): split on `,`,
-/// `split_once('=')`, trim key/value, skip blank keys, keep empty values.
-fn parse_otlp_header_list(raw: &str) -> Vec<(String, String)> {
-    raw.split(',')
-        .filter_map(|kv| {
-            let (k, v) = kv.split_once('=')?;
-            let k = k.trim();
-            (!k.is_empty()).then(|| (k.to_string(), v.trim().to_string()))
-        })
-        .collect()
 }
 impl EndpointsConfig {
     pub fn has_custom_endpoint(&self) -> bool {
@@ -287,7 +199,6 @@ impl EndpointsConfig {
     /// No field is derived from another — defaulting is done by the resolvers.
     pub(crate) fn from_config_value(config: &toml::Value) -> Self {
         let default = Self::default();
-        let external_otel_master_switch = default.external_otel_master_switch;
         let mut base = match toml::Value::try_from(default) {
             Ok(v) => v,
             Err(_) => return Self::default(),
@@ -295,14 +206,10 @@ impl EndpointsConfig {
         if let Some(endpoints) = config.get("endpoints") {
             crate::config::deep_merge_toml(&mut base, endpoints);
         }
-        let mut resolved: Self = base.try_into().unwrap_or_default();
-        resolved.external_otel_master_switch = external_otel_master_switch;
-        resolved
+        base.try_into().unwrap_or_default()
     }
-    /// The cli-chat-proxy base URL through which all auxiliary services (and
-    /// OAuth/session inference) resolve: explicit `cli_chat_proxy_base_url`, else
-    /// the public default. NEVER falls back to `xai_api_base_url` — that is the
-    /// inference endpoint (API-key auth) only.
+    /// The configured proxy base URL through which auxiliary services and
+    /// session inference resolve. No vendor endpoint is compiled in.
     pub fn proxy_url(&self) -> String {
         blank_as_unset(&self.cli_chat_proxy_base_url)
             .unwrap_or_else(|| CLI_CHAT_PROXY_BASE_URL_DEFAULT.to_owned())
@@ -311,128 +218,6 @@ impl EndpointsConfig {
         self.models_base_url
             .clone()
             .unwrap_or_else(|| self.proxy_url())
-    }
-    /// Feedback is a removed vendor service. It is never resolved in Atelier.
-    pub fn resolve_feedback_base_url(&self) -> String {
-        String::new()
-    }
-    /// Trace upload is a removed vendor service. It is never resolved in Atelier.
-    pub fn resolve_trace_upload_url(&self) -> String {
-        String::new()
-    }
-    /// INTERNAL OTLP traces endpoint. Precedence:
-    /// 1. `atelier_internal_otlp_traces_endpoint` (verbatim)
-    /// 2. legacy `otel_exporter_otlp_traces_endpoint` (verbatim) >
-    ///    `otel_exporter_otlp_endpoint` + `/v1/traces` — ONLY when the
-    ///    external-OTEL master switch is unset (back-compat; deprecated)
-    /// 3. `proxy_url` + `/traces`.
-    /// Uses the proxy default (not the `xai_api_base_url` fallback) so
-    /// telemetry reports to xAI even when inference is overridden. When the
-    /// master switch IS set, the standard `OTEL_EXPORTER_OTLP_*` values are
-    /// completely ignored here so the internally-authed firehose never lands
-    /// at an external collector.
-    pub fn resolve_otlp_traces_endpoint(&self) -> String {
-        String::new()
-    }
-    /// Legacy (standard-OTEL-var) internal traces endpoint, if any:
-    /// `otel_exporter_otlp_traces_endpoint` verbatim, else
-    /// `otel_exporter_otlp_endpoint` + `/v1/traces`. Ignores the master switch.
-    fn legacy_internal_otlp_traces_endpoint(&self) -> Option<String> {
-        if let Some(full) = blank_as_unset(&self.otel_exporter_otlp_traces_endpoint) {
-            return Some(full.trim_end_matches('/').to_string());
-        }
-        blank_as_unset(&self.otel_exporter_otlp_endpoint)
-            .map(|base| format!("{}/v1/traces", base.trim_end_matches('/')))
-    }
-    /// Extra headers for the INTERNAL export: `atelier_internal_otlp_headers`
-    /// first; legacy fallback to `otel_exporter_otlp_headers` ONLY when the
-    /// external-OTEL master switch is unset (back-compat for existing users).
-    pub fn resolve_otlp_headers(&self) -> Vec<(String, String)> {
-        if let Some(headers) = blank_as_unset(&self.atelier_internal_otlp_headers) {
-            return parse_otlp_header_list(&headers);
-        }
-        if !self.external_otel_master_switch {
-            return parse_otlp_header_list(
-                self.otel_exporter_otlp_headers.as_deref().unwrap_or(""),
-            );
-        }
-        Vec::new()
-    }
-    /// Whether the legacy fallback actually supplied the internal endpoint OR
-    /// internal headers from the standard `OTEL_EXPORTER_OTLP_*` vars — i.e.
-    /// the master switch is unset AND (`otel_exporter_otlp_traces_endpoint` /
-    /// `otel_exporter_otlp_endpoint` is non-blank for the endpoint, or
-    /// `otel_exporter_otlp_headers` is non-blank for headers) AND no
-    /// `atelier_internal_otlp_*` override shadowed that half.
-    ///
-    /// CONTRACT: this flag is passed to the external OTEL stream's init, which
-    /// MUST refuse to activate when it is true — the same standard vars cannot
-    /// feed both pipelines (no-double-send invariant, enforced in code).
-    pub fn internal_otlp_consumed_standard_vars(&self) -> bool {
-        if self.external_otel_master_switch {
-            return false;
-        }
-        let endpoint_consumed = blank_as_unset(&self.atelier_internal_otlp_traces_endpoint)
-            .is_none()
-            && self.legacy_internal_otlp_traces_endpoint().is_some();
-        let headers_consumed = blank_as_unset(&self.atelier_internal_otlp_headers).is_none()
-            && blank_as_unset(&self.otel_exporter_otlp_headers).is_some();
-        endpoint_consumed || headers_consumed
-    }
-    /// Trace export enabled unless `OTEL_TRACES_EXPORTER=none`. Deliberately
-    /// still honored by the internal pipeline even with `ATELIER_EXTERNAL_OTEL`
-    /// set: disabling internal span export is the safe direction.
-    pub fn resolve_traces_export_enabled(&self) -> bool {
-        !matches!(
-            self.otel_traces_exporter.as_deref().map(str::trim),
-            Some("none")
-        )
-    }
-    /// `OTEL_BSP_SCHEDULE_DELAY` / `OTEL_TRACES_EXPORT_INTERVAL` — tuning-only,
-    /// deliberately shared between the internal and external pipelines.
-    pub fn resolve_otlp_export_interval(&self) -> Option<std::time::Duration> {
-        self.otel_traces_export_interval
-            .map(std::time::Duration::from_millis)
-    }
-    /// `OTEL_EXPORTER_OTLP_TIMEOUT` — tuning-only, deliberately shared between
-    /// the internal and external pipelines.
-    pub fn resolve_otlp_timeout(&self) -> Option<std::time::Duration> {
-        self.otel_exporter_otlp_timeout
-            .map(std::time::Duration::from_millis)
-    }
-    /// Resolve trace upload credentials: inline > file > `None` (ambient).
-    pub fn resolve_trace_credentials(&self) -> Option<String> {
-        let _ = self;
-        None
-    }
-    /// Resolve direct-to-bucket upload method from `trace_upload_bucket`.
-    /// Returns `None` if no bucket is configured or scheme is unrecognized.
-    pub fn resolve_direct_upload_method(
-        &self,
-    ) -> Option<crate::session::repo_changes::UploadMethod> {
-        let _ = self;
-        // Trace/repo artifact uploads are not part of the private runtime.
-        None
-    }
-    /// Whether trace upload can authenticate without an interactive login.
-    pub fn has_noninteractive_upload_auth(&self) -> bool {
-        let _ = self;
-        false
-    }
-    /// Direct bucket → proxy (if `auth_token` or `deployment_key`) → ambient GCS → `None`.
-    pub fn resolve_upload_method(
-        &self,
-        auth_token: Option<String>,
-    ) -> Option<crate::session::repo_changes::UploadMethod> {
-        let _ = (self, auth_token);
-        // No proxy, GCS, or S3 upload is ever selected by Atelier.
-        None
-    }
-    /// Resolve trace bucket URL: env > config > compiled-in default.
-    /// `None` disables direct GCS trace uploads.
-    pub fn resolve_trace_bucket_url(&self) -> Option<Resolved<String>> {
-        let _ = self;
-        None
     }
     /// `models_list_url` > `{models_base_url}/models` > `{proxy_base_url}/models`.
     pub fn resolve_models_list_url(&self) -> String {
@@ -456,36 +241,12 @@ impl Default for EndpointsConfig {
     fn default() -> Self {
         Self {
             cli_chat_proxy_base_url: std::env::var("ATELIER_CLI_CHAT_PROXY_BASE_URL").ok(),
-            xai_api_base_url: std::env::var("ATELIER_XAI_API_BASE_URL")
-                .unwrap_or_else(|_| XAI_API_BASE_URL_DEFAULT.to_owned()),
             alpha_test_key: None,
             models_base_url: env_string("ATELIER_MODELS_BASE_URL"),
             models_list_url: env_string("ATELIER_MODELS_LIST_URL"),
-            feedback_base_url: env_string("ATELIER_FEEDBACK_BASE_URL"),
-            trace_upload_url: None,
-            trace_upload_bucket: None,
-            trace_upload_region: None,
-            trace_upload_credentials_file: None,
-            trace_upload_credentials: None,
-            trace_upload_endpoint_url: None,
             deployment_key: env_string("ATELIER_DEPLOYMENT_KEY"),
-            otel_exporter_otlp_endpoint: env_string("OTEL_EXPORTER_OTLP_ENDPOINT"),
-            otel_exporter_otlp_traces_endpoint: env_string("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"),
-            otel_exporter_otlp_headers: env_string("OTEL_EXPORTER_OTLP_HEADERS"),
-            atelier_internal_otlp_traces_endpoint: env_string(
-                "ATELIER_INTERNAL_OTLP_TRACES_ENDPOINT",
-            ),
-            atelier_internal_otlp_headers: env_string("ATELIER_INTERNAL_OTLP_HEADERS"),
-            external_otel_master_switch: external_otel_master_switch_resolved(),
-            otel_traces_exporter: env_string("OTEL_TRACES_EXPORTER"),
-            otel_traces_export_interval: env_string("OTEL_BSP_SCHEDULE_DELAY")
-                .or_else(|| env_string("OTEL_TRACES_EXPORT_INTERVAL"))
-                .and_then(|s| s.parse().ok()),
-            otel_exporter_otlp_timeout: env_string("OTEL_EXPORTER_OTLP_TIMEOUT")
-                .and_then(|s| s.parse().ok()),
             asset_server_url: default_asset_server_url(),
             management_api_key: None,
-            gcs_service_account_key: None,
         }
     }
 }
@@ -521,7 +282,6 @@ impl<T: Clone> Constrained<T> {
 #[derive(Debug, Clone, Default)]
 pub struct Requirements {
     pub telemetry: Constrained<TelemetryMode>,
-    pub trace_upload: Constrained<bool>,
     pub feedback: Constrained<bool>,
     pub lsp_tools: Constrained<bool>,
     pub tool_search: Constrained<bool>,
@@ -544,7 +304,7 @@ pub struct Requirements {
 /// to [`Config::resolve_runtime_fields`].
 pub struct RuntimeResolutionContext<'a> {
     pub raw_config: &'a toml::Value,
-    pub remote_settings: Option<&'a crate::util::config::RemoteSettings>,
+    pub local_runtime_settings: Option<&'a crate::util::config::LocalRuntimeSettings>,
     pub cwd: Option<&'a std::path::Path>,
     pub is_headless: bool,
     /// `Some(true)` = CLI explicitly enabled, `None` = defer to config/env/remote.
@@ -586,8 +346,8 @@ fn resolve_compaction_mode_from(
     env: Option<&str>,
     config: Option<&str>,
     remote: Option<&str>,
-) -> xai_chat_state::CompactionMode {
-    use xai_chat_state::CompactionMode;
+) -> atelier_chat_state::CompactionMode {
+    use atelier_chat_state::CompactionMode;
     env.and_then(CompactionMode::parse)
         .or_else(|| config.and_then(CompactionMode::parse))
         .or_else(|| remote.and_then(CompactionMode::parse))
@@ -599,8 +359,8 @@ fn resolve_compaction_detail_from(
     env: Option<&str>,
     config: Option<&str>,
     remote: Option<&str>,
-) -> xai_chat_state::CompactionDetail {
-    use xai_chat_state::CompactionDetail;
+) -> atelier_chat_state::CompactionDetail {
+    use atelier_chat_state::CompactionDetail;
     env.and_then(CompactionDetail::parse)
         .or_else(|| config.and_then(CompactionDetail::parse))
         .or_else(|| remote.and_then(CompactionDetail::parse))
@@ -633,7 +393,7 @@ pub(crate) fn resolve_compat_cell_with_env(
     }
 }
 fn remote_compat_value(
-    remote: Option<&crate::util::config::RemoteSettings>,
+    remote: Option<&crate::util::config::LocalRuntimeSettings>,
     key: Option<CompatRemoteKey>,
 ) -> Option<bool> {
     let remote = remote?;
@@ -656,7 +416,7 @@ fn remote_compat_value(
 /// Resolve vendor compatibility cells from TOML and remote settings.
 fn resolve_compat_config(
     config: &CompatConfigToml,
-    remote: Option<&crate::util::config::RemoteSettings>,
+    remote: Option<&crate::util::config::LocalRuntimeSettings>,
 ) -> CompatConfig {
     let defaults = CompatConfig::default();
     let mut resolved = defaults;
@@ -703,7 +463,7 @@ pub(crate) fn compat_config_cell(
 /// Resolve only picker-facing session cells from raw config independently.
 pub fn resolve_compat_sessions_from_raw(
     raw_config: Result<&toml::Value, ()>,
-    remote: Option<&crate::util::config::RemoteSettings>,
+    remote: Option<&crate::util::config::LocalRuntimeSettings>,
 ) -> CompatConfig {
     let mut config = CompatConfigToml::default();
     for cell in COMPAT_CELLS
@@ -1129,7 +889,7 @@ pub struct SuggestionsConfig {
 impl SuggestionsConfig {
     pub fn resolve_enabled(
         &self,
-        remote: Option<&crate::util::config::RemoteSettings>,
+        remote: Option<&crate::util::config::LocalRuntimeSettings>,
     ) -> Resolved<bool> {
         BoolFlag::env("ATELIER_SUGGESTIONS")
             .config(self.enabled)
@@ -1139,7 +899,7 @@ impl SuggestionsConfig {
     }
     pub fn resolve_ai_enabled(
         &self,
-        remote: Option<&crate::util::config::RemoteSettings>,
+        remote: Option<&crate::util::config::LocalRuntimeSettings>,
     ) -> Resolved<bool> {
         BoolFlag::env("ATELIER_SUGGESTIONS_AI")
             .config(self.ai_enabled)
@@ -1204,6 +964,15 @@ pub struct PermissionKnownKeys {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Config {
     pub features: Features,
+    /// Persistent new-Session default from top-level `config.toml:model`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// Selected editable prompt preset under `~/.atelier/contexts/<name>/`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<String>,
+    /// Selected outbound HTTP identity from `~/.atelier/request-agents.toml`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_agent: Option<String>,
     /// `[goal]` section: canonical `/goal` configuration. See [`GoalConfig`].
     #[serde(default)]
     pub goal: GoalConfig,
@@ -1244,8 +1013,6 @@ pub struct Config {
     /// is used for all sessions (unless overridden by CLI flag or ACP meta).
     #[serde(default)]
     pub agent: AgentSelectionConfig,
-    #[serde(default)]
-    pub repo_changes_dedup: RepoChangesDedupConfig,
     /// Skills discovery configuration.
     #[serde(default)]
     pub skills: SkillsConfig,
@@ -1376,7 +1143,7 @@ pub struct Config {
     /// Remote settings fetched from cli-chat-proxy at startup.
     /// Used for upload limits (replaces on-demand /v1/storage/limits fetch).
     #[serde(skip)]
-    pub remote_settings: Option<crate::util::config::RemoteSettings>,
+    pub local_runtime_settings: Option<crate::util::config::LocalRuntimeSettings>,
     #[serde(skip)]
     pub cli_agents: Vec<atelier_agent::config::AgentDefinition>,
     #[serde(skip)]
@@ -1464,7 +1231,7 @@ pub struct Config {
     #[serde(skip)]
     pub auto_wake_enabled: bool,
     /// Resolved vendor-compat config (env → `[compat]` TOML → feature flag →
-    /// default ON), built from `compat` + `remote_settings` in
+    /// default ON), built from `compat` + `local_runtime_settings` in
     /// `resolve_runtime_fields`. Threaded into skills / rules / AGENTS.md
     /// discovery.
     #[serde(skip)]
@@ -1605,43 +1372,14 @@ pub struct SessionConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub load_envrc: Option<bool>,
 }
-/// Configuration for change-archive deduplication.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
-pub struct RepoChangesDedupConfig {
-    pub enabled: bool,
-    /// Include inline content even when references exist.
-    pub include_inline_fallback: bool,
-    /// Omit inline content larger than this (0 = no limit).
-    pub max_inline_bytes: usize,
-    /// Deduplicate untracked file content.
-    pub dedup_untracked: bool,
-    /// Deduplicate binary file blobs.
-    pub dedup_binary: bool,
-    /// Skip untracked files larger than this (0 = no limit).
-    pub untracked_max_bytes: usize,
-    /// Optional glob patterns to exclude untracked paths.
-    pub untracked_exclude_globs: Vec<String>,
-}
-impl RepoChangesDedupConfig {}
-impl Default for RepoChangesDedupConfig {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            include_inline_fallback: false,
-            max_inline_bytes: 0,
-            dedup_untracked: true,
-            dedup_binary: true,
-            untracked_max_bytes: 0,
-            untracked_exclude_globs: Vec::new(),
-        }
-    }
-}
 impl Default for Config {
     fn default() -> Self {
         let endpoints = EndpointsConfig::default();
         let mut cfg = Self {
             features: Features::default(),
+            model: Some(atelier_config::runtime_defaults::DEFAULT_NEW_SESSION_MODEL.to_owned()),
+            context: None,
+            request_agent: None,
             goal: GoalConfig::default(),
             doom_loop_recovery: crate::util::config::DoomLoopRecoverySettings::default(),
             auto_mode: AutoModeConfig::default(),
@@ -1656,7 +1394,6 @@ impl Default for Config {
             telemetry: TelemetryConfig::default(),
             session: SessionConfig::default(),
             agent: AgentSelectionConfig::default(),
-            repo_changes_dedup: RepoChangesDedupConfig::default(),
             skills: SkillsConfig::default(),
             compat: CompatConfigToml::default(),
             plugins: PluginsConfig::default(),
@@ -1697,7 +1434,7 @@ impl Default for Config {
             agent_profile_path: None,
             client_version: Some(atelier_version::VERSION.to_string()),
             mode: AgentMode::default(),
-            remote_settings: None,
+            local_runtime_settings: None,
             cli_agents: Vec::new(),
             cli_agent_overrides: CliAgentOverrides::default(),
             subagents_enabled: true,
@@ -1782,10 +1519,23 @@ impl Config {
     }
     pub fn new_from_toml_cfg(raw_config: &toml::Value) -> Result<Self, String> {
         let raw_config = &Self::expand_auth_alias(raw_config);
+        let runtime_model = raw_config
+            .get("model")
+            .and_then(toml::Value::as_str)
+            .map(str::trim)
+            .filter(|model| !model.is_empty())
+            .map(ToOwned::to_owned);
         let super::config_model_override_parse::ParsedModelOverrides {
             models: config_models,
             warnings: model_override_warnings,
-        } = super::config_model_override_parse::parse_model_overrides(raw_config);
+        } = if raw_config.get("model").is_some_and(toml::Value::is_table) {
+            super::config_model_override_parse::parse_model_overrides(raw_config)
+        } else {
+            super::config_model_override_parse::ParsedModelOverrides {
+                models: IndexMap::new(),
+                warnings: Vec::new(),
+            }
+        };
         super::config_model_override_parse::log_model_override_warnings(&model_override_warnings);
         let mut base = toml::Value::try_from(Self::default()).map_err(|e| e.to_string())?;
         if let toml::Value::Table(ref mut t) = base {
@@ -1806,6 +1556,7 @@ impl Config {
         }
         config.config_models = config_models;
         config.model_override_warnings = model_override_warnings;
+        config.model = runtime_model;
         if config.atelier_com_config.oidc.is_none() {
             config.atelier_com_config.oidc = OidcAuthConfig::from_env();
         }
@@ -1854,7 +1605,7 @@ impl Config {
     /// - memory_config via `MemoryConfig::resolve`
     /// - disable_web_search (CLI flag ORed with config.toml)
     /// - storage_mode via `StorageMode::resolve`
-    /// - path_not_found_hints from remote_settings
+    /// - path_not_found_hints from local_runtime_settings
     ///
     /// Note: `worktree_type` is resolved directly in `MvpAgent::new` via
     /// `resolve_worktree_type` since it's an agent-level field, not a Config field.
@@ -1873,7 +1624,7 @@ impl Config {
         self.zdr_video_output_s3 = tools.zdr_video_output_s3;
         let mcps = crate::config::ManagedMcpsConfig::resolve(
             ctx.raw_config,
-            ctx.remote_settings,
+            ctx.local_runtime_settings,
             ctx.is_headless,
         );
         self.managed_mcps_enabled = mcps.enabled;
@@ -1882,7 +1633,7 @@ impl Config {
             ctx.cli_web_search_model,
             ctx.cli_session_summary_model,
             ctx.raw_config,
-            ctx.remote_settings,
+            ctx.local_runtime_settings,
         );
         self.web_search_model = models.web_search;
         self.session_summary_model = models.session_summary;
@@ -1894,24 +1645,27 @@ impl Config {
             ctx.cli_experimental_memory,
             ctx.cli_no_memory,
             ctx.raw_config,
-            ctx.remote_settings,
+            ctx.local_runtime_settings,
         );
         self.memory_config = if mem.enabled { Some(mem) } else { None };
         self.disable_web_search = self.disable_web_search || ctx.disable_web_search;
         self.todo_gate = ctx.todo_gate;
         self.laziness_debug_log = ctx.laziness_debug_log.map(std::path::Path::to_path_buf);
         self.storage_mode =
-            crate::config::StorageMode::resolve(ctx.storage_mode, ctx.remote_settings);
-        if let Some(v) = ctx.remote_settings.and_then(|s| s.path_not_found_hints) {
+            crate::config::StorageMode::resolve(ctx.storage_mode, ctx.local_runtime_settings);
+        if let Some(v) = ctx
+            .local_runtime_settings
+            .and_then(|s| s.path_not_found_hints)
+        {
             self.path_not_found_hints = v;
         }
         self.auto_wake_enabled = BoolFlag::env("ATELIER_AUTO_WAKE")
             .config(self.features.auto_wake)
-            .feature_flag(ctx.remote_settings.and_then(|r| r.auto_wake_enabled))
+            .feature_flag(ctx.local_runtime_settings.and_then(|r| r.auto_wake_enabled))
             .default(true)
             .resolve()
             .value;
-        self.compat_resolved = resolve_compat_config(&self.compat, ctx.remote_settings);
+        self.compat_resolved = resolve_compat_config(&self.compat, ctx.local_runtime_settings);
     }
     /// Re-resolve eagerly-resolved runtime fields using the current `Config`
     /// state and fresh `raw_config` + `cwd`. Builds a
@@ -1924,13 +1678,13 @@ impl Config {
         raw_config: &toml::Value,
         cwd: Option<&std::path::Path>,
     ) {
-        let remote_settings = self.remote_settings.clone();
+        let local_runtime_settings = self.local_runtime_settings.clone();
         let cli_web_search_model = self.web_search_model_override.clone();
         let cli_session_summary_model = self.session_summary_model_override.clone();
         let laziness_debug_log = self.laziness_debug_log.clone();
         let ctx = RuntimeResolutionContext {
             raw_config,
-            remote_settings: remote_settings.as_ref(),
+            local_runtime_settings: local_runtime_settings.as_ref(),
             cwd,
             is_headless: self.mode == AgentMode::Headless,
             cli_subagents: self.cli_subagents,
@@ -1944,7 +1698,6 @@ impl Config {
             storage_mode: None,
         };
         self.resolve_runtime_fields(&ctx);
-        crate::util::config::set_remote_campaigns_from_settings(self.remote_settings.as_ref());
     }
     /// If the TOML contains `[auth]`, copy its contents under `[atelier_com_config]`.
     /// `[atelier_com_config]` takes precedence if both are present (explicit wins).
@@ -1970,16 +1723,12 @@ impl Config {
         config
     }
     fn apply_env_overrides(&mut self) {
-        self.telemetry.apply_env_overrides();
         if let Some(mode) = env_telemetry_mode("ATELIER_TELEMETRY_ENABLED") {
             self.features.telemetry = Some(mode);
         }
     }
     pub fn is_telemetry_enabled(&self) -> bool {
         self.resolve_telemetry_mode().value.is_enabled()
-    }
-    pub fn is_trace_upload_enabled(&self) -> bool {
-        self.resolve_trace_upload().value
     }
     pub fn is_feedback_enabled(&self) -> bool {
         self.resolve_feedback().value
@@ -2006,37 +1755,19 @@ impl Config {
         if let Some(mode) = self.features.telemetry {
             return Resolved::new(mode, ConfigSource::Config);
         }
-        if let Some(rs) = self.remote_settings.as_ref() {
-            if let Some(mode_str) = rs.telemetry_mode.as_deref()
-                && let Some(mode) = TelemetryMode::parse(mode_str)
-            {
-                return Resolved::new(mode, ConfigSource::Remote);
-            }
-            if let Some(val) = rs.telemetry_enabled {
-                return Resolved::new(TelemetryMode::from(val), ConfigSource::Remote);
-            }
-        }
         Resolved::new(TelemetryMode::Disabled, ConfigSource::Default)
-    }
-    pub(crate) fn resolve_trace_upload(&self) -> Resolved<bool> {
-        let _ = self;
-        // This is a compile-time product decision, not a user-configurable
-        // feature flag. In particular, remote settings and requirements must
-        // not be able to re-arm artifact uploads.
-        Resolved::new(false, ConfigSource::Default)
     }
     /// Resolve jemalloc heap-profile config from stored remote settings + gates.
     pub fn resolve_jemalloc_heap_profile(
         &self,
         data_collection_disabled: bool,
     ) -> crate::heap_profile::JemallocHeapProfileConfig {
-        let rs = self.remote_settings.as_ref();
+        let rs = self.local_runtime_settings.as_ref();
         crate::heap_profile::resolve_jemalloc_heap_profile(
             rs.and_then(|s| s.jemalloc_heap_profile_enabled),
             rs.and_then(|s| s.jemalloc_heap_profile_thresholds_bytes.as_deref()),
             rs.and_then(|s| s.jemalloc_heap_profile_poll_interval_secs),
             data_collection_disabled,
-            self.resolve_trace_upload().value,
             crate::heap_profile::prof_available(),
         )
     }
@@ -2053,26 +1784,7 @@ impl Config {
             jemalloc_thresholds,
             jemalloc_poll_interval_secs,
             data_collection_disabled,
-            self.resolve_trace_upload().value,
             crate::heap_profile::prof_available(),
-        )
-    }
-    pub(crate) fn trace_upload_decision_debug(&self) -> serde_json::Value {
-        let telemetry = self.resolve_telemetry_mode();
-        let trace_upload = self.resolve_trace_upload();
-        let req = &self.requirements.trace_upload;
-        serde_json::json!(
-            { "trace_upload" : trace_upload.value, "trace_upload_source" : trace_upload
-            .source.to_string(), "telemetry_mode" : telemetry.value.to_string(),
-            "telemetry_source" : telemetry.source.to_string(), "in_requirement_pin" : req
-            .pinned(), "in_requirement_src" : req.source().map(| s | s.to_string()),
-            "in_env_trace_upload" : serde_json::Value::Null,
-            "in_env_telemetry_enabled" : std::env::var("ATELIER_TELEMETRY_ENABLED").ok(),
-            "in_cfg_telemetry_trace_upload" : self.telemetry.trace_upload,
-            "in_cfg_features_telemetry" : self.features.telemetry.map(| m | m
-            .to_string()), "in_remote_trace_upload_enabled" : self.remote_settings
-            .as_ref().and_then(| s | s.trace_upload_enabled), "has_remote_settings" :
-            self.remote_settings.is_some(), }
         )
     }
     pub(crate) fn resolve_feedback(&self) -> Resolved<bool> {
@@ -2081,7 +1793,7 @@ impl Config {
     }
     pub(crate) fn resolve_two_pass_compaction(&self) -> Resolved<bool> {
         let ff = self
-            .remote_settings
+            .local_runtime_settings
             .as_ref()
             .and_then(|s| s.two_pass_compaction_enabled);
         BoolFlag::env("ATELIER_TWO_PASS_COMPACTION")
@@ -2107,7 +1819,7 @@ impl Config {
     ) -> Option<atelier_sampling_types::DoomLoopRecoveryPolicy> {
         use atelier_sampling_types::DoomLoopRecoveryPolicy as Policy;
         let remote = self
-            .remote_settings
+            .local_runtime_settings
             .as_ref()
             .and_then(|s| s.doom_loop_recovery.as_ref());
         let enabled = BoolFlag::env("ATELIER_DOOM_LOOP_RECOVERY")
@@ -2136,7 +1848,7 @@ impl Config {
     }
     pub(crate) fn resolve_lsp_tools(&self) -> Resolved<bool> {
         let ff = self
-            .remote_settings
+            .local_runtime_settings
             .as_ref()
             .and_then(|s| s.lsp_tools_enabled);
         BoolFlag::env("ATELIER_LSP_TOOLS")
@@ -2147,7 +1859,7 @@ impl Config {
     }
     pub(crate) fn resolve_web_fetch(&self) -> Resolved<bool> {
         let ff = self
-            .remote_settings
+            .local_runtime_settings
             .as_ref()
             .and_then(|s| s.web_fetch_enabled);
         BoolFlag::env("ATELIER_WEB_FETCH")
@@ -2162,7 +1874,7 @@ impl Config {
     /// applied at the spawn site and outranks this resolver.
     pub(crate) fn resolve_ask_user_question(&self) -> Resolved<bool> {
         let ff = self
-            .remote_settings
+            .local_runtime_settings
             .as_ref()
             .and_then(|s| s.ask_user_question_enabled);
         BoolFlag::env("ATELIER_ASK_USER_QUESTION")
@@ -2176,7 +1888,10 @@ impl Config {
     /// recap). Default ON — disable via remote settings `session_recap`, the
     /// `[features] session_recap` config.toml key, or `ATELIER_SESSION_RECAP` env.
     pub(crate) fn resolve_session_recap(&self) -> Resolved<bool> {
-        let ff = self.remote_settings.as_ref().and_then(|s| s.session_recap);
+        let ff = self
+            .local_runtime_settings
+            .as_ref()
+            .and_then(|s| s.session_recap);
         BoolFlag::env("ATELIER_SESSION_RECAP")
             .config(self.features.session_recap)
             .feature_flag(ff)
@@ -2190,7 +1905,7 @@ impl Config {
     /// The pager may force API-key sessions on when only remote is off.
     pub(crate) fn resolve_voice_mode(&self) -> Resolved<bool> {
         let ff = self
-            .remote_settings
+            .local_runtime_settings
             .as_ref()
             .and_then(|s| s.voice_mode_enabled);
         BoolFlag::env("ATELIER_VOICE_MODE")
@@ -2200,38 +1915,18 @@ impl Config {
             .default(true)
             .resolve()
     }
-    /// Vendor-hosted image generation was removed from Atelier.
-    pub(crate) fn resolve_image_gen(&self) -> Resolved<bool> {
-        Resolved::new(false, ConfigSource::Default)
-    }
     /// Vendor-hosted image editing was removed from Atelier.
     pub(crate) fn resolve_image_edit(&self) -> Resolved<bool> {
         Resolved::new(false, ConfigSource::Default)
     }
-    /// Optional Imagine model override for `image_gen`. When set (non-empty),
-    /// `image_gen` calls this model slug instead of the default quality model.
-    /// Precedence: env `ATELIER_IMAGE_GEN_MODEL_OVERRIDE` > `[features]
-    /// image_gen_model_override` config > remote settings `image_gen_model_override`.
-    /// `None` → default model (`atelier-imagine-image-quality`).
-    pub(crate) fn resolve_image_gen_model_override(&self) -> Option<String> {
-        resolve_string_flag(
-            None,
-            "ATELIER_IMAGE_GEN_MODEL_OVERRIDE",
-            self.features.image_gen_model_override.as_deref(),
-            self.remote_settings
-                .as_ref()
-                .and_then(|s| s.image_gen_model_override.as_deref()),
-        )
-        .map(|r| r.value)
-    }
-    /// Goal mode (`/goal`) master switch. Default ON: deployments that can't
-    /// reach cli-chat-proxy `/v1/settings` (custom `models_base_url`, external
-    /// `auth_provider_command`, air-gapped proxies) never receive the
-    /// remote settings `goal_enabled` flag, so the default must not carve them out.
-    /// Env, `[goal] enabled`, and the remote flag (`Some(false)` kill-switch)
-    /// all still override.
+    /// Goal mode (`/goal`) master switch. Default ON.
+    /// Env, `[goal] enabled`, and an optional process-local runtime override
+    /// (`Some(false)` as a kill-switch) take precedence over the default.
     pub(crate) fn resolve_goal(&self) -> Resolved<bool> {
-        let ff = self.remote_settings.as_ref().and_then(|s| s.goal_enabled);
+        let ff = self
+            .local_runtime_settings
+            .as_ref()
+            .and_then(|s| s.goal_enabled);
         BoolFlag::env("ATELIER_GOAL")
             .config(self.goal.enabled)
             .feature_flag(ff)
@@ -2247,7 +1942,7 @@ impl Config {
         BoolFlag::env("ATELIER_GOAL_CLASSIFIER")
             .config(self.goal.classifier_enabled)
             .feature_flag(
-                self.remote_settings
+                self.local_runtime_settings
                     .as_ref()
                     .and_then(|s| s.goal_classifier_enabled),
             )
@@ -2258,7 +1953,7 @@ impl Config {
         BoolFlag::env("ATELIER_GOAL_PLANNER")
             .config(self.goal.planner_enabled)
             .feature_flag(
-                self.remote_settings
+                self.local_runtime_settings
                     .as_ref()
                     .and_then(|s| s.goal_planner_enabled),
             )
@@ -2269,7 +1964,7 @@ impl Config {
         BoolFlag::env("ATELIER_GOAL_SUMMARY")
             .config(self.goal.summary_enabled)
             .feature_flag(
-                self.remote_settings
+                self.local_runtime_settings
                     .as_ref()
                     .and_then(|s| s.goal_summary_enabled),
             )
@@ -2307,7 +2002,7 @@ impl Config {
         Self::resolve_goal_u32(
             "ATELIER_GOAL_VERIFIER_N",
             self.goal.verifier_count,
-            self.remote_settings
+            self.local_runtime_settings
                 .as_ref()
                 .and_then(|s| s.goal_verifier_count),
             GOAL_VERIFIER_SKEPTIC_COUNT,
@@ -2323,7 +2018,7 @@ impl Config {
         Self::resolve_goal_u32(
             "ATELIER_GOAL_CLASSIFIER_MAX",
             self.goal.classifier_max_runs,
-            self.remote_settings
+            self.local_runtime_settings
                 .as_ref()
                 .and_then(|s| s.goal_classifier_max_runs),
             GOAL_CLASSIFIER_MAX_RUNS_DEFAULT,
@@ -2337,7 +2032,7 @@ impl Config {
         Self::resolve_goal_u32(
             "ATELIER_GOAL_STRATEGIST_EVERY",
             self.goal.strategist_every,
-            self.remote_settings
+            self.local_runtime_settings
                 .as_ref()
                 .and_then(|s| s.goal_strategist_every),
             (classifier_max_runs / 2).max(1),
@@ -2401,7 +2096,7 @@ impl Config {
         Self::resolve_single_role_model(
             use_current_only,
             self.goal.planner_model.as_ref(),
-            self.remote_settings
+            self.local_runtime_settings
                 .as_ref()
                 .and_then(|s| s.goal_planner_model.as_ref()),
         )
@@ -2414,7 +2109,7 @@ impl Config {
         Self::resolve_single_role_model(
             use_current_only,
             self.goal.strategist_model.as_ref(),
-            self.remote_settings
+            self.local_runtime_settings
                 .as_ref()
                 .and_then(|s| s.goal_strategist_model.as_ref()),
         )
@@ -2439,7 +2134,7 @@ impl Config {
             return Resolved::new(to_choices(&self.goal.skeptic_models), ConfigSource::Config);
         }
         match self
-            .remote_settings
+            .local_runtime_settings
             .as_ref()
             .map(|s| s.goal_skeptic_models.as_slice())
         {
@@ -2449,7 +2144,7 @@ impl Config {
     }
     pub(crate) fn resolve_write_file(&self) -> Resolved<bool> {
         let ff = self
-            .remote_settings
+            .local_runtime_settings
             .as_ref()
             .and_then(|s| s.write_file_enabled);
         BoolFlag::env("ATELIER_WRITE_FILE")
@@ -2468,11 +2163,11 @@ impl Config {
     /// Resolve the mode (env `ATELIER_COMPACTION_MODE` > config > remote settings >
     /// default, unrecognized falling through) and, for `Segments`, attach the
     /// separately-resolved detail level.
-    pub(crate) fn resolve_compaction_mode(&self) -> xai_chat_state::CompactionMode {
+    pub(crate) fn resolve_compaction_mode(&self) -> atelier_chat_state::CompactionMode {
         resolve_compaction_mode_from(
             env_string("ATELIER_COMPACTION_MODE").as_deref(),
             self.features.compaction_mode.as_deref(),
-            self.remote_settings
+            self.local_runtime_settings
                 .as_ref()
                 .and_then(|r| r.compaction_mode.as_deref()),
         )
@@ -2483,7 +2178,7 @@ impl Config {
         BoolFlag::env("ATELIER_COMPACTION_VERBATIM_INPUT")
             .config(self.features.compaction_verbatim_input)
             .feature_flag(
-                self.remote_settings
+                self.local_runtime_settings
                     .as_ref()
                     .and_then(|r| r.compaction_verbatim_input),
             )
@@ -2493,20 +2188,20 @@ impl Config {
     }
     /// Precedence: env `ATELIER_COMPACTION_DETAIL`, then config
     /// `features.compaction_detail`, then remote settings
-    /// `remote_settings.compaction_detail`, then default (`verbose`). Drives the
+    /// `local_runtime_settings.compaction_detail`, then default (`verbose`). Drives the
     /// `segments` verbatim detail level.
-    fn resolve_compaction_detail(&self) -> xai_chat_state::CompactionDetail {
+    fn resolve_compaction_detail(&self) -> atelier_chat_state::CompactionDetail {
         resolve_compaction_detail_from(
             env_string("ATELIER_COMPACTION_DETAIL").as_deref(),
             self.features.compaction_detail.as_deref(),
-            self.remote_settings
+            self.local_runtime_settings
                 .as_ref()
                 .and_then(|r| r.compaction_detail.as_deref()),
         )
     }
     pub fn resolve_cancel_rewind(&self) -> Resolved<bool> {
         let ff = self
-            .remote_settings
+            .local_runtime_settings
             .as_ref()
             .and_then(|s| s.cancel_rewind_enabled);
         BoolFlag::env("ATELIER_CANCEL_REWIND")
@@ -2812,8 +2507,7 @@ pub fn is_telemetry_disabled_sync() -> bool {
         .resolve()
 }
 /// Like [`is_telemetry_disabled_sync`] but only `true` when telemetry is
-/// *explicitly* off; absence is not disabled (`.default(true)`) so remote-only
-/// enablement still builds the OTLP exporter (the runtime gate then governs it).
+/// *explicitly* off; absence is not disabled (`.default(true)`).
 pub fn is_telemetry_explicitly_disabled_sync() -> bool {
     !SyncBoolFlag::new(telemetry_enabled_from_toml)
         .disable_env("DISABLE_TELEMETRY")
@@ -2860,154 +2554,23 @@ pub(crate) fn read_requirements_toml() -> Option<toml::Value> {
     let content = std::fs::read_to_string(&path).ok()?;
     toml::from_str(&content).ok()
 }
-/// Resolve the external-OTEL master switch exactly the way the external
-/// stream's activation does: **requirement pin > `ATELIER_EXTERNAL_OTEL` env >
-/// `[telemetry].otel_enabled` config layer (managed config included) > off**.
-///
-/// The internal trace pipeline keys its "ignore `OTEL_EXPORTER_OTLP_*`"
-/// behavior off this value ([`EndpointsConfig::external_otel_master_switch`]),
-/// so an org enable distributed via managed config / requirements (no env
-/// var) flips **both** sides together. A desync here would leave the
-/// internally-authed firehose honoring legacy `OTEL_*` repointing while
-/// `internal_pipeline_consumed_otel_vars` simultaneously blocks the external
-/// stream — exactly the split this design forbids.
-pub(crate) fn external_otel_master_switch_resolved() -> bool {
-    external_otel_master_switch_from(
-        atelier_config::load_merged_requirements().as_ref(),
-        env_bool("ATELIER_EXTERNAL_OTEL"),
-        crate::config::load_effective_config().ok().as_ref(),
-    )
-}
-/// Testable core of [`external_otel_master_switch_resolved`].
-pub(crate) fn external_otel_master_switch_from(
-    requirements: Option<&toml::Value>,
-    env_switch: Option<bool>,
-    effective_config: Option<&toml::Value>,
-) -> bool {
-    let table_enabled = |v: Option<&toml::Value>| -> Option<bool> {
-        v?.get("telemetry")?.get("otel_enabled")?.as_bool()
-    };
-    if let Some(pinned) = table_enabled(requirements) {
-        return pinned;
-    }
-    if let Some(env) = env_switch {
-        return env;
-    }
-    table_enabled(effective_config).unwrap_or(false)
-}
-/// Resolve the external OTEL stream configuration at process startup
-/// (env + local config only — remote settings are not yet available when
-/// tracing init runs).
-///
-/// Layering follows `resolve_telemetry_mode`: **requirement > env > config >
-/// remote > default**, where the `[telemetry]` `otel_*` keys from the
-/// effective config (which already includes managed-config layers distributed
-/// by `atelier setup`) sit under the env vars, requirements pins are applied on
-/// top, and the remote layer is restrictive-only + asynchronous
-/// ([`apply_external_otel_remote_policy`]).
-pub fn resolve_external_otel_config(
-    client: atelier_telemetry::external::config::ExternalClientInfo,
-) -> Option<atelier_telemetry::external::ExternalOtelConfig> {
-    resolve_external_otel_config_with(
-        crate::config::load_effective_config().ok().as_ref(),
-        atelier_config::load_merged_requirements().as_ref(),
-        |name| std::env::var(name).ok(),
-        client,
-        EndpointsConfig::default().internal_otlp_consumed_standard_vars(),
-    )
-}
-/// Testable core of [`resolve_external_otel_config`]: all inputs injected so
-/// tests don't race on process env / disk.
-pub(crate) fn resolve_external_otel_config_with(
-    effective_config: Option<&toml::Value>,
-    requirements: Option<&toml::Value>,
-    getenv: impl Fn(&str) -> Option<String>,
-    client: atelier_telemetry::external::config::ExternalClientInfo,
-    internal_pipeline_consumed_otel_vars: bool,
-) -> Option<atelier_telemetry::external::ExternalOtelConfig> {
-    let file_cfg: Option<atelier_telemetry::external::ExternalOtelFileConfig> = effective_config
-        .and_then(|cfg| cfg.get("telemetry"))
-        .map(|t| atelier_telemetry::external::ExternalOtelFileConfig {
-            enabled: t.get("otel_enabled").and_then(toml::Value::as_bool),
-            metrics_exporter: t
-                .get("otel_metrics_exporter")
-                .and_then(toml::Value::as_str)
-                .map(str::to_owned),
-            logs_exporter: t
-                .get("otel_logs_exporter")
-                .and_then(toml::Value::as_str)
-                .map(str::to_owned),
-            endpoint: t
-                .get("otel_endpoint")
-                .and_then(toml::Value::as_str)
-                .map(str::to_owned),
-            protocol: t
-                .get("otel_protocol")
-                .or_else(|| t.get("otel_transport"))
-                .and_then(toml::Value::as_str)
-                .map(str::to_owned),
-            log_user_prompts: t
-                .get("otel_log_user_prompts")
-                .and_then(toml::Value::as_bool),
-            log_tool_details: t
-                .get("otel_log_tool_details")
-                .and_then(toml::Value::as_bool),
-        });
-    let req_get =
-        |key: &str| -> Option<bool> { requirements?.get("telemetry")?.get(key)?.as_bool() };
-    let req_enabled = req_get("otel_enabled");
-    let req_prompts = req_get("otel_log_user_prompts");
-    let req_details = req_get("otel_log_tool_details");
-    let getenv_pinned = |name: &str| -> Option<String> {
-        let pin = match name {
-            atelier_telemetry::external::config::ENV_MASTER_SWITCH => req_enabled,
-            "OTEL_LOG_USER_PROMPTS" => req_prompts,
-            "OTEL_LOG_TOOL_DETAILS" => req_details,
-            _ => None,
-        };
-        if let Some(v) = pin {
-            return Some(if v { "1" } else { "0" }.to_owned());
-        }
-        getenv(name)
-    };
-    let mut resolved = atelier_telemetry::external::ExternalOtelConfig::resolve_with(
-        getenv_pinned,
-        file_cfg.as_ref(),
-    )?;
-    resolved.client = client;
-    resolved.internal_pipeline_consumed_otel_vars = internal_pipeline_consumed_otel_vars;
-    Some(resolved)
-}
-/// Apply the restrictive-only remote-settings policy for the external OTEL
-/// stream (fleet kill switch + content-gate lock). Tighten-only by
-/// construction — there is no remote enable direction — so it is safe to
-/// call on every settings refresh.
-pub fn apply_external_otel_remote_policy(settings: Option<&crate::util::config::RemoteSettings>) {
-    let Some(settings) = settings else { return };
-    let policy = atelier_telemetry::external::ExternalOtelRemotePolicy {
-        force_disable: settings.external_otel_disabled.unwrap_or(false),
-        lock_content_gates: settings.external_otel_content_gates_locked.unwrap_or(false),
-    };
-    if policy.force_disable || policy.lock_content_gates {
-        atelier_telemetry::external::apply_remote_policy(policy);
-    }
-}
-/// Seed free-function remote caches after writing `Config.remote_settings`.
-pub fn apply_remote_settings_side_effects(settings: Option<&crate::util::config::RemoteSettings>) {
+/// Seed the remaining process-local compatibility caches after writing
+/// `Config.local_runtime_settings`.
+pub fn apply_local_runtime_settings_side_effects(
+    settings: Option<&crate::util::config::LocalRuntimeSettings>,
+) {
     crate::util::config::cache_remote_mcp_startup_timeout_secs(
         settings.and_then(|s| s.mcp_startup_timeout_secs),
     );
     crate::util::config::cache_remote_max_mcp_output_bytes(
         settings.and_then(|s| s.max_mcp_output_bytes),
     );
-    crate::util::config::cache_remote_auto_mode(settings.and_then(|s| s.auto_mode.clone()));
     crate::util::config::cache_remote_remember_tool_approvals(
         settings.and_then(|s| s.remember_tool_approvals),
     );
     crate::util::config::cache_remote_crash_handler_enabled(
         settings.and_then(|s| s.crash_handler_enabled),
     );
-    apply_external_otel_remote_policy(settings);
 }
 /// Read `env.<key>` from Claude-compat `managed_settings.json`. `Some(true)`
 /// indicates a force-off signal from a Mac-MDM-style admin policy.
@@ -3183,6 +2746,7 @@ mod sandbox_settings_contract_tests {
 /// while `ModelInfo.model` keeps the provider's routing slug.
 pub fn model_entries_from_provider_snapshot(
     snapshot: &ProviderSnapshot,
+    configured_model: Option<&str>,
 ) -> IndexMap<String, ModelEntry> {
     let providers = snapshot
         .providers
@@ -3211,9 +2775,15 @@ pub fn model_entries_from_provider_snapshot(
                 .iter()
                 .map(|(key, value)| (key.clone(), value.clone()))
                 .collect();
-            info.context_window =
-                NonZeroU64::new(model.context_window.unwrap_or(DEFAULT_CONTEXT_WINDOW))
-                    .expect("DEFAULT_CONTEXT_WINDOW is non-zero");
+            let context_window = model.context_window.and_then(NonZeroU64::new).or_else(|| {
+                tracing::error!(
+                    provider = %provider.id,
+                    model = %model.key.model_id,
+                    "Provider model has no configured context window; hiding it"
+                );
+                None
+            })?;
+            info.context_window = context_window;
             let provider_model_override = snapshot
                 .model_provider_overrides
                 .get(&model.key.to_string());
@@ -3231,6 +2801,8 @@ pub fn model_entries_from_provider_snapshot(
             info.user_selectable = true;
             info.supported_in_api = true;
             info.supports_reasoning_effort = model.capabilities.reasoning_effort;
+            info.accepts_images = model.capabilities.image_input;
+            info.supports_fast_mode = model.fast_mode;
             info.supports_backend_search = model.capabilities.web_search;
             info.reasoning_efforts = provider_reasoning_efforts(model);
             info.reasoning_effort = info
@@ -3247,7 +2819,8 @@ pub fn model_entries_from_provider_snapshot(
                 }
                 atelier_provider::CredentialRef::None => (None, None),
                 atelier_provider::CredentialRef::Command { .. }
-                | atelier_provider::CredentialRef::SecretStore { .. } => {
+                | atelier_provider::CredentialRef::SecretStore { .. }
+                | atelier_provider::CredentialRef::OAuth { .. } => {
                     match provider.credential.resolve() {
                         Ok(Some(secret)) => (Some(secret.into_inner()), None),
                         Ok(None) => (None, None),
@@ -3271,11 +2844,21 @@ pub fn model_entries_from_provider_snapshot(
                 request_payload: provider_model_override
                     .map(|override_config| override_config.payload.clone())
                     .unwrap_or_default(),
+                remote_compaction_endpoint: snapshot
+                    .resolve_remote_compaction_endpoint(&model.key)
+                    .ok()
+                    .flatten(),
+                image_generation_endpoint: snapshot
+                    .resolve_image_generation_endpoint(&model.key)
+                    .ok()
+                    .flatten(),
             };
             Some((model.key.to_string(), entry))
         })
         .collect();
-    if let Some(default_key) = snapshot.default_model.as_ref().map(ToString::to_string)
+    if let Some(default_key) = configured_model
+        .and_then(|model| atelier_provider::ModelKey::parse(model).ok())
+        .map(|key| key.to_string())
         && let Some(entry) = entries.shift_remove(&default_key)
     {
         entries.shift_insert(0, default_key, entry);
@@ -3289,12 +2872,20 @@ fn provider_reasoning_efforts(model: &ProviderModelDescriptor) -> Vec<ReasoningE
         .iter()
         .filter_map(|raw| raw.parse::<ReasoningEffort>().ok())
         .enumerate()
-        .map(|(index, value)| ReasoningEffortOption {
-            id: value.as_str().to_owned(),
-            value,
-            label: value.as_str().to_owned(),
-            description: None,
-            default: index == 0,
+        .map(|(index, value)| {
+            let label = value.as_str().to_owned();
+            let default = model
+                .default_effort
+                .as_deref()
+                .is_some_and(|default| default == value.as_str())
+                || (model.default_effort.is_none() && index == 0);
+            ReasoningEffortOption {
+                id: label.clone(),
+                value,
+                label,
+                description: None,
+                default,
+            }
         })
         .collect()
 }
@@ -3319,7 +2910,7 @@ pub fn resolve_model_list_with_provider_snapshot(
         return resolve_model_list(cfg, Some(IndexMap::new()));
     }
 
-    let local_models = model_entries_from_provider_snapshot(snapshot);
+    let local_models = model_entries_from_provider_snapshot(snapshot, cfg.model.as_deref());
     tracing::info!(
         count = local_models.len(),
         "using local Provider model catalog"
@@ -3334,7 +2925,10 @@ pub fn resolve_runtime_model_list(
     cfg: &Config,
     _prefetched: Option<IndexMap<String, ModelEntry>>,
 ) -> IndexMap<String, ModelEntry> {
-    resolve_model_list(cfg, Some(load_runtime_provider_models()))
+    resolve_model_list(
+        cfg,
+        Some(load_runtime_provider_models(cfg.model.as_deref())),
+    )
 }
 
 /// Load the local Provider catalog used by the vendorless runtime.
@@ -3342,7 +2936,9 @@ pub fn resolve_runtime_model_list(
 /// Absence or corruption returns an empty catalog. This fail-closed boundary
 /// prevents inherited vendor model lists from reappearing. The runtime caches
 /// the returned snapshot and refreshes it explicitly through Provider commands.
-pub fn load_runtime_provider_models() -> IndexMap<String, ModelEntry> {
+pub fn load_runtime_provider_models(
+    configured_model: Option<&str>,
+) -> IndexMap<String, ModelEntry> {
     let path = atelier_config::atelier_home().join("providers.toml");
     if !path.exists() {
         // A fresh Atelier install must be offline until the user configures a
@@ -3351,7 +2947,9 @@ pub fn load_runtime_provider_models() -> IndexMap<String, ModelEntry> {
     }
 
     match atelier_provider::ProviderRegistry::load_or_create(path) {
-        Ok(registry) => model_entries_from_provider_snapshot(&registry.snapshot()),
+        Ok(registry) => {
+            model_entries_from_provider_snapshot(&registry.snapshot(), configured_model)
+        }
         Err(error) => {
             tracing::error!(%error, "local Provider registry is invalid; refusing remote model catalog");
             IndexMap::new()
@@ -3508,7 +3106,7 @@ fn default_models(endpoints: &EndpointsConfig) -> IndexMap<String, ModelEntryCon
                 id: m.id,
                 model: m.model,
                 base_url: endpoints.resolve_inference_base_url(),
-                api_base_url: Some(endpoints.xai_api_base_url.clone()),
+                api_base_url: None,
                 name: m.name,
                 description: m.description,
                 context_window,
@@ -3876,6 +3474,12 @@ pub struct ModelInfo {
     /// Per-model reasoning-effort menu (source of truth); legacy fields derived from it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub reasoning_efforts: Vec<ReasoningEffortOption>,
+    /// Whether image input is explicitly supported by this model.
+    #[serde(default)]
+    pub accepts_images: bool,
+    /// Whether the Provider/model profile exposes a fast-mode switch.
+    #[serde(default)]
+    pub supports_fast_mode: bool,
     pub supports_backend_search: bool,
     /// Per-model config for the `x-compactions-remaining` header; `None` disables it.
     pub compactions_remaining: Option<CompactionsRemaining>,
@@ -3920,6 +3524,8 @@ impl ModelInfo {
             reasoning_effort: None,
             supports_reasoning_effort: false,
             reasoning_efforts: Vec::new(),
+            accepts_images: false,
+            supports_fast_mode: false,
             supports_backend_search: false,
             compactions_remaining: None,
             compaction_at_tokens: None,
@@ -3955,6 +3561,8 @@ impl ModelInfo {
             reasoning_effort: entry.reasoning_effort,
             supports_reasoning_effort: entry.supports_reasoning_effort,
             reasoning_efforts: entry.reasoning_efforts.clone(),
+            accepts_images: false,
+            supports_fast_mode: false,
             supports_backend_search: entry.supports_backend_search,
             compactions_remaining: entry.compactions_remaining,
             compaction_at_tokens: entry.compaction_at_tokens,
@@ -4005,6 +3613,14 @@ pub struct ModelEntry {
     pub api_base_url: Option<String>,
     #[serde(default)]
     pub request_payload: serde_json::Map<String, serde_json::Value>,
+    /// Provider/model-exact transport route for experimental remote
+    /// compaction. Never merged into ordinary request JSON.
+    #[serde(default)]
+    pub remote_compaction_endpoint: Option<String>,
+    /// Provider/model-exact transport route for experimental OpenAI
+    /// Images-compatible generation. Never inherited from common defaults.
+    #[serde(default)]
+    pub image_generation_endpoint: Option<String>,
 }
 impl ModelEntry {
     /// Minimal fallback entry for an unknown model slug.
@@ -4017,6 +3633,8 @@ impl ModelEntry {
             env_key: None,
             api_base_url: None,
             request_payload: serde_json::Map::new(),
+            remote_compaction_endpoint: None,
+            image_generation_endpoint: None,
         }
     }
     pub fn info(&self) -> &ModelInfo {
@@ -4029,6 +3647,8 @@ impl ModelEntry {
             env_key: entry.env_key.clone(),
             api_base_url: entry.api_base_url.clone(),
             request_payload: serde_json::Map::new(),
+            remote_compaction_endpoint: None,
+            image_generation_endpoint: None,
         }
     }
     /// The model's own (BYOK) credential: a non-empty `api_key`, else the first
@@ -4275,10 +3895,6 @@ pub struct Features {
     /// Video generation tool. `None` = defer to remote settings / env / default (false).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub video_gen: Option<bool>,
-    /// `image_gen` Imagine model override. `None`/empty = defer to remote settings
-    /// (`image_gen_model_override`) / env / default (`atelier-imagine-image-quality`).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub image_gen_model_override: Option<String>,
     /// Write file tool. `None` = defer to remote settings / env / default (true).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub write_file: Option<bool>,
@@ -4398,7 +4014,7 @@ pub struct Features {
 pub struct ResolvedCredentials {
     pub api_key: Option<String>,
     pub base_url: String,
-    pub auth_type: xai_chat_state::AuthType,
+    pub auth_type: atelier_chat_state::AuthType,
     pub auth_scheme: AuthScheme,
 }
 /// First usable BYOK credential: a non-empty (trimmed) api_key, else the first
@@ -4433,13 +4049,13 @@ pub fn resolve_credentials(model: &ModelEntry, session_key: Option<&str>) -> Res
         (
             Some(key),
             info.base_url.clone(),
-            xai_chat_state::AuthType::ApiKey,
+            atelier_chat_state::AuthType::ApiKey,
         )
     } else if !local_provider_model && let Some(key) = session_key {
         (
             Some(key.to_owned()),
             info.base_url.clone(),
-            xai_chat_state::AuthType::SessionToken,
+            atelier_chat_state::AuthType::SessionToken,
         )
     } else {
         if let Some(ref env_keys) = model.env_key
@@ -4454,7 +4070,7 @@ pub fn resolve_credentials(model: &ModelEntry, session_key: Option<&str>) -> Res
         (
             None,
             info.base_url.clone(),
-            xai_chat_state::AuthType::ApiKey,
+            atelier_chat_state::AuthType::ApiKey,
         )
     };
     let auth_scheme = info.auth_scheme;
@@ -4468,22 +4084,19 @@ pub fn resolve_credentials(model: &ModelEntry, session_key: Option<&str>) -> Res
         auth_scheme,
     }
 }
-/// `disable_api_key_auth` at the credential seam: swap a first-party xAI API
-/// key for the IdP session (absent => request fails => forces login). BYOK
-/// (non-xAI `base_url`) is untouched; no-op when the switch is off.
+/// `disable_api_key_auth` at the credential seam: replace any Provider API-key
+/// credential with the configured session token. If no session token exists,
+/// the request fails closed instead of using the Provider key.
 pub fn enforce_disable_api_key_auth(
     creds: &mut ResolvedCredentials,
     disable_api_key_auth: bool,
     session_key: Option<&str>,
 ) {
-    if disable_api_key_auth
-        && creds.auth_type == xai_chat_state::AuthType::ApiKey
-        && crate::util::is_first_party_xai_url(&creds.base_url)
-    {
-        creds.auth_type = xai_chat_state::AuthType::SessionToken;
+    if disable_api_key_auth && creds.auth_type == atelier_chat_state::AuthType::ApiKey {
+        creds.auth_type = atelier_chat_state::AuthType::SessionToken;
         creds.api_key = session_key.map(str::to_owned);
         atelier_telemetry::unified_log::debug(
-            "auth: kill switch blocked a first-party API key at the credential seam",
+            "auth: kill switch blocked a Provider API key at the credential seam",
             None,
             Some(serde_json::json!(
                 { "replaced_with_session" : session_key.is_some(), "base_url" : creds
@@ -4614,11 +4227,10 @@ pub fn resolve_aux_model_sampling_config(
             return Some(sampler);
         }
     }
-    let xai_bearer = session_key
+    let configured_bearer = session_key
         .map(|s| s.to_owned())
-        .or_else(|| crate::agent::auth_method::read_xai_api_key_env().ok())
         .or_else(|| endpoints.deployment_key.clone());
-    if let Some(bearer) = xai_bearer {
+    if let Some(bearer) = configured_bearer {
         let entry = ModelEntry {
             info: ModelInfo {
                 user_selectable: true,
@@ -4647,6 +4259,8 @@ pub fn resolve_aux_model_sampling_config(
                 reasoning_effort: None,
                 supports_reasoning_effort: false,
                 reasoning_efforts: Vec::new(),
+                accepts_images: false,
+                supports_fast_mode: false,
                 supports_backend_search: false,
                 compactions_remaining: None,
                 compaction_at_tokens: None,
@@ -4658,6 +4272,8 @@ pub fn resolve_aux_model_sampling_config(
             env_key: None,
             api_base_url: None,
             request_payload: serde_json::Map::new(),
+            remote_compaction_endpoint: None,
+            image_generation_endpoint: None,
         };
         let credentials = resolve_credentials_enforced(&entry, session_key, disable_api_key_auth);
         let sampler = sampling_config_for_model(
@@ -4728,8 +4344,8 @@ pub fn finalize_image_describe_sampler_config(
 pub fn resolve_chat_state_auth_type(
     model_id: &str,
     session_key: Option<&str>,
-    fallback: xai_chat_state::AuthType,
-) -> xai_chat_state::AuthType {
+    fallback: atelier_chat_state::AuthType,
+) -> atelier_chat_state::AuthType {
     try_resolve_model_credentials(model_id, session_key)
         .map(|r| r.auth_type)
         .unwrap_or(fallback)
@@ -4762,6 +4378,8 @@ pub fn sampling_config_for_model(
         temperature,
         top_p,
         request_payload: model.request_payload.clone(),
+        remote_compaction_endpoint: model.remote_compaction_endpoint.clone(),
+        image_generation_endpoint: model.image_generation_endpoint.clone(),
         api_backend,
         auth_scheme: credentials.auth_scheme,
         extra_headers,
@@ -4872,6 +4490,8 @@ fn resolve_hidden_default_web_search_sampling_config(
             reasoning_effort: None,
             supports_reasoning_effort: false,
             reasoning_efforts: Vec::new(),
+            accepts_images: false,
+            supports_fast_mode: false,
             supports_backend_search: false,
             compactions_remaining: None,
             compaction_at_tokens: None,
@@ -4883,6 +4503,8 @@ fn resolve_hidden_default_web_search_sampling_config(
         env_key: None,
         api_base_url: None,
         request_payload: serde_json::Map::new(),
+        remote_compaction_endpoint: None,
+        image_generation_endpoint: None,
     };
     let credentials = resolve_credentials_enforced(&entry, session_key, disable_api_key_auth);
     sampling_config_for_model(
@@ -4951,6 +4573,14 @@ pub fn to_acp_model_info(
                 map.insert(
                     "agentType".to_string(),
                     serde_json::Value::String(info.agent_type.clone()),
+                );
+                map.insert(
+                    "acceptsImages".to_string(),
+                    serde_json::Value::Bool(info.accepts_images),
+                );
+                map.insert(
+                    "supportsFastMode".to_string(),
+                    serde_json::Value::Bool(info.supports_fast_mode),
                 );
                 if info.supports_reasoning_effort {
                     map.insert(
@@ -5241,6 +4871,29 @@ reasoning_effort = "low"
             Some("caller-set"),
         );
     }
+
+    #[test]
+    fn new_from_toml_cfg_preserves_top_level_scalar_model() {
+        let raw_config: toml::Value = toml::from_str(
+            r#"
+            model = "allm/deepseek-v4-flash"
+
+            [ui]
+            compact_mode = true
+            "#,
+        )
+        .unwrap();
+
+        let cfg = Config::new_from_toml_cfg(&raw_config).expect("config should parse");
+
+        assert_eq!(
+            cfg.model.as_deref(),
+            Some("allm/deepseek-v4-flash"),
+            "the legacy [model.*] extraction pass must not discard top-level config.toml:model",
+        );
+        assert!(cfg.ui.compact_mode);
+    }
+
     #[test]
     fn parses_toolset_overrides() {
         let raw_config: toml::Value = toml::from_str(
@@ -5276,7 +4929,7 @@ reasoning_effort = "low"
         fn ctx(raw: &toml::Value) -> RuntimeResolutionContext<'_> {
             RuntimeResolutionContext {
                 raw_config: raw,
-                remote_settings: None,
+                local_runtime_settings: None,
                 cwd: None,
                 is_headless: false,
                 cli_subagents: None,
@@ -5305,7 +4958,7 @@ reasoning_effort = "low"
         fn ctx(raw: &toml::Value, disable_web_search: bool) -> RuntimeResolutionContext<'_> {
             RuntimeResolutionContext {
                 raw_config: raw,
-                remote_settings: None,
+                local_runtime_settings: None,
                 cwd: None,
                 is_headless: true,
                 cli_subagents: None,
@@ -5531,6 +5184,8 @@ reasoning_effort = "low"
                 reasoning_effort: None,
                 supports_reasoning_effort: false,
                 reasoning_efforts: Vec::new(),
+                accepts_images: false,
+                supports_fast_mode: false,
                 supports_backend_search: false,
                 compactions_remaining: None,
                 compaction_at_tokens: None,
@@ -5542,6 +5197,8 @@ reasoning_effort = "low"
             env_key: env_key.map(EnvKeys::single),
             api_base_url: api_base_url.map(|s| s.to_string()),
             request_payload: serde_json::Map::new(),
+            remote_compaction_endpoint: None,
+            image_generation_endpoint: None,
         }
     }
     /// The effective-model RE-support lookup must use the model ACTUALLY used:
@@ -5600,7 +5257,7 @@ reasoning_effort = "low"
             ResolvedCredentials {
                 api_key: Some("fallback-key".to_string()),
                 base_url: model.info().base_url.clone(),
-                auth_type: xai_chat_state::AuthType::ApiKey,
+                auth_type: atelier_chat_state::AuthType::ApiKey,
                 auth_scheme: AuthScheme::Bearer,
             },
             None,
@@ -5611,30 +5268,12 @@ reasoning_effort = "low"
         assert_eq!(sampling_config.api_key, Some("fallback-key".to_string()));
     }
     #[test]
-    fn default_models_dual_endpoint_routing() {
+    fn default_models_have_no_api_key_endpoint_fallback() {
         let endpoints = EndpointsConfig::default();
         for (model_id, entry) in default_model_entries(&endpoints) {
-            if entry.api_base_url.is_none() {
-                continue;
-            }
-            let session_creds = resolve_credentials(&entry, Some("tok"));
             assert_eq!(
-                session_creds.base_url,
-                endpoints.proxy_url(),
-                "{model_id}: SessionToken must route to cli-chat-proxy"
-            );
-            let api_key_creds = ResolvedCredentials {
-                api_key: Some("key".into()),
-                base_url: entry
-                    .api_base_url
-                    .clone()
-                    .unwrap_or(entry.info().base_url.clone()),
-                auth_type: xai_chat_state::AuthType::ApiKey,
-                auth_scheme: AuthScheme::Bearer,
-            };
-            assert_eq!(
-                api_key_creds.base_url, endpoints.xai_api_base_url,
-                "{model_id}: ExternalApiKey must route to api.x.ai"
+                entry.api_base_url, None,
+                "{model_id}: embedded defaults must not carry a vendor API endpoint"
             );
         }
     }
@@ -5733,7 +5372,7 @@ reasoning_effort = "low"
     #[test]
     #[serial]
     fn resolve_credentials_multi_env_key_uses_lc_alias() {
-        use xai_chat_state::AuthType;
+        use atelier_chat_state::AuthType;
         let primary = "ATELIER_TEST_MULTI_ENV_PRIMARY";
         let alias = "ATELIER_TEST_MULTI_ENV_LC_ALIAS";
         unsafe {
@@ -5768,8 +5407,8 @@ reasoning_effort = "low"
     #[test]
     #[serial]
     fn resolve_credentials_empty_env_key_falls_through_to_session() {
+        use atelier_chat_state::AuthType;
         use atelier_test_support::EnvGuard;
-        use xai_chat_state::AuthType;
         let primary = "ATELIER_TEST_EMPTY_ENV_PRIMARY";
         let alias = "ATELIER_TEST_EMPTY_ENV_LC_ALIAS";
         let _primary = EnvGuard::set(primary, "");
@@ -5782,29 +5421,8 @@ reasoning_effort = "low"
         assert_eq!(creds.api_key.as_deref(), Some("session-jwt"));
     }
     #[test]
-    #[serial]
-    fn resolve_credentials_empty_env_key_does_not_use_a_global_vendor_key() {
-        use crate::agent::auth_method::{LEGACY_XAI_API_KEY_ENV_VAR, XAI_API_KEY_ENV_VAR};
-        use atelier_test_support::EnvGuard;
-        use xai_chat_state::AuthType;
-        let sentinel = "global-vendor-key-must-not-be-used";
-        let primary = "ATELIER_TEST_EMPTY_ENV_GLOBAL_PRIMARY";
-        let alias = "ATELIER_TEST_EMPTY_ENV_GLOBAL_ALIAS";
-        let _primary = EnvGuard::set(primary, "");
-        let _alias = EnvGuard::set(alias, "");
-        let _global = EnvGuard::set(XAI_API_KEY_ENV_VAR, sentinel);
-        let _legacy = EnvGuard::unset(LEGACY_XAI_API_KEY_ENV_VAR);
-        let mut model = test_model_entry("m", "https://inference.example/v1", None, None, None);
-        model.env_key = Some(EnvKeys::new([primary, alias]));
-        model.api_base_url = Some("https://api.x.ai/v1".to_owned());
-        assert!(!model.has_own_credentials());
-        let creds = resolve_credentials(&model, None);
-        assert_eq!(creds.auth_type, AuthType::ApiKey);
-        assert_eq!(creds.api_key, None);
-    }
-    #[test]
     fn resolve_credentials_empty_api_key_falls_through_to_session() {
-        use xai_chat_state::AuthType;
+        use atelier_chat_state::AuthType;
         let model = test_model_entry("m", "https://inference.example/v1", Some(""), None, None);
         assert!(!model.has_own_credentials());
         let creds = resolve_credentials(&model, Some("session-jwt"));
@@ -5834,7 +5452,7 @@ reasoning_effort = "low"
     }
     #[test]
     fn resolve_credentials_sets_auth_type() {
-        use xai_chat_state::AuthType;
+        use atelier_chat_state::AuthType;
         let model = test_model_entry("m", "https://example.com/v1", None, None, None);
         let creds = resolve_credentials(&model, Some("tok"));
         assert_eq!(creds.auth_type, AuthType::SessionToken);
@@ -5847,7 +5465,7 @@ reasoning_effort = "low"
     #[test]
     #[serial_test::serial]
     fn resolve_credentials_env_key_byok_keeps_api_key_auth_with_session() {
-        use xai_chat_state::AuthType;
+        use atelier_chat_state::AuthType;
         let env_var = "REGRESSION_BYOK_TOKEN_FOR_AUTH_TYPE_TEST";
         unsafe {
             std::env::set_var(env_var, "sk-byok-test-value");
@@ -5913,86 +5531,42 @@ reasoning_effort = "low"
     fn resolve_credentials_no_session_key_returns_api_key() {
         let model = test_model_entry("m", "https://example.com/v1", None, None, None);
         let creds = resolve_credentials(&model, None);
-        assert_eq!(creds.auth_type, xai_chat_state::AuthType::ApiKey);
+        assert_eq!(creds.auth_type, atelier_chat_state::AuthType::ApiKey);
     }
     fn api_key_creds(base_url: &str) -> ResolvedCredentials {
         ResolvedCredentials {
-            api_key: Some("xai-secret".to_string()),
+            api_key: Some("provider-secret".to_string()),
             base_url: base_url.to_string(),
-            auth_type: xai_chat_state::AuthType::ApiKey,
+            auth_type: atelier_chat_state::AuthType::ApiKey,
             auth_scheme: Default::default(),
         }
     }
-    /// `disable_api_key_auth` kill switch (Claude `forceLoginMethod` parity).
-    #[cfg(any())] // The vendor API-key kill switch was removed with vendor authentication.
+    /// `disable_api_key_auth` blocks every configured Provider API key.
     #[test]
-    fn enforce_disable_api_key_auth_blocks_first_party_only() {
-        use xai_chat_state::AuthType;
-        let mut creds = api_key_creds("https://api.atelier/v1");
+    fn enforce_disable_api_key_auth_blocks_all_provider_keys() {
+        use atelier_chat_state::AuthType;
+        let mut creds = api_key_creds("https://provider.example/v1");
         enforce_disable_api_key_auth(&mut creds, false, Some("session-jwt"));
         assert_eq!(creds.auth_type, AuthType::ApiKey);
-        assert_eq!(creds.api_key.as_deref(), Some("xai-secret"));
-        let mut creds = api_key_creds("https://api.atelier/v1");
+        assert_eq!(creds.api_key.as_deref(), Some("provider-secret"));
+        let mut creds = api_key_creds("https://provider.example/v1");
         enforce_disable_api_key_auth(&mut creds, true, Some("session-jwt"));
         assert_eq!(creds.auth_type, AuthType::SessionToken);
         assert_eq!(creds.api_key.as_deref(), Some("session-jwt"));
-        let mut creds = api_key_creds("https://api.atelier/v1");
+        let mut creds = api_key_creds("https://provider.example/v1");
         enforce_disable_api_key_auth(&mut creds, true, None);
         assert_eq!(creds.auth_type, AuthType::SessionToken);
         assert_eq!(creds.api_key, None);
         let mut creds = api_key_creds("https://api.example.com/v1");
         enforce_disable_api_key_auth(&mut creds, true, Some("session-jwt"));
-        assert_eq!(creds.auth_type, AuthType::ApiKey);
-        assert_eq!(creds.api_key.as_deref(), Some("xai-secret"));
+        assert_eq!(creds.auth_type, AuthType::SessionToken);
+        assert_eq!(creds.api_key.as_deref(), Some("session-jwt"));
         let mut creds = ResolvedCredentials {
             auth_type: AuthType::SessionToken,
-            ..api_key_creds("https://api.atelier/v1")
+            ..api_key_creds("https://provider.example/v1")
         };
         enforce_disable_api_key_auth(&mut creds, true, Some("session-jwt"));
         assert_eq!(creds.auth_type, AuthType::SessionToken);
-    }
-    /// Regression for the OVERRIDE_MODEL kill-switch bypass: a first-party model
-    /// with its own api_key resolves to `ApiKey` (priority 1, beating the
-    /// session), and the kill switch — now applied inside
-    /// `try_resolve_model_credentials` — swaps it for the session token. BYOK
-    /// (non-x.ai) own keys are preserved. (`try_resolve_model_credentials`
-    /// loads global config, so this exercises its resolve + enforce core.)
-    #[cfg(any())] // The vendor API-key kill switch was removed with vendor authentication.
-    #[test]
-    fn try_resolve_model_credentials_swaps_first_party_own_key_under_kill_switch() {
-        use xai_chat_state::AuthType;
-        let entry = test_model_entry(
-            "m",
-            "https://api.atelier/v1",
-            Some("xai-model-key"),
-            None,
-            None,
-        );
-        let mut creds = resolve_credentials(&entry, Some("session-jwt"));
-        assert_eq!(
-            creds.auth_type,
-            AuthType::ApiKey,
-            "own key wins over session"
-        );
-        assert_eq!(creds.api_key.as_deref(), Some("xai-model-key"));
-        enforce_disable_api_key_auth(&mut creds, true, Some("session-jwt"));
-        assert_eq!(
-            creds.auth_type,
-            AuthType::SessionToken,
-            "swapped under switch"
-        );
-        assert_eq!(creds.api_key.as_deref(), Some("session-jwt"));
-        let byok = test_model_entry(
-            "b",
-            "https://api.example.com/v1",
-            Some("sk-byok"),
-            None,
-            None,
-        );
-        let mut byok_creds = resolve_credentials(&byok, Some("session-jwt"));
-        enforce_disable_api_key_auth(&mut byok_creds, true, Some("session-jwt"));
-        assert_eq!(byok_creds.auth_type, AuthType::ApiKey);
-        assert_eq!(byok_creds.api_key.as_deref(), Some("sk-byok"));
     }
     #[test]
     fn x_api_key_auth_scheme_flows_from_config_to_sampler() {
@@ -6007,7 +5581,7 @@ reasoning_effort = "low"
         model.info.auth_scheme = AuthScheme::XApiKey;
         let creds = resolve_credentials(&model, None);
         assert_eq!(creds.auth_scheme, AuthScheme::XApiKey);
-        assert_eq!(creds.auth_type, xai_chat_state::AuthType::ApiKey);
+        assert_eq!(creds.auth_type, atelier_chat_state::AuthType::ApiKey);
         assert_eq!(creds.api_key, Some("sk-ant-test-key".to_string()));
         let config = sampling_config_for_model(&model, creds, None, None, None, None);
         assert_eq!(config.auth_scheme, AuthScheme::XApiKey);
@@ -6248,22 +5822,22 @@ reasoning_effort = "low"
     }
     #[test]
     fn compaction_mode_precedence_env_over_config_over_remote_over_default() {
-        use xai_chat_state::CompactionMode;
+        use atelier_chat_state::CompactionMode;
         assert_eq!(
             resolve_compaction_mode_from(Some("transcript"), Some("segments"), Some("summary")),
             CompactionMode::Transcript
         );
         assert_eq!(
             resolve_compaction_mode_from(None, Some("segments"), Some("summary")),
-            CompactionMode::Segments(xai_chat_state::CompactionDetail::default())
+            CompactionMode::Segments(atelier_chat_state::CompactionDetail::default())
         );
         assert_eq!(
             resolve_compaction_mode_from(None, None, Some("segments")),
-            CompactionMode::Segments(xai_chat_state::CompactionDetail::default())
+            CompactionMode::Segments(atelier_chat_state::CompactionDetail::default())
         );
         assert_eq!(
             resolve_compaction_mode_from(Some("garbage"), None, Some("segments")),
-            CompactionMode::Segments(xai_chat_state::CompactionDetail::default())
+            CompactionMode::Segments(atelier_chat_state::CompactionDetail::default())
         );
         assert_eq!(
             resolve_compaction_mode_from(None, None, None),
@@ -6274,8 +5848,8 @@ reasoning_effort = "low"
     /// test exercises; the detail-specific facts are remote settings routing and the
     /// `Verbose` default (with unrecognized values falling through).
     #[test]
-    fn compaction_detail_resolves_remote_settings_and_verbose_default() {
-        use xai_chat_state::CompactionDetail;
+    fn compaction_detail_resolves_local_runtime_settings_and_verbose_default() {
+        use atelier_chat_state::CompactionDetail;
         assert_eq!(
             resolve_compaction_detail_from(None, None, Some("minimal")),
             CompactionDetail::Minimal
@@ -6296,31 +5870,6 @@ reasoning_effort = "low"
         .unwrap();
         let cfg = Config::new_from_toml_cfg(&raw_config).expect("config should parse");
         assert_eq!(cfg.session.auto_compact_threshold_percent, None);
-    }
-    #[test]
-    fn parses_repo_changes_dedup_config() {
-        let raw_config: toml::Value = toml::from_str(
-            r#"
-            [repo_changes_dedup]
-            enabled = false
-            include_inline_fallback = true
-            max_inline_bytes = 1024
-            dedup_untracked = false
-            dedup_binary = false
-            untracked_max_bytes = 2048
-            untracked_exclude_globs = ["*.zip", "tmp/**"]
-            "#,
-        )
-        .unwrap();
-        let cfg = Config::new_from_toml_cfg(&raw_config).expect("config should parse");
-        let dedup = cfg.repo_changes_dedup;
-        assert!(!dedup.enabled);
-        assert!(dedup.include_inline_fallback);
-        assert_eq!(dedup.max_inline_bytes, 1024);
-        assert!(!dedup.dedup_untracked);
-        assert!(!dedup.dedup_binary);
-        assert_eq!(dedup.untracked_max_bytes, 2048);
-        assert_eq!(dedup.untracked_exclude_globs, vec!["*.zip", "tmp/**"]);
     }
     #[test]
     fn parses_model_context_window() {
@@ -7181,67 +6730,31 @@ reasoning_effort = "low"
         let info = ModelInfo::from_config(&entry);
         assert_eq!(info.inference_idle_timeout_secs, Some(120));
     }
-    #[cfg(any())] // Remote telemetry configuration was removed; observability is local-only.
     #[test]
-    fn telemetry_config_parses_custom_values_from_toml() {
+    fn telemetry_config_parses_local_event_gate() {
         let raw: toml::Value = toml::from_str(
             r#"
             [telemetry]
-            events_url     = "https://custom.example.com/events"
-            events_api_key = "custom-key"
-            mixpanel_token = "custom-token"
-            mixpanel_enabled = false
+            enabled = true
             "#,
         )
         .unwrap();
         let cfg = Config::new_from_toml_cfg(&raw).expect("should parse");
+        assert_eq!(cfg.telemetry.enabled, Some(true));
         assert_eq!(
-            cfg.telemetry.events_url.as_deref(),
-            Some("https://custom.example.com/events")
+            serde_json::to_value(&cfg.telemetry).unwrap(),
+            serde_json::json!({ "enabled": true })
         );
-        assert_eq!(cfg.telemetry.events_api_key.as_deref(), Some("custom-key"));
-        assert_eq!(
-            cfg.telemetry.mixpanel_token.as_deref(),
-            Some("custom-token")
-        );
-        assert!(!cfg.telemetry.mixpanel_enabled);
     }
-    /// Empty/whitespace values must become `None`, not reach the HTTP client as empty strings.
     #[test]
-    fn telemetry_empty_string_disables_sink() {
-        let raw: toml::Value = toml::from_str(
-            r#"
-            [telemetry]
-            events_url     = ""
-            events_api_key = "  "
-            mixpanel_token = "\t"
-            "#,
-        )
-        .unwrap();
+    fn telemetry_config_defaults_to_local_event_gate_disabled() {
+        let raw = toml::Value::Table(Default::default());
         let cfg = Config::new_from_toml_cfg(&raw).expect("should parse");
-        assert!(cfg.telemetry.events_url.is_none());
-        assert!(cfg.telemetry.events_api_key.is_none());
-        assert!(cfg.telemetry.mixpanel_token.is_none());
-    }
-    #[cfg(any())] // Remote telemetry configuration was removed; observability is local-only.
-    #[test]
-    fn telemetry_partial_override_retains_defaults() {
-        let raw: toml::Value = toml::from_str(
-            r#"
-            [telemetry]
-            events_url = "https://my-proxy/events"
-            "#,
-        )
-        .unwrap();
-        let cfg = Config::new_from_toml_cfg(&raw).expect("should parse");
+        assert_eq!(cfg.telemetry.enabled, None);
         assert_eq!(
-            cfg.telemetry.events_url.as_deref(),
-            Some("https://my-proxy/events")
+            serde_json::to_value(&cfg.telemetry).unwrap(),
+            serde_json::json!({ "enabled": null })
         );
-        let defaults = TelemetryConfig::default();
-        assert_eq!(cfg.telemetry.events_api_key, defaults.events_api_key);
-        assert_eq!(cfg.telemetry.mixpanel_token, defaults.mixpanel_token);
-        assert_eq!(cfg.telemetry.mixpanel_enabled, defaults.mixpanel_enabled);
     }
     #[test]
     fn auth_alias_maps_to_atelier_com_config() {
@@ -7404,11 +6917,13 @@ reasoning_effort = "low"
                     ..Default::default()
                 },
                 reasoning_efforts: vec!["high".into(), "medium".into()],
+                default_effort: None,
+                fast_mode: false,
                 source: atelier_provider::ModelSource::Static,
                 enabled: true,
             }],
-            default_model: None,
             model_provider_overrides: Default::default(),
+            experimental_model_features: Default::default(),
         };
         let mut remote = IndexMap::new();
         remote.insert(
@@ -7428,21 +6943,21 @@ reasoning_effort = "low"
         assert_eq!(resolved.len(), 1);
         let entry = resolved.get("anthropic-local/claude-test").unwrap();
         assert_eq!(entry.info.model, "claude-test");
-        assert_eq!(entry.info.api_backend, ApiBackend::ChatCompletions);
-        assert_eq!(entry.info.auth_scheme, AuthScheme::Bearer);
+        assert_eq!(entry.info.api_backend, ApiBackend::Messages);
+        assert_eq!(entry.info.auth_scheme, AuthScheme::XApiKey);
         assert_eq!(entry.info.context_window.get(), 64_000);
         assert!(entry.info.supports_reasoning_effort);
         assert!(entry.info.reasoning_effort.is_some());
         assert!(!resolved.contains_key("remote/model"));
 
-        let _key = EnvGuard::set("XAI_API_KEY", "must-not-leak");
         let sampling = resolve_sampling(entry, None);
         assert_eq!(sampling.api_key, None);
         assert_eq!(sampling.base_url, "http://127.0.0.1:4317/v1");
+        assert_eq!(sampling.api_backend, ApiBackend::Messages);
     }
 
     #[test]
-    fn provider_default_model_is_first_in_the_runtime_catalog() {
+    fn config_model_is_first_in_the_runtime_catalog() {
         let provider = atelier_provider::ProviderConfig {
             id: "allm".into(),
             display_name: "AllM".into(),
@@ -7461,18 +6976,20 @@ reasoning_effort = "low"
             context_window: Some(128_000),
             capabilities: Default::default(),
             reasoning_efforts: Vec::new(),
+            default_effort: None,
+            fast_mode: false,
             source: atelier_provider::ModelSource::Static,
             enabled: true,
         };
-        let default = atelier_provider::ModelKey::new("allm", "deepseek-v4-flash").unwrap();
         let snapshot = ProviderSnapshot {
             providers: vec![provider],
             models: vec![descriptor("other"), descriptor("deepseek-v4-flash")],
-            default_model: Some(default),
             model_provider_overrides: Default::default(),
+            experimental_model_features: Default::default(),
         };
 
-        let entries = model_entries_from_provider_snapshot(&snapshot);
+        let entries =
+            model_entries_from_provider_snapshot(&snapshot, Some("allm/deepseek-v4-flash"));
 
         assert_eq!(
             entries.first().map(|(key, _)| key.as_str()),
@@ -7481,7 +6998,79 @@ reasoning_effort = "low"
     }
 
     #[test]
-    fn provider_protocol_does_not_override_default_chat_completions_wire_api() {
+    fn remote_compaction_endpoint_propagates_only_for_responses_models() {
+        let provider = |id: &str, protocol| atelier_provider::ProviderConfig {
+            id: id.into(),
+            display_name: id.into(),
+            protocol,
+            base_url: url::Url::parse(&format!("https://{id}.example.test/v1")).unwrap(),
+            credential: atelier_provider::CredentialRef::None,
+            discovery: atelier_provider::ProviderDiscovery::Static,
+            extra_headers: std::collections::BTreeMap::new(),
+            enabled: true,
+        };
+        let descriptor = |provider_id: &str| atelier_provider::ModelDescriptor {
+            key: atelier_provider::ModelKey::new(provider_id, "shared").unwrap(),
+            display_name: "shared".into(),
+            description: None,
+            wire_api: None,
+            context_window: Some(128_000),
+            capabilities: Default::default(),
+            reasoning_efforts: Vec::new(),
+            default_effort: None,
+            fast_mode: false,
+            source: atelier_provider::ModelSource::Static,
+            enabled: true,
+        };
+        let feature = atelier_provider::ExperimentalModelFeatures {
+            remote_compaction: Some(atelier_provider::ExperimentalEndpoint {
+                enabled: true,
+                endpoint: "responses/compact".into(),
+            }),
+            image_generation: None,
+        };
+        let snapshot = ProviderSnapshot {
+            providers: vec![
+                provider("responses", ProviderProtocol::OpenAiResponses),
+                provider("chat", ProviderProtocol::OpenAiChatCompletions),
+            ],
+            models: vec![descriptor("responses"), descriptor("chat")],
+            model_provider_overrides: Default::default(),
+            experimental_model_features: std::collections::BTreeMap::from([
+                ("responses/shared".into(), feature.clone()),
+                ("chat/shared".into(), feature),
+            ]),
+        };
+
+        let entries = model_entries_from_provider_snapshot(&snapshot, None);
+        let responses = entries.get("responses/shared").unwrap();
+        let chat = entries.get("chat/shared").unwrap();
+        assert_eq!(
+            responses.remote_compaction_endpoint.as_deref(),
+            Some("responses/compact")
+        );
+        assert_eq!(chat.remote_compaction_endpoint, None);
+        assert_eq!(
+            resolve_sampling(responses, None)
+                .remote_compaction_endpoint
+                .as_deref(),
+            Some("responses/compact")
+        );
+        assert_eq!(
+            resolve_sampling(chat, None).remote_compaction_endpoint,
+            None
+        );
+        assert!(
+            !responses
+                .request_payload
+                .contains_key("remote_compaction_endpoint"),
+            "transport routing metadata must not leak into ordinary inference payload"
+        );
+    }
+
+    #[test]
+    fn provider_protocol_sets_default_wire_api() {
+        let model_key = atelier_provider::ModelKey::new("allm", "deepseek-v4-flash").unwrap();
         let provider = atelier_provider::ProviderConfig {
             id: "allm".into(),
             display_name: "AllM".into(),
@@ -7495,26 +7084,37 @@ reasoning_effort = "low"
         let snapshot = ProviderSnapshot {
             providers: vec![provider],
             models: vec![atelier_provider::ModelDescriptor {
-                key: atelier_provider::ModelKey::new("allm", "deepseek-v4-flash").unwrap(),
+                key: model_key.clone(),
                 display_name: "deepseek-v4-flash".into(),
                 description: None,
                 wire_api: None,
                 context_window: Some(128_000),
                 capabilities: Default::default(),
                 reasoning_efforts: Vec::new(),
+                default_effort: None,
+                fast_mode: false,
                 source: atelier_provider::ModelSource::Static,
                 enabled: true,
             }],
-            default_model: None,
             model_provider_overrides: Default::default(),
+            experimental_model_features: Default::default(),
         };
 
-        let entries = model_entries_from_provider_snapshot(&snapshot);
+        let resolved_wire_api = snapshot.resolve_wire_api(&model_key).unwrap();
+        let entries = model_entries_from_provider_snapshot(&snapshot, None);
         let entry = entries.get("allm/deepseek-v4-flash").unwrap();
         let sampling = resolve_sampling(entry, None);
 
-        assert_eq!(entry.info.api_backend, ApiBackend::ChatCompletions);
-        assert_eq!(sampling.api_backend, ApiBackend::ChatCompletions);
+        assert_eq!(
+            resolved_wire_api.wire_api,
+            atelier_provider::WireApi::Responses
+        );
+        assert_eq!(
+            resolved_wire_api.source,
+            atelier_provider::WireApiSource::ProviderDefault
+        );
+        assert_eq!(entry.info.api_backend, ApiBackend::Responses);
+        assert_eq!(sampling.api_backend, ApiBackend::Responses);
     }
 
     #[test]
@@ -7534,7 +7134,7 @@ reasoning_effort = "low"
         assert_eq!(credentials.base_url, "http://127.0.0.1:4317/v1");
         assert_eq!(
             credentials.auth_type,
-            xai_chat_state::AuthType::ApiKey,
+            atelier_chat_state::AuthType::ApiKey,
             "an unauthenticated local Provider must not inherit vendor auth"
         );
     }
@@ -7545,8 +7145,8 @@ reasoning_effort = "low"
         let snapshot = ProviderSnapshot {
             providers: Vec::new(),
             models: Vec::new(),
-            default_model: None,
             model_provider_overrides: Default::default(),
+            experimental_model_features: Default::default(),
         };
         let cfg = Config::default();
         let mut prefetched = IndexMap::new();
@@ -7597,7 +7197,7 @@ reasoning_effort = "low"
         );
         assert_eq!(
             sampling.base_url, "https://inference.example.com/v1",
-            "should route to the user's custom endpoint, not api.x.ai"
+            "should route to the user's custom endpoint"
         );
         unsafe { std::env::remove_var("ENTERPRISE_AUTH_TOKEN") };
     }
@@ -7617,10 +7217,6 @@ reasoning_effort = "low"
         let model = models.get(dm).expect("model should exist");
         let sampling = resolve_sampling(model, Some("session-tok"));
         assert_eq!(sampling.base_url, "https://inference.example.com/v1");
-        unsafe { std::env::set_var("XAI_API_KEY", "xai-key") };
-        let sampling = resolve_sampling(model, None);
-        assert_eq!(sampling.base_url, "https://inference.example.com/v1");
-        unsafe { std::env::remove_var("XAI_API_KEY") };
         let sampling = resolve_sampling(model, None);
         assert_eq!(sampling.base_url, "https://inference.example.com/v1");
     }
@@ -7673,12 +7269,12 @@ reasoning_effort = "low"
     #[test]
     fn config_models_default_is_not_overwritten_by_default_models_json() {
         let config_default = Some("custom-byok-model");
-        let remote_settings_default = Some("remote-settings-model");
+        let local_runtime_settings_default = Some("remote-settings-model");
         let resolved = resolve_string_flag(
             None,
             "ATELIER_DEFAULT_MODEL_TEST_NONEXISTENT",
             config_default,
-            remote_settings_default,
+            local_runtime_settings_default,
         );
         let resolved = resolved.expect("should resolve to a value");
         assert_eq!(resolved.value, "custom-byok-model");
@@ -7722,23 +7318,6 @@ reasoning_effort = "low"
             "session auth should route to cli-chat-proxy, not api.x.ai"
         );
     }
-    #[cfg(any())] // Atelier does not read XAI_API_KEY or route to a vendor endpoint.
-    #[test]
-    #[serial]
-    fn e2e_default_model_with_external_api_key_routes_to_api_xai() {
-        let (_, models) = resolve_models_from_toml("", None);
-        let model = models
-            .get(crate::models::default_model())
-            .expect("default model should exist");
-        unsafe { std::env::set_var("XAI_API_KEY", "xai-external-key") };
-        let sampling = resolve_sampling(model, None);
-        assert_eq!(sampling.api_key.as_deref(), Some("xai-external-key"));
-        assert_eq!(
-            sampling.base_url, "https://api.atelier/v1",
-            "external API key should route to api.x.ai via api_base_url"
-        );
-        unsafe { std::env::remove_var("XAI_API_KEY") };
-    }
     #[test]
     fn e2e_user_config_overrides_prefetched_model() {
         let dm = crate::models::default_model();
@@ -7777,62 +7356,6 @@ reasoning_effort = "low"
             "model's own api_key should win over session token"
         );
         assert_eq!(sampling.base_url, "https://my-proxy.example.com/v1");
-    }
-    #[cfg(any())] // Vendor credential priority was replaced by explicit Provider credentials.
-    #[test]
-    #[serial]
-    fn e2e_credential_priority_model_key_beats_session_beats_env() {
-        let model_with_key = test_model_entry(
-            "test",
-            "https://custom.api/v1",
-            Some("model-key"),
-            None,
-            None,
-        );
-        unsafe { std::env::set_var("XAI_API_KEY", "env-key") };
-        let sampling = resolve_sampling(&model_with_key, Some("session-key"));
-        assert_eq!(
-            sampling.api_key.as_deref(),
-            Some("model-key"),
-            "model's own api_key must beat session and env key"
-        );
-        assert_eq!(
-            sampling.base_url, "https://custom.api/v1",
-            "model's own base_url must be used"
-        );
-        let model_no_key = test_model_entry(
-            "test",
-            "https://proxy.api/v1",
-            None,
-            None,
-            Some("https://api.atelier/v1"),
-        );
-        let sampling = resolve_sampling(&model_no_key, Some("session-key"));
-        assert_eq!(
-            sampling.api_key.as_deref(),
-            Some("session-key"),
-            "session token should beat env key when model has no own credentials"
-        );
-        assert_eq!(
-            sampling.base_url, "https://proxy.api/v1",
-            "session auth should use base_url, not api_base_url"
-        );
-        let sampling = resolve_sampling(&model_no_key, None);
-        assert_eq!(
-            sampling.api_key.as_deref(),
-            Some("env-key"),
-            "env key should be used when no session and no model credentials"
-        );
-        assert_eq!(
-            sampling.base_url, "https://api.atelier/v1",
-            "env key should route to api_base_url"
-        );
-        unsafe { std::env::remove_var("XAI_API_KEY") };
-        let sampling = resolve_sampling(&model_no_key, None);
-        assert!(
-            sampling.api_key.is_none(),
-            "no credentials available → api_key should be None"
-        );
     }
     #[cfg(any())] // Atelier has no duplicate built-in vendor model/proxy entry to preserve.
     #[test]
@@ -7950,10 +7473,10 @@ reasoning_effort = "low"
                 r#"
             [endpoints]
             cli_chat_proxy_base_url = "https://enterprise-proxy.acme.com/v1"
-            xai_api_base_url = "https://enterprise-api.acme.com/v1"
 
             [model."{dm}"]
             api_key = "acme-api-key"
+            api_base_url = "https://provider-api.acme.com/v1"
             "#,
             ),
             None,
@@ -7966,7 +7489,7 @@ reasoning_effort = "low"
         assert_eq!(model.api_key.as_deref(), Some("acme-api-key"));
         assert_eq!(
             model.api_base_url.as_deref(),
-            Some("https://enterprise-api.acme.com/v1"),
+            Some("https://provider-api.acme.com/v1"),
         );
         let sampling = resolve_sampling(model, Some("session-token"));
         assert_eq!(
@@ -7985,7 +7508,6 @@ reasoning_effort = "low"
             r#"
             [endpoints]
             cli_chat_proxy_base_url = "https://enterprise-proxy.acme.com/v1"
-            xai_api_base_url = "https://enterprise-api.acme.com/v1"
             "#,
             None,
         );
@@ -7996,11 +7518,7 @@ reasoning_effort = "low"
             model.info.base_url, "https://enterprise-proxy.acme.com/v1",
             "default model should use enterprise cli_chat_proxy_base_url"
         );
-        assert_eq!(
-            model.api_base_url.as_deref(),
-            Some("https://enterprise-api.acme.com/v1"),
-            "default model should use enterprise xai_api_base_url"
-        );
+        assert_eq!(model.api_base_url, None);
     }
     /// Unset every env var that `EndpointsConfig::default()` reads for endpoints,
     /// so the cli-chat-proxy resolver tests below are deterministic regardless of
@@ -8008,73 +7526,33 @@ reasoning_effort = "low"
     fn unset_endpoint_env_vars() {
         for k in [
             "ATELIER_CLI_CHAT_PROXY_BASE_URL",
-            "ATELIER_XAI_API_BASE_URL",
-            "ATELIER_FEEDBACK_BASE_URL",
-            "ATELIER_TRACE_UPLOAD_URL",
             "ATELIER_MANAGED_CONFIG_URL",
             "ATELIER_MODELS_BASE_URL",
             "ATELIER_MODELS_LIST_URL",
-            "OTEL_EXPORTER_OTLP_ENDPOINT",
-            "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
-            "OTEL_EXPORTER_OTLP_HEADERS",
-            "ATELIER_INTERNAL_OTLP_TRACES_ENDPOINT",
-            "ATELIER_INTERNAL_OTLP_HEADERS",
-            "ATELIER_EXTERNAL_OTEL",
         ] {
             unsafe { std::env::remove_var(k) };
         }
     }
-    /// INVARIANT: auxiliary-service resolvers resolve to the cli-chat-proxy, never
-    /// `xai_api_base_url` — overriding ONLY inference keeps every aux endpoint on
-    /// the proxy; explicit per-service overrides win verbatim.
+    /// INVARIANT: endpoint resolution uses only explicit generic configuration.
     #[test]
     #[serial]
     fn aux_endpoints_resolve_to_proxy_never_inference() {
         unset_endpoint_env_vars();
-        let inference = "https://inference.acme-corp.example/xai/v1";
         let cfg = EndpointsConfig {
-            xai_api_base_url: inference.to_string(),
             cli_chat_proxy_base_url: None,
             ..Default::default()
         };
         assert_eq!(cfg.proxy_url(), "");
         assert_eq!(cfg.resolve_inference_base_url(), "");
         assert_eq!(cfg.resolve_models_list_url(), "");
-        assert_eq!(cfg.resolve_feedback_base_url(), "");
-        assert_eq!(cfg.resolve_trace_upload_url(), "");
-        assert_eq!(cfg.resolve_otlp_traces_endpoint(), "");
-        assert_eq!(cfg.xai_api_base_url, inference);
         let overridden = EndpointsConfig {
             cli_chat_proxy_base_url: Some("https://proxy.enterprise.example/v1".to_string()),
-            feedback_base_url: Some("https://feedback.enterprise.example".to_string()),
-            trace_upload_url: Some("https://trace.enterprise.example".to_string()),
             ..Default::default()
         };
         assert_eq!(
             overridden.proxy_url(),
             "https://proxy.enterprise.example/v1"
         );
-        assert_eq!(overridden.resolve_otlp_traces_endpoint(), "");
-        assert_eq!(overridden.resolve_feedback_base_url(), "");
-        assert_eq!(overridden.resolve_trace_upload_url(), "");
-    }
-    /// REGRESSION: the managed-config URL never follows `xai_api_base_url`
-    /// through the full loader `Config::new_from_toml_cfg` — a distinct construction
-    /// path from `from_config_value`, so the deployment key never reaches the
-    /// inference host on either.
-    #[test]
-    #[serial]
-    fn loader_deployment_key_does_not_change_inference_endpoint() {
-        unset_endpoint_env_vars();
-        let cfg = Config::new_from_toml_cfg(
-            &toml::from_str(
-                r#"[endpoints]
-                xai_api_base_url = "https://inference.acme-corp.example/xai/v1""#,
-            )
-            .unwrap(),
-        )
-        .expect("config should parse");
-        assert!(cfg.endpoints.cli_chat_proxy_base_url.is_none());
     }
     #[test]
     fn e2e_user_override_explicit_base_url_wins_over_endpoints() {
@@ -8183,7 +7661,7 @@ reasoning_effort = "low"
     fn resolve_session_recap_remote_off_overrides_default() {
         unsafe { std::env::remove_var("ATELIER_SESSION_RECAP") };
         let cfg = Config {
-            remote_settings: Some(crate::util::config::RemoteSettings {
+            local_runtime_settings: Some(crate::util::config::LocalRuntimeSettings {
                 session_recap: Some(false),
                 ..Default::default()
             }),
@@ -8207,7 +7685,7 @@ reasoning_effort = "low"
         assert!(!r.value, "default is opt-in off");
         assert_eq!(r.source, ConfigSource::Default);
         let remote_on = Config {
-            remote_settings: Some(crate::util::config::RemoteSettings {
+            local_runtime_settings: Some(crate::util::config::LocalRuntimeSettings {
                 two_pass_compaction_enabled: Some(true),
                 ..Default::default()
             }),
@@ -8221,7 +7699,7 @@ reasoning_effort = "low"
                 two_pass_compaction: Some(true),
                 ..Default::default()
             },
-            remote_settings: Some(crate::util::config::RemoteSettings {
+            local_runtime_settings: Some(crate::util::config::LocalRuntimeSettings {
                 two_pass_compaction_enabled: Some(false),
                 ..Default::default()
             }),
@@ -8251,7 +7729,7 @@ reasoning_effort = "low"
             "default is opt-in off"
         );
         let remote_on = Config {
-            remote_settings: Some(crate::util::config::RemoteSettings {
+            local_runtime_settings: Some(crate::util::config::LocalRuntimeSettings {
                 doom_loop_recovery: Some(DoomLoopRecoverySettings {
                     enabled: Some(true),
                     max_threshold: Some(16),
@@ -8269,7 +7747,7 @@ reasoning_effort = "low"
                 enabled: Some(true),
                 ..Default::default()
             },
-            remote_settings: Some(crate::util::config::RemoteSettings {
+            local_runtime_settings: Some(crate::util::config::LocalRuntimeSettings {
                 doom_loop_recovery: Some(DoomLoopRecoverySettings {
                     max_threshold: Some(16),
                     ..Default::default()
@@ -8289,7 +7767,7 @@ reasoning_effort = "low"
                 max_threshold: Some(4),
                 max_retries: Some(3),
             },
-            remote_settings: Some(crate::util::config::RemoteSettings {
+            local_runtime_settings: Some(crate::util::config::LocalRuntimeSettings {
                 doom_loop_recovery: Some(DoomLoopRecoverySettings {
                     enabled: Some(false),
                     max_threshold: Some(16),
@@ -8367,7 +7845,7 @@ reasoning_effort = "low"
         unsafe { std::env::set_var("ATELIER_FEEDBACK_ENABLED", "true") };
         let mut cfg = Config::default();
         cfg.features.feedback = Some(false);
-        cfg.remote_settings = Some(crate::util::config::RemoteSettings {
+        cfg.local_runtime_settings = Some(crate::util::config::LocalRuntimeSettings {
             feedback_enabled: Some(false),
             ..Default::default()
         });
@@ -8378,11 +7856,11 @@ reasoning_effort = "low"
     }
     #[test]
     #[serial]
-    fn resolve_feedback_config_overrides_remote_settings() {
+    fn resolve_feedback_config_overrides_local_runtime_settings() {
         unsafe { std::env::remove_var("ATELIER_FEEDBACK_ENABLED") };
         let mut cfg = Config::default();
         cfg.features.feedback = Some(true);
-        cfg.remote_settings = Some(crate::util::config::RemoteSettings {
+        cfg.local_runtime_settings = Some(crate::util::config::LocalRuntimeSettings {
             feedback_enabled: Some(false),
             ..Default::default()
         });
@@ -8392,10 +7870,10 @@ reasoning_effort = "low"
     }
     #[test]
     #[serial]
-    fn resolve_feedback_remote_settings_used_when_no_local() {
+    fn resolve_feedback_local_runtime_settings_used_when_no_local() {
         unsafe { std::env::remove_var("ATELIER_FEEDBACK_ENABLED") };
         let cfg = Config {
-            remote_settings: Some(crate::util::config::RemoteSettings {
+            local_runtime_settings: Some(crate::util::config::LocalRuntimeSettings {
                 feedback_enabled: Some(true),
                 ..Default::default()
             }),
@@ -8404,76 +7882,6 @@ reasoning_effort = "low"
         let r = cfg.resolve_feedback();
         assert_eq!(r.source, ConfigSource::Default);
         assert!(!r.value);
-    }
-    #[test]
-    #[serial]
-    fn resolve_trace_upload_disabled_when_telemetry_off_despite_remote_flag() {
-        unsafe { std::env::remove_var("ATELIER_TELEMETRY_ENABLED") };
-        unsafe { std::env::remove_var("ATELIER_TELEMETRY_TRACE_UPLOAD") };
-        let mut cfg = Config::default();
-        cfg.features.telemetry = Some(TelemetryMode::Disabled);
-        cfg.remote_settings = Some(crate::util::config::RemoteSettings {
-            trace_upload_enabled: Some(true),
-            ..Default::default()
-        });
-        let r = cfg.resolve_trace_upload();
-        assert!(!r.value, "telemetry off must force trace upload off");
-        assert!(!cfg.is_trace_upload_enabled());
-    }
-    #[test]
-    #[serial]
-    fn resolve_trace_upload_ignores_all_reenable_attempts() {
-        unsafe { std::env::remove_var("ATELIER_TELEMETRY_ENABLED") };
-        unsafe { std::env::remove_var("ATELIER_TELEMETRY_TRACE_UPLOAD") };
-        let mut cfg = Config::default();
-        cfg.features.telemetry = Some(TelemetryMode::Disabled);
-        cfg.telemetry.trace_upload = Some(true);
-        let r = cfg.resolve_trace_upload();
-        assert!(!r.value, "trace uploads are removed from Atelier");
-        assert_eq!(r.source, ConfigSource::Default);
-        cfg.telemetry.trace_upload = None;
-        cfg.requirements
-            .trace_upload
-            .pin(true, crate::config::RequirementSource::Unknown);
-        assert!(!cfg.resolve_trace_upload().value);
-    }
-    #[test]
-    #[serial]
-    fn trace_upload_decision_debug_reports_winning_source() {
-        unsafe { std::env::remove_var("ATELIER_TELEMETRY_ENABLED") };
-        unsafe { std::env::remove_var("ATELIER_TELEMETRY_TRACE_UPLOAD") };
-        let mut cfg = Config::default();
-        cfg.features.telemetry = Some(TelemetryMode::Disabled);
-        cfg.remote_settings = Some(crate::util::config::RemoteSettings {
-            trace_upload_enabled: Some(true),
-            ..Default::default()
-        });
-        let d = cfg.trace_upload_decision_debug();
-        assert_eq!(d["trace_upload"], serde_json::json!(false));
-        assert_eq!(d["trace_upload_source"], serde_json::json!("default"));
-        assert_eq!(d["telemetry_mode"], serde_json::json!("false"));
-        assert_eq!(d["in_remote_trace_upload_enabled"], serde_json::json!(true));
-        assert_eq!(d["has_remote_settings"], serde_json::json!(true));
-        cfg.telemetry.trace_upload = Some(true);
-        let d = cfg.trace_upload_decision_debug();
-        assert_eq!(d["trace_upload"], serde_json::json!(false));
-        assert_eq!(d["trace_upload_source"], serde_json::json!("default"));
-        assert_eq!(d["in_cfg_telemetry_trace_upload"], serde_json::json!(true));
-    }
-    #[test]
-    #[serial]
-    fn resolve_trace_upload_stays_disabled_when_telemetry_on() {
-        unsafe { std::env::remove_var("ATELIER_TELEMETRY_ENABLED") };
-        unsafe { std::env::remove_var("ATELIER_TELEMETRY_TRACE_UPLOAD") };
-        let mut cfg = Config::default();
-        cfg.features.telemetry = Some(TelemetryMode::Enabled);
-        cfg.telemetry.trace_upload = Some(false);
-        let r = cfg.resolve_trace_upload();
-        assert!(!r.value);
-        assert_eq!(r.source, ConfigSource::Default);
-        cfg.telemetry.trace_upload = None;
-        let r = cfg.resolve_trace_upload();
-        assert!(!r.value, "Atelier never enables remote trace uploads");
     }
     #[test]
     #[serial]
@@ -8490,7 +7898,7 @@ reasoning_effort = "low"
         unsafe { std::env::set_var("ATELIER_GOAL", "1") };
         let mut cfg = Config::default();
         cfg.goal.enabled = Some(false);
-        cfg.remote_settings = Some(crate::util::config::RemoteSettings {
+        cfg.local_runtime_settings = Some(crate::util::config::LocalRuntimeSettings {
             goal_enabled: Some(false),
             ..Default::default()
         });
@@ -8501,11 +7909,11 @@ reasoning_effort = "low"
     }
     #[test]
     #[serial]
-    fn resolve_goal_config_overrides_remote_settings() {
+    fn resolve_goal_config_overrides_local_runtime_settings() {
         unsafe { std::env::remove_var("ATELIER_GOAL") };
         let mut cfg = Config::default();
         cfg.goal.enabled = Some(true);
-        cfg.remote_settings = Some(crate::util::config::RemoteSettings {
+        cfg.local_runtime_settings = Some(crate::util::config::LocalRuntimeSettings {
             goal_enabled: Some(false),
             ..Default::default()
         });
@@ -8515,10 +7923,10 @@ reasoning_effort = "low"
     }
     #[test]
     #[serial]
-    fn resolve_goal_remote_settings_used_when_no_local() {
+    fn resolve_goal_local_runtime_settings_used_when_no_local() {
         unsafe { std::env::remove_var("ATELIER_GOAL") };
         let cfg = Config {
-            remote_settings: Some(crate::util::config::RemoteSettings {
+            local_runtime_settings: Some(crate::util::config::LocalRuntimeSettings {
                 goal_enabled: Some(true),
                 ..Default::default()
             }),
@@ -8532,10 +7940,10 @@ reasoning_effort = "low"
     /// the default-on fallback.
     #[test]
     #[serial]
-    fn resolve_goal_remote_settings_kill_switch_overrides_default_on() {
+    fn resolve_goal_local_runtime_settings_kill_switch_overrides_default_on() {
         unsafe { std::env::remove_var("ATELIER_GOAL") };
         let cfg = Config {
-            remote_settings: Some(crate::util::config::RemoteSettings {
+            local_runtime_settings: Some(crate::util::config::LocalRuntimeSettings {
                 goal_enabled: Some(false),
                 ..Default::default()
             }),
@@ -8556,10 +7964,10 @@ reasoning_effort = "low"
     }
     #[test]
     #[serial]
-    fn resolve_ask_user_question_remote_settings_enables() {
+    fn resolve_ask_user_question_local_runtime_settings_enables() {
         unsafe { std::env::remove_var("ATELIER_ASK_USER_QUESTION") };
         let cfg = Config {
-            remote_settings: Some(crate::util::config::RemoteSettings {
+            local_runtime_settings: Some(crate::util::config::LocalRuntimeSettings {
                 ask_user_question_enabled: Some(true),
                 ..Default::default()
             }),
@@ -8571,10 +7979,10 @@ reasoning_effort = "low"
     }
     #[test]
     #[serial]
-    fn resolve_ask_user_question_env_overrides_remote_settings() {
+    fn resolve_ask_user_question_env_overrides_local_runtime_settings() {
         unsafe { std::env::set_var("ATELIER_ASK_USER_QUESTION", "1") };
         let cfg = Config {
-            remote_settings: Some(crate::util::config::RemoteSettings {
+            local_runtime_settings: Some(crate::util::config::LocalRuntimeSettings {
                 ask_user_question_enabled: Some(false),
                 ..Default::default()
             }),
@@ -8587,11 +7995,11 @@ reasoning_effort = "low"
     }
     #[test]
     #[serial]
-    fn resolve_ask_user_question_config_overrides_remote_settings() {
+    fn resolve_ask_user_question_config_overrides_local_runtime_settings() {
         unsafe { std::env::remove_var("ATELIER_ASK_USER_QUESTION") };
         let mut cfg = Config::default();
         cfg.features.ask_user_question = Some(true);
-        cfg.remote_settings = Some(crate::util::config::RemoteSettings {
+        cfg.local_runtime_settings = Some(crate::util::config::LocalRuntimeSettings {
             ask_user_question_enabled: Some(false),
             ..Default::default()
         });
@@ -8603,10 +8011,10 @@ reasoning_effort = "low"
     /// win over the default-on fallback.
     #[test]
     #[serial]
-    fn resolve_ask_user_question_remote_settings_kill_switch_overrides_default_on() {
+    fn resolve_ask_user_question_local_runtime_settings_kill_switch_overrides_default_on() {
         unsafe { std::env::remove_var("ATELIER_ASK_USER_QUESTION") };
         let cfg = Config {
-            remote_settings: Some(crate::util::config::RemoteSettings {
+            local_runtime_settings: Some(crate::util::config::LocalRuntimeSettings {
                 ask_user_question_enabled: Some(false),
                 ..Default::default()
             }),
@@ -8616,42 +8024,13 @@ reasoning_effort = "low"
         assert_eq!(r.source, ConfigSource::Remote);
         assert!(!r.value);
     }
-    #[test]
-    #[serial]
-    fn resolve_image_gen_model_override_remote_settings_or_config() {
-        unsafe { std::env::remove_var("ATELIER_IMAGE_GEN_MODEL_OVERRIDE") };
-        let with = |config: Option<&str>, gb: Option<&str>| Config {
-            features: Features {
-                image_gen_model_override: config.map(String::from),
-                ..Default::default()
-            },
-            remote_settings: Some(crate::util::config::RemoteSettings {
-                image_gen_model_override: gb.map(String::from),
-                ..Default::default()
-            }),
-            ..Default::default()
-        };
-        assert_eq!(Config::default().resolve_image_gen_model_override(), None);
-        assert_eq!(
-            with(None, Some("atelier-imagine-image")).resolve_image_gen_model_override(),
-            Some("atelier-imagine-image".to_owned())
-        );
-        assert_eq!(
-            with(
-                Some("atelier-imagine-image-pro"),
-                Some("atelier-imagine-image")
-            )
-            .resolve_image_gen_model_override(),
-            Some("atelier-imagine-image-pro".to_owned())
-        );
-    }
     #[cfg(any())] // Vendor-hosted image editing was removed from Atelier.
     #[test]
     #[serial]
     fn imagine_tools_disabled_gates_image_edit() {
         unsafe { std::env::remove_var("ATELIER_IMAGE_EDIT") };
         let with_list = |tools: Vec<&str>| Config {
-            remote_settings: Some(crate::util::config::RemoteSettings {
+            local_runtime_settings: Some(crate::util::config::LocalRuntimeSettings {
                 imagine_tools_disabled: Some(tools.into_iter().map(String::from).collect()),
                 ..Default::default()
             }),
@@ -8688,30 +8067,33 @@ reasoning_effort = "low"
             ..Default::default()
         }
     }
-    fn cfg_with_goal_and_remote(goal: bool, remote: crate::util::config::RemoteSettings) -> Config {
+    fn cfg_with_goal_and_remote(
+        goal: bool,
+        remote: crate::util::config::LocalRuntimeSettings,
+    ) -> Config {
         Config {
             goal: GoalConfig {
                 enabled: Some(goal),
                 ..Default::default()
             },
-            remote_settings: Some(remote),
+            local_runtime_settings: Some(remote),
             ..Default::default()
         }
     }
-    fn remote_classifier(v: bool) -> crate::util::config::RemoteSettings {
-        crate::util::config::RemoteSettings {
+    fn remote_classifier(v: bool) -> crate::util::config::LocalRuntimeSettings {
+        crate::util::config::LocalRuntimeSettings {
             goal_classifier_enabled: Some(v),
             ..Default::default()
         }
     }
-    fn remote_planner(v: bool) -> crate::util::config::RemoteSettings {
-        crate::util::config::RemoteSettings {
+    fn remote_planner(v: bool) -> crate::util::config::LocalRuntimeSettings {
+        crate::util::config::LocalRuntimeSettings {
             goal_planner_enabled: Some(v),
             ..Default::default()
         }
     }
-    fn remote_summary(v: bool) -> crate::util::config::RemoteSettings {
-        crate::util::config::RemoteSettings {
+    fn remote_summary(v: bool) -> crate::util::config::LocalRuntimeSettings {
+        crate::util::config::LocalRuntimeSettings {
             goal_summary_enabled: Some(v),
             ..Default::default()
         }
@@ -8724,11 +8106,11 @@ reasoning_effort = "low"
     }
     fn cfg_with_goal_config_and_remote(
         goal: GoalConfig,
-        remote: crate::util::config::RemoteSettings,
+        remote: crate::util::config::LocalRuntimeSettings,
     ) -> Config {
         Config {
             goal,
-            remote_settings: Some(remote),
+            local_runtime_settings: Some(remote),
             ..Default::default()
         }
     }
@@ -9123,16 +8505,16 @@ reverify_after = 6
     }
     fn remote_planner_model(
         p: crate::util::config::GoalRoleModel,
-    ) -> crate::util::config::RemoteSettings {
-        crate::util::config::RemoteSettings {
+    ) -> crate::util::config::LocalRuntimeSettings {
+        crate::util::config::LocalRuntimeSettings {
             goal_planner_model: Some(p),
             ..Default::default()
         }
     }
     fn remote_strategist_model(
         p: crate::util::config::GoalRoleModel,
-    ) -> crate::util::config::RemoteSettings {
-        crate::util::config::RemoteSettings {
+    ) -> crate::util::config::LocalRuntimeSettings {
+        crate::util::config::LocalRuntimeSettings {
             goal_strategist_model: Some(p),
             ..Default::default()
         }
@@ -9221,7 +8603,7 @@ reverify_after = 6
     }
     #[test]
     fn resolve_goal_skeptic_models_remote_pool_explicit() {
-        let remote = crate::util::config::RemoteSettings {
+        let remote = crate::util::config::LocalRuntimeSettings {
             goal_skeptic_models: vec![planner_pair(), strategist_pair()],
             ..Default::default()
         };
@@ -9238,7 +8620,7 @@ reverify_after = 6
     }
     #[test]
     fn resolve_goal_skeptic_models_config_pool_overrides_remote_pool() {
-        let remote = crate::util::config::RemoteSettings {
+        let remote = crate::util::config::LocalRuntimeSettings {
             goal_skeptic_models: vec![strategist_pair(), strategist_pair()],
             ..Default::default()
         };
@@ -9484,7 +8866,6 @@ agent_type = "cursor"
             [endpoints]
             deployment_key = "test"
             management_api_key = "mgmt-key"
-            gcs_service_account_key = "gcs-key"
             [models]
             default = "atelier-3"
             [ui]
@@ -9495,7 +8876,6 @@ agent_type = "cursor"
             auto_compact_threshold_percent = 85
             [telemetry]
             enabled = true
-            trace_upload = true
             [agent]
             name = "custom"
             [skills]
@@ -9511,8 +8891,6 @@ agent_type = "cursor"
             enabled = true
             [harness]
             block_for_upload = true
-            [repo_changes_dedup]
-            enabled = false
             [relay]
             enabled = false
             [remote]
@@ -9552,6 +8930,25 @@ agent_type = "cursor"
             unused.is_empty(),
             "false positive on valid config: {unused:?}"
         );
+    }
+    #[test]
+    fn removed_remote_telemetry_keys_are_rejected() {
+        let unused = unused_keys_from_toml(
+            r#"
+            [telemetry]
+            enabled = true
+            trace_upload = true
+        "#,
+        );
+        assert_eq!(unused, vec!["telemetry.trace_upload".to_string()]);
+    }
+    #[test]
+    fn removed_global_vendor_endpoint_key_is_rejected() {
+        let removed_key = ["xai", "_api_base_url"].concat();
+        let config =
+            format!("[endpoints]\n{removed_key} = \"https://removed-vendor.invalid/v1\"\n");
+        let unused = unused_keys_from_toml(&config);
+        assert_eq!(unused, vec![format!("endpoints.{removed_key}")]);
     }
     #[test]
     fn config_accepts_compact_permission_section() {
@@ -9663,487 +9060,6 @@ agent_type = "cursor"
             "exactly the typo'd key must be flagged"
         );
     }
-    /// Regression: a deployment key with no OAuth token must resolve to Proxy.
-    #[cfg(any())] // Vendor trace upload was removed from Atelier.
-    #[test]
-    fn resolve_upload_method_accepts_deployment_key_without_oauth() {
-        use crate::session::repo_changes::UploadMethod;
-        let endpoints = EndpointsConfig {
-            deployment_key: Some("enterprise-key".to_string()),
-            ..Default::default()
-        };
-        match endpoints.resolve_upload_method(None) {
-            Some(UploadMethod::Proxy {
-                deployment_key,
-                user_token,
-                ..
-            }) => {
-                assert_eq!(deployment_key.as_deref(), Some("enterprise-key"));
-                assert_eq!(user_token, "");
-            }
-            other => panic!("expected Proxy upload method, got {other:?}"),
-        }
-    }
-    #[cfg(any())] // Remote OTLP export was removed; observability is local-only.
-    #[test]
-    fn otlp_traces_endpoint_precedence() {
-        let proxy = "https://inference.acme.com/v1".to_string();
-        let derived = EndpointsConfig {
-            cli_chat_proxy_base_url: Some(proxy.clone()),
-            ..Default::default()
-        };
-        assert_eq!(
-            derived.resolve_otlp_traces_endpoint(),
-            "https://inference.acme.com/v1/traces"
-        );
-        let base = EndpointsConfig {
-            cli_chat_proxy_base_url: Some(proxy.clone()),
-            otel_exporter_otlp_endpoint: Some("https://otel.acme.com".to_string()),
-            ..Default::default()
-        };
-        assert_eq!(
-            base.resolve_otlp_traces_endpoint(),
-            "https://otel.acme.com/v1/traces"
-        );
-        let full = EndpointsConfig {
-            cli_chat_proxy_base_url: Some(proxy),
-            otel_exporter_otlp_endpoint: Some("https://ignored.example".to_string()),
-            otel_exporter_otlp_traces_endpoint: Some("https://otel.acme.com/v1/traces".to_string()),
-            ..Default::default()
-        };
-        assert_eq!(
-            full.resolve_otlp_traces_endpoint(),
-            "https://otel.acme.com/v1/traces"
-        );
-    }
-    #[test]
-    fn otlp_headers_parse() {
-        let cfg = EndpointsConfig {
-            otel_exporter_otlp_headers: Some("a=1, b = 2 ,=skip,c=".to_string()),
-            ..Default::default()
-        };
-        assert_eq!(
-            cfg.resolve_otlp_headers(),
-            vec![
-                ("a".to_string(), "1".to_string()),
-                ("b".to_string(), "2".to_string()),
-                ("c".to_string(), String::new()),
-            ]
-        );
-    }
-    /// Base config for the internal-OTLP tests: pinned proxy, every OTLP knob
-    /// explicitly unset so ambient env (via `Default`) can't leak in.
-    fn internal_otlp_test_config() -> EndpointsConfig {
-        EndpointsConfig {
-            cli_chat_proxy_base_url: Some("https://proxy.example/v1".to_string()),
-            otel_exporter_otlp_endpoint: None,
-            otel_exporter_otlp_traces_endpoint: None,
-            otel_exporter_otlp_headers: None,
-            atelier_internal_otlp_traces_endpoint: None,
-            atelier_internal_otlp_headers: None,
-            external_otel_master_switch: false,
-            ..Default::default()
-        }
-    }
-    /// `atelier_internal_otlp_traces_endpoint` wins over the legacy `OTEL_*`
-    /// fields regardless of the master switch.
-    #[cfg(any())] // Remote OTLP export was removed; observability is local-only.
-    #[test]
-    fn internal_otlp_endpoint_atelier_internal_wins_regardless_of_switch() {
-        for switch in [false, true] {
-            let cfg = EndpointsConfig {
-                atelier_internal_otlp_traces_endpoint: Some(
-                    "https://internal.example/traces/".to_string(),
-                ),
-                otel_exporter_otlp_traces_endpoint: Some(
-                    "https://legacy.example/v1/traces".to_string(),
-                ),
-                otel_exporter_otlp_endpoint: Some("https://legacy-base.example".to_string()),
-                external_otel_master_switch: switch,
-                ..internal_otlp_test_config()
-            };
-            assert_eq!(
-                cfg.resolve_otlp_traces_endpoint(),
-                "https://internal.example/traces",
-                "switch={switch}: ATELIER_INTERNAL_OTLP_TRACES_ENDPOINT must win verbatim (trailing / trimmed)"
-            );
-        }
-    }
-    /// Master switch unset → legacy fallback preserved (back-compat).
-    #[cfg(any())] // Remote OTLP export was removed; observability is local-only.
-    #[test]
-    fn internal_otlp_endpoint_legacy_fallback_when_switch_unset() {
-        let traces = EndpointsConfig {
-            otel_exporter_otlp_traces_endpoint: Some(
-                "https://legacy.example/v1/traces".to_string(),
-            ),
-            ..internal_otlp_test_config()
-        };
-        assert_eq!(
-            traces.resolve_otlp_traces_endpoint(),
-            "https://legacy.example/v1/traces"
-        );
-        let base = EndpointsConfig {
-            otel_exporter_otlp_endpoint: Some("https://legacy-base.example/".to_string()),
-            ..internal_otlp_test_config()
-        };
-        assert_eq!(
-            base.resolve_otlp_traces_endpoint(),
-            "https://legacy-base.example/v1/traces"
-        );
-    }
-    /// Master switch SET → legacy `OTEL_*` endpoint/headers are completely
-    /// ignored by the internal pipeline (the external stream owns them); the
-    /// internal pipeline falls back to the proxy default and
-    /// `internal_otlp_consumed_standard_vars()` is false.
-    #[cfg(any())] // Remote OTLP export was removed; observability is local-only.
-    #[test]
-    fn internal_otlp_ignores_legacy_vars_when_switch_set() {
-        let cfg = EndpointsConfig {
-            otel_exporter_otlp_traces_endpoint: Some(
-                "https://admin-collector.example/v1/traces".to_string(),
-            ),
-            otel_exporter_otlp_endpoint: Some("https://admin-collector.example".to_string()),
-            otel_exporter_otlp_headers: Some("authorization=Bearer admin".to_string()),
-            external_otel_master_switch: true,
-            ..internal_otlp_test_config()
-        };
-        assert_eq!(
-            cfg.resolve_otlp_traces_endpoint(),
-            "https://proxy.example/v1/traces",
-            "internal firehose must never follow OTEL_* to the external collector"
-        );
-        assert_eq!(cfg.resolve_otlp_headers(), Vec::<(String, String)>::new());
-        assert!(!cfg.internal_otlp_consumed_standard_vars());
-    }
-    /// `internal_otlp_consumed_standard_vars()` truth table.
-    #[test]
-    fn internal_otlp_consumed_standard_vars_cases() {
-        struct Case {
-            switch: bool,
-            legacy_traces_ep: bool,
-            legacy_base_ep: bool,
-            legacy_headers: bool,
-            internal_ep: bool,
-            internal_headers: bool,
-            expected: bool,
-            why: &'static str,
-        }
-        let unset = Case {
-            switch: false,
-            legacy_traces_ep: false,
-            legacy_base_ep: false,
-            legacy_headers: false,
-            internal_ep: false,
-            internal_headers: false,
-            expected: false,
-            why: "nothing set",
-        };
-        let cases = [
-            Case { ..unset },
-            Case {
-                legacy_traces_ep: true,
-                expected: true,
-                why: "legacy traces endpoint consumed",
-                ..unset
-            },
-            Case {
-                legacy_base_ep: true,
-                expected: true,
-                why: "legacy base endpoint consumed",
-                ..unset
-            },
-            Case {
-                legacy_headers: true,
-                expected: true,
-                why: "legacy headers consumed",
-                ..unset
-            },
-            Case {
-                legacy_traces_ep: true,
-                internal_ep: true,
-                expected: false,
-                why: "internal endpoint shadows legacy",
-                ..unset
-            },
-            Case {
-                legacy_headers: true,
-                internal_headers: true,
-                expected: false,
-                why: "internal headers shadow legacy",
-                ..unset
-            },
-            Case {
-                legacy_traces_ep: true,
-                legacy_headers: true,
-                internal_ep: true,
-                expected: true,
-                why: "endpoint shadowed but legacy headers still consumed (headers half)",
-                ..unset
-            },
-            Case {
-                switch: true,
-                legacy_traces_ep: true,
-                legacy_base_ep: true,
-                legacy_headers: true,
-                expected: false,
-                why: "switch set: legacy vars ignored",
-                ..unset
-            },
-        ];
-        for case in cases {
-            let cfg = EndpointsConfig {
-                external_otel_master_switch: case.switch,
-                otel_exporter_otlp_traces_endpoint: case
-                    .legacy_traces_ep
-                    .then(|| "https://legacy.example/v1/traces".to_string()),
-                otel_exporter_otlp_endpoint: case
-                    .legacy_base_ep
-                    .then(|| "https://legacy-base.example".to_string()),
-                otel_exporter_otlp_headers: case.legacy_headers.then(|| "k=v".to_string()),
-                atelier_internal_otlp_traces_endpoint: case
-                    .internal_ep
-                    .then(|| "https://internal.example/traces".to_string()),
-                atelier_internal_otlp_headers: case.internal_headers.then(|| "ik=iv".to_string()),
-                ..internal_otlp_test_config()
-            };
-            assert_eq!(
-                cfg.internal_otlp_consumed_standard_vars(),
-                case.expected,
-                "case: {}",
-                case.why
-            );
-        }
-    }
-    /// Headers precedence: `atelier_internal_otlp_headers` wins; legacy
-    /// `otel_exporter_otlp_headers` only when the master switch is unset.
-    #[test]
-    fn internal_otlp_headers_precedence() {
-        for switch in [false, true] {
-            let cfg = EndpointsConfig {
-                atelier_internal_otlp_headers: Some("x-debug=1".to_string()),
-                otel_exporter_otlp_headers: Some("legacy=1".to_string()),
-                external_otel_master_switch: switch,
-                ..internal_otlp_test_config()
-            };
-            assert_eq!(
-                cfg.resolve_otlp_headers(),
-                vec![("x-debug".to_string(), "1".to_string())],
-                "switch={switch}"
-            );
-        }
-        let legacy = EndpointsConfig {
-            otel_exporter_otlp_headers: Some("legacy=1".to_string()),
-            ..internal_otlp_test_config()
-        };
-        assert_eq!(
-            legacy.resolve_otlp_headers(),
-            vec![("legacy".to_string(), "1".to_string())]
-        );
-    }
-    fn ext_env(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> + use<> {
-        let map: std::collections::HashMap<String, String> = pairs
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect();
-        move |name: &str| map.get(name).cloned()
-    }
-    fn ext_client() -> atelier_telemetry::external::config::ExternalClientInfo {
-        atelier_telemetry::external::config::ExternalClientInfo::default()
-    }
-    #[cfg(any())] // External OTLP export was removed; observability is local-only.
-    #[test]
-    fn external_otel_default_off_and_double_opt_in() {
-        assert!(
-            resolve_external_otel_config_with(None, None, ext_env(&[]), ext_client(), false)
-                .is_none()
-        );
-        assert!(
-            resolve_external_otel_config_with(
-                None,
-                None,
-                ext_env(&[("ATELIER_EXTERNAL_OTEL", "1")]),
-                ext_client(),
-                false,
-            )
-            .is_none()
-        );
-        assert!(
-            resolve_external_otel_config_with(
-                None,
-                None,
-                ext_env(&[
-                    ("ATELIER_EXTERNAL_OTEL", "1"),
-                    ("OTEL_METRICS_EXPORTER", "otlp"),
-                ]),
-                ext_client(),
-                false,
-            )
-            .is_some()
-        );
-    }
-    #[cfg(any())] // External OTLP export was removed; observability is local-only.
-    #[test]
-    fn external_otel_file_table_layered_under_env() {
-        let effective: toml::Value = toml::from_str(
-            r#"
-            [telemetry]
-            otel_enabled = true
-            otel_logs_exporter = "otlp"
-            otel_endpoint = "https://collector.corp.example:4318"
-            otel_protocol = "grpc"
-            "#,
-        )
-        .unwrap();
-        let cfg = resolve_external_otel_config_with(
-            Some(&effective),
-            None,
-            ext_env(&[]),
-            ext_client(),
-            false,
-        )
-        .expect("file table must activate");
-        assert_eq!(cfg.transport.as_protocol_str(), "grpc");
-        assert_eq!(cfg.logs_endpoint, "https://collector.corp.example:4318");
-        let cfg = resolve_external_otel_config_with(
-            Some(&effective),
-            None,
-            ext_env(&[("OTEL_EXPORTER_OTLP_PROTOCOL", "http/protobuf")]),
-            ext_client(),
-            false,
-        )
-        .expect("env protocol must override file protocol");
-        assert_eq!(cfg.transport.as_protocol_str(), "http/protobuf");
-        assert_eq!(
-            cfg.logs_endpoint,
-            "https://collector.corp.example:4318/v1/logs"
-        );
-        assert!(
-            resolve_external_otel_config_with(
-                Some(&effective),
-                None,
-                ext_env(&[("ATELIER_EXTERNAL_OTEL", "0")]),
-                ext_client(),
-                false,
-            )
-            .is_none()
-        );
-    }
-    #[cfg(any())] // External OTLP export was removed; observability is local-only.
-    #[test]
-    fn external_otel_requirements_pin_wins_over_env() {
-        let req: toml::Value = toml::from_str(
-            r#"
-            [telemetry]
-            otel_enabled = false
-            "#,
-        )
-        .unwrap();
-        assert!(
-            resolve_external_otel_config_with(
-                None,
-                Some(&req),
-                ext_env(&[
-                    ("ATELIER_EXTERNAL_OTEL", "1"),
-                    ("OTEL_LOGS_EXPORTER", "otlp"),
-                ]),
-                ext_client(),
-                false,
-            )
-            .is_none()
-        );
-        let req: toml::Value = toml::from_str(
-            r#"
-            [telemetry]
-            otel_log_user_prompts = false
-            otel_log_tool_details = false
-            "#,
-        )
-        .unwrap();
-        let cfg = resolve_external_otel_config_with(
-            None,
-            Some(&req),
-            ext_env(&[
-                ("ATELIER_EXTERNAL_OTEL", "1"),
-                ("OTEL_LOGS_EXPORTER", "otlp"),
-                ("OTEL_LOG_USER_PROMPTS", "1"),
-                ("OTEL_LOG_TOOL_DETAILS", "1"),
-            ]),
-            ext_client(),
-            false,
-        )
-        .expect("stream still active; only gates pinned");
-        assert!(!cfg.gates.log_user_prompts, "requirement pin must win");
-        assert!(!cfg.gates.log_tool_details, "requirement pin must win");
-    }
-    /// Regression: an org enable via `[telemetry].otel_enabled`
-    /// (managed config / requirements — no `ATELIER_EXTERNAL_OTEL` env var) must
-    /// flip the master switch the *internal* pipeline keys off, so legacy
-    /// `OTEL_EXPORTER_OTLP_*` repointing shuts off in lockstep with the
-    /// external stream activating. A desync would point the internally-authed
-    /// firehose at the customer collector while
-    /// `internal_pipeline_consumed_otel_vars` blocks the external stream.
-    #[test]
-    fn external_otel_master_switch_resolves_from_all_layers() {
-        let enabled_table: toml::Value =
-            toml::from_str("[telemetry]\notel_enabled = true").unwrap();
-        let disabled_table: toml::Value =
-            toml::from_str("[telemetry]\notel_enabled = false").unwrap();
-        assert!(external_otel_master_switch_from(
-            None,
-            None,
-            Some(&enabled_table)
-        ));
-        assert!(!external_otel_master_switch_from(None, None, None));
-        assert!(!external_otel_master_switch_from(
-            None,
-            Some(false),
-            Some(&enabled_table)
-        ));
-        assert!(external_otel_master_switch_from(
-            None,
-            Some(true),
-            Some(&disabled_table)
-        ));
-        assert!(!external_otel_master_switch_from(
-            Some(&disabled_table),
-            Some(true),
-            Some(&enabled_table)
-        ));
-        assert!(external_otel_master_switch_from(
-            Some(&enabled_table),
-            Some(false),
-            None
-        ));
-        let cfg = EndpointsConfig {
-            otel_exporter_otlp_traces_endpoint: Some(
-                "https://collector.corp:4318/v1/traces".into(),
-            ),
-            external_otel_master_switch: true,
-            ..internal_otlp_test_config()
-        };
-        assert!(!cfg.internal_otlp_consumed_standard_vars());
-        assert!(
-            !cfg.resolve_otlp_traces_endpoint()
-                .contains("collector.corp")
-        );
-    }
-    #[cfg(any())] // External OTLP export was removed; observability is local-only.
-    #[test]
-    fn external_otel_carries_internal_consumed_flag() {
-        let cfg = resolve_external_otel_config_with(
-            None,
-            None,
-            ext_env(&[
-                ("ATELIER_EXTERNAL_OTEL", "1"),
-                ("OTEL_LOGS_EXPORTER", "otlp"),
-            ]),
-            ext_client(),
-            true,
-        )
-        .expect("resolution itself still succeeds");
-        assert!(cfg.internal_pipeline_consumed_otel_vars);
-    }
     fn empty_config() -> toml::Value {
         toml::Value::Table(toml::map::Map::new())
     }
@@ -10189,11 +9105,11 @@ agent_type = "cursor"
             }
         }
     }
-    fn remote_settings_with(
+    fn local_runtime_settings_with(
         key: CompatRemoteKey,
         value: bool,
-    ) -> crate::util::config::RemoteSettings {
-        let mut remote = crate::util::config::RemoteSettings::default();
+    ) -> crate::util::config::LocalRuntimeSettings {
+        let mut remote = crate::util::config::LocalRuntimeSettings::default();
         match key {
             CompatRemoteKey::CursorSkills => remote.cursor_skills_enabled = Some(value),
             CompatRemoteKey::CursorRules => remote.cursor_rules_enabled = Some(value),
@@ -10271,7 +9187,7 @@ sessions = true
 "#,
         )
         .unwrap();
-        let remote = crate::util::config::RemoteSettings {
+        let remote = crate::util::config::LocalRuntimeSettings {
             codex_sessions_enabled: Some(false),
             ..Default::default()
         };
@@ -10343,7 +9259,7 @@ hooks = true
     fn resolve_raw_compat_sessions_valid_empty_uses_remote_and_defaults() {
         let _env = isolate_compat_env();
         let raw = toml::Value::Table(Default::default());
-        let remote = crate::util::config::RemoteSettings {
+        let remote = crate::util::config::LocalRuntimeSettings {
             claude_sessions_enabled: Some(false),
             ..Default::default()
         };
@@ -10360,7 +9276,7 @@ hooks = true
             .into_iter()
             .filter_map(|cell| cell.remote_key())
         {
-            let remote = remote_settings_with(key, false);
+            let remote = local_runtime_settings_with(key, false);
             for cell in COMPAT_CELLS {
                 assert_eq!(
                     remote_compat_value(Some(&remote), cell.remote_key()),
@@ -10371,7 +9287,7 @@ hooks = true
                 );
             }
         }
-        let remote = remote_settings_with(CompatRemoteKey::CursorSkills, false);
+        let remote = local_runtime_settings_with(CompatRemoteKey::CursorSkills, false);
         assert!(CompatConfig::default().cursor.skills);
         assert!(
             !resolve_compat_config(&CompatConfigToml::default(), Some(&remote))
@@ -10401,7 +9317,7 @@ hooks = true
         let _env = isolate_compat_env();
         let config =
             parse_compat("[compat.cursor]\nsessions = false\n[compat.codex]\nhooks = false");
-        let remote = crate::util::config::RemoteSettings {
+        let remote = crate::util::config::LocalRuntimeSettings {
             cursor_sessions_enabled: Some(true),
             ..Default::default()
         };
@@ -10424,7 +9340,7 @@ hooks = true
         let raw: toml::Value =
             toml::from_str("[compat.cursor]\nsessions = true\n[compat.claude]\nsessions = false")
                 .unwrap();
-        let remote = crate::util::config::RemoteSettings {
+        let remote = crate::util::config::LocalRuntimeSettings {
             cursor_sessions_enabled: Some(true),
             claude_sessions_enabled: Some(true),
             codex_sessions_enabled: Some(false),
@@ -10433,7 +9349,7 @@ hooks = true
         let mut config = Config::new_from_toml_cfg(&raw).unwrap();
         config.resolve_runtime_fields(&RuntimeResolutionContext {
             raw_config: &raw,
-            remote_settings: Some(&remote),
+            local_runtime_settings: Some(&remote),
             cwd: None,
             is_headless: false,
             cli_subagents: None,
@@ -10459,7 +9375,7 @@ hooks = true
         let mut cfg = Config::new_from_toml_cfg(&raw).unwrap();
         cfg.resolve_runtime_fields(&RuntimeResolutionContext {
             raw_config: &raw,
-            remote_settings: None,
+            local_runtime_settings: None,
             cwd: None,
             is_headless: false,
             cli_subagents: None,
@@ -10495,7 +9411,7 @@ hooks = true
         let mut cfg = Config::new_from_toml_cfg(&raw).unwrap();
         cfg.resolve_runtime_fields(&RuntimeResolutionContext {
             raw_config: &raw,
-            remote_settings: None,
+            local_runtime_settings: None,
             cwd: None,
             is_headless: true,
             cli_subagents: None,
@@ -10520,14 +9436,14 @@ hooks = true
         clear_runtime_env_vars();
         clear_managed_mcp_env_vars();
         let raw = empty_config();
-        let remote = crate::util::config::RemoteSettings {
+        let remote = crate::util::config::LocalRuntimeSettings {
             managed_mcp_gateway_tools_enabled: Some(true),
             ..Default::default()
         };
         let mut cfg = Config::new_from_toml_cfg(&raw).unwrap();
         cfg.resolve_runtime_fields(&RuntimeResolutionContext {
             raw_config: &raw,
-            remote_settings: Some(&remote),
+            local_runtime_settings: Some(&remote),
             cwd: None,
             is_headless: false,
             cli_subagents: None,
@@ -10550,7 +9466,7 @@ hooks = true
         let mut cfg = Config::new_from_toml_cfg(&raw).unwrap();
         cfg.resolve_runtime_fields(&RuntimeResolutionContext {
             raw_config: &raw,
-            remote_settings: None,
+            local_runtime_settings: None,
             cwd: None,
             is_headless: false,
             cli_subagents: None,
@@ -10573,7 +9489,7 @@ hooks = true
         let mut cfg = Config::new_from_toml_cfg(&raw).unwrap();
         cfg.resolve_runtime_fields(&RuntimeResolutionContext {
             raw_config: &raw,
-            remote_settings: None,
+            local_runtime_settings: None,
             cwd: None,
             is_headless: false,
             cli_subagents: Some(true),
@@ -10597,7 +9513,7 @@ hooks = true
         let mut cfg = Config::new_from_toml_cfg(&raw).unwrap();
         cfg.resolve_runtime_fields(&RuntimeResolutionContext {
             raw_config: &raw,
-            remote_settings: None,
+            local_runtime_settings: None,
             cwd: None,
             is_headless: false,
             cli_subagents: None,
@@ -10621,7 +9537,7 @@ hooks = true
         let mut cfg = Config::new_from_toml_cfg(&raw).unwrap();
         cfg.resolve_runtime_fields(&RuntimeResolutionContext {
             raw_config: &raw,
-            remote_settings: None,
+            local_runtime_settings: None,
             cwd: None,
             is_headless: false,
             cli_subagents: None,
@@ -10642,14 +9558,14 @@ hooks = true
     fn resolve_runtime_fields_path_hints_from_remote() {
         clear_runtime_env_vars();
         let raw = empty_config();
-        let remote = crate::util::config::RemoteSettings {
+        let remote = crate::util::config::LocalRuntimeSettings {
             path_not_found_hints: Some(true),
             ..Default::default()
         };
         let mut cfg = Config::new_from_toml_cfg(&raw).unwrap();
         cfg.resolve_runtime_fields(&RuntimeResolutionContext {
             raw_config: &raw,
-            remote_settings: Some(&remote),
+            local_runtime_settings: Some(&remote),
             cwd: None,
             is_headless: false,
             cli_subagents: None,
@@ -10672,7 +9588,7 @@ hooks = true
         let mut cfg = Config::new_from_toml_cfg(&raw).unwrap();
         let ctx = RuntimeResolutionContext {
             raw_config: &raw,
-            remote_settings: None,
+            local_runtime_settings: None,
             cwd: None,
             is_headless: false,
             cli_subagents: None,
@@ -10936,6 +9852,8 @@ default = "atelier-4.5"
                 reasoning_effort: None,
                 supports_reasoning_effort: false,
                 reasoning_efforts: Vec::new(),
+                accepts_images: false,
+                supports_fast_mode: false,
                 supports_backend_search: false,
                 compactions_remaining: None,
                 compaction_at_tokens: None,
@@ -10949,6 +9867,8 @@ default = "atelier-4.5"
             env_key: None,
             api_base_url: None,
             request_payload: serde_json::Map::new(),
+            remote_compaction_endpoint: None,
+            image_generation_endpoint: None,
         }
     }
     #[test]

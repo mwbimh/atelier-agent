@@ -25,7 +25,7 @@ use crate::sampling::{ChatRequestMessage, Role};
 use crate::session::memory::text_utils::{has_markdown_headers, is_no_reply};
 
 /// Memory log target — matches `atelier_telemetry::memory_log::TARGET`.
-const LOG: &str = "xai_memory";
+const LOG: &str = "atelier_memory";
 
 /// Check whether a memory flush should run before the next compaction.
 ///
@@ -55,7 +55,7 @@ pub fn should_flush(
             "MEMORY_FLUSH_CHECK: already flushed this cycle (cycle={current_compaction_count})");
         return false;
     }
-    let should = xai_token_estimation::exceeds_threshold_with_headroom(
+    let should = atelier_token_estimation::exceeds_threshold_with_headroom(
         total_tokens,
         context_window,
         compact_threshold_percent,
@@ -203,14 +203,15 @@ pub fn is_duplicate(content: &str, db_path: &std::path::Path) -> bool {
     let content_hash = blake3::hash(content.as_bytes()).to_hex().to_string();
 
     // Journal-mode-aware open: never mmap a legacy WAL -shm on network
-    // mounts (SIGBUS); see xai_sqlite_journal::JournalMode::open_readonly.
-    let conn = match xai_sqlite_journal::JournalMode::for_db_path(db_path).open_readonly(db_path) {
-        Ok(c) => c,
-        Err(_) => {
-            tracing::debug!(target: LOG, "MEMORY_FLUSH_DEDUP: can't open DB, allowing write");
-            return false;
-        }
-    };
+    // mounts (SIGBUS); see atelier_sqlite_journal::JournalMode::open_readonly.
+    let conn =
+        match atelier_sqlite_journal::JournalMode::for_db_path(db_path).open_readonly(db_path) {
+            Ok(c) => c,
+            Err(_) => {
+                tracing::debug!(target: LOG, "MEMORY_FLUSH_DEDUP: can't open DB, allowing write");
+                return false;
+            }
+        };
 
     let exact_match: bool = conn
         .query_row(

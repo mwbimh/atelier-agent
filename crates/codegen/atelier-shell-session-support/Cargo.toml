@@ -15,7 +15,6 @@ thiserror = { workspace = true }
 tokio = { workspace = true, features = ["sync", "rt", "time", "macros"] }
 tokio-util = { workspace = true }
 tracing = { workspace = true }
-xai-file-utils = { path = "../xai-file-utils", optional = true }
 atelier-http = { workspace = true }
 atelier-shell-base = { workspace = true }
 atelier-version = { workspace = true }

@@ -250,28 +250,28 @@ impl crate::types::tool_metadata::ToolMetadata for HashlineEditTool {
     }
 }
 
-impl xai_tool_runtime::Tool for HashlineEditTool {
+impl atelier_tool_runtime::Tool for HashlineEditTool {
     type Args = HashlineEditInput;
     type Output = crate::types::output::SearchReplaceOutput;
 
-    fn id(&self) -> xai_tool_protocol::ToolId {
-        xai_tool_protocol::ToolId::new("hashline_edit").expect("valid tool id")
+    fn id(&self) -> atelier_tool_protocol::ToolId {
+        atelier_tool_protocol::ToolId::new("hashline_edit").expect("valid tool id")
     }
 
     fn description(
         &self,
-        _ctx: &::xai_tool_runtime::ListToolsContext,
-    ) -> xai_tool_types::ToolDescription {
-        xai_tool_types::ToolDescription::new(
+        _ctx: &::atelier_tool_runtime::ListToolsContext,
+    ) -> atelier_tool_types::ToolDescription {
+        atelier_tool_types::ToolDescription::new(
             "hashline_edit",
             crate::types::tool_metadata::ToolMetadata::description_template(self),
         )
     }
 
-    fn capabilities(&self) -> xai_tool_protocol::ToolCapabilities {
-        xai_tool_protocol::ToolCapabilities {
+    fn capabilities(&self) -> atelier_tool_protocol::ToolCapabilities {
+        atelier_tool_protocol::ToolCapabilities {
             is_read_only: false,
-            tool_scope: Some(xai_tool_protocol::ToolScope::Write),
+            tool_scope: Some(atelier_tool_protocol::ToolScope::Write),
             ..Default::default()
         }
     }
@@ -283,9 +283,9 @@ impl xai_tool_runtime::Tool for HashlineEditTool {
     )]
     async fn run(
         &self,
-        ctx: xai_tool_runtime::ToolCallContext,
+        ctx: atelier_tool_runtime::ToolCallContext,
         input: HashlineEditInput,
-    ) -> Result<crate::types::output::SearchReplaceOutput, xai_tool_runtime::ToolError> {
+    ) -> Result<crate::types::output::SearchReplaceOutput, atelier_tool_runtime::ToolError> {
         use crate::types::tool_metadata::shared_resources;
         let resources = shared_resources(&ctx)?;
 
@@ -297,7 +297,7 @@ impl xai_tool_runtime::Tool for HashlineEditTool {
 
         let (cwd, display_cwd, fs, scheme, hints_enabled) = {
             let res = resources.lock().await;
-            let cwd = match ctx.extensions.get::<xai_tool_runtime::Cwd>() {
+            let cwd = match ctx.extensions.get::<atelier_tool_runtime::Cwd>() {
                 Some(dir) => dir.0.clone(),
                 None => res.require::<Cwd>()?.0.clone(),
             };
@@ -310,7 +310,7 @@ impl xai_tool_runtime::Tool for HashlineEditTool {
             let scheme = params
                 .0
                 .build_scheme()
-                .map_err(xai_tool_runtime::ToolError::invalid_arguments)?;
+                .map_err(atelier_tool_runtime::ToolError::invalid_arguments)?;
             let hints_enabled = res.get::<PathNotFoundHints>().is_some_and(|h| h.0);
             (cwd, display_cwd, fs, scheme, hints_enabled)
         };
@@ -489,9 +489,10 @@ mod tests {
             }],
         };
 
-        let result = xai_tool_runtime::Tool::run(&tool, test_ctx(resources.into_shared()), input)
-            .await
-            .unwrap();
+        let result =
+            atelier_tool_runtime::Tool::run(&tool, test_ctx(resources.into_shared()), input)
+                .await
+                .unwrap();
 
         match result {
             SearchReplaceOutput::FileNotFound(msg) => {
@@ -527,9 +528,10 @@ mod tests {
             ],
         };
 
-        let result = xai_tool_runtime::Tool::run(&tool, test_ctx(resources.into_shared()), input)
-            .await
-            .unwrap();
+        let result =
+            atelier_tool_runtime::Tool::run(&tool, test_ctx(resources.into_shared()), input)
+                .await
+                .unwrap();
 
         assert!(
             matches!(
@@ -566,9 +568,10 @@ mod tests {
             }],
         };
 
-        let result = xai_tool_runtime::Tool::run(&tool, test_ctx(resources.into_shared()), input)
-            .await
-            .unwrap();
+        let result =
+            atelier_tool_runtime::Tool::run(&tool, test_ctx(resources.into_shared()), input)
+                .await
+                .unwrap();
 
         assert!(
             matches!(
@@ -608,7 +611,7 @@ mod tests {
         };
 
         let result: crate::types::output::SearchReplaceOutput =
-            xai_tool_runtime::Tool::run(&tool, test_ctx(resources.into_shared()), input)
+            atelier_tool_runtime::Tool::run(&tool, test_ctx(resources.into_shared()), input)
                 .await
                 .unwrap();
 

@@ -62,9 +62,6 @@ fn apply_agent_endpoint_args(agent_args: &atelier_pager::app::AgentArgs, config:
     if let Some(v) = &agent_args.cli_chat_proxy_base_url {
         config.endpoints.cli_chat_proxy_base_url = Some(v.clone());
     }
-    if let Some(v) = &agent_args.xai_api_base_url {
-        config.endpoints.xai_api_base_url = v.clone();
-    }
 }
 /// Resolve --agent-profile path: canonicalize and verify the file exists.
 fn resolve_agent_profile_path(path: &std::path::Path) -> std::path::PathBuf {
@@ -310,7 +307,7 @@ async fn connect_workspace_control(
     .map_err(|e| {
         anyhow::anyhow!(
             "no running leader for this environment ({e}). \
-             Start a atelier session, or run `atelier workspace start`."
+             Start an Atelier session, or run `ate workspace start`."
         )
     })
 }
@@ -333,10 +330,9 @@ async fn workspace_control(
 async fn workspace_start(
     args: WorkspaceStartArgs,
     restart: bool,
-    remote_settings: Option<atelier_shell::util::config::RemoteSettings>,
+    local_runtime_settings: Option<atelier_shell::util::config::LocalRuntimeSettings>,
 ) -> Result<()> {
     use atelier_shell::auth::ensure_authenticated;
-    atelier_shell::util::config::set_remote_campaigns_from_settings(remote_settings.as_ref());
     let raw_config = atelier_shell::config::load_effective_config()
         .map_err(|e| anyhow::anyhow!("Failed to load config: {e}"))?;
     let agent_config = AgentConfig::new_from_toml_cfg(&raw_config)
@@ -345,19 +341,19 @@ async fn workspace_start(
         args.leader,
         args.no_leader,
         &raw_config,
-        remote_settings.as_ref(),
+        local_runtime_settings.as_ref(),
         true,
     );
     if !use_leader {
         anyhow::bail!(
-            "`atelier workspace` requires leader mode (the workspace is shared via the leader).\n\
+            "`ate workspace` requires leader mode (the workspace is shared via the leader).\n\
              Enable it with `[cli] use_leader = true` in ~/.atelier/config.toml, or pass --leader."
         );
     }
     ensure_authenticated(
         &agent_config.atelier_com_config,
         false,
-        Some("No cached credentials found. Run `atelier login` first."),
+        Some("No Provider credentials found. Configure a Provider or run `/provider login <provider>`."),
     )
     .await?;
     let env_urls = LeaderEnvUrls::from(&agent_config.atelier_com_config);
@@ -823,7 +819,7 @@ async fn run_agent_command(
     if !is_stdio && !is_leader {
         eprintln!("Atelier - v{}", env!("VERSION_WITH_COMMIT"));
     }
-    let remote_settings = None;
+    let local_runtime_settings = None;
     let raw_config = atelier_shell::config::load_effective_config()
         .map_err(|e| anyhow::anyhow!("Failed to load config: {}", e))?;
     let mut agent_config = AgentConfig::new_from_toml_cfg(&raw_config)
@@ -858,10 +854,10 @@ async fn run_agent_command(
         agent_config.plugins.cli_plugin_dirs = agent_args.canonical_plugin_dirs();
     }
     apply_agent_endpoint_args(&agent_args, &mut agent_config);
-    agent_config.remote_settings = remote_settings.clone();
+    agent_config.local_runtime_settings = local_runtime_settings.clone();
     agent_config.resolve_runtime_fields(&atelier_shell::agent::config::RuntimeResolutionContext {
         raw_config: &raw_config,
-        remote_settings: remote_settings.as_ref(),
+        local_runtime_settings: local_runtime_settings.as_ref(),
         cwd: None,
         is_headless: !is_leader,
         cli_subagents: None,
@@ -883,7 +879,7 @@ async fn run_agent_command(
         agent_args.leader,
         agent_args.no_leader,
         &raw_config,
-        remote_settings.as_ref(),
+        local_runtime_settings.as_ref(),
         leader_eligible,
     );
     tracing::info!(use_leader, ?policy_disable_reason, "leader mode resolved");
@@ -903,10 +899,7 @@ async fn run_agent_command(
             _ => ClientMode::Stdio,
         };
         let env_urls = atelier_shell::leader::LeaderEnvUrls::from(&agent_config.atelier_com_config);
-        let default_model = agent_config
-            .default_model_override
-            .clone()
-            .or(agent_config.models.default.clone());
+        let default_model = agent_config.default_model_override.clone();
         let client_type = std::env::args().collect::<Vec<_>>().join(" ");
         let capabilities = ClientCapabilities {
             yolo_mode: launch_yolo.yolo,
@@ -937,7 +930,7 @@ async fn run_agent_command(
                 let replay_state_stdin = replay_state.clone();
                 let cancel_stdin = cancel.clone();
                 let stdin_task = tokio::spawn(async move {
-                    let mut stdin_lines = xai_acp_lib::spawn_stdin_line_reader();
+                    let mut stdin_lines = atelier_acp_runtime::spawn_stdin_line_reader();
                     loop {
                         tokio::select! {
                             biased; _ = cancel_stdin.cancelled() => break, maybe_line =
@@ -1099,7 +1092,6 @@ async fn run_agent_command(
                 &agent_config,
                 a.no_exit_on_disconnect,
                 a.relay_on_demand,
-                None,
                 agent_memory_config,
             )
             .await
@@ -1158,12 +1150,12 @@ fn raise_fd_limit() {
 fn raise_fd_limit() {}
 /// Single audit point for the `Command::Dashboard` soft-subcommand.
 /// Sets `ATELIER_OPEN_DASHBOARD_AT_STARTUP=1` if the user asked for
-/// `atelier dashboard`, and clears `args.command` so the regular
+/// `ate dashboard`, and clears `args.command` so the regular
 /// subcommand match doesn't try to handle it.
 ///
 /// The dashboard is independent of leader mode — it renders local
 /// sessions and, when a leader happens to be present, additionally shows
-/// the leader roster — so `atelier dashboard` does NOT force leader mode and
+/// the leader roster — so `ate dashboard` does NOT force leader mode and
 /// is compatible with `--no-leader`.
 ///
 /// The only gate is the feature flag: a disabled dashboard
@@ -1323,6 +1315,19 @@ fn main() {
     if let Some(code) = run_internal_submode() {
         std::process::exit(code);
     }
+    #[cfg(windows)]
+    if let Some(code) = run_public_sandbox_subcommand() {
+        std::process::exit(code);
+    }
+    // Parse before touching user configuration so clap's informational exits
+    // (`--help` and `--version`) remain available even when config is invalid.
+    let args = match PagerArgs::parse_and_apply_cwd() {
+        Ok(args) => args,
+        Err(error) => {
+            eprintln!("Error: {error:#}");
+            std::process::exit(1);
+        }
+    };
     let atelier_home = atelier_config::atelier_home();
     if let Err(error) =
         atelier_config::defaults::ensure_user_defaults(&atelier_home, env!("CARGO_PKG_VERSION"))
@@ -1331,6 +1336,24 @@ fn main() {
             "Couldn't initialize Atelier defaults in {}: {error}",
             atelier_home.display()
         );
+        std::process::exit(2);
+    }
+    let runtime_defaults =
+        match atelier_config::runtime_defaults::install_runtime_defaults_at(&atelier_home) {
+            Ok(defaults) => defaults,
+            Err(error) => {
+                eprintln!(
+                    "Couldn't load Atelier runtime defaults from {}: {error}",
+                    atelier_home.display()
+                );
+                std::process::exit(2);
+            }
+        };
+    if let Err(error) = atelier_shell::http::set_request_agent_identity(
+        runtime_defaults.request_agent.name.clone(),
+        runtime_defaults.request_agent.version.clone(),
+    ) {
+        eprintln!("Couldn't configure Atelier request agent: {error}");
         std::process::exit(2);
     }
     atelier_pager_minimal::install();
@@ -1360,17 +1383,17 @@ fn main() {
         std::process::exit(2);
     }
     atelier_pager::docs::extract_user_guide_docs(&atelier_shell::util::atelier_home::atelier_home());
-    xai_crash_handler::install_terminal_restore_only();
+    atelier_crash_handler::install_terminal_restore_only();
     if atelier_shell::util::config::load_crash_handler_enabled_sync() {
         let crash_dir = atelier_shell::util::atelier_home::atelier_home().join("crash");
-        if let Some(report) = xai_crash_handler::check_previous_crash(&crash_dir) {
+        if let Some(report) = atelier_crash_handler::check_previous_crash(&crash_dir) {
             eprintln!("Atelier crashed during your last session.");
             eprintln!("  Signal:  {}", report.signal_name);
             eprintln!("  Version: {}", report.app_version);
             eprintln!("  Report:  {}", report.report_path.display());
             eprintln!();
         }
-        if !xai_crash_handler::install(xai_crash_handler::CrashHandlerConfig {
+        if !atelier_crash_handler::install(atelier_crash_handler::CrashHandlerConfig {
             app_version: env!("VERSION_WITH_COMMIT").to_string(),
             crash_dir: crash_dir.clone(),
         }) {
@@ -1391,13 +1414,41 @@ fn main() {
         .enable_all()
         .build()
         .unwrap_or_else(|e| panic!("failed to start tokio runtime: {e}"));
-    let result = run_and_shutdown(runtime, Box::pin(async_main()), RUNTIME_SHUTDOWN_GRACE);
+    let result = run_and_shutdown(runtime, Box::pin(async_main(args)), RUNTIME_SHUTDOWN_GRACE);
     atelier_telemetry::debug_log::flush();
     if let Err(e) = result {
-        xai_tty_utils::restore_native_stderr();
+        atelier_tty_utils::restore_native_stderr();
         eprintln!("Error: {e:#}");
         std::process::exit(1);
     }
+}
+
+#[cfg(windows)]
+fn public_sandbox_args<I, T>(args: I) -> Option<Vec<std::ffi::OsString>>
+where
+    I: IntoIterator<Item = T>,
+    T: Into<std::ffi::OsString>,
+{
+    let mut args = args.into_iter().map(Into::into);
+    let command = args.next()?;
+    if command != "sandbox" {
+        return None;
+    }
+    Some(args.collect())
+}
+
+#[cfg(windows)]
+fn run_public_sandbox_subcommand() -> Option<i32> {
+    let args = public_sandbox_args(std::env::args_os().skip(1))?;
+    Some(
+        match atelier_windows_sandbox::run_public_sandbox_command(args) {
+            Ok(code) => code,
+            Err(error) => {
+                eprintln!("ate sandbox: {error:#}");
+                2
+            }
+        },
+    )
 }
 
 /// Handle process-internal worker modes before TUI, crash handling, tracing,
@@ -1412,15 +1463,45 @@ fn run_internal_submode() -> Option<i32> {
         "--internal-command-runner" => match atelier_windows_sandbox::run_command_runner(args) {
             Ok(code) => Some(code),
             Err(error) => {
-                eprintln!("atelier internal command runner: {error:#}");
+                eprintln!("ate internal command runner: {error:#}");
                 Some(2)
             }
         },
+        #[cfg(windows)]
+        "--internal-windows-sandbox-setup" => {
+            match atelier_windows_sandbox::run_setup_helper(args) {
+                Ok(code) => Some(code),
+                Err(error) => {
+                    eprintln!("ate internal Windows sandbox setup: {error:#}");
+                    Some(2)
+                }
+            }
+        }
+        #[cfg(windows)]
+        "--internal-windows-sandbox-runner" => {
+            match atelier_windows_sandbox::run_persistent_runner(args) {
+                Ok(code) => Some(code),
+                Err(error) => {
+                    eprintln!("ate internal Windows sandbox runner: {error:#}");
+                    Some(2)
+                }
+            }
+        }
+        #[cfg(windows)]
+        "--internal-windows-sandbox-boundary-probe" => {
+            match atelier_windows_sandbox::run_boundary_probe(args) {
+                Ok(code) => Some(code),
+                Err(error) => {
+                    eprintln!("ate internal Windows sandbox boundary probe: {error:#}");
+                    Some(2)
+                }
+            }
+        }
         "--internal-workspace-worker" => {
             let root = match atelier_workspace::parse_worker_args(args) {
                 Ok(root) => root,
                 Err(error) => {
-                    eprintln!("atelier internal workspace worker: {error}");
+                    eprintln!("ate internal workspace worker: {error}");
                     return Some(2);
                 }
             };
@@ -1430,14 +1511,14 @@ fn run_internal_submode() -> Option<i32> {
             {
                 Ok(runtime) => runtime,
                 Err(error) => {
-                    eprintln!("atelier internal workspace worker runtime: {error}");
+                    eprintln!("ate internal workspace worker runtime: {error}");
                     return Some(2);
                 }
             };
             match runtime.block_on(atelier_workspace::run_worker(root)) {
                 Ok(()) => Some(0),
                 Err(error) => {
-                    eprintln!("atelier internal workspace worker: {error}");
+                    eprintln!("ate internal workspace worker: {error}");
                     Some(2)
                 }
             }
@@ -1446,19 +1527,13 @@ fn run_internal_submode() -> Option<i32> {
     }
 }
 #[inline(never)]
-async fn async_main() -> Result<()> {
+async fn async_main(mut args: PagerArgs) -> Result<()> {
     let _ = rustls::crypto::ring::default_provider().install_default();
-    let mut args = PagerArgs::parse_and_apply_cwd()?;
     if let Some(ref mode) = args.compaction_mode {
         unsafe { std::env::set_var("ATELIER_COMPACTION_MODE", mode) };
     }
     if let Some(ref detail) = args.compaction_detail {
         unsafe { std::env::set_var("ATELIER_COMPACTION_DETAIL", detail) };
-    }
-    if args.chat() {
-        unsafe {
-            std::env::set_var(atelier_shell::agent::chat_modes::ATELIER_CHAT_MODE_ENV, "1");
-        }
     }
     if let Some(ref socket) = args.leader_socket {
         unsafe { std::env::set_var(atelier_shell::leader::LEADER_SOCKET_ENV, socket) };
@@ -1539,7 +1614,7 @@ fn run_async_command_loop(mut args: PagerArgs) -> Pin<Box<dyn Future<Output = Re
         if let Some(flag) = invalid_leader_flag {
             anyhow::bail!(
                 "top-level {flag} applies to the pager TUI, not the agent subcommand. \
-                 Use `atelier agent {flag}` instead."
+                 Use `ate agent {flag}` instead."
             );
         }
         run_agent_command(agent_args, permission_mode_flag, trust, disable_web_search).await
@@ -1557,7 +1632,7 @@ async fn legacy_async_command_loop(mut args: PagerArgs) -> Result<()> {
                     });
                     println!("{}", serde_json::to_string(&payload)?);
                 } else {
-                    println!("atelier {}", env!("VERSION_WITH_COMMIT"));
+                    println!("Atelier {}", env!("VERSION_WITH_COMMIT"));
                 }
                 return Ok(());
             }
@@ -1570,7 +1645,7 @@ async fn legacy_async_command_loop(mut args: PagerArgs) -> Result<()> {
                     };
                     anyhow::bail!(
                         "top-level {flag} applies to the pager TUI, not the agent subcommand. \
-                         Use `atelier agent {flag}` instead."
+                         Use `ate agent {flag}` instead."
                     );
                 }
                 return run_agent_command(
@@ -1722,13 +1797,13 @@ async fn legacy_async_command_loop(mut args: PagerArgs) -> Result<()> {
 /// Complete the update after a quit-for-update (Ctrl+U) exit. Returns `true`
 /// when an update path completed without a reported failure.
 ///
-/// Prefers awaiting the parked waiter for the background `atelier update` child
+/// Prefers awaiting the parked waiter for the background `ate update` child
 /// spawned at startup — the download is usually already done or in flight.
 /// Only when there is no waiter (spawn failed, or no download was needed
 /// because the target was already on disk) or the child failed does this
-/// fall back to a fresh blocking `atelier update`, which itself resolves to
+/// fall back to a fresh blocking `ate update`, which itself resolves to
 /// "Already up to date" without downloading when the disk is current.
-/// After a successful `atelier update`, ask any running leader on this machine that
+/// After a successful `ate update`, ask any running leader on this machine that
 /// is older than `installed_version` to relaunch onto the new binary (bounded
 /// grace; running sessions close and reconnect via `session/load`).
 ///
@@ -1801,6 +1876,15 @@ async fn signal_leaders_to_relaunch(installed_version: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(windows)]
+    #[test]
+    fn public_sandbox_entrypoint_is_detected_before_pager_parsing() {
+        assert_eq!(
+            public_sandbox_args(["sandbox", "status", "--json"]),
+            Some(vec!["status".into(), "--json".into()])
+        );
+        assert_eq!(public_sandbox_args(["agent", "stdio"]), None);
+    }
     #[cfg(all(feature = "jemalloc", unix))]
     struct TempHeapDump(std::path::PathBuf);
     #[cfg(all(feature = "jemalloc", unix))]
@@ -1944,31 +2028,8 @@ mod tests {
         atelier_shell::heap_profile::dump_to_path(dump.path()).expect("shell dump");
         dump.assert_nonempty_dump();
     }
-    /// Only the direct (non-leader) stdio agent is newly eligible for the
-    /// background auto-update. Leader-backed stdio defers to the leader's own
-    /// updater, and non-stdio modes already update at the top of
-    /// `run_agent_command`.
-    #[test]
-    fn stdio_direct_update_eligible_only_for_non_leader_stdio() {
-        assert!(
-            stdio_direct_update_eligible(true, false),
-            "direct stdio agent should be eligible",
-        );
-        assert!(
-            !stdio_direct_update_eligible(true, true),
-            "leader-backed stdio defers to the leader's updater",
-        );
-        assert!(
-            !stdio_direct_update_eligible(false, false),
-            "non-stdio modes update at the top of run_agent_command",
-        );
-        assert!(
-            !stdio_direct_update_eligible(false, true),
-            "non-stdio leader path is not stdio-eligible",
-        );
-    }
     use clap::Parser as _;
-    /// `atelier dashboard` flags the startup hook without forcing leader mode —
+    /// `ate dashboard` flags the startup hook without forcing leader mode —
     /// the dashboard is independent of leader mode, so the launch keeps
     /// whatever leader setting the user (or config) chose.
     #[serial_test::serial(ATELIER_AGENT_DASHBOARD)]
@@ -1989,7 +2050,7 @@ mod tests {
         );
         unsafe { std::env::remove_var("ATELIER_OPEN_DASHBOARD_AT_STARTUP") };
     }
-    /// `atelier dashboard --no-leader` is allowed — the dashboard does not
+    /// `ate dashboard --no-leader` is allowed — the dashboard does not
     /// require a leader, so the combination launches into the dashboard in
     /// non-leader mode.
     #[serial_test::serial(ATELIER_AGENT_DASHBOARD)]
@@ -2029,12 +2090,12 @@ mod tests {
     }
     #[test]
     fn workspace_command_gate_resolution() {
-        use atelier_shell::util::config::RemoteSettings;
-        let on = RemoteSettings {
+        use atelier_shell::util::config::LocalRuntimeSettings;
+        let on = LocalRuntimeSettings {
             workspace_command_enabled: Some(true),
-            ..RemoteSettings::default()
+            ..LocalRuntimeSettings::default()
         };
-        let off = RemoteSettings::default();
+        let off = LocalRuntimeSettings::default();
         assert_eq!(
             workspace_command_gate(None, Some(&on)),
             WorkspaceGate::Enabled

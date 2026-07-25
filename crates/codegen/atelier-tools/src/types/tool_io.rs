@@ -15,6 +15,7 @@ use crate::implementations::atelier_build::ask_user_question::AskUserQuestionInp
 use crate::implementations::atelier_build::enter_plan_mode::EnterPlanModeInput;
 use crate::implementations::atelier_build::exit_plan_mode::ExitPlanModeInput;
 use crate::implementations::atelier_build::grep::GrepSearchInput;
+use crate::implementations::atelier_build::image_gen::ImageGenInput;
 use crate::implementations::atelier_build::list_dir::ListDirInput;
 use crate::implementations::atelier_build::read_file::ReadFileInput;
 use crate::implementations::atelier_build::search_replace::SearchReplaceInput;
@@ -32,11 +33,11 @@ use crate::implementations::opencode::write::WriteInput;
 use crate::implementations::search_tool::SearchToolInput;
 use crate::implementations::skills::skill::SkillInput;
 use crate::implementations::use_tool::UseToolInput;
+use atelier_tool_types::KillTaskToolInput;
+use atelier_tool_types::TaskOutputToolInput;
+use atelier_tool_types::TaskToolInput;
+use atelier_tool_types::WaitTasksToolInput;
 use serde::{Deserialize, Serialize};
-use xai_tool_types::KillTaskToolInput;
-use xai_tool_types::TaskOutputToolInput;
-use xai_tool_types::TaskToolInput;
-use xai_tool_types::WaitTasksToolInput;
 /// Raw input for an MCP (Model Context Protocol) tool call.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct MCPToolInput {
@@ -69,6 +70,7 @@ pub enum ToolInput {
     Task(TaskToolInput),
     WebSearch(WebSearchInput),
     WebFetch(WebFetchInput),
+    ImageGen(ImageGenInput),
     Write(WriteInput),
     ApplyPatch(ApplyPatchInput),
     HashlineEdit(crate::implementations::atelier_build_hashline::edit::types::HashlineEditInput),

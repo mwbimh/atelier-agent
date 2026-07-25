@@ -169,7 +169,7 @@ impl acp::Agent for MvpAgent {
                 );
             }
         }
-        let has_external_api_key = auth_method::should_advertise_xai_api_key(
+        let has_external_api_key = auth_method::should_advertise_provider_api_key(
             disable_api_key_auth,
             self.models_manager.models().values(),
         );
@@ -315,11 +315,7 @@ impl acp::Agent for MvpAgent {
         let mcp_servers: Vec<crate::extensions::mcp::McpServerEntry> = Vec::new();
         self.spawn_initialize_launch_mcp_setup();
         self.spawn_heap_profile_monitor();
-        let init_model_state = if crate::agent::chat_modes::process_chat_mode_enabled() {
-            self.chat_modes.model_state().await
-        } else {
-            self.model_state(None)
-        };
+        let init_model_state = self.model_state(None);
         Ok(
             acp::InitializeResponse::new(acp::ProtocolVersion::V1)
                 .agent_capabilities(
@@ -331,8 +327,8 @@ impl acp::Agent for MvpAgent {
                                 : [atelier_hooks::event::HookEventName::PreToolUse],
                                 "decisions" : ["deny"], },
                                 "atelier/runtime" : { "version" :
-                                xai_acp_lib::ATELIER_PROTOCOL_VERSION, "capabilities" :
-                                xai_acp_lib::ATELIER_PROTOCOL_CAPABILITIES, }, }
+                                atelier_acp_runtime::ATELIER_PROTOCOL_VERSION, "capabilities" :
+                                atelier_acp_runtime::ATELIER_PROTOCOL_CAPABILITIES, }, }
                             )
                                 .as_object()
                                 .cloned(),
@@ -363,8 +359,8 @@ impl acp::Agent for MvpAgent {
                         .resolve_cancel_rewind().value, "sessionRecap" : self.cfg
                         .borrow().is_session_recap_enabled(), "voiceMode" : self.cfg
                         .borrow().is_voice_mode_enabled(), "atelierRuntime" : {
-                        "version" : xai_acp_lib::ATELIER_PROTOCOL_VERSION,
-                        "capabilities" : xai_acp_lib::ATELIER_PROTOCOL_CAPABILITIES, }, }
+                        "version" : atelier_acp_runtime::ATELIER_PROTOCOL_VERSION,
+                        "capabilities" : atelier_acp_runtime::ATELIER_PROTOCOL_CAPABILITIES, }, }
                     )
                         .as_object()
                         .cloned()
@@ -403,7 +399,6 @@ impl acp::Agent for MvpAgent {
                 acp::Error::invalid_params()
                     .data("initialize must be called before new_session")
             })?;
-        require_local_provider_catalog(self.models_manager.models().is_empty())?;
         self.seed_client_config_auth_if_available();
         let cwd = AbsPathBuf::new(arguments.cwd.clone())
             .map_err(|e| acp::Error::invalid_params().data(e.to_string()))?;
@@ -486,7 +481,32 @@ impl acp::Agent for MvpAgent {
         let mut model_agent_type: Option<String> = None;
         let mut session_sampling_override: Option<SamplingConfig> = None;
         let session_initial_model = chat_initial_model(is_chat_kind, custom_model_id);
-        let build_custom_model_id = if is_chat_kind { None } else { custom_model_id };
+        let cli_default_model = self.models_manager.cli_default_model_override();
+        let persisted_default_model = if !is_chat_kind
+            && custom_model_id.is_none()
+            && session_role.is_none()
+            && cli_default_model.is_none()
+        {
+            Some(
+                atelier_config::runtime_defaults::resolve_runtime_defaults_at(
+                    &atelier_config::atelier_home(),
+                )
+                .map_err(|error| {
+                    acp::Error::invalid_params().data(format!(
+                        "invalid new-session default model configuration: {error}"
+                    ))
+                })?
+                .model,
+            )
+        } else {
+            None
+        };
+        let configured_default_model = cli_default_model.or_else(|| persisted_default_model.clone());
+        let build_custom_model_id = if is_chat_kind {
+            None
+        } else {
+            custom_model_id.or(configured_default_model.as_deref())
+        };
         if build_custom_model_id.is_some()
             && session_role_id.is_some_and(|role| role != atelier_provider::RoleId::Main)
         {
@@ -499,12 +519,21 @@ impl acp::Agent for MvpAgent {
                 let model = self
                     .resolve_model_id(&acp::ModelId::new(custom_model))
                     .map_err(|_| {
-                        acp::Error::invalid_params()
-                            .data(format!("requested model is unavailable: {custom_model}"))
+                        if persisted_default_model.is_some() {
+                            acp::Error::invalid_params()
+                                .data(configured_model_unavailable_message(custom_model))
+                        } else {
+                            acp::Error::invalid_params()
+                                .data(format!("requested model is unavailable: {custom_model}"))
+                        }
                     })?;
                 if !model.info.user_selectable {
-                    return Err(acp::Error::invalid_params()
-                        .data(format!("requested model is not selectable: {custom_model}")));
+                    let message = if persisted_default_model.is_some() {
+                        configured_model_unavailable_message(custom_model)
+                    } else {
+                        format!("requested model is not selectable: {custom_model}")
+                    };
+                    return Err(acp::Error::invalid_params().data(message));
                 }
                 model_agent_type = Some(model.info().agent_type.clone());
                 let origin_client = self.origin_client_info_from_meta(arguments.meta.as_ref());
@@ -521,7 +550,7 @@ impl acp::Agent for MvpAgent {
             None => None,
         };
         let mut resolved_role_model: Option<String> = None;
-        if !is_chat_kind && custom_model_id.is_none()
+        if !is_chat_kind && build_custom_model_id.is_none()
             && let Some((role_id, role)) = session_role.as_ref()
         {
             let role_model = format!("{}/{}", role.provider, role.model);
@@ -544,14 +573,14 @@ impl acp::Agent for MvpAgent {
             );
             resolved_role_model = Some(role_model);
         }
-        if model_agent_type.is_none() && custom_model_id.is_none()
+        if model_agent_type.is_none() && build_custom_model_id.is_none()
             && let Ok(default_model) = self
                 .resolve_model_id(&self.models_manager.current_model_id())
         {
             model_agent_type = Some(default_model.info().agent_type.clone());
-        } else if model_agent_type.is_none() && custom_model_id.is_some() {
+        } else if model_agent_type.is_none() && build_custom_model_id.is_some() {
             tracing::debug!(
-                custom_model = ? custom_model_id, current_model_id = % self
+                custom_model = ? build_custom_model_id, current_model_id = % self
                 .models_manager.current_model_id().0,
                 "Skipping current_model_id agent_type fallback: custom model was requested, \
                  avoiding cross-client agent_type contamination in leader mode"
@@ -609,7 +638,7 @@ impl acp::Agent for MvpAgent {
         } else {
             let _timer = crate::instrumentation_timer!("session.persistence_init");
             let registry_title_sync = self
-                .session_registry_client()
+                .local_session_catalog()
                 .map(|client| crate::session::persistence::RegistryGeneratedTitleSync {
                     client,
                     suppress_for_zdr: self
@@ -695,7 +724,7 @@ impl acp::Agent for MvpAgent {
         );
         let bridge_attach = BridgeAttach::NotAttached;
         let product_analytics = self.product_analytics_enabled();
-        if product_analytics || atelier_telemetry::external::is_active() {
+        if product_analytics {
             let sid = session_id.0.to_string();
             let ci = client_identifier.clone();
             let cv = self.client_version();
@@ -756,7 +785,7 @@ impl acp::Agent for MvpAgent {
             let cfg = self.cfg.borrow();
             let show_non_git_warning = !is_git_repo && !discovery_failed
                 && cfg
-                    .remote_settings
+                    .local_runtime_settings
                     .as_ref()
                     .and_then(|s| s.non_git_warning)
                     .unwrap_or(cfg.features.non_git_warning);
@@ -768,15 +797,7 @@ impl acp::Agent for MvpAgent {
             Some(session_id.0.as_ref()),
             Some(serde_json::json!({ "cwd" : cwd.as_str() })),
         );
-        let models = if is_chat_kind {
-            chat_new_session_model_state(
-                self.chat_modes.model_state().await,
-                session_initial_model
-                    .filter(|_| matches!(bridge_attach, BridgeAttach::Spawned)),
-            )
-        } else {
-            self.model_state(Some(&session_id))
-        };
+        let models = self.model_state(Some(&session_id));
         let (session_config_value, session_detail_value) = self
             .session_config_meta(&session_id, cwd.as_str().to_owned(), None, &models);
         let mut meta = serde_json::json!(
@@ -830,8 +851,8 @@ impl acp::Agent for MvpAgent {
         } = arguments;
         let cwd = AbsPathBuf::new(cwd)
             .map_err(|e| acp::Error::invalid_params().data(e.to_string()))?;
-        let remote_settings = self.cfg.borrow().remote_settings.clone();
-        folder_trust::resolve_and_record(cwd.as_path(), remote_settings.as_ref(), false);
+        let local_runtime_settings = self.cfg.borrow().local_runtime_settings.clone();
+        folder_trust::resolve_and_record(cwd.as_path(), local_runtime_settings.as_ref(), false);
         let initial_client_mcp_servers = client_mcp_servers.clone();
         let (mcp_servers, managed_mcp_expires_at) = self
             .resolve_mcp_servers(client_mcp_servers, cwd.as_path())
@@ -896,29 +917,12 @@ impl acp::Agent for MvpAgent {
             title_backend_for_session(self.build_summary_client(&load_session_sampling));
         let mut persistence_timer = crate::instrumentation_timer!("session.load_light");
         persistence_timer.with_field("session_id", session_id.0.as_ref());
-        let backend = if self.build_registry_config().is_some() {
-            Some(
-                crate::remote::BackendClient::new()
-                    .with_auth_manager(self.auth_manager.clone()),
-            )
-        } else {
-            None
-        };
-        let registry_title_sync = self
-            .session_registry_client()
-            .map(|client| crate::session::persistence::RegistryGeneratedTitleSync {
-                client,
-                suppress_for_zdr: self
-                    .auth_manager
-                    .current_or_expired()
-                    .is_some_and(|a| a.is_zdr_team()),
-            });
+        let registry_title_sync = None;
         let (persistence_info, persistence) = crate::session::persistence::load_light(
                 &session_info,
                 title_backend,
                 self.storage_mode,
                 Some(self.auth_manager.clone()),
-                backend.as_ref(),
                 Some(self.gateway.clone()),
                 registry_title_sync,
             )
@@ -1000,7 +1004,7 @@ impl acp::Agent for MvpAgent {
             .and_then(|m| m.get("atelier/restore_code"))
             .and_then(|v| v.as_bool())
             .unwrap_or(self.restore_code);
-        let registry_client_for_restore = self.session_registry_client();
+        let registry_client_for_restore = self.local_session_catalog();
         if restore_code_requested && registry_client_for_restore.is_none() {
             atelier_workspace::session::git::warn_registry_disabled_restore(
                 session_id.0.as_ref(),
@@ -1281,7 +1285,7 @@ impl acp::Agent for MvpAgent {
         self.maybe_spawn_interactive_trust_prompt(
             &session_id,
             cwd.as_path(),
-            remote_settings.as_ref(),
+            local_runtime_settings.as_ref(),
         );
         if let Some((parent_cmd_tx, session_cwd)) = self
             .sessions
@@ -1568,11 +1572,6 @@ impl acp::Agent for MvpAgent {
         mut arguments: acp::PromptRequest,
     ) -> Result<acp::PromptResponse, acp::Error> {
         use crate::session::plan_mode::PromptMode;
-        if let Some(meta) = arguments.meta.as_ref() {
-            xai_file_utils::trace_context::link_current_span_to_meta(
-                &serde_json::Value::Object(meta.clone()),
-            );
-        }
         tracing::debug!(
             target : "sampling_log", session_id = % arguments.session_id.0,
             "Received prompt request"
@@ -1767,7 +1766,7 @@ impl acp::Agent for MvpAgent {
                 })
                 .collect();
             let mut prompt_metadata = PromptMetadata {
-                schema_version: GCS_SCHEMA_VERSION.to_string(),
+                schema_version: LOCAL_ARTIFACT_SCHEMA_VERSION.to_string(),
                 session_id: ctx.session_info.id.0.to_string(),
                 turn_number: ctx.turn_number,
                 request_id: prompt_id.clone(),
@@ -1823,22 +1822,22 @@ impl acp::Agent for MvpAgent {
                             info.full_text.is_some(),
                         );
                         if let Some(full_text) = &info.full_text {
-                            upload_full_prompt_txt(&ctx, full_text).await;
+                            write_full_prompt_txt(&ctx, full_text).await;
                         }
                     }
-                    upload_metadata(&ctx, prompt_metadata).await;
+                    write_metadata(&ctx, prompt_metadata).await;
                 }
             });
-            spawn_upload_task(
+            spawn_artifact_task(
                 "before_uploads",
                 async move {
                     let before_workspace_fut = async {};
                     futures::join!(
-                        upload_session_state(& ctx, "before", session_copy_rx,
-                        UploadWait::Confirm), before_workspace_fut, upload_config(& ctx,
-                        & agent_config), crate
-                        ::upload::config_files::upload_config_files(& ctx),
-                        upload_images(& ctx, & prompt_images), upload_plugin_state(& ctx,
+                        write_session_state(&ctx, "before", session_copy_rx),
+                        before_workspace_fut, write_config(&ctx,
+                        &agent_config),
+                        crate::local_artifacts::artifacts::write_config_files(&ctx),
+                        write_images(&ctx, &prompt_images), write_plugin_state(&ctx,
                         plugin_registry.as_deref()),
                     );
                 },
@@ -1912,8 +1911,8 @@ impl acp::Agent for MvpAgent {
             .prompt
             .iter()
             .map(|block| match block {
-                acp::ContentBlock::Text(text) => xai_token_estimation::estimate_tokens(&text.text),
-                acp::ContentBlock::Image(_) => xai_token_estimation::estimate_image_tokens(1),
+                acp::ContentBlock::Text(text) => atelier_token_estimation::estimate_tokens(&text.text),
+                acp::ContentBlock::Image(_) => atelier_token_estimation::estimate_image_tokens(1),
                 _ => 0,
             })
             .sum::<u64>();
@@ -1946,7 +1945,7 @@ impl acp::Agent for MvpAgent {
             runtime_payload["role"] = serde_json::json!(role_id.as_str());
             runtime_payload["provider"] = serde_json::json!(role.provider);
             runtime_payload["model"] = serde_json::json!(role.model);
-            runtime_payload["payload"] = xai_acp_lib::redact_payload(
+            runtime_payload["payload"] = atelier_acp_runtime::redact_payload(
                 &serde_json::Value::Object(role.effective_payload()),
             );
         }
@@ -1998,7 +1997,7 @@ impl acp::Agent for MvpAgent {
         ) {
             self.runtime_finish_request(
                 &arguments.session_id,
-                xai_acp_lib::RuntimeState::Failed,
+                atelier_acp_runtime::RuntimeState::Failed,
                 Some("policy".to_owned()),
                 Some(error.to_string()),
             );
@@ -2006,7 +2005,7 @@ impl acp::Agent for MvpAgent {
         }
         self.runtime_update_status(
             &arguments.session_id,
-            xai_acp_lib::RuntimeState::WaitingForProvider,
+            atelier_acp_runtime::RuntimeState::WaitingForProvider,
             None,
         );
         let (detach_tx, detach_rx) = tokio::sync::oneshot::channel();
@@ -2015,13 +2014,9 @@ impl acp::Agent for MvpAgent {
                 prompt_id: prompt_id.clone(),
                 prompt_blocks: arguments.prompt.clone(),
                 prompt_mode,
-                artifact_upload_ctx: trace_context
-                    .as_ref()
-                    .map(|ctx| ctx.artifact_upload_context()),
                 client_identifier: prompt_client_identifier,
                 screen_mode: prompt_screen_mode,
                 verbatim,
-                traceparent: xai_file_utils::trace_context::current_traceparent(),
                 json_schema,
                 send_now,
                 respond_to: tx,
@@ -2031,7 +2026,7 @@ impl acp::Agent for MvpAgent {
             self.clear_detach_waiter(&prompt_id);
             self.runtime_finish_request(
                 &arguments.session_id,
-                xai_acp_lib::RuntimeState::Failed,
+                atelier_acp_runtime::RuntimeState::Failed,
                 Some("session_dispatch".to_owned()),
                 Some(format!("failed to dispatch prompt to session: {error}")),
             );
@@ -2053,7 +2048,7 @@ impl acp::Agent for MvpAgent {
                     Err(_) => {
                         self.runtime_finish_request(
                             &arguments.session_id,
-                            xai_acp_lib::RuntimeState::Failed,
+                            atelier_acp_runtime::RuntimeState::Failed,
                             Some("session_response".to_owned()),
                             Some("session failed to respond".to_owned()),
                         );
@@ -2078,17 +2073,17 @@ impl acp::Agent for MvpAgent {
                             matches!(result.stop_reason, acp::StopReason::Cancelled)
                                 .then(|| "cancelled by client".to_owned()),
                         ),
-                        Ok(Err(_)) | Err(_) => (xai_acp_lib::RuntimeState::Failed, None),
+                        Ok(Err(_)) | Err(_) => (atelier_acp_runtime::RuntimeState::Failed, None),
                     };
                     agent_ref.get().runtime_finish_request_by_id(
                         &detached_session_id,
                         &detached_prompt_id,
                         runtime_state,
-                        (runtime_state == xai_acp_lib::RuntimeState::Failed)
+                        (runtime_state == atelier_acp_runtime::RuntimeState::Failed)
                             .then(|| "provider_or_tool".to_owned()),
                         diagnostic_message,
                     );
-                    if runtime_state == xai_acp_lib::RuntimeState::Completed {
+                    if runtime_state == atelier_acp_runtime::RuntimeState::Completed {
                         agent_ref.get().forget_retryable_prompt(&detached_prompt_id);
                     }
                 });
@@ -2099,7 +2094,7 @@ impl acp::Agent for MvpAgent {
         };
         let runtime_state = match &stop_result {
             Ok(result) => super::runtime::runtime_state_for_stop_reason(&result.stop_reason),
-            Err(_) => xai_acp_lib::RuntimeState::Failed,
+            Err(_) => atelier_acp_runtime::RuntimeState::Failed,
         };
         let cancelled = stop_result
             .as_ref()
@@ -2117,7 +2112,7 @@ impl acp::Agent for MvpAgent {
                 .map(ToString::to_string)
                 .or_else(|| cancelled.then(|| "cancelled by client".to_owned())),
         );
-        if runtime_state == xai_acp_lib::RuntimeState::Completed {
+        if runtime_state == atelier_acp_runtime::RuntimeState::Completed {
             self.forget_retryable_prompt(&prompt_id);
         }
         let last_turn_usage_for_meta = handle
@@ -2220,7 +2215,7 @@ impl acp::Agent for MvpAgent {
             }
         };
         if trace_context.is_some() && !harness_trace_turns.is_empty() {
-            self.upload_harness_trace_turns(
+            self.persist_harness_trace_turns(
                     &arguments.session_id,
                     &handle.info,
                     &handle.cmd_tx,
@@ -2245,7 +2240,7 @@ impl acp::Agent for MvpAgent {
                     .spawned_refs_for_prompt(&prompt_id);
                 let permission_events = self
                     .collect_permission_events(&arguments.session_id);
-                let turn_messages: Option<xai_chat_state::TurnCapture> = {
+                let turn_messages: Option<atelier_chat_state::TurnCapture> = {
                     let (tx, rx) = oneshot::channel();
                     if handle
                         .cmd_tx
@@ -2259,7 +2254,7 @@ impl acp::Agent for MvpAgent {
                         None
                     }
                 };
-                let streaming_partial = crate::upload::turn::take_streaming_partial(
+                let streaming_partial = crate::local_artifacts::turn::take_streaming_partial(
                         &handle.cmd_tx,
                         prompt_id.clone(),
                         matches!(stop_reason, acp::StopReason::EndTurn),
@@ -2304,7 +2299,7 @@ impl acp::Agent for MvpAgent {
                             .as_ref()
                             .and_then(|s| s.end_prompt_mode.clone());
                         let result = TurnResultMetadata {
-                            schema_version: GCS_SCHEMA_VERSION,
+                            schema_version: LOCAL_ARTIFACT_SCHEMA_VERSION,
                             request_id,
                             completed,
                             stop_reason: Some(format!("{stop_reason:?}")),
@@ -2321,7 +2316,7 @@ impl acp::Agent for MvpAgent {
                             resolved_model: resolved_model.clone(),
                             subagents_spawned: subagent_refs.clone(),
                         };
-                        upload_turn_result(&ctx, &result, UploadWait::Defer { deadline })
+                        write_turn_result(&ctx, &result, ArtifactWriteWait::Deadline { deadline })
                             .await;
                     } else {
                         let snapshot_clone = turn_snapshot.clone();
@@ -2338,7 +2333,7 @@ impl acp::Agent for MvpAgent {
                                 .as_ref()
                                 .and_then(|s| s.end_prompt_mode.clone());
                             let result = TurnResultMetadata {
-                                schema_version: GCS_SCHEMA_VERSION,
+                                schema_version: LOCAL_ARTIFACT_SCHEMA_VERSION,
                                 request_id,
                                 completed,
                                 stop_reason: Some(format!("{stop_reason:?}")),
@@ -2357,7 +2352,7 @@ impl acp::Agent for MvpAgent {
                                 resolved_model,
                                 subagents_spawned: subagent_refs.clone(),
                             };
-                            upload_turn_result(&ctx, &result, UploadWait::Confirm).await;
+                            write_turn_result(&ctx, &result, ArtifactWriteWait::Confirm).await;
                         });
                     }
                 }
@@ -2378,7 +2373,7 @@ impl acp::Agent for MvpAgent {
                         );
                     }
                     if turn_number == 0
-                        && let Some(client) = self.session_registry_client()
+                        && let Some(client) = self.local_session_catalog()
                     {
                         let cwd_str = handle.info.cwd.clone();
                         let model = self.models_manager.current_model_id().0.to_string();
@@ -2407,7 +2402,7 @@ impl acp::Agent for MvpAgent {
                         let sid = arguments.session_id.to_string();
                         tokio::spawn(async move {
                             let git_out = |args: &[&str]| -> Option<String> {
-                                xai_tty_utils::git_command()
+                                atelier_tty_utils::git_command()
                                     .current_dir(&cwd_str)
                                     .args(args)
                                     .output()
@@ -2425,10 +2420,9 @@ impl acp::Agent for MvpAgent {
                                 &["rev-parse", "--abbrev-ref", "HEAD"],
                             );
                             let repo_head_at_start = git_out(&["rev-parse", "HEAD"]);
-                            let reg_req = crate::agent::session_registry_client::RegisterRequest {
+                            let reg_req = crate::agent::local_session_catalog::RegisterRequest {
                                 session_id: sid.clone(),
                                 cwd: cwd_str,
-                                gcs_trace_prefix: sid,
                                 model_id: Some(model),
                                 repo_remote_url,
                                 repo_branch,
@@ -2473,7 +2467,7 @@ impl acp::Agent for MvpAgent {
                                         .filter(|s| !s.is_empty())
                             };
                             if first_prompt.is_some() || summary.is_some() {
-                                let upd_req = crate::agent::session_registry_client::UpdateRequest {
+                                let upd_req = crate::agent::local_session_catalog::UpdateRequest {
                                     summary,
                                     first_prompt,
                                     last_turn_number: None,
@@ -2504,12 +2498,12 @@ impl acp::Agent for MvpAgent {
                     /// Sets `last_turn_number` with `repo_head_at_end` and does not wait for
                     /// session-state uploads.
                     async fn advance_last_turn(
-                        client: crate::agent::session_registry_client::SessionRegistryClient,
+                        client: crate::agent::local_session_catalog::LocalSessionCatalog,
                         session_id: String,
                         turn: i32,
                         cwd: String,
                     ) {
-                        let repo_head_at_end = xai_tty_utils::git_command()
+                        let repo_head_at_end = atelier_tty_utils::git_command()
                             .current_dir(&cwd)
                             .args(["rev-parse", "HEAD"])
                             .output()
@@ -2519,7 +2513,7 @@ impl acp::Agent for MvpAgent {
                                 String::from_utf8_lossy(&o.stdout).trim().to_string()
                             })
                             .filter(|s| !s.is_empty());
-                        let req = crate::agent::session_registry_client::UpdateRequest {
+                        let req = crate::agent::local_session_catalog::UpdateRequest {
                             summary: None,
                             first_prompt: None,
                             last_turn_number: Some(turn),
@@ -2538,11 +2532,11 @@ impl acp::Agent for MvpAgent {
                     ///
                     /// Called after the post-turn session archive is confirmed in cloud storage.
                     async fn advance_restorable_turn(
-                        client: crate::agent::session_registry_client::SessionRegistryClient,
+                        client: crate::agent::local_session_catalog::LocalSessionCatalog,
                         session_id: String,
                         turn: i32,
                     ) {
-                        let req = crate::agent::session_registry_client::UpdateRequest {
+                        let req = crate::agent::local_session_catalog::UpdateRequest {
                             summary: None,
                             first_prompt: None,
                             last_turn_number: None,
@@ -2556,7 +2550,7 @@ impl acp::Agent for MvpAgent {
                             );
                         }
                     }
-                    if let Some(client) = self.session_registry_client() {
+                    if let Some(client) = self.local_session_catalog() {
                         let sid = arguments.session_id.to_string();
                         let cwd = cwd_for_git.clone();
                         tokio::spawn(async move {
@@ -2582,7 +2576,7 @@ impl acp::Agent for MvpAgent {
                                 });
                         });
                     }
-                    let registry_client_for_restorable = self.session_registry_client();
+                    let registry_client_for_restorable = self.local_session_catalog();
                     let registry_sid_for_restorable = arguments.session_id.to_string();
                     let err_ctx = ctx.clone();
                     if let Some(deadline) = upload_deadline {
@@ -2592,7 +2586,7 @@ impl acp::Agent for MvpAgent {
                                 session_copy_rx,
                                 turn_messages,
                                 streaming_partial,
-                                UploadWait::Defer { deadline },
+                                ArtifactWriteWait::Deadline { deadline },
                             )
                             .await
                         {
@@ -2614,7 +2608,7 @@ impl acp::Agent for MvpAgent {
                             }
                             Err(e) => {
                                 tracing::warn!("Failed to complete prompt trace: {e:?}");
-                                crate::upload::trace::flush_then_write_error_manifest(
+                                crate::local_artifacts::artifacts::flush_then_write_error_manifest(
                                         &err_ctx,
                                         deadline,
                                     )
@@ -2622,7 +2616,7 @@ impl acp::Agent for MvpAgent {
                             }
                         }
                     } else {
-                        spawn_upload_task(
+                        spawn_artifact_task(
                             "after_uploads",
                             async move {
                                 match complete_prompt_trace(
@@ -2631,7 +2625,7 @@ impl acp::Agent for MvpAgent {
                                         session_copy_rx,
                                         turn_messages,
                                         streaming_partial,
-                                        UploadWait::Confirm,
+                                        ArtifactWriteWait::Confirm,
                                     )
                                     .await
                                 {
@@ -2695,7 +2689,7 @@ impl acp::Agent for MvpAgent {
                     .subagent_coordinator
                     .borrow()
                     .spawned_refs_for_prompt(&prompt_id);
-                let turn_messages: Option<xai_chat_state::TurnCapture> = {
+                let turn_messages: Option<atelier_chat_state::TurnCapture> = {
                     let (tx, rx) = oneshot::channel();
                     if handle
                         .cmd_tx
@@ -2710,7 +2704,7 @@ impl acp::Agent for MvpAgent {
                     }
                 };
                 let err_kind_str = format!("{:?}", err.code);
-                let streaming_partial = crate::upload::turn::take_streaming_partial(
+                let streaming_partial = crate::local_artifacts::turn::take_streaming_partial(
                         &handle.cmd_tx,
                         prompt_id.clone(),
                         false,
@@ -2736,7 +2730,7 @@ impl acp::Agent for MvpAgent {
                         .then(|| tokio::time::Instant::now() + upload_flush_timeout);
                     if let Some(deadline) = upload_deadline {
                         let result = TurnResultMetadata {
-                            schema_version: GCS_SCHEMA_VERSION,
+                            schema_version: LOCAL_ARTIFACT_SCHEMA_VERSION,
                             request_id,
                             completed: false,
                             stop_reason: Some(stop_reason),
@@ -2753,34 +2747,33 @@ impl acp::Agent for MvpAgent {
                             resolved_model: resolved_model.clone(),
                             subagents_spawned: subagent_refs.clone(),
                         };
-                        let wait = UploadWait::Defer { deadline };
-                        upload_turn_result(&ctx, &result, wait).await;
+                        let wait = ArtifactWriteWait::Deadline { deadline };
+                        write_turn_result(&ctx, &result, wait).await;
                         if let Some(capture) = turn_messages {
-                            upload_turn_messages(&ctx, capture, wait).await;
+                            write_turn_messages(&ctx, capture).await;
                         }
                         if let Some(ref capture) = streaming_partial {
-                            crate::upload::trace::upload_streaming_partial(
+                            crate::local_artifacts::artifacts::write_streaming_partial(
                                     &ctx,
                                     capture,
-                                    wait,
                                 )
                                 .await;
                         }
                         if upload_unified {
-                            upload_unified_log(&ctx, wait).await;
+                            write_unified_log(&ctx, wait).await;
                         }
-                        crate::upload::trace::flush_then_write_error_manifest(
+                        crate::local_artifacts::artifacts::flush_then_write_error_manifest(
                                 &ctx,
                                 deadline,
                             )
                             .await;
                     } else {
                         let resolved_model = resolved_model.clone();
-                        spawn_upload_task(
+                        spawn_artifact_task(
                             "error_turn_result",
                             async move {
                                 let result = TurnResultMetadata {
-                                    schema_version: GCS_SCHEMA_VERSION,
+                                    schema_version: LOCAL_ARTIFACT_SCHEMA_VERSION,
                                     request_id,
                                     completed: false,
                                     stop_reason: Some(stop_reason),
@@ -2797,22 +2790,21 @@ impl acp::Agent for MvpAgent {
                                     resolved_model,
                                     subagents_spawned: subagent_refs.clone(),
                                 };
-                                upload_turn_result(&ctx, &result, UploadWait::Confirm)
+                                write_turn_result(&ctx, &result, ArtifactWriteWait::Confirm)
                                     .await;
                                 if let Some(capture) = turn_messages {
-                                    upload_turn_messages(&ctx, capture, UploadWait::Confirm)
+                                    write_turn_messages(&ctx, capture)
                                         .await;
                                 }
                                 if let Some(ref capture) = streaming_partial {
-                                    crate::upload::trace::upload_streaming_partial(
+                                    crate::local_artifacts::artifacts::write_streaming_partial(
                                             &ctx,
                                             capture,
-                                            UploadWait::Confirm,
                                         )
                                         .await;
                                 }
                                 if upload_unified {
-                                    upload_unified_log(&ctx, UploadWait::Confirm).await;
+                                    write_unified_log(&ctx, ArtifactWriteWait::Confirm).await;
                                 }
                                 write_error_manifest(&ctx).await;
                             },
@@ -2951,9 +2943,6 @@ impl acp::Agent for MvpAgent {
         let request_meta = serde_json::from_str::<serde_json::Value>(args.params.get())
             .ok()
             .and_then(|v| v.get("_meta").cloned());
-        if let Some(meta) = &request_meta {
-            xai_file_utils::trace_context::link_current_span_to_meta(meta);
-        }
         tracing::info!("Received extension method call: method={}", args.method);
         #[allow(unused_mut)]
         let mut backend_no_bridge_err: Option<acp::Error> = None;
@@ -2971,9 +2960,6 @@ impl acp::Agent for MvpAgent {
             "atelier/session/info" | "atelier/session/close" | "atelier/session/list"
             | "atelier/sessions/list" => {
                 crate::agent::handlers::session::handle(self, &args).await
-            }
-            "atelier/workspaces/list" => {
-                crate::agent::handlers::workspaces::handle(self, &args).await
             }
             "atelier/session/updates" => {
                 crate::extensions::session_updates::handle(&args, &self.gateway).await
@@ -3020,201 +3006,16 @@ impl acp::Agent for MvpAgent {
                 crate::extensions::context_snapshot::handle(self, &args).await
             }
             "atelier/recap" => crate::extensions::recap::handle(self, &args).await,
-            "atelier/cloud/terminate" => {
-                crate::extensions::auth_gate::require_xai_auth(
-                    &self.auth_manager,
-                    "Authentication required",
-                    "Run `atelier login` to authenticate.",
-                )?;
-                let params: serde_json::Value = serde_json::from_str(args.params.get())
-                    .map_err(|e| acp::Error::invalid_params().data(e.to_string()))?;
-                let sandbox_id = params
-                    .get("sandbox_id")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| {
-                        acp::Error::invalid_params().data("missing sandbox_id")
-                    })?;
-                let sandbox_client = crate::remote::SandboxClient::new(
-                    self.cli_chat_proxy_base_url(),
-                    self.auth_manager.clone(),
-                );
-                sandbox_client
-                    .terminate_session(
-                        sandbox_id,
-                        &crate::remote::SandboxTerminateRequest {
-                            environment_id: None,
-                        },
-                    )
-                    .await
-                    .map_err(|e| {
-                        acp::Error::internal_error()
-                            .data(format!("Failed to terminate sandbox: {e}"))
-                    })?;
-                crate::extensions::to_raw_response(&serde_json::json!({ "ok" : true }))
-            }
-            "atelier/cloud/env/list" => {
-                crate::extensions::auth_gate::require_xai_auth(
-                    &self.auth_manager,
-                    "Authentication required",
-                    "Run `atelier login` to authenticate.",
-                )?;
-                let sandbox_client = crate::remote::SandboxClient::new(
-                    self.cli_chat_proxy_base_url(),
-                    self.auth_manager.clone(),
-                );
-                let resp = sandbox_client
-                    .list_environments(
-                        &crate::remote::SandboxListEnvironmentsRequest::default(),
-                    )
-                    .await
-                    .map_err(|e| {
-                        acp::Error::internal_error()
-                            .data(format!("Failed to list environments: {e}"))
-                    })?;
-                crate::extensions::to_raw_response(
-                    &serde_json::json!({ "environments" : resp.environments, }),
-                )
-            }
-            "atelier/cloud/env/create" => {
-                crate::extensions::auth_gate::require_xai_auth(
-                    &self.auth_manager,
-                    "Authentication required",
-                    "Run `atelier login` to authenticate.",
-                )?;
-                let params: serde_json::Value = serde_json::from_str(args.params.get())
-                    .map_err(|e| acp::Error::invalid_params().data(e.to_string()))?;
-                let sandbox_client = crate::remote::SandboxClient::new(
-                    self.cli_chat_proxy_base_url(),
-                    self.auth_manager.clone(),
-                );
-                let resp = sandbox_client
-                    .create_environment(
-                        &crate::remote::SandboxCreateEnvironmentRequest {
-                            name: params
-                                .get("name")
-                                .and_then(|v| v.as_str())
-                                .map(String::from),
-                            description: params
-                                .get("description")
-                                .and_then(|v| v.as_str())
-                                .map(String::from),
-                            repository: params
-                                .get("repository")
-                                .and_then(|v| v.as_str())
-                                .map(String::from),
-                            default_branch: params
-                                .get("default_branch")
-                                .and_then(|v| v.as_str())
-                                .map(String::from),
-                            container_image: params
-                                .get("container_image")
-                                .and_then(|v| v.as_str())
-                                .map(String::from),
-                            setup_script: params
-                                .get("setup_script")
-                                .and_then(|v| v.as_str())
-                                .map(String::from),
-                            workspace_directory: Some("/workspace".to_string()),
-                            internet_enabled: Some(true),
-                            domain_allowlist_preset: Some("common".to_string()),
-                            allowed_http_methods: Some("all".to_string()),
-                            ..Default::default()
-                        },
-                    )
-                    .await
-                    .map_err(|e| {
-                        acp::Error::internal_error()
-                            .data(format!("Failed to create environment: {e}"))
-                    })?;
-                crate::extensions::to_raw_response(
-                    &serde_json::json!({ "environment" : resp.environment, }),
-                )
-            }
-            "atelier/cloud/env/update" => {
-                crate::extensions::auth_gate::require_xai_auth(
-                    &self.auth_manager,
-                    "Authentication required",
-                    "Run `atelier login` to authenticate.",
-                )?;
-                let params: serde_json::Value = serde_json::from_str(args.params.get())
-                    .map_err(|e| acp::Error::invalid_params().data(e.to_string()))?;
-                let environment_id = params
-                    .get("environment_id")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| {
-                        acp::Error::invalid_params().data("missing environment_id")
-                    })?;
-                let sandbox_client = crate::remote::SandboxClient::new(
-                    self.cli_chat_proxy_base_url(),
-                    self.auth_manager.clone(),
-                );
-                let resp = sandbox_client
-                    .update_environment(
-                        environment_id,
-                        &crate::remote::SandboxUpdateEnvironmentRequest {
-                            name: params
-                                .get("name")
-                                .and_then(|v| v.as_str())
-                                .map(String::from),
-                            description: params
-                                .get("description")
-                                .and_then(|v| v.as_str())
-                                .map(String::from),
-                            repository: params
-                                .get("repository")
-                                .and_then(|v| v.as_str())
-                                .map(String::from),
-                            default_branch: params
-                                .get("default_branch")
-                                .and_then(|v| v.as_str())
-                                .map(String::from),
-                            container_image: params
-                                .get("container_image")
-                                .and_then(|v| v.as_str())
-                                .map(String::from),
-                            setup_script: params
-                                .get("setup_script")
-                                .and_then(|v| v.as_str())
-                                .map(String::from),
-                            ..Default::default()
-                        },
-                    )
-                    .await
-                    .map_err(|e| {
-                        acp::Error::internal_error()
-                            .data(format!("Failed to update environment: {e}"))
-                    })?;
-                crate::extensions::to_raw_response(
-                    &serde_json::json!({ "environment" : resp.environment, }),
-                )
-            }
-            "atelier/cloud/env/delete" => {
-                crate::extensions::auth_gate::require_xai_auth(
-                    &self.auth_manager,
-                    "Authentication required",
-                    "Run `atelier login` to authenticate.",
-                )?;
-                let params: serde_json::Value = serde_json::from_str(args.params.get())
-                    .map_err(|e| acp::Error::invalid_params().data(e.to_string()))?;
-                let environment_id = params
-                    .get("environment_id")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| {
-                        acp::Error::invalid_params().data("missing environment_id")
-                    })?;
-                let sandbox_client = crate::remote::SandboxClient::new(
-                    self.cli_chat_proxy_base_url(),
-                    self.auth_manager.clone(),
-                );
-                sandbox_client
-                    .delete_environment(environment_id)
-                    .await
-                    .map_err(|e| {
-                        acp::Error::internal_error()
-                            .data(format!("Failed to delete environment: {e}"))
-                    })?;
-                crate::extensions::to_raw_response(&serde_json::json!({ "ok" : true }))
-            }
+            "atelier/cloud/terminate" | "atelier/cloud/env/list" => Err(
+                acp::Error::method_not_found()
+                    .data("vendor cloud sandboxes are not supported by the local runtime"),
+            ),
+            "atelier/cloud/env/create" => Err(acp::Error::method_not_found()
+                .data("vendor cloud sandboxes are not supported by the local runtime")),
+            "atelier/cloud/env/update" => Err(acp::Error::method_not_found()
+                .data("vendor cloud sandboxes are not supported by the local runtime")),
+            "atelier/cloud/env/delete" => Err(acp::Error::method_not_found()
+                .data("vendor cloud sandboxes are not supported by the local runtime")),
             "atelier/prompt_history" => {
                 crate::extensions::prompt_history::handle(self, &args).await
             }
@@ -3236,6 +3037,9 @@ impl acp::Agent for MvpAgent {
             }
             s if s.starts_with("_atelier/role/") || s.starts_with("atelier/role/") => {
                 crate::extensions::roles::handle(self, &args).await
+            }
+            s if s.starts_with("_atelier/config/") || s.starts_with("atelier/config/") => {
+                crate::extensions::configuration::handle(self, &args).await
             }
             s if s.starts_with("_atelier/policy/") || s.starts_with("atelier/policy/") => {
                 crate::extensions::policy::handle(self, &args).await
@@ -3524,7 +3328,7 @@ impl acp::Agent for MvpAgent {
                 SessionNotification,
             >(args.params.get()) {
                 tracing::info!(
-                    "Storing xAI session notification: session_id={}", notification
+                    "Storing Atelier extension session notification: session_id={}", notification
                     .session_id.0
                 );
                 if let Some(handle) = self
@@ -3534,17 +3338,17 @@ impl acp::Agent for MvpAgent {
                 {
                     let _ = handle
                         .cmd_tx
-                        .send(crate::session::SessionCommand::XaiSessionNotification {
+                        .send(crate::session::SessionCommand::ExtensionSessionNotification {
                             notification,
                         });
                 } else {
                     tracing::warn!(
-                        "Received xAI session notification for unknown session: {}",
+                        "Received Atelier extension session notification for unknown session: {}",
                         notification.session_id.0
                     );
                 }
             } else {
-                tracing::warn!("Failed to parse xAI session notification params");
+                tracing::warn!("Failed to parse Atelier extension session notification params");
             }
         }
         if args.method.as_ref() == "atelier/telemetry/non_git_decision" {
@@ -3687,15 +3491,6 @@ impl acp::Agent for MvpAgent {
     }
 }
 
-fn require_local_provider_catalog(models_empty: bool) -> Result<(), acp::Error> {
-    if models_empty {
-        return Err(acp::Error::invalid_params().data(
-            "No local Provider is configured. Add one with /provider or _atelier/provider/create before creating a session.",
-        ));
-    }
-    Ok(())
-}
-
 fn role_for_new_session(
     meta: Option<&acp::Meta>,
     is_chat_kind: bool,
@@ -3706,10 +3501,13 @@ fn role_for_new_session(
     if is_chat_kind {
         return Ok(None);
     }
-    let role_id = meta
+    let Some(role_value) = meta
         .and_then(|meta| meta.get("atelier/role").or_else(|| meta.get("role")))
         .and_then(|value| value.as_str())
-        .unwrap_or(atelier_provider::RoleId::Main.as_str())
+    else {
+        return Ok(None);
+    };
+    let role_id = role_value
         .parse::<atelier_provider::RoleId>()
         .map_err(|error| acp::Error::invalid_params().data(error.to_string()))?;
     if matches!(
@@ -3739,6 +3537,16 @@ fn role_for_new_session(
     Ok(Some((role_id, load_role(role_id)?)))
 }
 
+fn configured_model_unavailable_message(model: &str) -> String {
+    let provider = model
+        .split_once('/')
+        .map(|(provider, _)| provider)
+        .unwrap_or(model);
+    format!(
+        "configured new-session model is unavailable: {model}; configure and enable Provider '{provider}' or update config.toml:model"
+    )
+}
+
 fn title_backend_for_session(
     result: Result<(crate::sampling::Client, String), acp::Error>,
 ) -> crate::session::summary::TitleBackend {
@@ -3750,7 +3558,7 @@ fn title_backend_for_session(
             }
         }
         Err(error) => {
-            let reason = xai_acp_lib::redact_text(&error.to_string());
+            let reason = atelier_acp_runtime::redact_text(&error.to_string());
             tracing::warn!(
                 target: "atelier.runtime",
                 role = "title",
@@ -3808,8 +3616,9 @@ mod vendorless_extension_tests {
     use crate::agent::auth_method;
 
     use super::{
-        inspector_model_key, is_removed_vendor_extension, resolve_inspector_wire_api,
-        role_for_new_session, title_backend_for_session, vendorless_auth_method_allowed,
+        configured_model_unavailable_message, inspector_model_key, is_removed_vendor_extension,
+        resolve_inspector_wire_api, role_for_new_session, title_backend_for_session,
+        vendorless_auth_method_allowed,
     };
 
     #[test]
@@ -3836,22 +3645,30 @@ mod vendorless_extension_tests {
     }
 
     #[test]
-    fn title_role_failure_disables_only_title_generation() {
-        let main = atelier_provider::RoleConfig::new("allm", "deepseek-v4-flash").unwrap();
-        let resolved_main = role_for_new_session(None, false, |role_id| {
-            assert_eq!(role_id, atelier_provider::RoleId::Main);
-            Ok(main.clone())
+    fn ordinary_new_session_has_no_main_role_fallback() {
+        let resolved = role_for_new_session(None, false, |_| {
+            panic!("ordinary new Sessions must not load roles.main")
         })
-        .expect("a configured main Role must remain independently resolvable")
-        .expect("Build sessions always have a Role snapshot");
+        .unwrap();
 
+        assert!(resolved.is_none());
+    }
+
+    #[test]
+    fn unavailable_config_model_error_names_provider_and_remediation() {
+        assert_eq!(
+            configured_model_unavailable_message("allm/deepseek-v4-flash"),
+            "configured new-session model is unavailable: allm/deepseek-v4-flash; configure and enable Provider 'allm' or update config.toml:model"
+        );
+    }
+
+    #[test]
+    fn title_role_failure_disables_only_title_generation() {
         let backend = title_backend_for_session(Err(
             agent_client_protocol::Error::invalid_params()
                 .data("role title is not configured"),
         ));
 
-        assert_eq!(resolved_main.0, atelier_provider::RoleId::Main);
-        assert_eq!(resolved_main.1, main);
         assert!(matches!(
             backend,
             crate::session::summary::TitleBackend::Disabled { reason }
@@ -3869,7 +3686,7 @@ mod vendorless_extension_tests {
     }
 
     #[test]
-    fn inspector_uses_registry_default_chat_completions_resolution() {
+    fn inspector_uses_registry_provider_default_wire_api_resolution() {
         let mut registry = atelier_provider::ProviderRegistry::in_memory();
         registry
             .upsert_provider(atelier_provider::ProviderConfig {
@@ -3892,6 +3709,8 @@ mod vendorless_extension_tests {
                 context_window: Some(128_000),
                 capabilities: Default::default(),
                 reasoning_efforts: Vec::new(),
+                default_effort: None,
+                fast_mode: false,
                 source: atelier_provider::ModelSource::Static,
                 enabled: true,
             })
@@ -3902,10 +3721,10 @@ mod vendorless_extension_tests {
 
         assert_eq!(resolved.provider, "allm");
         assert_eq!(resolved.model, "deepseek-v4-flash");
-        assert_eq!(resolved.wire_api, atelier_provider::WireApi::ChatCompletions);
+        assert_eq!(resolved.wire_api, atelier_provider::WireApi::Responses);
         assert_eq!(
             resolved.source,
-            atelier_provider::WireApiSource::DefaultChatCompletions
+            atelier_provider::WireApiSource::ProviderDefault
         );
     }
 
@@ -3915,7 +3734,7 @@ mod vendorless_extension_tests {
             auth_method::LOCAL_PROVIDER_AUTH_METHOD_ID
         ));
         for method in [
-            auth_method::XAI_API_KEY_METHOD_ID,
+            auth_method::PROVIDER_API_KEY_METHOD_ID,
             auth_method::CACHED_TOKEN_AUTH_METHOD_ID,
             auth_method::ATELIER_COM_METHOD_ID,
             auth_method::OIDC_METHOD_ID,
@@ -3926,15 +3745,6 @@ mod vendorless_extension_tests {
                 "vendorless runtime must reject direct auth method {method}"
             );
         }
-    }
-
-    #[test]
-    fn empty_local_provider_catalog_is_always_rejected() {
-        assert!(
-            super::require_local_provider_catalog(true).is_err(),
-            "legacy vendor credentials must not bypass the local Provider requirement"
-        );
-        assert!(super::require_local_provider_catalog(false).is_ok());
     }
 
     #[test]

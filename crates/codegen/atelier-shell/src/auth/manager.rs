@@ -181,7 +181,7 @@ pub struct AuthManager {
     power_listener_started: std::sync::atomic::AtomicBool,
     /// Keeps the OS power listener alive for this manager's lifetime; dropping
     /// it stops the listener. `None` until started (or if unavailable).
-    power_listener: parking_lot::Mutex<Option<xai_system_power::SystemPowerListener>>,
+    power_listener: parking_lot::Mutex<Option<atelier_system_power::SystemPowerListener>>,
     /// Per-process `manual_auth` KPI debounce, shared by all recoveries on this
     /// manager so repeated 401s on the most-recent dead credential emit once.
     manual_auth: crate::auth::recovery::ManualAuthTracker,
@@ -1697,7 +1697,7 @@ impl AuthManager {
             ));
         }
 
-        // Dark wake (see `xai_system_power::PowerState` for the canonical
+        // Dark wake (see `atelier_system_power::PowerState` for the canonical
         // explanation): defer the not-yet-started refresh. The refresh token
         // wasn't sent yet, so retrying on a later full wake is safe, whereas
         // starting the exchange now risks straddling the re-sleep and losing the

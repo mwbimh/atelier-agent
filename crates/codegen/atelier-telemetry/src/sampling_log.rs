@@ -8,7 +8,7 @@ use tracing_subscriber::fmt::writer::BoxMakeWriter;
 use tracing_subscriber::layer::Layer;
 use tracing_subscriber::registry::LookupSpan;
 
-use atelier_config::atelier_home;
+use crate::home::atelier_home;
 
 use crate::instrumentation::{NoOpLayer, TargetFilterLayer};
 

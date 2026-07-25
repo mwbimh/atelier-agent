@@ -31,7 +31,7 @@
 //! (with `timestamp`, `method`, and `params` wrapper), not just the inner
 //! notification params. Clients should parse the `method` field to determine
 //! the update type (`"session/update"` for ACP, `"_atelier/session/update"` for
-//! xAI extensions) and extract the notification payload from `params`.
+//! Atelier extensions) and extract the notification payload from `params`.
 
 use std::io::{self, BufRead, BufReader};
 use std::path::Path;
@@ -288,7 +288,7 @@ fn extract_last_event_id<T: AsRef<str>>(lines: &[T]) -> Option<String> {
 /// Send updates as chunked `_atelier/session/updates/chunk` notifications.
 /// Injects routing metadata when `target_client_id` is set.
 fn send_streamed_chunks<T: AsRef<str>>(
-    gateway: &xai_acp_lib::AcpAgentGatewaySender,
+    gateway: &atelier_acp_runtime::AcpAgentGatewaySender,
     session_id: &str,
     lines: &[T],
     chunk_size: usize,
@@ -327,7 +327,7 @@ fn send_streamed_chunks<T: AsRef<str>>(
 /// Inline sync I/O (`spawn_blocking` is slow on `current_thread` + `LocalSet`).
 pub async fn handle(
     args: &acp::ExtRequest,
-    gateway: &xai_acp_lib::AcpAgentGatewaySender,
+    gateway: &atelier_acp_runtime::AcpAgentGatewaySender,
 ) -> ExtResult {
     let _timer = crate::instrumentation_timer!("session.ext.bulk_updates");
 
@@ -495,9 +495,9 @@ mod tests {
         serde_json::from_str(response.0.get()).unwrap()
     }
 
-    fn dummy_gateway() -> xai_acp_lib::AcpAgentGatewaySender {
+    fn dummy_gateway() -> atelier_acp_runtime::AcpAgentGatewaySender {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        xai_acp_lib::AcpAgentGatewaySender::new(tx)
+        atelier_acp_runtime::AcpAgentGatewaySender::new(tx)
     }
 
     fn make_request(
@@ -664,11 +664,11 @@ mod tests {
     }
 
     fn capturing_gateway() -> (
-        xai_acp_lib::AcpAgentGatewaySender,
-        tokio::sync::mpsc::UnboundedReceiver<xai_acp_lib::AcpClientMessage>,
+        atelier_acp_runtime::AcpAgentGatewaySender,
+        tokio::sync::mpsc::UnboundedReceiver<atelier_acp_runtime::AcpClientMessage>,
     ) {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-        (xai_acp_lib::AcpAgentGatewaySender::new(tx), rx)
+        (atelier_acp_runtime::AcpAgentGatewaySender::new(tx), rx)
     }
 
     fn make_stream_request(
@@ -693,11 +693,11 @@ mod tests {
     }
 
     fn extract_chunk_params(
-        rx: &mut tokio::sync::mpsc::UnboundedReceiver<xai_acp_lib::AcpClientMessage>,
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<atelier_acp_runtime::AcpClientMessage>,
     ) -> Vec<serde_json::Value> {
         let mut chunks = Vec::new();
         while let Ok(msg) = rx.try_recv() {
-            if let xai_acp_lib::AcpClientMessage::ExtNotification(args) = msg {
+            if let atelier_acp_runtime::AcpClientMessage::ExtNotification(args) = msg {
                 let params: serde_json::Value =
                     serde_json::from_str(args.request.params.get()).unwrap();
                 chunks.push(params);

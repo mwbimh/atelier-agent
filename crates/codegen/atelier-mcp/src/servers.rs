@@ -376,7 +376,7 @@ pub struct McpState {
     /// Stashed registrations for disabled tools so they can be re-enabled
     /// without a full MCP re-init (no need to call `list_tools` again).
     pub disabled_tool_registrations: HashMap<String, McpToolRegistration>,
-    event_writer: xai_file_utils::events::EventWriter,
+    event_writer: atelier_runtime_events::events::EventWriter,
     /// Sender wired by the session actor to its `StatusDispatcher`
     /// task.  When `Some`, the state — and every [`McpClient`] reached
     /// through [`Self::all_clients`] / [`Self::get_client`] — forwards
@@ -423,7 +423,7 @@ impl McpState {
             init_failed: HashMap::new(),
             disabled_tools: HashMap::new(),
             disabled_tool_registrations: HashMap::new(),
-            event_writer: xai_file_utils::events::EventWriter::noop(),
+            event_writer: atelier_runtime_events::events::EventWriter::noop(),
             client_event_tx: None,
         }
     }
@@ -467,11 +467,11 @@ impl McpState {
         self.client_event_tx.clone()
     }
 
-    pub fn set_event_writer(&mut self, writer: xai_file_utils::events::EventWriter) {
+    pub fn set_event_writer(&mut self, writer: atelier_runtime_events::events::EventWriter) {
         self.event_writer = writer;
     }
 
-    pub fn event_writer(&self) -> &xai_file_utils::events::EventWriter {
+    pub fn event_writer(&self) -> &atelier_runtime_events::events::EventWriter {
         &self.event_writer
     }
 
@@ -1097,8 +1097,8 @@ impl McpError {
         matches!(self, Self::Timeout { .. })
     }
 
-    pub fn error_category(&self) -> xai_file_utils::events::McpErrorCategory {
-        use xai_file_utils::events::McpErrorCategory;
+    pub fn error_category(&self) -> atelier_runtime_events::events::McpErrorCategory {
+        use atelier_runtime_events::events::McpErrorCategory;
         match self {
             Self::SpawnFailed { .. } => McpErrorCategory::SpawnFailed,
             Self::Timeout { .. } => McpErrorCategory::Timeout,
@@ -1303,7 +1303,7 @@ impl McpTool {
 /// MCP tool wrapper for runtime dispatch.
 ///
 /// MCP tools are already untyped (JSON → JSON), so they implement
-/// `xai_tool_runtime::Tool` directly instead of going through typed wrappers.
+/// `atelier_tool_runtime::Tool` directly instead of going through typed wrappers.
 pub struct McpErasedTool {
     tool: McpTool,
 }
@@ -1331,38 +1331,38 @@ impl ToolMetadata for McpErasedTool {
     }
 }
 
-impl xai_tool_runtime::Tool for McpErasedTool {
+impl atelier_tool_runtime::Tool for McpErasedTool {
     type Args = serde_json::Value;
     type Output = ToolOutput;
 
-    fn id(&self) -> xai_tool_protocol::ToolId {
+    fn id(&self) -> atelier_tool_protocol::ToolId {
         // Use the qualified name (server__tool) so that two MCP servers
         // exposing the same raw tool name get distinct LocalRegistry entries.
         let qualified = format!(
             "{}{}{}",
             self.tool.server_name, MCP_TOOL_NAME_DELIMITER, self.tool.name
         );
-        xai_tool_protocol::ToolId::new(&qualified)
-            .unwrap_or_else(|_| xai_tool_protocol::ToolId::new("mcp_tool").expect("valid"))
+        atelier_tool_protocol::ToolId::new(&qualified)
+            .unwrap_or_else(|_| atelier_tool_protocol::ToolId::new("mcp_tool").expect("valid"))
     }
 
     fn description(
         &self,
-        _ctx: &::xai_tool_runtime::ListToolsContext,
-    ) -> xai_tool_types::ToolDescription {
-        xai_tool_types::ToolDescription::new(&self.tool.name, &self.tool.description)
+        _ctx: &::atelier_tool_runtime::ListToolsContext,
+    ) -> atelier_tool_types::ToolDescription {
+        atelier_tool_types::ToolDescription::new(&self.tool.name, &self.tool.description)
     }
 
     async fn run(
         &self,
-        _ctx: xai_tool_runtime::ToolCallContext,
+        _ctx: atelier_tool_runtime::ToolCallContext,
         raw: serde_json::Value,
-    ) -> Result<ToolOutput, xai_tool_runtime::ToolError> {
+    ) -> Result<ToolOutput, atelier_tool_runtime::ToolError> {
         let mcp_call_start = std::time::Instant::now();
         let (client, event_writer) = {
             let state = self.tool.mcp_state.lock().await;
             let c = Arc::clone(state.get_client(&self.tool.server_name).ok_or_else(|| {
-                xai_tool_runtime::ToolError::custom(
+                atelier_tool_runtime::ToolError::custom(
                     "process_manager",
                     format!("MCP server '{}' not found", self.tool.server_name),
                 )
@@ -1374,7 +1374,7 @@ impl xai_tool_runtime::Tool for McpErasedTool {
         let tool = &self.tool.name;
         let tool_timeout = client.tool_timeout_for(tool);
         let qualified_name = format!("{}{}{}", server, MCP_TOOL_NAME_DELIMITER, tool);
-        event_writer.emit(xai_file_utils::events::Event::McpToolCallStarted {
+        event_writer.emit(atelier_runtime_events::events::Event::McpToolCallStarted {
             server_name: server.clone(),
             tool_name: tool.clone(),
             call_id: qualified_name.clone(),
@@ -1393,7 +1393,7 @@ impl xai_tool_runtime::Tool for McpErasedTool {
             Err(first_err) if client.has_auth() => {
                 auth_retry_attempted = true;
                 let reauth_ok = client.force_reauth(false).await;
-                ew.emit(xai_file_utils::events::Event::McpAuthRetry {
+                ew.emit(atelier_runtime_events::events::Event::McpAuthRetry {
                     server_name: server.clone(),
                     trigger: "tool_call_failed".to_string(),
                     success: reauth_ok,
@@ -1402,7 +1402,10 @@ impl xai_tool_runtime::Tool for McpErasedTool {
                     self.try_call_tool(&client, &raw, &mut reconnect_attempted, &mut is_timeout, ew)
                         .await
                         .map_err(|e| {
-                            xai_tool_runtime::ToolError::custom("process_manager", e.to_string())
+                            atelier_tool_runtime::ToolError::custom(
+                                "process_manager",
+                                e.to_string(),
+                            )
                         })
                 } else {
                     Err(first_err)
@@ -1414,17 +1417,19 @@ impl xai_tool_runtime::Tool for McpErasedTool {
         let call_result = match dispatch_result {
             Ok(result) => result,
             Err(e) => {
-                ew.emit(xai_file_utils::events::Event::McpToolCallCompleted {
-                    server_name: server.clone(),
-                    tool_name: tool.clone(),
-                    call_id: qualified_name,
-                    duration_ms: mcp_call_start.elapsed().as_millis() as u64,
-                    success: false,
-                    is_timeout,
-                    error: Some(e.to_string()),
-                    reconnect_attempted,
-                    auth_retry_attempted,
-                });
+                ew.emit(
+                    atelier_runtime_events::events::Event::McpToolCallCompleted {
+                        server_name: server.clone(),
+                        tool_name: tool.clone(),
+                        call_id: qualified_name,
+                        duration_ms: mcp_call_start.elapsed().as_millis() as u64,
+                        success: false,
+                        is_timeout,
+                        error: Some(e.to_string()),
+                        reconnect_attempted,
+                        auth_retry_attempted,
+                    },
+                );
                 return Err(e);
             }
         };
@@ -1491,17 +1496,19 @@ impl xai_tool_runtime::Tool for McpErasedTool {
         } else {
             None
         };
-        event_writer.emit(xai_file_utils::events::Event::McpToolCallCompleted {
-            server_name: server.clone(),
-            tool_name: tool.clone(),
-            call_id: qualified_name.clone(),
-            duration_ms,
-            success,
-            is_timeout,
-            error: error_text,
-            reconnect_attempted,
-            auth_retry_attempted,
-        });
+        event_writer.emit(
+            atelier_runtime_events::events::Event::McpToolCallCompleted {
+                server_name: server.clone(),
+                tool_name: tool.clone(),
+                call_id: qualified_name.clone(),
+                duration_ms,
+                success,
+                is_timeout,
+                error: error_text,
+                reconnect_attempted,
+                auth_retry_attempted,
+            },
+        );
         atelier_telemetry::session_ctx::log_event(atelier_telemetry::events::McpToolCalled {
             server_name: server.clone(),
             tool_name: tool.clone(),
@@ -1577,12 +1584,11 @@ impl McpErasedTool {
         raw: &serde_json::Value,
         reconnect_attempted: &mut bool,
         is_timeout: &mut bool,
-        ew: &xai_file_utils::events::EventWriter,
-    ) -> Result<rmcp::model::CallToolResult, xai_tool_runtime::ToolError> {
-        let mcp_service = client
-            .ensure_initialized()
-            .await
-            .map_err(|e| xai_tool_runtime::ToolError::custom("process_manager", e.to_string()))?;
+        ew: &atelier_runtime_events::events::EventWriter,
+    ) -> Result<rmcp::model::CallToolResult, atelier_tool_runtime::ToolError> {
+        let mcp_service = client.ensure_initialized().await.map_err(|e| {
+            atelier_tool_runtime::ToolError::custom("process_manager", e.to_string())
+        })?;
         let tool_timeout = client.tool_timeout_for(&self.tool.name);
         let timeout_duration = std::time::Duration::from_secs(tool_timeout);
         let mut params = CallToolRequestParams::new(self.tool.name.clone());
@@ -1612,7 +1618,7 @@ impl McpErasedTool {
                 )
                 .await
             }
-            Ok(Err(e)) => Err(xai_tool_runtime::ToolError::custom(
+            Ok(Err(e)) => Err(atelier_tool_runtime::ToolError::custom(
                 "process_manager",
                 e.to_string(),
             )),
@@ -1623,7 +1629,7 @@ impl McpErasedTool {
                     client.reset_transport().await;
                     *reconnect_attempted = true;
                 }
-                Err(xai_tool_runtime::ToolError::custom(
+                Err(atelier_tool_runtime::ToolError::custom(
                     "process_manager",
                     format!(
                         "MCP tool '{}' timed out after {} seconds",
@@ -1646,8 +1652,8 @@ impl McpErasedTool {
         original_err: ServiceError,
         reconnect_attempted: &mut bool,
         is_timeout: &mut bool,
-        ew: &xai_file_utils::events::EventWriter,
-    ) -> Result<rmcp::model::CallToolResult, xai_tool_runtime::ToolError> {
+        ew: &atelier_runtime_events::events::EventWriter,
+    ) -> Result<rmcp::model::CallToolResult, atelier_tool_runtime::ToolError> {
         *reconnect_attempted = true;
         tracing::warn!(
             server = self.tool.server_name.as_str(),
@@ -1655,27 +1661,31 @@ impl McpErasedTool {
             error = %original_err,
             "MCP transport error, attempting reconnect"
         );
-        ew.emit(xai_file_utils::events::Event::McpTransportError {
+        ew.emit(atelier_runtime_events::events::Event::McpTransportError {
             server_name: self.tool.server_name.clone(),
             tool_name: self.tool.name.clone(),
             error: original_err.to_string(),
         });
         let mcp_service = match client.recover().await {
             Ok(service) => {
-                ew.emit(xai_file_utils::events::Event::McpTransportReconnect {
-                    server_name: self.tool.server_name.clone(),
-                    success: true,
-                    error: None,
-                });
+                ew.emit(
+                    atelier_runtime_events::events::Event::McpTransportReconnect {
+                        server_name: self.tool.server_name.clone(),
+                        success: true,
+                        error: None,
+                    },
+                );
                 service
             }
             Err(e) => {
-                ew.emit(xai_file_utils::events::Event::McpTransportReconnect {
-                    server_name: self.tool.server_name.clone(),
-                    success: false,
-                    error: Some(e.to_string()),
-                });
-                return Err(xai_tool_runtime::ToolError::custom(
+                ew.emit(
+                    atelier_runtime_events::events::Event::McpTransportReconnect {
+                        server_name: self.tool.server_name.clone(),
+                        success: false,
+                        error: Some(e.to_string()),
+                    },
+                );
+                return Err(atelier_tool_runtime::ToolError::custom(
                     "process_manager",
                     original_err.to_string(),
                 ));
@@ -1683,13 +1693,13 @@ impl McpErasedTool {
         };
         match tokio::time::timeout(timeout_duration, mcp_service.call_tool(params)).await {
             Ok(Ok(call_result)) => Ok(call_result),
-            Ok(Err(retry_err)) => Err(xai_tool_runtime::ToolError::custom(
+            Ok(Err(retry_err)) => Err(atelier_tool_runtime::ToolError::custom(
                 "process_manager",
                 retry_err.to_string(),
             )),
             Err(_) => {
                 *is_timeout = true;
-                Err(xai_tool_runtime::ToolError::custom(
+                Err(atelier_tool_runtime::ToolError::custom(
                     "process_manager",
                     format!(
                         "MCP tool '{}' timed out after {} seconds",
@@ -1862,7 +1872,7 @@ where
     /// drop the writer — mirrors rmcp's own `AsyncRwTransport`.
     write: Arc<Mutex<Option<W>>>,
     server_name: String,
-    event_writer: xai_file_utils::events::EventWriter,
+    event_writer: atelier_runtime_events::events::EventWriter,
 }
 
 /// Max bytes of an offending line copied into the decode-error event.
@@ -1888,7 +1898,7 @@ where
         read: R,
         write: W,
         server_name: String,
-        event_writer: xai_file_utils::events::EventWriter,
+        event_writer: atelier_runtime_events::events::EventWriter,
     ) -> Self {
         Self {
             read: BufReader::new(read),
@@ -1913,12 +1923,13 @@ where
             sample = %sample,
             "Skipping undecodable MCP stdout line; keeping transport alive",
         );
-        self.event_writer
-            .emit(xai_file_utils::events::Event::McpTransportDecodeError {
+        self.event_writer.emit(
+            atelier_runtime_events::events::Event::McpTransportDecodeError {
                 server_name: self.server_name.clone(),
                 error: err.to_string(),
                 sample,
-            });
+            },
+        );
     }
 }
 
@@ -2024,7 +2035,7 @@ impl SafeTokioChildProcess {
     fn spawn(
         mut cmd: Command,
         server_name: String,
-        event_writer: xai_file_utils::events::EventWriter,
+        event_writer: atelier_runtime_events::events::EventWriter,
     ) -> std::io::Result<(Self, Option<ChildStderr>)> {
         cmd.stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
@@ -4045,7 +4056,7 @@ pub async fn start_mcp_server(
     overrides: Option<&McpClientTimeoutOverrides>,
     meta_config: Option<&McpServerMetaConfig>,
     byo_config: Option<&McpOAuthConfig>,
-    event_writer: &xai_file_utils::events::EventWriter,
+    event_writer: &atelier_runtime_events::events::EventWriter,
     mode: OauthInteractivity,
 ) -> Result<McpClient, McpError> {
     let _per_server_timer = atelier_telemetry::instrumentation::timer("mcp_start_one_server");
@@ -4160,7 +4171,7 @@ pub async fn start_mcp_server(
                             "OAuth discovery timed out"
                         );
                         event_writer.emit(
-                            xai_file_utils::events::Event::McpOAuthDiscoveryTimeout {
+                            atelier_runtime_events::events::Event::McpOAuthDiscoveryTimeout {
                                 server_name: name.clone(),
                                 url: url.clone(),
                             },
@@ -4203,7 +4214,7 @@ pub async fn start_mcp_servers(
     overrides_map: &HashMap<String, McpClientTimeoutOverrides>,
     meta_config_map: &McpMetaConfigMap,
     oauth_config_map: &crate::oauth_config::McpOAuthConfigMap,
-    event_writer: &xai_file_utils::events::EventWriter,
+    event_writer: &atelier_runtime_events::events::EventWriter,
     mode: OauthInteractivity,
 ) -> Vec<Result<McpClient, McpError>> {
     let _mcp_start_timer = atelier_telemetry::instrumentation::timer("mcp_start_servers");
@@ -4409,7 +4420,7 @@ mod tests {
             client_in,
             tokio::io::sink(),
             "fwbuild".to_string(),
-            xai_file_utils::events::EventWriter::noop(),
+            atelier_runtime_events::events::EventWriter::noop(),
         );
 
         let valid = r#"{"jsonrpc":"2.0","method":"notifications/tools/list_changed"}"#;
@@ -4585,7 +4596,7 @@ mod tests {
             let (transport, _stderr) = SafeTokioChildProcess::spawn(
                 cmd,
                 "test".to_string(),
-                xai_file_utils::events::EventWriter::noop(),
+                atelier_runtime_events::events::EventWriter::noop(),
             )
             .expect("spawn test child");
             let pid = transport.id().expect("spawned child pid");
@@ -5266,7 +5277,7 @@ mod tests {
     /// silently overwrite the first in the `LocalRegistry`.
     #[test]
     fn test_mcp_erased_tool_id_is_qualified() {
-        use xai_tool_runtime::Tool;
+        use atelier_tool_runtime::Tool;
 
         let mcp_state = Arc::new(Mutex::new(McpState::new(vec![])));
 
@@ -5306,8 +5317,8 @@ mod tests {
     /// into a `LocalRegistry` must preserve both entries (no silent overwrite).
     #[test]
     fn test_same_raw_name_different_servers_no_local_registry_collision() {
-        use xai_computer_hub_sdk::LocalRegistry;
-        use xai_tool_runtime::Tool;
+        use atelier_tool_hub_sdk::LocalRegistry;
+        use atelier_tool_runtime::Tool;
 
         let mcp_state = Arc::new(Mutex::new(McpState::new(vec![])));
         let registry = LocalRegistry::new();
@@ -5938,7 +5949,7 @@ mod tests {
 
         let mut reconnect_attempted = false;
         let mut is_timeout = false;
-        let ew = xai_file_utils::events::EventWriter::noop();
+        let ew = atelier_runtime_events::events::EventWriter::noop();
 
         let err = tool
             .recover_and_retry(
@@ -6130,7 +6141,7 @@ mod tests {
         let client = fake_http_client(&url, 5);
         let tool = fake_echo_tool();
         let tmp = tempfile::tempdir().unwrap();
-        let ew = xai_file_utils::events::EventWriter::open(tmp.path());
+        let ew = atelier_runtime_events::events::EventWriter::open(tmp.path());
 
         let mut reconnect = false;
         let mut is_timeout = false;
@@ -6177,7 +6188,7 @@ mod tests {
             spawn_fake_mcp(CallToolBehavior::AlwaysError { code: -32603 }).await;
         let client = fake_http_client(&url, 5);
         let tool = fake_echo_tool();
-        let ew = xai_file_utils::events::EventWriter::noop();
+        let ew = atelier_runtime_events::events::EventWriter::noop();
 
         let mut reconnect = false;
         let mut is_timeout = false;
@@ -6208,7 +6219,7 @@ mod tests {
             spawn_fake_mcp(CallToolBehavior::AlwaysError { code: -32602 }).await;
         let client = fake_http_client(&url, 5);
         let tool = fake_echo_tool();
-        let ew = xai_file_utils::events::EventWriter::noop();
+        let ew = atelier_runtime_events::events::EventWriter::noop();
 
         let mut reconnect = false;
         let mut is_timeout = false;
@@ -6231,7 +6242,7 @@ mod tests {
             spawn_fake_mcp(CallToolBehavior::HangThenOk { hang_ms: 3000 }).await;
         let client = fake_http_client(&url, 1);
         let tool = fake_echo_tool();
-        let ew = xai_file_utils::events::EventWriter::noop();
+        let ew = atelier_runtime_events::events::EventWriter::noop();
 
         let mut reconnect = false;
         let mut is_timeout = false;
@@ -6283,7 +6294,7 @@ mod tests {
         .await;
         let client = fake_http_client(&url, 1);
         let tool = fake_echo_tool();
-        let ew = xai_file_utils::events::EventWriter::noop();
+        let ew = atelier_runtime_events::events::EventWriter::noop();
 
         let mut reconnect = false;
         let mut is_timeout = false;
@@ -6733,7 +6744,7 @@ mod tests {
         let raw = serde_json::json!({ "text": "after reconnect" });
         let mut reconnect_attempted = false;
         let mut is_timeout = false;
-        let ew = xai_file_utils::events::EventWriter::noop();
+        let ew = atelier_runtime_events::events::EventWriter::noop();
         let result = erased
             .try_call_tool(
                 &client,
@@ -6804,7 +6815,7 @@ mod tests {
         };
         assert!(matches!(
             err.error_category(),
-            xai_file_utils::events::McpErrorCategory::AuthRequired
+            atelier_runtime_events::events::McpErrorCategory::AuthRequired
         ));
     }
 

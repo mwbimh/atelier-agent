@@ -1,4 +1,4 @@
-use crate::util::config::RemoteSettings;
+use crate::util::config::LocalRuntimeSettings;
 use toml::Value as TomlValue;
 
 /// Resolve whether ZDR users are allowed to use the product.
@@ -8,7 +8,7 @@ pub fn resolve_zdr_access_enabled(
     requirements: Option<&TomlValue>,
     user: Option<&TomlValue>,
     managed: Option<&TomlValue>,
-    remote: Option<&RemoteSettings>,
+    remote: Option<&LocalRuntimeSettings>,
 ) -> bool {
     use crate::agent::config::BoolFlag;
     fn from_toml(v: Option<&TomlValue>) -> Option<bool> {
@@ -23,10 +23,8 @@ pub fn resolve_zdr_access_enabled(
         .value
 }
 
-/// Whether model-catalog (`/v1/models`) and remote-settings (`/v1/settings`)
-/// fetches from xAI backends are allowed, including the deployment-config sync
-/// bundled into the startup prefetch (the background managed-config sync has
-/// its own `[features] managed_config` gate).
+/// Legacy vendor-fetch kill switch. Atelier model discovery is performed by
+/// explicitly configured Providers, so this path is permanently disabled.
 ///
 /// Precedence: requirements (MDM > system > user) > managed
 /// (`managed_config.toml` > system managed) > user `config.toml` > default
@@ -34,9 +32,7 @@ pub fn resolve_zdr_access_enabled(
 /// pre-agent), so it re-reads the config layers like
 /// `managed_config::is_fetch_enabled`.
 ///
-/// Deliberately no env var and no remote tier: remote settings are exactly
-/// what is unreachable when this knob is needed (firewalled / air-gapped
-/// deployments), and an env var would be one more way to re-arm the fetches.
+/// Deliberately no env var or runtime tier can re-enable this old path.
 pub fn resolve_remote_fetch_enabled() -> bool {
     // Atelier is vendorless. The old layered resolver is retained below for
     // migration/test documentation, but no user, managed, requirement, or

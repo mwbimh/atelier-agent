@@ -47,6 +47,29 @@ fn format_runtime_extension_response(method: &str, response: &str) -> String {
     format!("{method}\n{rendered}")
 }
 
+fn provider_oauth_begin_ui(result: &serde_json::Value) -> Option<(String, String)> {
+    let login_id = result.get("loginId")?.as_str()?.to_owned();
+    let provider_id = result.get("providerId")?.as_str()?;
+    let flow = result.get("flow")?.as_str()?;
+    let verification_url = result.get("verificationUrl")?.as_str()?;
+    let user_code = result.get("userCode").and_then(serde_json::Value::as_str);
+    let browser_opened = result
+        .get("browserOpened")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    let mut rendered = format!(
+        "Provider OAuth login\nProvider: {provider_id}\nFlow: {flow}\nURL: {verification_url}"
+    );
+    if let Some(user_code) = user_code {
+        rendered.push_str(&format!("\nCode: {user_code}"));
+    }
+    if !browser_opened {
+        rendered.push_str("\nBrowser could not be opened automatically; open the URL manually.");
+    }
+    rendered.push_str("\nWaiting for authorization...");
+    Some((login_id, rendered))
+}
+
 fn show_dashboard_runtime_output(app: &mut AppView, output: &str) -> bool {
     if !matches!(app.active_view, ActiveView::AgentDashboard) {
         return false;
@@ -61,7 +84,26 @@ fn show_dashboard_runtime_output(app: &mut AppView, output: &str) -> bool {
 
 #[cfg(test)]
 mod runtime_task_format_tests {
-    use super::{format_runtime_task_attach_response, format_runtime_task_response};
+    use super::{
+        format_runtime_task_attach_response, format_runtime_task_response, provider_oauth_begin_ui,
+    };
+
+    #[test]
+    fn provider_oauth_begin_is_rendered_before_completion_polling() {
+        let (login_id, rendered) = provider_oauth_begin_ui(&serde_json::json!({
+            "providerId": "allm",
+            "loginId": "login-1",
+            "flow": "device-code",
+            "verificationUrl": "https://login.example/device",
+            "userCode": "ABCD-EFGH",
+            "browserOpened": false,
+        }))
+        .expect("OAuth begin response");
+        assert_eq!(login_id, "login-1");
+        assert!(rendered.contains("https://login.example/device"));
+        assert!(rendered.contains("ABCD-EFGH"));
+        assert!(rendered.contains("open the URL manually"));
+    }
 
     #[test]
     fn runtime_tasks_are_rendered_as_a_control_table() {
@@ -672,16 +714,6 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             }
             vec![]
         }
-        TaskResult::PreferredModelPersisted { result } => {
-            if let Err(err) = result
-                && let Some(agent) = get_active_agent_mut(app)
-            {
-                agent.scrollback.push_block(RenderBlock::system(format!(
-                    "Couldn't save preferred model: {err} (still active for this session)"
-                )));
-            }
-            vec![]
-        }
         TaskResult::CancelComplete => {
             tracing::trace!("Cancel notification sent successfully");
             vec![]
@@ -1114,6 +1146,29 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             let attach_replay = is_task_attach
                 .then(|| format_runtime_task_attach_response(&response))
                 .flatten();
+            if method == "_atelier/provider/oauth_begin" || method == "atelier/provider/oauth_begin"
+            {
+                let Some(result) = result else {
+                    return vec![];
+                };
+                let Some((login_id, rendered)) = provider_oauth_begin_ui(result) else {
+                    return vec![];
+                };
+                if let Some(agent_id) = agent_id
+                    && let Some(agent) = app.agents.get_mut(&agent_id)
+                {
+                    agent
+                        .scrollback
+                        .push_block(RenderBlock::system(rendered.clone()));
+                } else if !show_dashboard_runtime_output(app, &rendered) {
+                    app.show_toast(&rendered);
+                }
+                return vec![Effect::RuntimeExtension {
+                    agent_id,
+                    method: "_atelier/provider/oauth_complete".into(),
+                    params: serde_json::json!({ "loginId": login_id }),
+                }];
+            }
             if method == "_atelier/task/list" || method == "atelier/task/list" {
                 let rendered = format_runtime_task_response(&response);
                 if let Some(agent_id) = agent_id

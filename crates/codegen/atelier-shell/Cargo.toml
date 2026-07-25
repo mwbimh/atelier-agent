@@ -16,7 +16,7 @@ tonic-prost = { workspace = true, optional = true }
 agent-client-protocol = { workspace = true }
 anyhow = { workspace = true }
 atelier-announcements = { workspace = true }
-xai-prompt-queue = { workspace = true }
+atelier-prompt-queue = { workspace = true }
 atelier-version = { workspace = true }
 
 async-openai = { workspace = true }
@@ -76,7 +76,7 @@ obfstr = { workspace = true }
 tokio-util = { workspace = true, features = ["compat"] }
 tokio-retry = { workspace = true }
 uuid = { workspace = true, features = ["v4", "v5", "v7"] }
-xai-acp-lib = { workspace = true }
+atelier-acp-runtime = { workspace = true }
 axum = { workspace = true, features = ["ws", "multipart"] }
 backon = { workspace = true }
 webbrowser = { workspace = true }
@@ -96,7 +96,6 @@ rustls-native-certs = "0.8"
 futures-util = { workspace = true }
 urlencoding = { workspace = true }
 gethostname = { workspace = true }
-gcloud-storage = { workspace = true }
 git2 = { version = "0.20", default-features = false, features = [
     "vendored-libgit2",
 ] }
@@ -113,7 +112,7 @@ sha2 = { workspace = true }
 rand = { workspace = true }
 shlex = { workspace = true }
 strum = { workspace = true }
-xai-fast-worktree = { path = "../xai-fast-worktree", features = ["metadata"] }
+atelier-fast-worktree = { path = "../atelier-fast-worktree", features = ["metadata"] }
 
 tonic = { workspace = true, optional = true }
 prost = { workspace = true, optional = true }
@@ -121,23 +120,23 @@ atelier-paths = { path = "../atelier-paths" }
 atelier-shell-base = { workspace = true }
 atelier-shell-session-support = { workspace = true }
 atelier-shared = { workspace = true }
-xai-tracing-macros = { path = "../xai-tracing-macros" }
-xai-fsnotify = { path = "../xai-fsnotify" }
-xai-codebase-graph = { path = "../xai-codebase-graph" }
-xai-hunk-tracker = { path = "../xai-hunk-tracker" }
-xai-agent-lifecycle = { workspace = true }
-xai-interjection-core = { workspace = true }
+atelier-tracing-macros = { path = "../atelier-tracing-macros" }
+atelier-fsnotify = { path = "../atelier-fsnotify" }
+atelier-codebase-graph = { path = "../atelier-codebase-graph" }
+atelier-hunk-tracker = { path = "../atelier-hunk-tracker" }
+atelier-agent-lifecycle = { workspace = true }
+atelier-interjection-core = { workspace = true }
 atelier-sandbox = { path = "../atelier-sandbox", default-features = false }
 atelier-windows-sandbox = { path = "../atelier-windows-sandbox" }
-xai-chat-state = { path = "../xai-chat-state" }
+atelier-chat-state = { path = "../atelier-chat-state" }
 atelier-compaction = { path = "../../common/atelier-compaction" }
 atelier-sampler = { path = "../atelier-sampler" }
-xai-sqlite-journal = { workspace = true }
-xai-token-estimation = { workspace = true }
+atelier-sqlite-journal = { workspace = true }
+atelier-token-estimation = { workspace = true }
 atelier-sampling-types = { path = "../atelier-sampling-types" }
 atelier-tools = { path = "../atelier-tools" }
-xai-tty-utils = { workspace = true }
-xai-system-power = { workspace = true }
+atelier-tty-utils = { workspace = true }
+atelier-system-power = { workspace = true }
 atelier-workspace = { workspace = true }
 atelier-subagent-resolution = { path = "../atelier-subagent-resolution" }
 atelier-agent = { path = "../atelier-agent" }
@@ -145,15 +144,14 @@ atelier-config = { workspace = true }
 atelier-config-types = { workspace = true }
 atelier-memory = { workspace = true }
 atelier-hooks = { path = "../atelier-hooks" }
-xai-hooks-plugins-types = { path = "../xai-hooks-plugins-types" }
+atelier-hooks-plugins-types = { path = "../atelier-hooks-plugins-types" }
 atelier-plugin-marketplace = { path = "../atelier-plugin-marketplace" }
-xai-file-utils = { path = "../xai-file-utils" }
+atelier-runtime-events = { path = "../atelier-runtime-events" }
 atelier-auth = { workspace = true, features = ["middleware"] }
 atelier-telemetry = { workspace = true }
 atelier-http = { workspace = true }
 atelier-models = { workspace = true }
 atelier-provider = { path = "../atelier-provider" }
-prod-mc-cli-chat-proxy-types = { path = "../../../prod/mc/cli-chat-proxy-types" }
 flate2 = { workspace = true }
 fs2 = { workspace = true }
 zstd = { workspace = true }
@@ -168,11 +166,11 @@ parking_lot.workspace = true
 dashmap.workspace = true
 
 # Used by acp_session.rs and mcp_servers.rs for the unified
-# xai_tool_runtime::Tool dispatch model and the computer-hub MCP adapter.
-xai-computer-hub-sdk = { workspace = true }
-xai-tool-runtime = { workspace = true }
-xai-tool-protocol = { workspace = true }
-xai-tool-types = { workspace = true }
+# atelier_tool_runtime::Tool dispatch model and the computer-hub MCP adapter.
+atelier-tool-hub-sdk = { workspace = true }
+atelier-tool-runtime = { workspace = true }
+atelier-tool-protocol = { workspace = true }
+atelier-tool-types = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
@@ -204,7 +202,7 @@ serial_test = { workspace = true }
 # this crate's test targets.
 atelier-shell-base = { workspace = true, features = ["test-support"] }
 atelier-test-support = { workspace = true, features = [] }
-xai-test-utils = { workspace = true }
+atelier-test-utils = { workspace = true }
 # `test-util` enables `#[tokio::test(start_paused = true)]` (paused virtual
 # clock with auto-advance) so interval-driven loop tests in `auth::refresh`
 # can assert exact tick counts deterministically without real-time sleep.
@@ -222,3 +220,5 @@ workspace = true
 [[bin]]
 name = "chat-history-downgrade"
 path = "src/bin/chat-history-downgrade.rs"
+test = false
+bench = false

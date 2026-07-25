@@ -3,6 +3,7 @@ pub(crate) mod auth_gate;
 pub mod btw;
 pub mod chat_conversation_history;
 pub mod code_nav;
+pub mod configuration;
 pub mod context_snapshot;
 pub mod debug;
 pub mod fs;

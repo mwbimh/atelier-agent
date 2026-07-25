@@ -34,7 +34,7 @@ pub use flow::{
 };
 pub use jwt::{is_jwt_expired_or_near, parse_jwt_expiration};
 #[cfg(test)]
-pub use test_support::{XAI_OAUTH2_ISSUER, is_xai_oauth2_issuer, xai_oauth2_issuer};
+pub use test_support::TEST_OIDC_ISSUER;
 mod meta;
 pub use error::{AuthError, RefreshTokenError, RefreshTokenFailedReason};
 pub use manager::{AuthManager, shared_api_key_provider};

@@ -3,9 +3,9 @@
 This repository does **not** accept external pull requests or unsolicited
 patches.
 
-SpaceXAI develops this software internally. The public tree is published for
-source transparency and local builds under the terms of the Apache License,
-Version 2.0 (see [`LICENSE`](LICENSE)).
+Atelier is developed as a local-first Agent Runtime. This source tree is
+published for source transparency and local builds under the terms of the
+Apache License, Version 2.0 (see [`LICENSE`](LICENSE)).
 
 ## Security reports
 

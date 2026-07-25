@@ -9,14 +9,14 @@ use std::thread;
 use anyhow::Result;
 use tokio_util::sync::CancellationToken;
 
+use atelier_acp_runtime::{
+    AcpAgentChannel, AcpClientChannel, AcpClientTx, AcpGatewayReceiver, AcpGatewaySender,
+    acp_channels,
+};
 use atelier_shell::{
     agent::{MvpAgent, config::Config as AgentConfig, models::RefreshStrategy},
     auth::AuthManager,
     util::atelier_home::atelier_home,
-};
-use xai_acp_lib::{
-    AcpAgentChannel, AcpClientChannel, AcpClientTx, AcpGatewayReceiver, AcpGatewaySender,
-    acp_channels,
 };
 
 /// Result of spawning a child agent.

@@ -4,25 +4,38 @@
 //! First-stage Windows sandbox support for Atelier.
 //!
 //! The active implementation is a real restricted-token runner with temporary
-//! capability ACLs and strict existing-path validation. Elevated provisioning,
-//! Windows Filtering Platform networking, and ConPTY are intentionally outside
-//! this crate's first stage and are not represented as active capabilities.
+//! capability ACLs, strict existing-path validation, and account-bound Windows
+//! Filtering Platform rules. ConPTY remains outside the current implementation.
 
 mod acl;
+mod dpapi;
 mod env;
 mod error;
+mod logon_runner;
+mod materialize;
+mod network;
 mod path_normalization;
 mod process;
+mod public_cli;
 mod runner;
+mod setup;
 mod token;
 mod winutil;
 
 pub use error::SandboxError;
+pub use network::{
+    NetworkPolicy, SANDBOX_NETWORK_ALLOWED_USERNAME, SANDBOX_NETWORK_DISABLED_USERNAME,
+    network_identity_username,
+};
 pub use path_normalization::canonical_path_key;
 pub use path_normalization::ensure_no_reparse_points;
 pub use path_normalization::normalize_existing_path;
 pub use path_normalization::path_is_within;
+pub use public_cli::{
+    PublicSandboxCommand, parse_public_sandbox_command, run_public_sandbox_command,
+};
 pub use runner::{SandboxSession, SandboxedPipedChild, run_command, spawn_piped_command};
+pub use setup::{inspect_status as setup_status, probe_ready_launch_chain, run_setup_helper};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
@@ -34,6 +47,43 @@ pub fn probe_restricted_token() -> Result<(), SandboxError> {
     token::create_restricted_token(&capability)
         .map(|_| ())
         .map_err(SandboxError::Operation)
+}
+
+/// Entry point for the hidden persistent-user runner mode in `ate.exe`.
+pub fn run_persistent_runner<I, T>(args: I) -> anyhow::Result<i32>
+where
+    I: IntoIterator<Item = T>,
+    T: Into<OsString>,
+{
+    logon_runner::run_runner(args)
+}
+
+/// Hidden E2E probe used to verify the OS boundary independently from the
+/// workspace RPC path checks. Returns the raw Windows access-denied code when
+/// the outside write is blocked as expected.
+pub fn run_boundary_probe<I, T>(args: I) -> anyhow::Result<i32>
+where
+    I: IntoIterator<Item = T>,
+    T: Into<OsString>,
+{
+    let mut args = args.into_iter().map(Into::into);
+    let inside = PathBuf::from(
+        args.next()
+            .ok_or_else(|| anyhow::anyhow!("missing inside probe path"))?,
+    );
+    let outside = PathBuf::from(
+        args.next()
+            .ok_or_else(|| anyhow::anyhow!("missing outside probe path"))?,
+    );
+    if args.next().is_some() {
+        return Err(anyhow::anyhow!("unexpected boundary probe arguments"));
+    }
+    std::fs::write(&inside, b"inside-ok")?;
+    match std::fs::write(&outside, b"blocked") {
+        Ok(()) => Ok(0),
+        Err(error) if error.raw_os_error() == Some(5) => Ok(5),
+        Err(error) => Err(error.into()),
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -281,6 +331,7 @@ pub struct CommandRequest {
     pub cwd: std::path::PathBuf,
     pub program: std::path::PathBuf,
     pub args: Vec<std::ffi::OsString>,
+    pub network_policy: NetworkPolicy,
     pub env: std::collections::BTreeMap<std::ffi::OsString, std::ffi::OsString>,
     pub atelier_home: Option<std::path::PathBuf>,
     pub timeout: Option<std::time::Duration>,
@@ -301,11 +352,17 @@ impl CommandRequest {
             cwd,
             program,
             args,
+            network_policy: NetworkPolicy::for_mode(mode),
             env: std::collections::BTreeMap::new(),
             atelier_home: None,
             timeout: None,
             telemetry: None,
         }
+    }
+
+    pub fn with_network_policy(mut self, network_policy: NetworkPolicy) -> Self {
+        self.network_policy = network_policy;
+        self
     }
 
     pub fn validate(&self) -> Result<(), SandboxError> {

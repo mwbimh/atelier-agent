@@ -14,16 +14,16 @@ use crate::session::{
 };
 use crate::terminal::AsyncTerminalRunner;
 use crate::tools::ToolContext;
-use crate::upload::trace::{
-    GCS_SCHEMA_VERSION, PromptMetadata, SubagentSpawnedRef, TurnResultMetadata,
-    local_sandbox_telemetry, upload_config, upload_metadata, upload_session_state,
-    upload_subagent_metadata, upload_turn_result,
+use crate::local_artifacts::artifacts::{
+    LOCAL_ARTIFACT_SCHEMA_VERSION, PromptMetadata, SubagentSpawnedRef, TurnResultMetadata,
+    local_sandbox_telemetry, write_config, write_metadata, write_session_state,
+    write_turn_result,
 };
-use crate::upload::turn::{PromptTraceContext, complete_prompt_trace};
-use xai_acp_lib::AcpAgentGatewaySender as GatewaySender;
+use crate::local_artifacts::turn::{PromptTraceContext, complete_prompt_trace};
+use atelier_acp_runtime::AcpAgentGatewaySender as GatewaySender;
 use atelier_tools::implementations::atelier_build::task::types::*;
 use atelier_workspace::file_system::AsyncFileSystem;
-use xai_hunk_tracker::HunkTrackerHandle;
+use atelier_hunk_tracker::HunkTrackerHandle;
 use super::*;
 impl SubagentCoordinator {
     pub fn new() -> Self {

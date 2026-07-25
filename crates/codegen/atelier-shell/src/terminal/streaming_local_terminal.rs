@@ -81,7 +81,7 @@ pub trait SessionNotificationSender: Send + Sync {
 }
 
 #[async_trait::async_trait]
-impl SessionNotificationSender for xai_acp_lib::AcpAgentGatewaySender {
+impl SessionNotificationSender for atelier_acp_runtime::AcpAgentGatewaySender {
     async fn session_notification(
         &self,
         notification: acp::SessionNotification,

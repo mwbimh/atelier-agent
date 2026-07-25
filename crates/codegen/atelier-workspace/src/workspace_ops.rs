@@ -22,6 +22,7 @@ use crate::file_system::ContentSearchRequest;
 use crate::handle::WorkspaceHandle;
 use crate::worktree::{ApplyWorktreeRequest, CreateWorktreeRequest, RemoveWorktreeRequest};
 use async_trait::async_trait;
+use atelier_tool_hub_sdk::ToolHarness;
 use atelier_tools::types::output::ToolRunResult;
 use atelier_workspace_client::{WorkspaceClient, is_transport_fatal};
 pub use atelier_workspace_types::rpc::WorkspaceRpc;
@@ -69,7 +70,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
-use xai_computer_hub_sdk::ToolHarness;
 /// Implements [`WorkspaceRpc`] for request types whose responses
 /// reference crate-internal types and so cannot live in the types crate.
 macro_rules! workspace_rpc {
@@ -107,7 +107,7 @@ impl WorkspaceRpc for GetRewindPointsReq {
     const METHOD: &'static str = "workspace.get_rewind_points";
     type Response = Vec<crate::session::file_state::RewindPoint>;
 }
-fn hunk_line_info_to_wire(info: &xai_hunk_tracker::types::HunkLineInfo) -> HunkLineInfoWire {
+fn hunk_line_info_to_wire(info: &atelier_hunk_tracker::types::HunkLineInfo) -> HunkLineInfoWire {
     HunkLineInfoWire {
         old_start: info.old_start,
         old_count: info.old_count,
@@ -115,15 +115,15 @@ fn hunk_line_info_to_wire(info: &xai_hunk_tracker::types::HunkLineInfo) -> HunkL
         new_count: info.new_count,
     }
 }
-fn hunk_source_to_wire(source: xai_hunk_tracker::types::HunkSource) -> HunkSourceWire {
-    use xai_hunk_tracker::types::HunkSource as S;
+fn hunk_source_to_wire(source: atelier_hunk_tracker::types::HunkSource) -> HunkSourceWire {
+    use atelier_hunk_tracker::types::HunkSource as S;
     match source {
         S::AgentEdit { prompt_index } => HunkSourceWire::AgentEdit { prompt_index },
         S::ExternalEditOnAgentFile => HunkSourceWire::ExternalEditOnAgentFile,
         S::External => HunkSourceWire::External,
     }
 }
-fn hunk_to_wire(hunk: &xai_hunk_tracker::types::Hunk) -> HunkWire {
+fn hunk_to_wire(hunk: &atelier_hunk_tracker::types::Hunk) -> HunkWire {
     HunkWire {
         id: hunk.id.as_str().to_owned(),
         path: hunk.path.clone(),
@@ -136,9 +136,9 @@ fn hunk_to_wire(hunk: &xai_hunk_tracker::types::Hunk) -> HunkWire {
     }
 }
 fn file_content_status_to_wire(
-    status: xai_hunk_tracker::types::FileContentStatus,
+    status: atelier_hunk_tracker::types::FileContentStatus,
 ) -> FileContentStatusWire {
-    use xai_hunk_tracker::types::FileContentStatus as S;
+    use atelier_hunk_tracker::types::FileContentStatus as S;
     match status {
         S::Missing => FileContentStatusWire::Missing,
         S::Binary => FileContentStatusWire::Binary,
@@ -149,7 +149,7 @@ fn file_content_status_to_wire(
     }
 }
 fn file_content_view_to_wire(
-    view: xai_hunk_tracker::types::FileContentView,
+    view: atelier_hunk_tracker::types::FileContentView,
 ) -> FileContentViewWire {
     FileContentViewWire {
         status: file_content_status_to_wire(view.status),
@@ -157,7 +157,9 @@ fn file_content_view_to_wire(
         content: view.content,
     }
 }
-fn file_content_entry_to_wire(entry: xai_hunk_tracker::FileContentEntry) -> FileContentEntryWire {
+fn file_content_entry_to_wire(
+    entry: atelier_hunk_tracker::FileContentEntry,
+) -> FileContentEntryWire {
     FileContentEntryWire {
         path: entry.path,
         baseline: file_content_view_to_wire(entry.baseline),
@@ -166,7 +168,7 @@ fn file_content_entry_to_wire(entry: xai_hunk_tracker::FileContentEntry) -> File
         staged: entry.staged,
     }
 }
-fn session_stats_to_wire(stats: &xai_hunk_tracker::types::SessionStats) -> SessionStatsWire {
+fn session_stats_to_wire(stats: &atelier_hunk_tracker::types::SessionStats) -> SessionStatsWire {
     SessionStatsWire {
         accepted_hunks: stats.accepted_hunks,
         rejected_hunks: stats.rejected_hunks,
@@ -176,7 +178,7 @@ fn session_stats_to_wire(stats: &xai_hunk_tracker::types::SessionStats) -> Sessi
         rejected_lines_removed: stats.rejected_lines_removed,
     }
 }
-fn turn_summary_to_wire(turn: xai_hunk_tracker::types::TurnSummary) -> TurnSummaryWire {
+fn turn_summary_to_wire(turn: atelier_hunk_tracker::types::TurnSummary) -> TurnSummaryWire {
     TurnSummaryWire {
         prompt_index: turn.prompt_index,
         files: turn.files,
@@ -185,7 +187,7 @@ fn turn_summary_to_wire(turn: xai_hunk_tracker::types::TurnSummary) -> TurnSumma
         lines_removed: turn.lines_removed,
     }
 }
-fn session_summary_to_wire(summary: xai_hunk_tracker::SessionSummary) -> SessionSummaryWire {
+fn session_summary_to_wire(summary: atelier_hunk_tracker::SessionSummary) -> SessionSummaryWire {
     SessionSummaryWire {
         stats: session_stats_to_wire(&summary.stats),
         turns: summary
@@ -202,17 +204,17 @@ fn session_summary_to_wire(summary: xai_hunk_tracker::SessionSummary) -> Session
     }
 }
 /// Convert a wire [`HunkActionKind`] to the hunk-tracker crate's `HunkAction`.
-fn tracker_action(kind: HunkActionKind) -> xai_hunk_tracker::types::HunkAction {
+fn tracker_action(kind: HunkActionKind) -> atelier_hunk_tracker::types::HunkAction {
     match kind {
-        HunkActionKind::Accept => xai_hunk_tracker::types::HunkAction::Accept,
-        HunkActionKind::Reject => xai_hunk_tracker::types::HunkAction::Reject,
+        HunkActionKind::Accept => atelier_hunk_tracker::types::HunkAction::Accept,
+        HunkActionKind::Reject => atelier_hunk_tracker::types::HunkAction::Reject,
     }
 }
 /// Access the per-session hunk tracker; the op must carry a session.
 fn session_tracker(
     ws: &WorkspaceHandle,
     session_id: Option<&str>,
-) -> WorkspaceResult<xai_hunk_tracker::HunkTrackerHandle> {
+) -> WorkspaceResult<atelier_hunk_tracker::HunkTrackerHandle> {
     let sid = session_id
         .ok_or_else(|| WorkspaceError::HubError("per-session hunk op requires a session".into()))?;
     let session = ws
@@ -608,7 +610,7 @@ impl WorkspaceOp for HunkSingleActionReq {
         ws: &WorkspaceHandle,
         session_id: Option<&str>,
     ) -> WorkspaceResult<Self::Response> {
-        let hunk_id = xai_hunk_tracker::types::HunkId::from_string(self.action.hunk_id.clone());
+        let hunk_id = atelier_hunk_tracker::types::HunkId::from_string(self.action.hunk_id.clone());
         let hunk_action = tracker_action(self.action.action);
         session_tracker(ws, session_id)?
             .hunk_action(hunk_id, hunk_action)
@@ -767,7 +769,7 @@ impl WorkspaceOp for HunkGetFileSummariesReq {
             let path_str = h.path.to_string_lossy().to_string();
             let is_agent = matches!(
                 h.source,
-                xai_hunk_tracker::types::HunkSource::AgentEdit { .. }
+                atelier_hunk_tracker::types::HunkSource::AgentEdit { .. }
             );
             let entry = file_map.entry(path_str).or_insert((0, false));
             entry.0 += 1;
@@ -954,7 +956,7 @@ fn resolve_index_for_workspace(
     ws: &WorkspaceHandle,
     root: Option<&std::path::Path>,
 ) -> WorkspaceResult<(
-    std::sync::Arc<xai_codebase_graph::IndexManagerHandle>,
+    std::sync::Arc<atelier_codebase_graph::IndexManagerHandle>,
     std::path::PathBuf,
 )> {
     let index_root = index_root_for(ws, root)?;
@@ -1064,7 +1066,7 @@ impl WorkspaceOp for CodeIndexStatusReq {
     }
 }
 fn query_result_to_response(
-    result: Result<xai_codebase_graph::QueryResult, xai_codebase_graph::QueryError>,
+    result: Result<atelier_codebase_graph::QueryResult, atelier_codebase_graph::QueryError>,
 ) -> CodeNavResponse {
     match result {
         Ok(qr) => CodeNavResponse {
@@ -1082,7 +1084,7 @@ fn query_result_to_response(
     }
 }
 fn symbol_locations_to_response(
-    locations: Vec<xai_codebase_graph::SymbolLocation>,
+    locations: Vec<atelier_codebase_graph::SymbolLocation>,
 ) -> CodeNavResponse {
     CodeNavResponse {
         locations: locations
@@ -1317,9 +1319,9 @@ impl WorkspaceOps {
         &self,
         session_id: &str,
         cwd: std::path::PathBuf,
-        hunk_tracker: xai_hunk_tracker::HunkTrackerHandle,
+        hunk_tracker: atelier_hunk_tracker::HunkTrackerHandle,
         toolset: Arc<atelier_tools::registry::types::FinalizedToolset>,
-        viewer_ctx: Option<xai_tool_runtime::WorkspaceViewerContext>,
+        viewer_ctx: Option<atelier_tool_runtime::WorkspaceViewerContext>,
     ) -> WorkspaceResult<()> {
         let Self::Local { handle } = self else {
             return Ok(());
@@ -1357,7 +1359,7 @@ impl WorkspaceOps {
     pub async fn on_before_turn(
         &self,
         session_id: &str,
-        payload: &xai_tool_protocol::turn_hook::BeforeTurnPayload,
+        payload: &atelier_tool_protocol::turn_hook::BeforeTurnPayload,
     ) {
         match self {
             Self::Local { handle } => {
@@ -1371,7 +1373,7 @@ impl WorkspaceOps {
     pub async fn on_after_turn(
         &self,
         session_id: &str,
-        payload: &xai_tool_protocol::turn_hook::AfterTurnPayload,
+        payload: &atelier_tool_protocol::turn_hook::AfterTurnPayload,
     ) {
         match self {
             Self::Local { handle } => {
@@ -1507,17 +1509,17 @@ impl WorkspaceOps {
         args: Value,
         call_id: &str,
         session_id: Option<&str>,
-    ) -> Result<ToolRunResult, xai_tool_runtime::ToolError> {
+    ) -> Result<ToolRunResult, atelier_tool_runtime::ToolError> {
         match self {
             Self::Local { handle } => {
                 let session_id = session_id.ok_or_else(|| {
-                    xai_tool_runtime::ToolError::custom(
+                    atelier_tool_runtime::ToolError::custom(
                         "missing_session",
                         "session_id required for local tool dispatch",
                     )
                 })?;
                 let session = handle.session(session_id).ok_or_else(|| {
-                    xai_tool_runtime::ToolError::custom(
+                    atelier_tool_runtime::ToolError::custom(
                         "session_not_found",
                         format!(
                             "workspace session not found: {session_id} \
@@ -1529,20 +1531,20 @@ impl WorkspaceOps {
             }
             Self::Proxy { client } => {
                 if !client.is_connected() {
-                    return Err(xai_tool_runtime::ToolError::network_error(
+                    return Err(atelier_tool_runtime::ToolError::network_error(
                         "The workspace server connection was lost. \
                          Please restart your session to reconnect.",
                     ));
                 }
-                let tool_id = xai_tool_protocol::ToolId::new(name).map_err(|e| {
-                    xai_tool_runtime::ToolError::custom(
+                let tool_id = atelier_tool_protocol::ToolId::new(name).map_err(|e| {
+                    atelier_tool_runtime::ToolError::custom(
                         "hub_proxy_error",
                         format!("invalid tool name: {e}"),
                     )
                 })?;
-                let mut ctx = xai_tool_runtime::ToolCallContext::default();
-                ctx.call_id =
-                    xai_tool_protocol::ToolCallId::new(call_id.to_owned()).unwrap_or(ctx.call_id);
+                let mut ctx = atelier_tool_runtime::ToolCallContext::default();
+                ctx.call_id = atelier_tool_protocol::ToolCallId::new(call_id.to_owned())
+                    .unwrap_or(ctx.call_id);
                 let mut stream = client.harness().call(tool_id, args, ctx).await;
                 let typed = crate::hub_channel::consume_stream_terminal(&mut stream)
                     .await
@@ -1552,7 +1554,7 @@ impl WorkspaceOps {
                         }
                     })?;
                 serde_json::from_value::<ToolRunResult>(typed.value).map_err(|e| {
-                    xai_tool_runtime::ToolError::custom(
+                    atelier_tool_runtime::ToolError::custom(
                         "tool_result_deserialize",
                         format!("tool result deserialization failed: {e}"),
                     )
@@ -1651,7 +1653,7 @@ mod tests {
         ops.bind_local_session(
             sid,
             handle.root_cwd().unwrap(),
-            xai_hunk_tracker::HunkTrackerHandle::noop(),
+            atelier_hunk_tracker::HunkTrackerHandle::noop(),
             toolset,
             None,
         )
@@ -1713,7 +1715,7 @@ mod tests {
             ops.bind_local_session(
                 session_id,
                 root.clone(),
-                xai_hunk_tracker::HunkTrackerHandle::noop(),
+                atelier_hunk_tracker::HunkTrackerHandle::noop(),
                 std::sync::Arc::new(
                     atelier_tools::registry::types::FinalizedToolset::empty_for_test(),
                 ),
@@ -1795,7 +1797,7 @@ mod tests {
     /// A `Hunk`'s wire mirror serializes byte-for-byte like the heavy type.
     #[test]
     fn hunk_to_wire_serializes_identically() {
-        use xai_hunk_tracker::types::{Hunk, HunkSource};
+        use atelier_hunk_tracker::types::{Hunk, HunkSource};
         let mut hunk = Hunk::file_created(
             std::path::PathBuf::from("/repo/a.rs"),
             "new\n".to_string(),
@@ -1813,8 +1815,8 @@ mod tests {
     /// `skip_serializing_if` handling on absent baseline content).
     #[test]
     fn file_content_entry_to_wire_serializes_identically() {
-        use xai_hunk_tracker::FileContentEntry;
-        use xai_hunk_tracker::types::FileContentView;
+        use atelier_hunk_tracker::FileContentEntry;
+        use atelier_hunk_tracker::types::FileContentView;
         let entry = FileContentEntry {
             path: std::path::PathBuf::from("/repo/a.rs"),
             baseline: FileContentView::missing(),
@@ -1830,9 +1832,9 @@ mod tests {
     /// A `SessionSummary` (with a turn carrying a hunk) mirrors identically.
     #[test]
     fn session_summary_to_wire_serializes_identically() {
+        use atelier_hunk_tracker::SessionSummary;
+        use atelier_hunk_tracker::types::{Hunk, HunkSource, TurnSummary};
         use std::sync::Arc;
-        use xai_hunk_tracker::SessionSummary;
-        use xai_hunk_tracker::types::{Hunk, HunkSource, TurnSummary};
         let hunk = Hunk::file_created(
             std::path::PathBuf::from("/repo/a.rs"),
             "x\n".to_string(),

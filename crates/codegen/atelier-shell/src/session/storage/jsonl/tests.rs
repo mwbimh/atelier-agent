@@ -42,7 +42,7 @@ async fn write_compaction_segment_numbers_and_indexes_resume_safely() {
     let seg = |summary: &str| CompactionSegmentFile {
         items: vec![ConversationItem::user("a"), ConversationItem::user("b")],
         summary: summary.to_string(),
-        detail: xai_chat_state::CompactionDetail::Verbose,
+        detail: atelier_chat_state::CompactionDetail::Verbose,
         timestamp: "2026-01-01T00:00:00Z".to_string(),
     };
     let adapter = JsonlStorageAdapter::with_root(temp_dir.path().to_path_buf());
@@ -50,7 +50,7 @@ async fn write_compaction_segment_numbers_and_indexes_resume_safely() {
     adapter.write_compaction_segment(&info, &seg("second")).await.unwrap();
     let base = adapter
         .session_dir(&info)
-        .join(xai_chat_state::compaction_transcript::COMPACTION_DIR);
+        .join(atelier_chat_state::compaction_transcript::COMPACTION_DIR);
     let read = |p: &str| std::fs::read_to_string(base.join(p)).unwrap();
     assert!(read("segment_000.md").contains("# HISTORICAL -- DO NOT EDIT"));
     assert!(read("segment_001.md").contains("second"));
@@ -297,18 +297,18 @@ async fn delete_session_removes_dir_and_is_idempotent() {
     adapter.delete_session(&info).await.expect("second delete must succeed");
 }
 #[tokio::test]
-async fn test_xai_session_update_round_trip() {
+async fn test_extension_session_update_round_trip() {
     use crate::extensions::notification::{
-        DiffContent, SessionNotification as XaiSessionNotification,
-        SessionUpdate as XaiSessionUpdateType,
+        DiffContent, SessionNotification as ExtensionSessionNotification,
+        SessionUpdate as ExtensionSessionUpdateType,
     };
     let temp_dir = TempDir::new().unwrap();
     let adapter = JsonlStorageAdapter::with_root(temp_dir.path().to_path_buf());
     let info = create_test_info();
     adapter.init_session(&info, default_model_id()).await.unwrap();
-    let xai_notification = XaiSessionNotification {
+    let extension_notification = ExtensionSessionNotification {
         session_id: acp::SessionId::new("test-session-123"),
-        update: XaiSessionUpdateType::DiffReview {
+        update: ExtensionSessionUpdateType::DiffReview {
             content: vec![
                 DiffContent { diff :
                 acp::Diff::new(std::path::PathBuf::from("/test/file.rs"), "new code"
@@ -318,7 +318,7 @@ async fn test_xai_session_update_round_trip() {
         meta: None,
     };
     adapter
-        .append_update(&info, &SessionUpdate::Xai(Box::new(xai_notification.clone())))
+        .append_update(&info, &SessionUpdate::Extension(Box::new(extension_notification.clone())))
         .await
         .unwrap();
     let acp_notification = create_test_notification();
@@ -329,10 +329,10 @@ async fn test_xai_session_update_round_trip() {
     let loaded = adapter.load_session(&info).await.unwrap();
     assert_eq!(loaded.updates.len(), 2, "Should have 2 updates (1 xAI + 1 ACP)");
     match &loaded.updates[0] {
-        SessionUpdate::Xai(notification) => {
+        SessionUpdate::Extension(notification) => {
             assert_eq!(notification.session_id.0.as_ref(), "test-session-123");
             match &notification.update {
-                XaiSessionUpdateType::DiffReview { content } => {
+                ExtensionSessionUpdateType::DiffReview { content } => {
                     assert_eq!(content.len(), 1);
                     assert_eq!(
                         content[0].diff.path, std::path::PathBuf::from("/test/file.rs")
@@ -343,7 +343,7 @@ async fn test_xai_session_update_round_trip() {
                 }
             }
         }
-        _ => panic!("Expected xAI update as first item"),
+        _ => panic!("Expected extension update as first item"),
     }
     match &loaded.updates[1] {
         SessionUpdate::Acp(_) => {}
@@ -355,16 +355,16 @@ async fn test_xai_session_update_round_trip() {
 #[tokio::test]
 async fn test_subagent_notifications_round_trip() {
     use crate::extensions::notification::{
-        SessionNotification as XaiSessionNotification,
-        SessionUpdate as XaiSessionUpdateType,
+        SessionNotification as ExtensionSessionNotification,
+        SessionUpdate as ExtensionSessionUpdateType,
     };
     let temp_dir = TempDir::new().unwrap();
     let adapter = JsonlStorageAdapter::with_root(temp_dir.path().to_path_buf());
     let info = create_test_info();
     adapter.init_session(&info, default_model_id()).await.unwrap();
-    let spawned = XaiSessionNotification {
+    let spawned = ExtensionSessionNotification {
         session_id: acp::SessionId::new("parent-session"),
-        update: XaiSessionUpdateType::SubagentSpawned {
+        update: ExtensionSessionUpdateType::SubagentSpawned {
             subagent_id: "child-001".to_string(),
             parent_session_id: "parent-session".to_string(),
             parent_prompt_id: Some("turn-123".to_string()),
@@ -381,10 +381,10 @@ async fn test_subagent_notifications_round_trip() {
         },
         meta: None,
     };
-    adapter.append_update(&info, &SessionUpdate::Xai(Box::new(spawned))).await.unwrap();
-    let finished = XaiSessionNotification {
+    adapter.append_update(&info, &SessionUpdate::Extension(Box::new(spawned))).await.unwrap();
+    let finished = ExtensionSessionNotification {
         session_id: acp::SessionId::new("parent-session"),
-        update: XaiSessionUpdateType::SubagentFinished {
+        update: ExtensionSessionUpdateType::SubagentFinished {
             subagent_id: "child-001".to_string(),
             child_session_id: "child-001".to_string(),
             status: "completed".to_string(),
@@ -398,13 +398,13 @@ async fn test_subagent_notifications_round_trip() {
         },
         meta: None,
     };
-    adapter.append_update(&info, &SessionUpdate::Xai(Box::new(finished))).await.unwrap();
+    adapter.append_update(&info, &SessionUpdate::Extension(Box::new(finished))).await.unwrap();
     let loaded = adapter.load_session(&info).await.unwrap();
     assert_eq!(loaded.updates.len(), 2);
     match &loaded.updates[0] {
-        SessionUpdate::Xai(notification) => {
+        SessionUpdate::Extension(notification) => {
             match &notification.update {
-                XaiSessionUpdateType::SubagentSpawned {
+                ExtensionSessionUpdateType::SubagentSpawned {
                     subagent_id,
                     child_session_id,
                     description,
@@ -419,12 +419,12 @@ async fn test_subagent_notifications_round_trip() {
                 other => panic!("Expected SubagentSpawned, got {other:?}"),
             }
         }
-        other => panic!("Expected Xai update, got {other:?}"),
+        other => panic!("Expected extension update, got {other:?}"),
     }
     match &loaded.updates[1] {
-        SessionUpdate::Xai(notification) => {
+        SessionUpdate::Extension(notification) => {
             match &notification.update {
-                XaiSessionUpdateType::SubagentFinished {
+                ExtensionSessionUpdateType::SubagentFinished {
                     subagent_id,
                     status,
                     tool_calls,
@@ -443,7 +443,7 @@ async fn test_subagent_notifications_round_trip() {
                 other => panic!("Expected SubagentFinished, got {other:?}"),
             }
         }
-        other => panic!("Expected Xai update, got {other:?}"),
+        other => panic!("Expected extension update, got {other:?}"),
     }
     let raw_jsonl = tokio::fs::read_to_string(
             adapter.session_dir(&info).join("updates.jsonl"),
@@ -470,16 +470,16 @@ async fn test_subagent_notifications_round_trip() {
 #[tokio::test]
 async fn test_subagent_spawned_resumed_roundtrip() {
     use crate::extensions::notification::{
-        SessionNotification as XaiSessionNotification,
-        SessionUpdate as XaiSessionUpdateType,
+        SessionNotification as ExtensionSessionNotification,
+        SessionUpdate as ExtensionSessionUpdateType,
     };
     let temp_dir = TempDir::new().unwrap();
     let adapter = JsonlStorageAdapter::with_root(temp_dir.path().to_path_buf());
     let info = create_test_info();
     adapter.init_session(&info, default_model_id()).await.unwrap();
-    let spawned = XaiSessionNotification {
+    let spawned = ExtensionSessionNotification {
         session_id: acp::SessionId::new("resume-parent"),
-        update: XaiSessionUpdateType::SubagentSpawned {
+        update: ExtensionSessionUpdateType::SubagentSpawned {
             subagent_id: "child-resumed".to_string(),
             parent_session_id: "resume-parent".to_string(),
             parent_prompt_id: Some("turn-5".to_string()),
@@ -496,13 +496,13 @@ async fn test_subagent_spawned_resumed_roundtrip() {
         },
         meta: None,
     };
-    adapter.append_update(&info, &SessionUpdate::Xai(Box::new(spawned))).await.unwrap();
+    adapter.append_update(&info, &SessionUpdate::Extension(Box::new(spawned))).await.unwrap();
     let loaded = adapter.load_session(&info).await.unwrap();
     assert_eq!(loaded.updates.len(), 1);
     match &loaded.updates[0] {
-        SessionUpdate::Xai(notification) => {
+        SessionUpdate::Extension(notification) => {
             match &notification.update {
-                XaiSessionUpdateType::SubagentSpawned {
+                ExtensionSessionUpdateType::SubagentSpawned {
                     subagent_id,
                     effective_context_source,
                     persona,
@@ -520,7 +520,7 @@ async fn test_subagent_spawned_resumed_roundtrip() {
                 other => panic!("Expected SubagentSpawned, got {other:?}"),
             }
         }
-        other => panic!("Expected Xai update, got {other:?}"),
+        other => panic!("Expected extension update, got {other:?}"),
     }
 }
 #[tokio::test]
@@ -540,7 +540,7 @@ async fn copy_session_data_copies_compaction_segments_when_enabled() {
     let seg = |s: &str| CompactionSegmentFile {
         items: vec![ConversationItem::user("a"), ConversationItem::user("b")],
         summary: s.to_string(),
-        detail: xai_chat_state::CompactionDetail::Verbose,
+        detail: atelier_chat_state::CompactionDetail::Verbose,
         timestamp: "2026-01-01T00:00:00Z".to_string(),
     };
     adapter.write_compaction_segment(&source_info, &seg("first")).await.unwrap();
@@ -563,7 +563,7 @@ async fn copy_session_data_copies_compaction_segments_when_enabled() {
     assert_eq!(result.compaction_segments_copied, 3);
     let dst = adapter
         .session_dir(&target_info)
-        .join(xai_chat_state::compaction_transcript::COMPACTION_DIR);
+        .join(atelier_chat_state::compaction_transcript::COMPACTION_DIR);
     assert!(dst.join("segment_000.md").is_file());
     assert!(dst.join("segment_001.md").is_file());
     assert!(dst.join("INDEX.md").is_file());
@@ -582,7 +582,7 @@ async fn copy_session_data_copies_compaction_segments_when_enabled() {
     assert_eq!(result2.compaction_segments_copied, 0);
     assert!(
         ! adapter.session_dir(& target2)
-        .join(xai_chat_state::compaction_transcript::COMPACTION_DIR).exists()
+        .join(atelier_chat_state::compaction_transcript::COMPACTION_DIR).exists()
     );
 }
 #[tokio::test]
@@ -667,10 +667,10 @@ async fn test_copy_session_data_without_plan() {
     assert!(loaded.plan_state.is_none());
 }
 #[tokio::test]
-async fn test_copy_session_data_transforms_xai_updates() {
+async fn test_copy_session_data_transforms_extension_updates() {
     use crate::extensions::notification::{
-        DiffContent, SessionNotification as XaiSessionNotification,
-        SessionUpdate as XaiSessionUpdateType,
+        DiffContent, SessionNotification as ExtensionSessionNotification,
+        SessionUpdate as ExtensionSessionUpdateType,
     };
     let temp_dir = TempDir::new().unwrap();
     let adapter = JsonlStorageAdapter::with_root(temp_dir.path().to_path_buf());
@@ -679,9 +679,9 @@ async fn test_copy_session_data_transforms_xai_updates() {
         cwd: "/source".to_string(),
     };
     adapter.init_session(&source_info, default_model_id()).await.unwrap();
-    let xai_notification = XaiSessionNotification {
+    let extension_notification = ExtensionSessionNotification {
         session_id: acp::SessionId::new("source-xai"),
-        update: XaiSessionUpdateType::DiffReview {
+        update: ExtensionSessionUpdateType::DiffReview {
             content: vec![
                 DiffContent { diff :
                 acp::Diff::new(std::path::PathBuf::from("/test/file.rs"), "new"
@@ -691,7 +691,7 @@ async fn test_copy_session_data_transforms_xai_updates() {
         meta: None,
     };
     adapter
-        .append_update(&source_info, &SessionUpdate::Xai(Box::new(xai_notification)))
+        .append_update(&source_info, &SessionUpdate::Extension(Box::new(extension_notification)))
         .await
         .unwrap();
     let target_info = Info {
@@ -704,10 +704,10 @@ async fn test_copy_session_data_transforms_xai_updates() {
         .unwrap();
     let loaded = adapter.load_session(&target_info).await.unwrap();
     match &loaded.updates[0] {
-        SessionUpdate::Xai(notification) => {
+        SessionUpdate::Extension(notification) => {
             assert_eq!(notification.session_id.0.as_ref(), "fork-source-xai-abcd1234");
         }
-        _ => panic!("Expected xAI update"),
+        _ => panic!("Expected extension update"),
     }
 }
 #[tokio::test]
@@ -874,7 +874,7 @@ async fn test_load_prompts_only_merges_multi_chunk_prompt() {
 #[tokio::test]
 async fn test_load_prompts_only_applies_rewind_truncation() {
     use crate::extensions::notification::{
-        SessionNotification as XaiNotification, SessionUpdate as XaiSessionUpdate,
+        SessionNotification as ExtensionNotification, SessionUpdate as ExtensionSessionUpdate,
     };
     let temp_dir = TempDir::new().unwrap();
     let adapter = JsonlStorageAdapter::with_root(temp_dir.path().to_path_buf());
@@ -917,9 +917,9 @@ async fn test_load_prompts_only_applies_rewind_truncation() {
             ),
         ),
     );
-    let rewind = XaiNotification {
+    let rewind = ExtensionNotification {
         session_id: info.id.clone(),
-        update: XaiSessionUpdate::RewindMarker {
+        update: ExtensionSessionUpdate::RewindMarker {
             target_prompt_index: 1,
             created_at: "2024-01-01T00:00:00Z".to_string(),
         },
@@ -948,7 +948,7 @@ async fn test_load_prompts_only_applies_rewind_truncation() {
         SessionUpdate::Acp(Box::new(agent1)),
         SessionUpdate::Acp(Box::new(user2)),
         SessionUpdate::Acp(Box::new(agent2)),
-        SessionUpdate::Xai(Box::new(rewind)),
+        SessionUpdate::Extension(Box::new(rewind)),
         SessionUpdate::Acp(Box::new(user3)),
         SessionUpdate::Acp(Box::new(agent3)),
     ] {
@@ -1085,7 +1085,7 @@ async fn test_load_prompts_only_large_session() {
 #[tokio::test]
 async fn test_append_feedback_creates_file_and_persists() {
     use crate::session::persistence::{LocalFeedbackEntry, UserFeedbackEntry};
-    use prod_mc_cli_chat_proxy_types::feedback_types::{
+    use crate::session::feedback_types::{
         ClientType, FeedbackSubmission, FeedbackType, RatingType,
     };
     let temp_dir = TempDir::new().unwrap();
@@ -1116,15 +1116,9 @@ async fn test_append_feedback_creates_file_and_persists() {
             context_type: None,
             feature_name: None,
             tool_name: None,
-            experiment_id: None,
-            comparison_id: None,
-            preferred_model_id: None,
-            preference_strength: None,
-            preference_reasons: vec![],
             request_id: None,
             client_version: None,
             shell_version: None,
-            extension_host: None,
             metadata: None,
             last_user_message: None,
             last_assistant_message: None,
@@ -2311,6 +2305,7 @@ fn read_chat_history_upgrades_raw_output_parallel_tco_reasoning() {
             ConversationItem::ToolResult(_) => "tool_result",
             ConversationItem::BackendToolCall(_) => "backend_tool_call",
             ConversationItem::Reasoning(_) => "reasoning",
+            ConversationItem::Compaction(_) => "compaction",
         })
         .collect();
     assert_eq!(
@@ -2363,6 +2358,7 @@ fn read_chat_history_handles_hybrid_legacy_and_post_pr_lines() {
             ConversationItem::ToolResult(_) => "tool_result",
             ConversationItem::BackendToolCall(_) => "backend_tool_call",
             ConversationItem::Reasoning(_) => "reasoning",
+            ConversationItem::Compaction(_) => "compaction",
         })
         .collect();
     assert_eq!(
@@ -2425,6 +2421,7 @@ fn read_chat_history_is_idempotent_on_post_pr_sessions() {
             ConversationItem::ToolResult(_) => "tool_result",
             ConversationItem::BackendToolCall(_) => "backend_tool_call",
             ConversationItem::Reasoning(_) => "reasoning",
+            ConversationItem::Compaction(_) => "compaction",
         })
         .collect();
     assert_eq!(kinds, vec!["system", "user", "reasoning", "assistant"]);

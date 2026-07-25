@@ -8,8 +8,8 @@ use std::collections::HashMap;
 use agent_client_protocol as acp;
 use atelier_hooks::event::{HookEventEnvelope, HookEventName};
 use atelier_hooks::matcher::HookMatcher;
+use atelier_hooks_plugins_types::{HookEvent, HookHandlerType, HookInfo};
 use serde::Deserialize;
-use xai_hooks_plugins_types::{HookEvent, HookHandlerType, HookInfo};
 
 use crate::agent::MvpAgent;
 
@@ -236,7 +236,7 @@ pub async fn handle(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
             super::to_ext_response(result)
         }
         "atelier/hooks/action" => {
-            let req: xai_hooks_plugins_types::HooksActionRequest = super::parse_params(args)?;
+            let req: atelier_hooks_plugins_types::HooksActionRequest = super::parse_params(args)?;
             let sid = acp::SessionId::new(req.session_id);
 
             let result = agent

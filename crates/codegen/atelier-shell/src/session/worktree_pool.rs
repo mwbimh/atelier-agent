@@ -36,15 +36,15 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use atelier_fast_worktree::{WorktreeBuilder, WorktreeSync};
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
-use xai_fast_worktree::{WorktreeBuilder, WorktreeSync};
 
 const WORKTREE_POOL_LOG: &str = "xai_worktree_pool";
 use crate::util::atelier_home::atelier_home;
 use crate::util::config::PoolConfig;
 
-use xai_tty_utils::git_command;
+use atelier_tty_utils::git_command;
 
 /// Marker suffix appended to the worktree directory name to form a sibling
 /// marker file.  E.g. for worktree `<instance>/<pool_id>/` the ready marker
@@ -1518,7 +1518,7 @@ async fn warm_source_repo(repo_path: &Path) {
         atelier_tools::util::detach_std_command(&mut cmd);
         cmd.stdin(std::process::Stdio::null());
         cmd.envs(atelier_tools::util::pager_env());
-        for &(key, val) in xai_tty_utils::GIT_AUTH_SUPPRESSION_ENVS.iter() {
+        for &(key, val) in atelier_tty_utils::GIT_AUTH_SUPPRESSION_ENVS.iter() {
             cmd.env(key, val);
         }
         let result = cmd
@@ -1644,9 +1644,9 @@ async fn create_pooled_worktree(
 
     let result = tokio::task::spawn_blocking(move || {
         WorktreeBuilder::new(&source, &dest_clone)
-            .creation_mode(xai_fast_worktree::CreationMode::GitCheckout)
+            .creation_mode(atelier_fast_worktree::CreationMode::GitCheckout)
             .parallelism(parallelism)
-            .worktree_kind(xai_fast_worktree::WorktreeKind::Pool)
+            .worktree_kind(atelier_fast_worktree::WorktreeKind::Pool)
             .create()
     })
     .await?;
@@ -1705,7 +1705,7 @@ fn schedule_cleanup(path: PathBuf) {
                 "SCHEDULE_CLEANUP_FAST: rm -rf + deregister"
             );
             let result = tokio::task::spawn_blocking(move || {
-                xai_fast_worktree::remove_worktree(&path_clone)
+                atelier_fast_worktree::remove_worktree(&path_clone)
             })
             .await;
             let cleanup_ms = cleanup_start.elapsed().as_millis() as u64;
@@ -1748,7 +1748,8 @@ async fn remove_worktree_registration(path: &Path) {
 
     let path_owned = path.to_path_buf();
     let result =
-        tokio::task::spawn_blocking(move || xai_fast_worktree::remove_worktree(&path_owned)).await;
+        tokio::task::spawn_blocking(move || atelier_fast_worktree::remove_worktree(&path_owned))
+            .await;
     let deregister_ms = deregister_start.elapsed().as_millis() as u64;
     tracing::info!(
         target: WORKTREE_POOL_LOG,

@@ -87,9 +87,9 @@ impl SessionActor {
     /// Handle a hooks management action from the pager modal.
     pub(super) async fn handle_hooks_action(
         self: &Arc<Self>,
-        action: xai_hooks_plugins_types::HooksAction,
-    ) -> xai_hooks_plugins_types::ActionOutcome {
-        use xai_hooks_plugins_types::{ActionOutcome, HooksAction, OutcomeStatus};
+        action: atelier_hooks_plugins_types::HooksAction,
+    ) -> atelier_hooks_plugins_types::ActionOutcome {
+        use atelier_hooks_plugins_types::{ActionOutcome, HooksAction, OutcomeStatus};
 
         match action {
             HooksAction::Reload => {
@@ -272,9 +272,9 @@ impl SessionActor {
     /// Handle a plugins management action from the pager modal.
     pub(super) async fn handle_plugins_action(
         self: &Arc<Self>,
-        action: xai_hooks_plugins_types::PluginsAction,
-    ) -> xai_hooks_plugins_types::ActionOutcome {
-        use xai_hooks_plugins_types::{ActionOutcome, OutcomeStatus, PluginsAction};
+        action: atelier_hooks_plugins_types::PluginsAction,
+    ) -> atelier_hooks_plugins_types::ActionOutcome {
+        use atelier_hooks_plugins_types::{ActionOutcome, OutcomeStatus, PluginsAction};
 
         match action {
             PluginsAction::Reload => match &self.plugin_registry_handle {
@@ -703,7 +703,7 @@ impl SessionActor {
             };
             let load_errors = self.hook_load_errors.borrow().clone();
             let project_trusted = is_trusted;
-            self.send_xai_notification(XaiSessionUpdate::HooksChanged {
+            self.send_extension_notification(ExtensionSessionUpdate::HooksChanged {
                 hooks,
                 project_trusted,
                 load_errors,
@@ -984,7 +984,7 @@ impl SessionActor {
         // Notify pager about registry changes so the modal auto-refreshes.
         // Extract all RefCell borrows into locals before the .await so
         // no Ref guard is alive across the suspension point (prevents
-        // BorrowMutError panics when send_xai_notification dispatches
+        // BorrowMutError panics when send_extension_notification dispatches
         // Notification hooks that also borrow these RefCells).
         let t_notify = std::time::Instant::now();
         {
@@ -1006,7 +1006,7 @@ impl SessionActor {
             let project_trusted = crate::agent::folder_trust::project_scope_allowed(
                 std::path::Path::new(&self.session_info.cwd),
             );
-            self.send_xai_notification(XaiSessionUpdate::HooksChanged {
+            self.send_extension_notification(ExtensionSessionUpdate::HooksChanged {
                 hooks,
                 project_trusted,
                 load_errors,
@@ -1025,7 +1025,7 @@ impl SessionActor {
                     None => Vec::new(),
                 }
             };
-            self.send_xai_notification(XaiSessionUpdate::PluginsChanged { plugins })
+            self.send_extension_notification(ExtensionSessionUpdate::PluginsChanged { plugins })
                 .await;
         }
 

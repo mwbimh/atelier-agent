@@ -1,8 +1,8 @@
 use super::support::create_test_actor;
 
 use crate::extensions::notification::{
-    CompactionCheckpointFile, CompactionCheckpointInfo, SessionNotification as XaiNotification,
-    SessionUpdate as XaiSessionUpdate,
+    CompactionCheckpointFile, CompactionCheckpointInfo,
+    SessionNotification as ExtensionNotification, SessionUpdate as ExtensionSessionUpdate,
 };
 use crate::sampling::ConversationItem;
 use crate::session::storage::{SessionUpdate, SessionUpdateEnvelope};
@@ -35,9 +35,9 @@ fn agent_chunk(text: &str) -> SessionUpdate {
 }
 
 fn checkpoint_update(id: &str, prompt_index_at_compaction: usize) -> SessionUpdate {
-    SessionUpdate::Xai(Box::new(XaiNotification {
+    SessionUpdate::Extension(Box::new(ExtensionNotification {
         session_id: acp::SessionId::new("s"),
-        update: XaiSessionUpdate::CompactionCheckpoint(Box::new(CompactionCheckpointInfo {
+        update: ExtensionSessionUpdate::CompactionCheckpoint(Box::new(CompactionCheckpointInfo {
             checkpoint_id: id.to_string(),
             prompt_index_at_compaction,
             checkpoint_file: format!("compaction_checkpoints/{id}.json"),

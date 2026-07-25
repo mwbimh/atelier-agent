@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 use agent_client_protocol as acp;
 use tokio::task::JoinSet;
-use xai_acp_lib::{AcpAgentTx, acp_send};
+use atelier_acp_runtime::{AcpAgentTx, acp_send};
 use actions::{
     ClipboardPasteTarget, Effect, ProbedAttachment, SubagentKillOutcome,
     SwitchModelError, TaskResult,
@@ -836,14 +836,6 @@ pub(crate) fn execute(
                         }
                     }
                 });
-        }
-        Effect::RestoreAndLoadSession { agent_id, .. } => {
-            tasks.spawn(async move {
-                TaskResult::SessionRestoreFailed {
-                    agent_id,
-                    error: "remote session restore is disabled in Atelier".into(),
-                }
-            });
         }
         Effect::LoadCardDetail { source, session_id, cwd, generation } => {
             tasks
@@ -1692,55 +1684,6 @@ pub(crate) fn execute(
             );
             persist_hint(tasks, config_key, mode.as_config_str(), "worktree mode");
         }
-        Effect::PersistPreferredModel { model_id, reasoning_effort } => {
-            let model_id_str = model_id.0.to_string();
-            tasks
-                .spawn(async move {
-                    let path = atelier_config::atelier_home().join("providers.toml");
-                    let result = match atelier_shell::util::config::set_default_model(String::new())
-                        .await
-                    {
-                        Ok(()) => tokio::task::spawn_blocking(move || {
-                                persist_preferred_model_as_main_role(
-                                    &path,
-                                    &model_id_str,
-                                    reasoning_effort,
-                                )
-                            })
-                            .await
-                            .map_err(|e| e.to_string())
-                            .and_then(|result| result),
-                        Err(error) => Err(format!(
-                            "failed to delete legacy models.default before saving roles.main: {error}"
-                        )),
-                    };
-                    if let Err(ref e) = result {
-                        tracing::warn!("failed to save roles.main model preference: {e}");
-                    }
-                    TaskResult::PreferredModelPersisted {
-                        result,
-                    }
-                });
-        }
-        Effect::ClearLegacyModelDefaults => {
-            tasks.spawn(async move {
-                let path = atelier_config::atelier_home().join("providers.toml");
-                let result = match atelier_shell::util::config::set_default_model(String::new())
-                    .await
-                {
-                    Ok(()) => tokio::task::spawn_blocking(move || {
-                            clear_legacy_provider_default(&path)
-                        })
-                        .await
-                        .map_err(|error| error.to_string())
-                        .and_then(|result| result),
-                    Err(error) => Err(format!(
-                        "failed to delete legacy models.default: {error}"
-                    )),
-                };
-                TaskResult::PreferredModelPersisted { result }
-            });
-        }
         Effect::PersistPermissionMode { canonical, session_id, persist } => {
             let tx = acp_tx.clone();
             tasks
@@ -1982,7 +1925,7 @@ pub(crate) fn execute(
                                 .unwrap_or_default();
                             let inner = wrapper.get("result").unwrap_or(&wrapper);
                             serde_json::from_value::<
-                                xai_hooks_plugins_types::HooksListResponse,
+                                atelier_hooks_plugins_types::HooksListResponse,
                             >(inner.clone())
                                 .map_err(|_| "couldn't load hooks".to_string())
                         }
@@ -2019,7 +1962,7 @@ pub(crate) fn execute(
                                 .unwrap_or_default();
                             let inner = wrapper.get("result").unwrap_or(&wrapper);
                             serde_json::from_value::<
-                                xai_hooks_plugins_types::PluginsListResponse,
+                                atelier_hooks_plugins_types::PluginsListResponse,
                             >(inner.clone())
                                 .map_err(|_| "couldn't load plugins".to_string())
                         }
@@ -2039,7 +1982,7 @@ pub(crate) fn execute(
             let tx = acp_tx.clone();
             tasks
                 .spawn(async move {
-                    let req_body = xai_hooks_plugins_types::HooksActionRequest {
+                    let req_body = atelier_hooks_plugins_types::HooksActionRequest {
                         session_id: session_id.0.to_string(),
                         action,
                     };
@@ -2057,7 +2000,7 @@ pub(crate) fn execute(
                                 .unwrap_or_default();
                             let inner = wrapper.get("result").unwrap_or(&wrapper);
                             serde_json::from_value::<
-                                xai_hooks_plugins_types::ActionOutcome,
+                                atelier_hooks_plugins_types::ActionOutcome,
                             >(inner.clone())
                                 .map_err(|_| "couldn't complete hooks action".to_string())
                         }
@@ -2079,7 +2022,7 @@ pub(crate) fn execute(
             let tx = acp_tx.clone();
             tasks
                 .spawn(async move {
-                    let req_body = xai_hooks_plugins_types::PluginsActionRequest {
+                    let req_body = atelier_hooks_plugins_types::PluginsActionRequest {
                         session_id: session_id.0.to_string(),
                         action,
                     };
@@ -2097,7 +2040,7 @@ pub(crate) fn execute(
                                 .unwrap_or_default();
                             let inner = wrapper.get("result").unwrap_or(&wrapper);
                             serde_json::from_value::<
-                                xai_hooks_plugins_types::ActionOutcome,
+                                atelier_hooks_plugins_types::ActionOutcome,
                             >(inner.clone())
                                 .map_err(|_| "couldn't complete plugins action".to_string())
                         }
@@ -2136,7 +2079,7 @@ pub(crate) fn execute(
                                 .unwrap_or_default();
                             let inner = wrapper.get("result").unwrap_or(&wrapper);
                             serde_json::from_value::<
-                                xai_hooks_plugins_types::MarketplaceListResponse,
+                                atelier_hooks_plugins_types::MarketplaceListResponse,
                             >(inner.clone())
                                 .map_err(|_| "couldn't load marketplace".to_string())
                         }
@@ -2175,7 +2118,7 @@ pub(crate) fn execute(
                                 .unwrap_or_default();
                             let inner = wrapper.get("result").unwrap_or(&wrapper);
                             serde_json::from_value::<
-                                xai_hooks_plugins_types::MarketplaceListResponse,
+                                atelier_hooks_plugins_types::MarketplaceListResponse,
                             >(inner.clone())
                                 .map_err(|_| "couldn't load marketplace".to_string())
                         }
@@ -2300,7 +2243,7 @@ pub(crate) fn execute(
                                 .unwrap_or_default();
                             let inner = wrapper.get("result").unwrap_or(&wrapper);
                             serde_json::from_value::<
-                                xai_hooks_plugins_types::MarketplaceListResponse,
+                                atelier_hooks_plugins_types::MarketplaceListResponse,
                             >(inner.clone())
                                 .ok()
                                 .map(|r| {
@@ -2339,11 +2282,11 @@ pub(crate) fn execute(
                     }
                     let mut succeeded = Vec::new();
                     for (name, old, new, source_url, rel_path) in outdated {
-                        let action = xai_hooks_plugins_types::MarketplaceAction::Update {
+                        let action = atelier_hooks_plugins_types::MarketplaceAction::Update {
                             source_url_or_path: source_url.clone(),
                             plugin_relative_path: rel_path.clone(),
                         };
-                        let req_body = xai_hooks_plugins_types::MarketplaceActionRequest {
+                        let req_body = atelier_hooks_plugins_types::MarketplaceActionRequest {
                             session_id: session_id.0.to_string(),
                             action,
                         };
@@ -2361,7 +2304,7 @@ pub(crate) fn execute(
                                     .unwrap_or_default();
                                 let inner = wrapper.get("result").unwrap_or(&wrapper);
                                 serde_json::from_value::<
-                                    xai_hooks_plugins_types::ActionOutcome,
+                                    atelier_hooks_plugins_types::ActionOutcome,
                                 >(inner.clone())
                                     .is_ok_and(|outcome| marketplace_outcome_succeeded(
                                         &outcome,
@@ -2396,7 +2339,7 @@ pub(crate) fn execute(
             let tx = acp_tx.clone();
             tasks
                 .spawn(async move {
-                    let req_body = xai_hooks_plugins_types::MarketplaceActionRequest {
+                    let req_body = atelier_hooks_plugins_types::MarketplaceActionRequest {
                         session_id: session_id.0.to_string(),
                         action,
                     };
@@ -2414,7 +2357,7 @@ pub(crate) fn execute(
                                 .unwrap_or_default();
                             let inner = wrapper.get("result").unwrap_or(&wrapper);
                             serde_json::from_value::<
-                                xai_hooks_plugins_types::ActionOutcome,
+                                atelier_hooks_plugins_types::ActionOutcome,
                             >(inner.clone())
                                 .map_err(|e| {
                                     tracing::debug!(
@@ -2451,11 +2394,11 @@ pub(crate) fn execute(
                         .next()
                         .unwrap_or(plugin_relative_path.as_str())
                         .to_string();
-                    let action = xai_hooks_plugins_types::MarketplaceAction::Install {
+                    let action = atelier_hooks_plugins_types::MarketplaceAction::Install {
                         source_url_or_path,
                         plugin_relative_path,
                     };
-                    let req_body = xai_hooks_plugins_types::MarketplaceActionRequest {
+                    let req_body = atelier_hooks_plugins_types::MarketplaceActionRequest {
                         session_id: session_id.0.to_string(),
                         action,
                     };
@@ -2473,7 +2416,7 @@ pub(crate) fn execute(
                                 .unwrap_or_default();
                             let inner = wrapper.get("result").unwrap_or(&wrapper);
                             serde_json::from_value::<
-                                xai_hooks_plugins_types::ActionOutcome,
+                                atelier_hooks_plugins_types::ActionOutcome,
                             >(inner.clone())
                                 .map_err(|e| {
                                     tracing::debug!(
@@ -2501,9 +2444,9 @@ pub(crate) fn execute(
             let tx = acp_tx.clone();
             tasks
                 .spawn(async move {
-                    let req_body = xai_hooks_plugins_types::PluginsActionRequest {
+                    let req_body = atelier_hooks_plugins_types::PluginsActionRequest {
                         session_id: session_id.0.to_string(),
-                        action: xai_hooks_plugins_types::PluginsAction::Reload,
+                        action: atelier_hooks_plugins_types::PluginsAction::Reload,
                     };
                     let req = acp::ExtRequest::new(
                         "atelier/plugins/action",
@@ -2519,7 +2462,7 @@ pub(crate) fn execute(
                                 .unwrap_or_default();
                             let inner = wrapper.get("result").unwrap_or(&wrapper);
                             serde_json::from_value::<
-                                xai_hooks_plugins_types::ActionOutcome,
+                                atelier_hooks_plugins_types::ActionOutcome,
                             >(inner.clone())
                                 .map_err(|_| "couldn't complete plugins action".to_string())
                         }
@@ -2883,8 +2826,20 @@ pub(crate) fn execute(
         Effect::SendFeedback { agent_id, session_id, feedback_text } => {
             use atelier_shell::session::ClientType;
             use atelier_shell::session::acp_types::ClientFeedbackInput;
+            let terminal = crate::terminal::terminal_context().feedback_info();
             let terminal_info = Some(
-                crate::terminal::terminal_context().feedback_info(),
+                atelier_shell::session::feedback_types::FeedbackTerminalInfo {
+                    brand: terminal.brand,
+                    multiplexer: terminal.multiplexer,
+                    is_ssh: terminal.is_ssh,
+                    is_byobu: terminal.is_byobu,
+                    term_var: terminal.term_var,
+                    tmux_version: terminal.tmux_version,
+                    hyperlink_osc8_support: terminal.hyperlink_osc8_support,
+                    clipboard_route: terminal.clipboard_route,
+                    clipboard_native_tool: terminal.clipboard_native_tool,
+                    display_server: terminal.display_server,
+                },
             );
             let tx = acp_tx.clone();
             tasks

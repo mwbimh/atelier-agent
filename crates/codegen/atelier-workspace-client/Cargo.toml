@@ -11,10 +11,10 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["time"] }
 tracing = { workspace = true }
-xai-computer-hub-sdk = { workspace = true }
+atelier-tool-hub-sdk = { workspace = true }
 atelier-workspace-types = { workspace = true }
-xai-tool-protocol = { workspace = true }
-xai-tool-runtime = { workspace = true }
+atelier-tool-protocol = { workspace = true }
+atelier-tool-runtime = { workspace = true }
 
 [features]
 default = []
@@ -22,7 +22,7 @@ default-bazel = []
 [dev-dependencies]
 schemars = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "test-util"] }
-xai-tool-types = { workspace = true }
+atelier-tool-types = { workspace = true }
 
 [lints]
 workspace = true

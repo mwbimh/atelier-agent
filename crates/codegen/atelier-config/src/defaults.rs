@@ -1,6 +1,5 @@
 //! First-run Atelier configuration tree and resettable built-in presets.
 
-use std::fmt::Write as _;
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -8,38 +7,38 @@ const PROVIDERS_TOML: &str = "schema_version = 2\n\n[providers]\n";
 const ROLES_TOML: &str = r#"schema_version = 1
 
 [roles.main]
-provider = "default"
-model = "default"
+provider = "allm"
+model = "deepseek-v4-flash"
 [roles.explore]
-provider = "default"
-model = "default"
+provider = "allm"
+model = "deepseek-v4-flash"
 [roles.implement]
-provider = "default"
-model = "default"
+provider = "allm"
+model = "deepseek-v4-flash"
 [roles.review]
-provider = "default"
-model = "default"
+provider = "allm"
+model = "deepseek-v4-flash"
 [roles.test]
-provider = "default"
-model = "default"
+provider = "allm"
+model = "deepseek-v4-flash"
 [roles.compact]
-provider = "default"
-model = "default"
+provider = "allm"
+model = "deepseek-v4-flash"
 [roles.summary]
-provider = "default"
-model = "default"
+provider = "allm"
+model = "deepseek-v4-flash"
 [roles.title]
-provider = "default"
-model = "default"
+provider = "allm"
+model = "deepseek-v4-flash"
 [roles.planner]
-provider = "default"
-model = "default"
+provider = "allm"
+model = "deepseek-v4-flash"
 [roles.strategist]
-provider = "default"
-model = "default"
+provider = "allm"
+model = "deepseek-v4-flash"
 [roles.skeptic]
-provider = "default"
-model = "default"
+provider = "allm"
+model = "deepseek-v4-flash"
 "#;
 const COMMON_MODELS_TOML: &str = r#"schema_version = 1
 
@@ -91,12 +90,12 @@ reasoning_efforts = ["low", "medium", "high"]
 fast_mode = true
 context_window = 256000
 "#;
-const LOGO: &str = r#"     _  _____ _____
-    / \|_   _| ____|
-   / _ \ | | |  _|
-  / ___ \| | | |___
- /_/   \_\_| |_____|
-        Atelier / ATE
+const LOGO: &str = r#"    ___  ____________
+   /   |/_  __/ ____/
+  / /| | / / / __/
+ / ___ |/ / / /___
+/_/  |_/_/ /_____/
+     A T E L I E R
 "#;
 
 struct DefaultFile {
@@ -104,7 +103,7 @@ struct DefaultFile {
     content: &'static str,
 }
 
-const DEFAULT_FILES: &[DefaultFile] = &[
+const RESETTABLE_DEFAULT_FILES: &[DefaultFile] = &[
     DefaultFile {
         relative: "providers.toml",
         content: PROVIDERS_TOML,
@@ -179,7 +178,11 @@ pub fn ensure_user_defaults(home: &Path, version: &str) -> io::Result<()> {
         std::fs::create_dir_all(home.join(directory))?;
     }
     write_if_missing(home.join("config.toml"), &default_config(version))?;
-    for file in DEFAULT_FILES {
+    write_if_missing(
+        home.join("request-agents.toml"),
+        &default_request_agents(version),
+    )?;
+    for file in RESETTABLE_DEFAULT_FILES {
         write_if_missing(home.join(file.relative), file.content)?;
     }
     Ok(())
@@ -190,27 +193,63 @@ pub fn reset_user_defaults(home: &Path, version: &str) -> io::Result<()> {
     for directory in USER_OWNED_DIRECTORIES {
         std::fs::create_dir_all(home.join(directory))?;
     }
-    write_owned(home.join("config.toml"), &default_config(version))?;
-    for file in DEFAULT_FILES {
+    reset_main_config(home.join("config.toml"))?;
+    write_owned(
+        home.join("request-agents.toml"),
+        &default_request_agents(version),
+    )?;
+    for file in RESETTABLE_DEFAULT_FILES {
         write_owned(home.join(file.relative), file.content)?;
     }
     Ok(())
 }
 
-fn default_config(version: &str) -> String {
-    let mut content = String::new();
-    let _ = writeln!(content, "# model = \"provider/model\"");
-    let _ = writeln!(content, "context = \"default\"");
-    let _ = writeln!(content, "request_agent = \"atelier\"");
-    for (id, value) in [
-        ("atelier", format!("Atelier/{version}")),
-        ("pi", "pi 1.0".to_owned()),
-        ("codex", "codex 1.0".to_owned()),
-        ("opencode", "opencode 1.0".to_owned()),
-    ] {
-        let _ = writeln!(content, "\n[request_agents.{id}]\nvalue = \"{value}\"");
-    }
-    content
+fn reset_main_config(path: PathBuf) -> io::Result<()> {
+    let mut document = match std::fs::read_to_string(&path) {
+        Ok(source) => source.parse::<toml_edit::DocumentMut>().map_err(|error| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("failed to parse {}: {error}", path.display()),
+            )
+        })?,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => toml_edit::DocumentMut::new(),
+        Err(error) => return Err(error),
+    };
+
+    document["model"] = toml_edit::value(super::runtime_defaults::DEFAULT_NEW_SESSION_MODEL);
+    document["context"] = toml_edit::value("default");
+    document["request_agent"] = toml_edit::value("atelier");
+    write_owned(path, &document.to_string())
+}
+
+fn default_config(_version: &str) -> String {
+    format!(
+        "model = {:?}\ncontext = \"default\"\nrequest_agent = \"atelier\"\n",
+        super::runtime_defaults::DEFAULT_NEW_SESSION_MODEL
+    )
+}
+
+fn default_request_agents(version: &str) -> String {
+    format!(
+        r#"schema_version = 1
+
+[agents.atelier]
+name = "Atelier"
+version = "{version}"
+
+[agents.pi]
+name = "pi"
+version = "1.0"
+
+[agents.codex]
+name = "codex"
+version = "1.0"
+
+[agents.opencode]
+name = "opencode"
+version = "1.0"
+"#
+    )
 }
 
 fn write_if_missing(path: PathBuf, content: &str) -> io::Result<()> {

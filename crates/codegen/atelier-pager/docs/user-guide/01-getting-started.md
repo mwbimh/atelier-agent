@@ -17,11 +17,11 @@ npm install -g @atelier/atelier
 Or build the release binary from source:
 
 ```bash
-cargo build -p atelier-pager-bin --bin atelier --release
+cargo build -p atelier-pager-bin --bin ate --profile release-dist
 ```
 
 The user-facing release contains one executable. On Windows this is
-`atelier.exe`; the Workspace Worker and command runner are embedded and start
+`ate.exe`; the Workspace Worker and command runner are embedded and start
 as hidden child-process modes of the same executable.
 
 The npm package installs the executable under `~/.atelier/bin`

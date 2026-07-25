@@ -15,7 +15,7 @@
 //! through [`effective_atelier_home`] rather than assuming the temp dir won.
 //!
 //! The scenarios are `#[ignore]`d in the shared lib test binary: the harness
-//! mutates process-global env (proxy URLs, `XAI_API_KEY`,
+//! mutates process-global env (proxy URLs,
 //! `ATELIER_LEADER_SOCKET`, `ATELIER_HOME`) for a real agent's whole lifetime, and
 //! in a several-thousand-test process that poisons concurrently-running tests
 //! (and `atelier_home()`'s OnceLock is usually already pinned). Run on demand:
@@ -36,7 +36,12 @@ use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::time::Duration;
 
 use agent_client_protocol as acp;
-use atelier_shell::agent::config::Config as AgentConfig;
+use atelier_acp_runtime::{
+    AcpAgentGatewayReceiver as GatewayReceiver, AcpAgentGatewaySender as GatewaySender,
+    AcpClientRx, LineBufferedRead, acp_send,
+};
+use atelier_shell::agent::auth_method::PROVIDER_API_KEY_METHOD_ID;
+use atelier_shell::agent::config::{Config as AgentConfig, ConfigModelOverride};
 use atelier_shell::agent::mvp_agent::MvpAgent;
 use atelier_shell::leader::{
     ClientCapabilities as LeaderClientCapabilities, ClientMode, ConnectionStatus,
@@ -49,10 +54,6 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::task::JoinSet;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 use tokio_util::sync::CancellationToken;
-use xai_acp_lib::{
-    AcpAgentGatewayReceiver as GatewayReceiver, AcpAgentGatewaySender as GatewaySender,
-    AcpClientRx, LineBufferedRead, acp_send,
-};
 
 use super::actions::{Action, TaskResult};
 use super::agent::AgentState;
@@ -311,6 +312,7 @@ impl PagerLeaderCluster {
         let _ = rustls::crypto::ring::default_provider().install_default();
 
         let server = MockInferenceServer::start().await.expect("mock server");
+        let provider_base_url = server.url().to_owned();
         let atelier_home = TempDir::new().unwrap();
         let workdir = TempDir::new().unwrap();
         let sock_path = atelier_home.path().join("leader-cluster.sock");
@@ -318,11 +320,8 @@ impl PagerLeaderCluster {
         let env = vec![
             crate::test_util::EnvVarGuard::set("ATELIER_HOME", atelier_home.path()),
             crate::test_util::EnvVarGuard::set("ATELIER_CLI_CHAT_PROXY_BASE_URL", server.url()),
-            crate::test_util::EnvVarGuard::set("ATELIER_XAI_API_BASE_URL", server.url()),
-            crate::test_util::EnvVarGuard::set("XAI_API_KEY", "test-key-for-ci"),
             crate::test_util::EnvVarGuard::set("ATELIER_TELEMETRY_ENABLED", "false"),
             crate::test_util::EnvVarGuard::set("ATELIER_FEEDBACK_ENABLED", "false"),
-            crate::test_util::EnvVarGuard::set("ATELIER_TRACE_UPLOAD", "false"),
             // Pin every leader-path derivation (LeaderLock::new / reconnect's
             // connect_or_spawn) to this cluster's socket.
             crate::test_util::EnvVarGuard::set(LEADER_SOCKET_ENV, &sock_path),
@@ -405,7 +404,19 @@ impl PagerLeaderCluster {
         let (agent_out_read, agent_out_write) = tokio::io::simplex(SIMPLEX_BUF);
 
         generation_tasks.push(tokio::task::spawn_local(async move {
-            let agent_config = AgentConfig::default();
+            let mut agent_config = AgentConfig::default();
+            let provider_model = "cluster-test".to_owned();
+            agent_config.model = Some(provider_model.clone());
+            agent_config.default_model_override = Some(provider_model.clone());
+            agent_config.config_models.insert(
+                provider_model.clone(),
+                ConfigModelOverride {
+                    model: Some(provider_model),
+                    base_url: Some(provider_base_url),
+                    api_key: Some("test-key-for-ci".to_owned()),
+                    ..Default::default()
+                },
+            );
             let auth_manager = Arc::new(agent_config.create_auth_manager());
             let (gw_tx, gw_rx) = tokio::sync::mpsc::unbounded_channel();
             let gateway = GatewaySender::new(gw_tx);
@@ -420,11 +431,7 @@ impl PagerLeaderCluster {
                     tokio::task::spawn_local(fut);
                 },
             );
-            tokio::task::spawn_local(
-                GatewayReceiver::new(gw_rx, conn)
-                    .with_on_meta(xai_file_utils::trace_context::span_from_meta_traceparent)
-                    .run(),
-            );
+            tokio::task::spawn_local(GatewayReceiver::new(gw_rx, conn).run());
             let _ = handle_io.await;
         }));
 
@@ -582,8 +589,10 @@ impl PagerLeaderCluster {
             let _: acp::AuthenticateResponse = bounded(
                 "authenticate",
                 acp_send(
-                    acp::AuthenticateRequest::new(acp::AuthMethodId::new("xai.api_key"))
-                        .meta(serde_json::json!({ "headless": true }).as_object().cloned()),
+                    acp::AuthenticateRequest::new(acp::AuthMethodId::new(
+                        PROVIDER_API_KEY_METHOD_ID,
+                    ))
+                    .meta(serde_json::json!({ "headless": true }).as_object().cloned()),
                     &tx,
                 ),
             )

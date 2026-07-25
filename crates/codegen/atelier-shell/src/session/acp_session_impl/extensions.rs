@@ -3,8 +3,8 @@
 use std::rc::Rc;
 use std::sync::Weak;
 
-use xai_agent_lifecycle::LocalExtensionRegistry;
-use xai_agent_lifecycle::LocalExtensionRegistryBuilder;
+use atelier_agent_lifecycle::LocalExtensionRegistry;
+use atelier_agent_lifecycle::LocalExtensionRegistryBuilder;
 
 use super::*;
 

@@ -5,7 +5,7 @@ use super::*;
 
 #[derive(Debug)]
 pub(super) struct MemoryFlushSnapshot {
-    counts: xai_chat_state::ConversationCounts,
+    counts: atelier_chat_state::ConversationCounts,
     chat_history: Vec<ChatRequestMessage>,
 }
 
@@ -303,7 +303,7 @@ impl SessionActor {
             DreamStatus::Skipped(reason) => format!("skipped: {reason}"),
             DreamStatus::Failed(err) => format!("failed: {err}"),
         };
-        self.send_xai_notification(XaiSessionUpdate::MemoryDreamCompleted {
+        self.send_extension_notification(ExtensionSessionUpdate::MemoryDreamCompleted {
             result: dream_result_str,
             path: dream_path,
         })
@@ -376,7 +376,7 @@ impl SessionActor {
         tracing::info!(target: atelier_telemetry::memory_log::TARGET, "MEMORY_FLUSH: starting");
         let flush_start = std::time::Instant::now();
 
-        self.send_xai_notification(XaiSessionUpdate::MemoryFlushStarted)
+        self.send_extension_notification(ExtensionSessionUpdate::MemoryFlushStarted)
             .await;
 
         let result = async {
@@ -636,7 +636,7 @@ impl SessionActor {
         });
 
         self.memory.release_flush_lock();
-        self.send_xai_notification(XaiSessionUpdate::MemoryFlushCompleted {
+        self.send_extension_notification(ExtensionSessionUpdate::MemoryFlushCompleted {
             result: outcome,
             path: flush_path,
         })
@@ -651,7 +651,9 @@ impl SessionActor {
             self.chat_state_handle.get_conversation(),
         );
         let chat_history = crate::sampling::conversation_to_chat_messages(
-            xai_chat_state::compaction_utils::prepare_conversation_for_summarization(conversation),
+            atelier_chat_state::compaction_utils::prepare_conversation_for_summarization(
+                conversation,
+            ),
         );
         MemoryFlushSnapshot {
             counts,

@@ -44,7 +44,7 @@ pub struct PermissionEvent {
     /// Effective permission mode governing this decision (not the trigger):
     /// "ask" | "auto" | "always-approve". Hyphenated to match
     /// `config.ui.permission_mode` in the same trace (differs from the telemetry
-    /// enum's underscore Mixpanel serde).
+    /// enum's underscore local-metrics serde).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permission_mode: Option<String>,
     /// The trigger that produced this decision, distinct from `prompt_outcome`

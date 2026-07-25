@@ -63,7 +63,7 @@ fn failing_am() -> Arc<AuthManager> {
     am
 }
 
-fn ok_result(text: &str) -> Result<ToolRunResult, xai_tool_runtime::ToolError> {
+fn ok_result(text: &str) -> Result<ToolRunResult, atelier_tool_runtime::ToolError> {
     Ok(ToolRunResult {
         output: ToolOutput::Text(text.to_owned().into()),
         prompt_text: text.to_owned(),
@@ -71,8 +71,8 @@ fn ok_result(text: &str) -> Result<ToolRunResult, xai_tool_runtime::ToolError> {
     })
 }
 
-fn err(msg: &str) -> Result<ToolRunResult, xai_tool_runtime::ToolError> {
-    Err(xai_tool_runtime::ToolError::invalid_arguments(
+fn err(msg: &str) -> Result<ToolRunResult, atelier_tool_runtime::ToolError> {
+    Err(atelier_tool_runtime::ToolError::invalid_arguments(
         msg.to_owned(),
     ))
 }
@@ -80,13 +80,12 @@ fn err(msg: &str) -> Result<ToolRunResult, xai_tool_runtime::ToolError> {
 /// Production-shaped HTTP failure (image_gen / video_gen emit this on
 /// any non-success status). Use for retry tests that should exercise
 /// the structured status-code path rather than the string fallback.
-fn http_err(status: u16, msg: &str) -> Result<ToolRunResult, xai_tool_runtime::ToolError> {
-    Err(
-        xai_tool_runtime::ToolError::new(xai_tool_runtime::ToolErrorKind::Custom, msg.to_owned())
-            .with_details(
-                serde_json::json!({"code": "http_failure", HTTP_STATUS_DETAILS_KEY: status}),
-            ),
+fn http_err(status: u16, msg: &str) -> Result<ToolRunResult, atelier_tool_runtime::ToolError> {
+    Err(atelier_tool_runtime::ToolError::new(
+        atelier_tool_runtime::ToolErrorKind::Custom,
+        msg.to_owned(),
     )
+    .with_details(serde_json::json!({"code": "http_failure", HTTP_STATUS_DETAILS_KEY: status})))
 }
 
 // ── is_auth_tool_error ────────────────────────────────────────
@@ -97,14 +96,14 @@ fn http_err(status: u16, msg: &str) -> Result<ToolRunResult, xai_tool_runtime::T
 fn is_auth_tool_error_classification() {
     // (expected, error) — covers every branch + a sample of negatives
     // a careless edit could plausibly break.
-    let cases: Vec<(bool, xai_tool_runtime::ToolError)> = vec![
+    let cases: Vec<(bool, atelier_tool_runtime::ToolError)> = vec![
         // Primary path: image_gen / video_gen now surface 401s as
         // structured custom errors with status in details; classifier
         // matches the status code, not the rendered string.
         (
             true,
-            xai_tool_runtime::ToolError::new(
-                xai_tool_runtime::ToolErrorKind::Custom,
+            atelier_tool_runtime::ToolError::new(
+                atelier_tool_runtime::ToolErrorKind::Custom,
                 "Image generation failed with HTTP 401 Unauthorized: missing token",
             )
             .with_details(
@@ -118,8 +117,8 @@ fn is_auth_tool_error_classification() {
         // that surfaces as a spurious auth_required teardown.
         (
             false,
-            xai_tool_runtime::ToolError::new(
-                xai_tool_runtime::ToolErrorKind::Custom,
+            atelier_tool_runtime::ToolError::new(
+                atelier_tool_runtime::ToolErrorKind::Custom,
                 "Forbidden: ZDR-blocked operation",
             )
             .with_details(
@@ -132,8 +131,8 @@ fn is_auth_tool_error_classification() {
         // the keyword fallback would mis-fire here.
         (
             false,
-            xai_tool_runtime::ToolError::new(
-                xai_tool_runtime::ToolErrorKind::Custom,
+            atelier_tool_runtime::ToolError::new(
+                atelier_tool_runtime::ToolErrorKind::Custom,
                 "Forbidden: unauthorized to perform this action",
             )
             .with_details(
@@ -143,8 +142,8 @@ fn is_auth_tool_error_classification() {
         // Negative: any other non-success HTTP status falls through.
         (
             false,
-            xai_tool_runtime::ToolError::new(
-                xai_tool_runtime::ToolErrorKind::Custom,
+            atelier_tool_runtime::ToolError::new(
+                atelier_tool_runtime::ToolErrorKind::Custom,
                 "internal server error",
             )
             .with_details(
@@ -156,30 +155,34 @@ fn is_auth_tool_error_classification() {
         // catches it via the message-string fallback.
         (
             true,
-            xai_tool_runtime::ToolError::invalid_arguments("response: invalid api key for project"),
+            atelier_tool_runtime::ToolError::invalid_arguments(
+                "response: invalid api key for project",
+            ),
         ),
         // Fallback path: OAuth 2.0 `invalid_token` payload (RFC 6749)
         // surfaced as raw JSON without a structured status code.
         (
             true,
-            xai_tool_runtime::ToolError::invalid_arguments(r#"{"error":"invalid_token"}"#),
+            atelier_tool_runtime::ToolError::invalid_arguments(r#"{"error":"invalid_token"}"#),
         ),
         // Fallback path: case-insensitive "unauthorized" anywhere in
         // the message body.
         (
             true,
-            xai_tool_runtime::ToolError::invalid_arguments("UNAUTHORIZED"),
+            atelier_tool_runtime::ToolError::invalid_arguments("UNAUTHORIZED"),
         ),
         // Negative: transport failure must not trigger a token refresh.
         (
             false,
-            xai_tool_runtime::ToolError::invalid_arguments("Image generation timed out after 60s"),
+            atelier_tool_runtime::ToolError::invalid_arguments(
+                "Image generation timed out after 60s",
+            ),
         ),
         // Negative: structural not-found error; not a network response.
         (
             false,
-            xai_tool_runtime::ToolError::not_found(
-                xai_tool_protocol::ToolId::new("image_gen").expect("valid"),
+            atelier_tool_runtime::ToolError::not_found(
+                atelier_tool_protocol::ToolId::new("image_gen").expect("valid"),
                 "Tool not found: image_gen",
             ),
         ),
@@ -188,7 +191,7 @@ fn is_auth_tool_error_classification() {
         // match accidentally re-introduced into the fallback path).
         (
             false,
-            xai_tool_runtime::ToolError::invalid_arguments("request id req_401abc failed"),
+            atelier_tool_runtime::ToolError::invalid_arguments("request id req_401abc failed"),
         ),
     ];
 

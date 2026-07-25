@@ -48,8 +48,8 @@ fn provider_snapshot_serialization_redacts_all_extra_header_values() {
     let snapshot = ProviderSnapshot {
         providers: vec![provider_with_headers()],
         models: Vec::new(),
-        default_model: None,
         model_provider_overrides: Default::default(),
+        experimental_model_features: Default::default(),
     };
     let encoded = serde_json::to_string(&snapshot).unwrap();
 
@@ -130,16 +130,37 @@ fn provider_validation_rejects_credential_headers_with_a_clear_error() {
 }
 
 #[test]
+fn provider_validation_rejects_user_agent_overrides() {
+    for header_name in ["User-Agent", "user-agent", "USER_AGENT"] {
+        let mut provider = provider_with_headers();
+        provider.extra_headers.clear();
+        provider
+            .extra_headers
+            .insert(header_name.to_owned(), "secret-agent-override".to_owned());
+
+        let error = provider.validate().unwrap_err().to_string();
+        assert!(
+            error.contains(header_name),
+            "error omitted header name: {error}"
+        );
+        assert!(
+            error.to_ascii_lowercase().contains("user-agent"),
+            "error did not explain the reserved User-Agent boundary: {error}"
+        );
+        assert!(!error.contains("secret-agent-override"));
+    }
+}
+
+#[test]
 fn registry_rejects_persisted_credential_headers_before_loading_them() {
     let directory = tempdir().unwrap();
     let path = directory.path().join("providers.toml");
     std::fs::write(
         &path,
         r#"
-schema_version = 1
+schema_version = 2
 
 [providers.proxy]
-id = "proxy"
 display_name = "Proxy"
 protocol = "open_ai_responses"
 base_url = "https://models.example.test/v1"
@@ -147,8 +168,6 @@ credential = { type = "none" }
 discovery = { type = "static" }
 extra_headers = { Authorization = "Bearer persisted-secret" }
 enabled = true
-
-[models]
 "#,
     )
     .unwrap();

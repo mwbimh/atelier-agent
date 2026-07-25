@@ -15,7 +15,7 @@ use crate::types::resources::Terminal;
 use crate::types::template_renderer::TemplateRenderer;
 use crate::types::tool::ToolKind;
 use crate::types::tool::ToolNamespace;
-use xai_tool_types::{KillTaskOutput, KillTaskResult, KillTaskToolInput};
+use atelier_tool_types::{KillTaskOutput, KillTaskResult, KillTaskToolInput};
 
 // ───────────────────────────────────────────────────────────────────────────
 // Tool implementation
@@ -80,12 +80,14 @@ impl crate::types::tool_metadata::ToolMetadata for KillTaskTool {
         // renders it context-aware from the finalized toolset. This static
         // fallback mirrors the default atelier-build toolset on the current OS.
         static DESC: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
-            xai_tool_types::build_kill_task_description(&xai_tool_types::KillTaskToolNaming {
-                monitor_tool: Some("monitor"),
-                subagent_present: true,
-                bash_present: true,
-                is_windows: cfg!(not(unix)),
-            })
+            atelier_tool_types::build_kill_task_description(
+                &atelier_tool_types::KillTaskToolNaming {
+                    monitor_tool: Some("monitor"),
+                    subagent_present: true,
+                    bash_present: true,
+                    is_windows: cfg!(not(unix)),
+                },
+            )
         });
         &DESC
     }
@@ -117,7 +119,7 @@ impl crate::types::tool_metadata::ToolMetadata for KillTaskTool {
         use crate::types::tool_metadata::ToolMetadata as TM;
         let task_tool = Expr::Value(ToolRequirement::Tool {
             namespace: TM::tool_namespace(&TaskTool).to_string(),
-            id: xai_tool_runtime::Tool::id(&TaskTool).to_string(),
+            id: atelier_tool_runtime::Tool::id(&TaskTool).to_string(),
             if_params: None,
         });
         let mut arms =
@@ -129,7 +131,7 @@ impl crate::types::tool_metadata::ToolMetadata for KillTaskTool {
 
 /// Resolve the model-facing `kill_task` description from the finalized toolset,
 /// honoring an explicit config override. Wording lives in the shared
-/// [`xai_tool_types::build_kill_task_description`] builder so the CLI and
+/// [`atelier_tool_types::build_kill_task_description`] builder so the CLI and
 /// prod-chat can't drift; the monitor / subagent / bash clauses follow the
 /// tools actually registered this turn, and the kill verb follows the host OS.
 fn kill_task_description(
@@ -142,7 +144,7 @@ fn kill_task_description(
             ovr.to_string()
         });
     }
-    xai_tool_types::build_kill_task_description(&xai_tool_types::KillTaskToolNaming {
+    atelier_tool_types::build_kill_task_description(&atelier_tool_types::KillTaskToolNaming {
         monitor_tool: renderer.tool_for_kind(ToolKind::Monitor),
         subagent_present: renderer.tool_for_kind(ToolKind::Task).is_some(),
         bash_present: renderer.tool_for_kind(ToolKind::Execute).is_some(),
@@ -150,28 +152,28 @@ fn kill_task_description(
     })
 }
 
-impl xai_tool_runtime::Tool for KillTaskTool {
+impl atelier_tool_runtime::Tool for KillTaskTool {
     type Args = KillTaskToolInput;
     type Output = KillTaskOutput;
 
-    fn id(&self) -> xai_tool_protocol::ToolId {
-        xai_tool_protocol::ToolId::new("kill_task").expect("valid tool id")
+    fn id(&self) -> atelier_tool_protocol::ToolId {
+        atelier_tool_protocol::ToolId::new("kill_task").expect("valid tool id")
     }
 
     fn description(
         &self,
-        _ctx: &::xai_tool_runtime::ListToolsContext,
-    ) -> xai_tool_types::ToolDescription {
-        xai_tool_types::ToolDescription::new(
+        _ctx: &::atelier_tool_runtime::ListToolsContext,
+    ) -> atelier_tool_types::ToolDescription {
+        atelier_tool_types::ToolDescription::new(
             "kill_task",
             crate::types::tool_metadata::ToolMetadata::description_template(self),
         )
     }
 
-    fn capabilities(&self) -> xai_tool_protocol::ToolCapabilities {
-        xai_tool_protocol::ToolCapabilities {
+    fn capabilities(&self) -> atelier_tool_protocol::ToolCapabilities {
+        atelier_tool_protocol::ToolCapabilities {
             is_read_only: false,
-            tool_scope: Some(xai_tool_protocol::ToolScope::Write),
+            tool_scope: Some(atelier_tool_protocol::ToolScope::Write),
             ..Default::default()
         }
     }
@@ -183,9 +185,9 @@ impl xai_tool_runtime::Tool for KillTaskTool {
     )]
     async fn run(
         &self,
-        ctx: xai_tool_runtime::ToolCallContext,
+        ctx: atelier_tool_runtime::ToolCallContext,
         input: KillTaskToolInput,
-    ) -> Result<KillTaskOutput, xai_tool_runtime::ToolError> {
+    ) -> Result<KillTaskOutput, atelier_tool_runtime::ToolError> {
         use crate::types::tool_metadata::shared_resources;
         let resources = shared_resources(&ctx)?;
 
@@ -273,10 +275,10 @@ mod tests {
         call_id: &str,
         resources: SharedResources,
         version: &str,
-    ) -> xai_tool_runtime::ToolCallContext {
+    ) -> atelier_tool_runtime::ToolCallContext {
         let mut ctx = test_ctx_with_call_id(resources, call_id);
         ctx.extensions
-            .insert(xai_tool_runtime::BehaviorVersion(version.to_owned()));
+            .insert(atelier_tool_runtime::BehaviorVersion(version.to_owned()));
         ctx
     }
 
@@ -333,7 +335,7 @@ mod tests {
     #[test]
     fn tool_name_and_description() {
         let tool = KillTaskTool;
-        assert_eq!(xai_tool_runtime::Tool::id(&tool).as_str(), "kill_task");
+        assert_eq!(atelier_tool_runtime::Tool::id(&tool).as_str(), "kill_task");
         // The static fallback is the shared builder's default atelier-build
         // rendering (monitor + task + bash present) for the current OS.
         let desc = crate::types::tool_metadata::ToolMetadata::description_template(&tool);
@@ -475,7 +477,7 @@ mod tests {
     async fn kill_task_killed() {
         let resources = resources_with_terminal(KO::Killed);
         let tool = KillTaskTool;
-        let result = xai_tool_runtime::Tool::run(
+        let result = atelier_tool_runtime::Tool::run(
             &tool,
             test_ctx_with_call_id(resources.into_shared(), "tool_call"),
             KillTaskToolInput {
@@ -498,7 +500,7 @@ mod tests {
     async fn kill_task_already_exited() {
         let resources = resources_with_terminal(KO::AlreadyExited);
         let tool = KillTaskTool;
-        let result = xai_tool_runtime::Tool::run(
+        let result = atelier_tool_runtime::Tool::run(
             &tool,
             test_ctx_with_call_id(resources.into_shared(), "tool_call"),
             KillTaskToolInput {
@@ -518,7 +520,7 @@ mod tests {
     async fn kill_task_not_found_returns_typed_output() {
         let resources = resources_with_terminal(KO::NotFound);
         let tool = KillTaskTool;
-        let result = xai_tool_runtime::Tool::run(
+        let result = atelier_tool_runtime::Tool::run(
             &tool,
             test_ctx_with_call_id(resources.into_shared(), "tool_call"),
             KillTaskToolInput {
@@ -544,7 +546,7 @@ mod tests {
     async fn errors_when_terminal_not_in_resources() {
         let resources = Resources::new();
         let tool = KillTaskTool;
-        let result = xai_tool_runtime::Tool::run(
+        let result = atelier_tool_runtime::Tool::run(
             &tool,
             test_ctx_with_call_id(resources.into_shared(), "tool_call"),
             KillTaskToolInput {
@@ -569,7 +571,7 @@ mod tests {
         let resources = resources_with_terminal(KO::NotFound);
         let tool = KillTaskTool;
 
-        let result = xai_tool_runtime::Tool::run(
+        let result = atelier_tool_runtime::Tool::run(
             &tool,
             make_ctx_with_version("test-call", resources.into_shared(), "legacy-0.4.10"),
             KillTaskToolInput {
@@ -595,7 +597,7 @@ mod tests {
         let resources = resources_with_terminal(KO::NotFound);
         let tool = KillTaskTool;
 
-        let result = xai_tool_runtime::Tool::run(
+        let result = atelier_tool_runtime::Tool::run(
             &tool,
             test_ctx_with_call_id(resources.into_shared(), "test-call"),
             KillTaskToolInput {
@@ -660,7 +662,7 @@ mod tests {
                 .unwrap();
         });
 
-        let result = xai_tool_runtime::Tool::run(
+        let result = atelier_tool_runtime::Tool::run(
             &KillTaskTool,
             test_ctx_with_call_id(shared, "test-call"),
             KillTaskToolInput {
@@ -699,7 +701,7 @@ mod tests {
                 .unwrap();
         });
 
-        let result = xai_tool_runtime::Tool::run(
+        let result = atelier_tool_runtime::Tool::run(
             &KillTaskTool,
             test_ctx_with_call_id(shared, "test-call"),
             KillTaskToolInput {
@@ -736,7 +738,7 @@ mod tests {
                 .unwrap();
         });
 
-        let result = xai_tool_runtime::Tool::run(
+        let result = atelier_tool_runtime::Tool::run(
             &KillTaskTool,
             test_ctx_with_call_id(shared, "test-call"),
             KillTaskToolInput {

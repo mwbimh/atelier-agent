@@ -38,7 +38,7 @@ fn dashboard_bare_stop_keeps_an_interactive_command_draft() {
 
 #[test]
 fn dashboard_bare_runtime_configuration_commands_keep_interactive_drafts() {
-    for command in ["provider", "roles", "model-config"] {
+    for command in ["provider", "roles", "wire-api"] {
         let mut app = test_app();
         app.active_view = ActiveView::AgentDashboard;
         ensure_dashboard_state(&mut app);
@@ -71,7 +71,7 @@ fn dashboard_complete_runtime_commands_dispatch_the_expected_control_effects() {
         ),
         ("/provider test allm", "_atelier/provider/test"),
         ("/roles list", "_atelier/role/list"),
-        ("/model-config list", "_atelier/model/list"),
+        ("/wire-api list", "_atelier/model/list"),
         ("/tasks", "_atelier/task/list"),
         ("/attach task-1", "_atelier/task/attach"),
         ("/stop task-1", "_atelier/task/cancel"),
@@ -1738,12 +1738,8 @@ fn dashboard_slash_model_stages_pending_model() {
     open_dashboard(&mut app);
     let effects = dispatch_dashboard_dispatch_slash(&mut app, "/model atelier-4.5".into());
     assert!(
-        matches!(
-            effects.as_slice(),
-            [Effect::PersistPreferredModel { model_id, reasoning_effort: None }]
-                if model_id.0.as_ref() == "atelier-4.5"
-        ),
-        "dashboard model selection must persist roles.main without spawning: {effects:?}"
+        effects.is_empty(),
+        "dashboard model selection must only stage the next Session: {effects:?}"
     );
     assert!(app.agents.is_empty(), "no session should be created");
     let pending = app
@@ -5089,7 +5085,7 @@ fn dashboard_peek_reply_with_image_sends_blocks() {
             },
         ));
         let img = crate::prompt_images::PastedImage {
-            element_id: xai_ratatui_textarea::ElementId::from_raw(0),
+            element_id: atelier_ratatui_textarea::ElementId::from_raw(0),
             display_number: 0,
             mime_type: "image/png".into(),
             dimensions: Some((10, 10)),
@@ -5149,7 +5145,7 @@ fn dashboard_peek_reply_image_with_whitespace_survives_rewind_restore() {
         d.peek_reply.set_text("   ");
         d.peek_reply.set_cursor(3);
         let img = crate::prompt_images::PastedImage {
-            element_id: xai_ratatui_textarea::ElementId::from_raw(0),
+            element_id: atelier_ratatui_textarea::ElementId::from_raw(0),
             display_number: 0,
             mime_type: "image/png".into(),
             dimensions: Some((10, 10)),
@@ -5223,7 +5219,7 @@ fn dashboard_peek_reply_with_image_queues_images() {
             },
         ));
         let img = crate::prompt_images::PastedImage {
-            element_id: xai_ratatui_textarea::ElementId::from_raw(0),
+            element_id: atelier_ratatui_textarea::ElementId::from_raw(0),
             display_number: 0,
             mime_type: "image/png".into(),
             dimensions: Some((10, 10)),

@@ -71,6 +71,42 @@ fn telemetry_is_explicitly_none_by_default() {
 }
 
 #[test]
+fn explicit_child_handle_list_marks_standard_handles_inheritable() {
+    let source = include_str!("../src/process.rs");
+    assert!(source.contains("SetHandleInformation"));
+    assert!(source.contains("HANDLE_FLAG_INHERIT"));
+}
+
+#[test]
+fn restricted_child_uses_a_runner_owned_private_desktop() {
+    let source = include_str!("../src/process.rs");
+    assert!(source.contains("CreateDesktopW"));
+    assert!(source.contains("lpDesktop"));
+    assert!(!source.contains(r#"Winsta0\\Default"#));
+}
+
+#[test]
+fn token_policy_supports_windows_loader_without_granting_resource_access() {
+    let source = include_str!("../src/token.rs");
+    assert!(source.contains("S-1-5-32-545"));
+    assert!(source.contains("S-1-1-0"));
+    assert!(source.contains("Everyone must also be"));
+    assert!(source.contains("normal token access check still gates every resource"));
+}
+
+#[test]
+fn persistent_account_runner_loads_its_user_profile() {
+    let source = include_str!("../src/logon_runner.rs");
+    assert!(source.contains("LOGON_WITH_PROFILE"));
+}
+
+#[test]
+fn restricted_child_environment_is_based_on_the_sandbox_account() {
+    let source = include_str!("../src/logon_runner.rs");
+    assert!(source.contains("environment_for_sandbox_child"));
+}
+
+#[test]
 fn restricted_token_runner_executes_a_command() {
     if !restricted_token_supported_or_skip() {
         return;

@@ -23,11 +23,11 @@ use std::time::Duration;
 use tokio::sync::{Semaphore, mpsc};
 use tokio::time::Instant;
 
+use super::search_bootstrap_state;
 use super::search_fts::{SessionDoc, SessionSearchIndex, SessionSearchRow};
-use super::search_remote_sync;
 use super::{
-    ContentPeek, PromptExtractEvent, RawLinePeek, RawParamsPeek, StorageAdapter,
-    XAI_SESSION_UPDATE_METHOD, collect_prompts_from_events,
+    ATELIER_SESSION_UPDATE_METHOD, ContentPeek, PromptExtractEvent, RawLinePeek, RawParamsPeek,
+    StorageAdapter, collect_prompts_from_events,
 };
 use crate::session::info::Info;
 use crate::session::persistence::Summary;
@@ -274,10 +274,10 @@ fn search_db_path(root_dir: &Path) -> PathBuf {
     // Best-effort: the journal-mode classifier statfs's the parent dir.
     let _ = std::fs::create_dir_all(&sessions);
     let path = sessions.join("session_search.sqlite");
-    // Pre-resolve the per-host sibling (network mounts) so search_remote_sync's
+    // Pre-resolve the per-host sibling (network mounts) so bootstrap metadata
     // raw file ops (exists/compress/replace) target the same file the index
     // opens; resolution is idempotent, so the open re-resolving is a no-op.
-    xai_sqlite_journal::JournalMode::for_db_path(&path).effective_db_path(&path)
+    atelier_sqlite_journal::JournalMode::for_db_path(&path).effective_db_path(&path)
 }
 
 fn sqlite_to_io_error(error: rusqlite::Error) -> io::Error {
@@ -443,7 +443,7 @@ async fn handle_job(
 async fn has_completed_bootstrap_marker(root_dir: &Path) -> Option<bool> {
     let db_path = search_db_path(root_dir);
     tokio::task::spawn_blocking(move || {
-        search_remote_sync::try_read_last_bootstrap_at(&db_path)
+        search_bootstrap_state::try_read_last_bootstrap_at(&db_path)
             .map(|marker| marker.is_some())
             .ok()
     })
@@ -779,7 +779,7 @@ async fn reindex_all(root_dir: &Path, storage: &dyn StorageAdapter) -> io::Resul
     // Record bootstrap completion timestamp in the meta table.
     // Used by remote sync to determine local index staleness.
     let db_path_meta = search_db_path(root_dir);
-    if let Err(e) = search_remote_sync::write_last_bootstrap_at(&db_path_meta) {
+    if let Err(e) = search_bootstrap_state::write_last_bootstrap_at(&db_path_meta) {
         tracing::warn!(error = %e, "failed to write last_bootstrap_at metadata");
     }
 
@@ -921,7 +921,7 @@ fn collect_all_indexable_content_single_pass(updates_path: &Path) -> io::Result<
         let (raw_params, is_xai) = if let Ok(env) = serde_json::from_str::<RawLinePeek<'_>>(trimmed)
         {
             let raw = env.params.map(|p| p.get()).unwrap_or(trimmed);
-            let xai = env.method == Some(XAI_SESSION_UPDATE_METHOD);
+            let xai = env.method == Some(ATELIER_SESSION_UPDATE_METHOD);
             (raw, xai)
         } else {
             (trimmed, false)
@@ -937,7 +937,7 @@ fn collect_all_indexable_content_single_pass(updates_path: &Path) -> io::Result<
 
         // Content events (user messages, assistant responses, tool calls,
         // thoughts) come from the standard ACP protocol ("session/update").
-        // Control events (rewind markers) come from xAI extensions
+        // Control events (rewind markers) come from Atelier extensions
         // ("_atelier/session/update"). Dispatch on source first, then tag.
         if !is_xai {
             // ── ACP content events ──────────────────────────────────
@@ -1176,7 +1176,7 @@ fn collect_delta_content(updates_path: &Path, offset: u64) -> io::Result<DeltaRe
         let (raw_params, is_xai) = if let Ok(env) = serde_json::from_str::<RawLinePeek<'_>>(trimmed)
         {
             let raw = env.params.map(|p| p.get()).unwrap_or(trimmed);
-            let xai = env.method == Some(XAI_SESSION_UPDATE_METHOD);
+            let xai = env.method == Some(ATELIER_SESSION_UPDATE_METHOD);
             (raw, xai)
         } else {
             (trimmed, false)
@@ -1387,7 +1387,7 @@ mod tests {
         )
     }
 
-    fn xai_update(session_update_json: &str) -> String {
+    fn extension_update(session_update_json: &str) -> String {
         format!(
             r#"{{"timestamp":1,"method":"_atelier/session/update","params":{{"sessionId":"s","update":{session_update_json}}}}}"#
         )
@@ -1502,7 +1502,7 @@ mod tests {
             acp_update(
                 r#"{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"second reply"}}"#,
             ),
-            xai_update(
+            extension_update(
                 r#"{"sessionUpdate":"rewind_marker","target_prompt_index":1,"created_at":"2024-01-01"}"#,
             ),
             acp_update(
@@ -1869,7 +1869,7 @@ mod tests {
 
         // Append a rewind marker in the delta window
         let delta = vec![
-            xai_update(
+            extension_update(
                 r#"{"sessionUpdate":"rewind_marker","target_prompt_index":0,"created_at":"2024-01-01"}"#,
             ),
             acp_update(
@@ -1981,7 +1981,7 @@ mod tests {
         assert_eq!(has_completed_bootstrap_marker(root).await, Some(false));
 
         // A completed bootstrap at the current schema version → marker set.
-        search_remote_sync::write_last_bootstrap_at(&db_path).unwrap();
+        search_bootstrap_state::write_last_bootstrap_at(&db_path).unwrap();
         assert_eq!(has_completed_bootstrap_marker(root).await, Some(true));
 
         // Simulate an older (pre-ratchet) binary having wiped and re-stamped
@@ -2000,7 +2000,7 @@ mod tests {
         );
 
         // A subsequent completed bootstrap restores the marker.
-        search_remote_sync::write_last_bootstrap_at(&db_path).unwrap();
+        search_bootstrap_state::write_last_bootstrap_at(&db_path).unwrap();
         assert_eq!(has_completed_bootstrap_marker(root).await, Some(true));
     }
 

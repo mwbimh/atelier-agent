@@ -492,12 +492,12 @@ fn clone_repo_to_path(
     }
 
     let mut cmd = Command::new("git");
-    xai_tty_utils::detach_std_command(&mut cmd);
+    atelier_tty_utils::detach_std_command(&mut cmd);
     cmd.arg("clone")
         .arg("--depth")
         .arg("1")
         .stdin(std::process::Stdio::null())
-        .envs(xai_tty_utils::pager_env());
+        .envs(atelier_tty_utils::pager_env());
     if let Some(r) = git_ref {
         cmd.arg("--branch").arg(r);
     }
@@ -559,11 +559,11 @@ fn run_git_in(cwd: &Path, args: &[&str]) -> Result<(), String> {
 
 fn run_git_in_capture(cwd: &Path, args: &[&str]) -> Result<std::process::Output, String> {
     let mut cmd = Command::new("git");
-    xai_tty_utils::detach_std_command(&mut cmd);
+    atelier_tty_utils::detach_std_command(&mut cmd);
     cmd.args(args)
         .current_dir(cwd)
         .stdin(std::process::Stdio::null())
-        .envs(xai_tty_utils::pager_env());
+        .envs(atelier_tty_utils::pager_env());
     let output = cmd
         .output()
         .map_err(|e| format!("failed to run git {}: {e}", args.first().unwrap_or(&"")))?;
@@ -748,8 +748,8 @@ fn ensure_manifest_for_root_skills(
     }
 
     // Build a unique name from the source display name + relative path.
-    // e.g. source="xAI Marketplace", path="default-skills"
-    //   -> "xai-marketplace-default-skills"
+    // e.g. source="Atelier Marketplace", path="default-skills"
+    //   -> "atelier-marketplace-default-skills"
     let source_slug: String = source_display_name
         .chars()
         .map(|c| {
@@ -957,16 +957,14 @@ mod tests {
                 .find(|p| p.relative_path == "plugins/demo")
                 .unwrap();
 
-            unsafe {
-                std::env::set_var("XAI_ATELIER_TEST_FAIL_REGISTRY_SAVE_AFTER_SERIALIZE", "1")
-            };
+            unsafe { std::env::set_var("ATELIER_TEST_FAIL_REGISTRY_SAVE_AFTER_SERIALIZE", "1") };
             let result = update_from_marketplace_entry_transactional(
                 marketplace.path(),
                 &entry,
                 provenance(marketplace.path(), "plugins/demo"),
                 registry,
             );
-            unsafe { std::env::remove_var("XAI_ATELIER_TEST_FAIL_REGISTRY_SAVE_AFTER_SERIALIZE") };
+            unsafe { std::env::remove_var("ATELIER_TEST_FAIL_REGISTRY_SAVE_AFTER_SERIALIZE") };
 
             assert!(result.is_err());
             assert_eq!(

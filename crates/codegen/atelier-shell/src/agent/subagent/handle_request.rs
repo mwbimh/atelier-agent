@@ -14,16 +14,16 @@ use crate::session::{
 };
 use crate::terminal::AsyncTerminalRunner;
 use crate::tools::ToolContext;
-use crate::upload::trace::{
-    GCS_SCHEMA_VERSION, PromptMetadata, SubagentSpawnedRef, TurnResultMetadata,
-    local_sandbox_telemetry, upload_config, upload_metadata, upload_session_state,
-    upload_subagent_metadata, upload_turn_result,
+use crate::local_artifacts::artifacts::{
+    LOCAL_ARTIFACT_SCHEMA_VERSION, PromptMetadata, SubagentSpawnedRef, TurnResultMetadata,
+    local_sandbox_telemetry, write_config, write_metadata, write_session_state,
+    write_turn_result,
 };
-use crate::upload::turn::{PromptTraceContext, complete_prompt_trace};
-use xai_acp_lib::AcpAgentGatewaySender as GatewaySender;
+use crate::local_artifacts::turn::{ArtifactWriteWait, PromptTraceContext, complete_prompt_trace};
+use atelier_acp_runtime::AcpAgentGatewaySender as GatewaySender;
 use atelier_tools::implementations::atelier_build::task::types::*;
 use atelier_workspace::file_system::AsyncFileSystem;
-use xai_hunk_tracker::HunkTrackerHandle;
+use atelier_hunk_tracker::HunkTrackerHandle;
 use super::*;
 pub(super) fn task_model_override_error(
     requested: Option<&str>,
@@ -155,7 +155,7 @@ pub(crate) async fn handle_subagent_request(
             .map(|e| <&str>::from(e).to_string());
     }
     {
-        use xai_tool_types::SubagentIsolationMode;
+        use atelier_tool_types::SubagentIsolationMode;
         if effective_runtime.isolation == SubagentIsolationMode::None
             && definition.isolation
                 == Some(atelier_agent::config::IsolationMode::Worktree)
@@ -243,7 +243,7 @@ pub(crate) async fn handle_subagent_request(
         return;
     }
     let worktree_path = if let Some(ref source) = resume_source {
-        if effective_runtime.isolation != xai_tool_types::SubagentIsolationMode::None
+        if effective_runtime.isolation != atelier_tool_types::SubagentIsolationMode::None
             && source.worktree_path.is_none()
         {
             tracing::info!(
@@ -300,7 +300,7 @@ pub(crate) async fn handle_subagent_request(
                 }
             }
         }
-    } else if effective_runtime.isolation != xai_tool_types::SubagentIsolationMode::None
+    } else if effective_runtime.isolation != atelier_tool_types::SubagentIsolationMode::None
     {
         let source_cwd = parent_source_cwd(&ctx);
         let dest = match crate::session::worktree::worktree_base_dir_for_source(
@@ -317,18 +317,18 @@ pub(crate) async fn handle_subagent_request(
         };
         let source_clone = source_cwd;
         let subagent_id = request.id.clone();
-        let creation_mode: xai_fast_worktree::CreationMode = ctx.worktree_type.into();
+        let creation_mode: atelier_fast_worktree::CreationMode = ctx.worktree_type.into();
         let btrfs_delegate = crate::session::worktree::btrfs_delegate_from_env();
         match tokio::task::spawn_blocking(move || {
-                let mut builder = xai_fast_worktree::WorktreeBuilder::new(
+                let mut builder = atelier_fast_worktree::WorktreeBuilder::new(
                         &source_clone,
                         &dest,
                     )
                     .working_tree_mode(
-                        xai_fast_worktree::WorkingTreeMode::PreserveWorkingTree,
+                        atelier_fast_worktree::WorkingTreeMode::PreserveWorkingTree,
                     )
                     .creation_mode(creation_mode)
-                    .worktree_kind(xai_fast_worktree::WorktreeKind::Subagent)
+                    .worktree_kind(atelier_fast_worktree::WorktreeKind::Subagent)
                     .session_id(subagent_id);
                 if let Some(delegate) = btrfs_delegate {
                     builder = builder.btrfs_delegate(delegate);
@@ -615,45 +615,6 @@ pub(crate) async fn handle_subagent_request(
         effective_model_id: Some(effective_model_id.0.to_string()),
     };
     write_subagent_meta(&subagent_meta_dir, &subagent_meta);
-    if let (Some(bucket_url), Some(upload_method)) = (
-        &ctx.gcs_bucket_url,
-        &ctx.gcs_upload_method,
-    ) {
-        let gcs_meta = SubagentSessionMetadata::from_meta(
-            &subagent_meta,
-            Some(&*effective_model_id.0),
-            Some(&child_session_info.cwd),
-            None,
-            None,
-            None,
-            effective_runtime.reasoning_effort.as_deref(),
-            effective_runtime.role_name.as_deref(),
-            request.parent_prompt_id.as_deref(),
-            0,
-        );
-        let bucket = bucket_url.clone();
-        let method = upload_method.clone();
-        let auth_for_spawn = ctx.auth_manager.clone();
-        tokio::spawn(async move {
-            upload_subagent_metadata(&gcs_meta, &bucket, method, auth_for_spawn).await;
-        });
-    }
-    let gcs_upload_ctx = GcsUploadContext {
-        bucket_url: ctx.gcs_bucket_url.clone(),
-        upload_method: ctx.gcs_upload_method.clone(),
-        model_id: Some(effective_model_id.0.to_string()),
-        cwd: Some(child_session_info.cwd.clone()),
-        reasoning_effort: effective_runtime.reasoning_effort.clone(),
-        role_name: effective_runtime.role_name.clone(),
-        parent_prompt_id: request.parent_prompt_id.clone(),
-        auth_manager: ctx.auth_manager.clone(),
-        isolation_mode: Some(format!("{:?}", effective_runtime.isolation)),
-        capability_mode: effective_runtime
-            .capability_mode
-            .as_ref()
-            .map(|m| format!("{m:?}")),
-        depth: ctx.parent_depth + 1,
-    };
     emit_subagent_notification(
         gateway,
         &ctx.parent_session_id,
@@ -680,19 +641,6 @@ pub(crate) async fn handle_subagent_request(
         },
         ctx.parent_cmd_tx.as_ref(),
     );
-    let early_gcs_ctx = GcsUploadContext {
-        bucket_url: ctx.gcs_bucket_url.clone(),
-        upload_method: ctx.gcs_upload_method.clone(),
-        model_id: None,
-        cwd: None,
-        isolation_mode: None,
-        capability_mode: None,
-        reasoning_effort: effective_runtime.reasoning_effort.clone(),
-        role_name: effective_runtime.role_name.clone(),
-        parent_prompt_id: request.parent_prompt_id.clone(),
-        depth: 0,
-        auth_manager: ctx.auth_manager.clone(),
-    };
     let sampling_client = match crate::sampling::Client::new(
         effective_sampling_config.clone(),
     ) {
@@ -710,7 +658,6 @@ pub(crate) async fn handle_subagent_request(
                 &ctx.parent_session_id,
                 ctx.parent_cmd_tx.as_ref(),
                 0,
-                &early_gcs_ctx,
             );
             return;
         }
@@ -738,7 +685,6 @@ pub(crate) async fn handle_subagent_request(
                 &ctx.parent_session_id,
                 ctx.parent_cmd_tx.as_ref(),
                 0,
-                &early_gcs_ctx,
             );
             return;
         }
@@ -780,10 +726,9 @@ pub(crate) async fn handle_subagent_request(
     tool_ctx.monitor_event_buffer = Some(MonitorEventBuffer::default());
     tool_ctx.subagent_depth = ctx.parent_depth + 1;
     tool_ctx.lsp = ctx.lsp.clone();
-    let parent_traceparent = xai_file_utils::trace_context::current_traceparent();
     let tracker_child_cwd = child_session_info.cwd.clone();
     let tracker_model_id = effective_model_id.0.to_string();
-    let initial_child_tokens = xai_chat_state::estimate_conversation_tokens(
+    let initial_child_tokens = atelier_chat_state::estimate_conversation_tokens(
         &forked_conversation,
     );
     let model_entry = crate::agent::config::find_model_by_id(
@@ -793,7 +738,7 @@ pub(crate) async fn handle_subagent_request(
     let model_has_own_creds = model_entry
         .is_some_and(|entry| entry.has_own_credentials());
     let inherited_auth_type = subagent_auth_type(model_entry, &ctx.auth_method_id);
-    let credentials = xai_chat_state::Credentials {
+    let credentials = atelier_chat_state::Credentials {
         api_key: effective_sampling_config.api_key.clone(),
         auth_type: inherited_auth_type,
         alpha_test_key: ctx.alpha_test_key.clone(),
@@ -1110,7 +1055,7 @@ pub(crate) async fn handle_subagent_request(
             atelier_workspace::permission::ClientType::Generic,
             ctx.resolve_auto_compact_threshold_percent(&subagent_model_id),
             atelier_agent::DEFAULT_SYSTEM_PROMPT_LABEL.to_string(),
-            xai_chat_state::CompactionMode::Summary,
+            atelier_chat_state::CompactionMode::Summary,
             ctx.resolve_compaction_verbatim_input(),
             false,
             None,
@@ -1122,10 +1067,6 @@ pub(crate) async fn handle_subagent_request(
             ),
             false,
             subagent_fs_watch,
-            None,
-            None,
-            None,
-            None,
             false,
             false,
             std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
@@ -1198,7 +1139,6 @@ pub(crate) async fn handle_subagent_request(
             ctx.plugin_registry.clone(),
             None,
             ctx.models_manager.clone(),
-            parent_traceparent,
             ctx.permission_handle.clone(),
             ctx.api_key_provider.clone(),
             ctx.image_description_model.clone(),
@@ -1206,7 +1146,6 @@ pub(crate) async fn handle_subagent_request(
             ctx.workspace_ops.clone(),
             vec![],
             ctx.todo_gate,
-            std::mem::take(&mut ctx.remote_settings),
             std::mem::take(&mut ctx.laziness_debug_log),
             ctx.parent_terminal_backend.clone(),
             ctx.parent_scheduler_handle.clone(),
@@ -1229,7 +1168,6 @@ pub(crate) async fn handle_subagent_request(
                 &ctx.parent_session_id,
                 ctx.parent_cmd_tx.as_ref(),
                 start.elapsed().as_millis() as u64,
-                &gcs_upload_ctx,
             );
             return;
         }
@@ -1249,7 +1187,6 @@ pub(crate) async fn handle_subagent_request(
                 worktree_path.as_deref(),
                 worktree_freshly_created,
                 start.elapsed().as_millis() as u64,
-                &gcs_upload_ctx,
             )
             .await;
         return;
@@ -1307,30 +1244,9 @@ pub(crate) async fn handle_subagent_request(
                 acp::ContentBlock::Text(acp::TextContent::new(prompt_text))
             ],
             prompt_mode: crate::session::plan_mode::PromptMode::Agent,
-            artifact_upload_ctx: ctx
-                .gcs_bucket_url
-                .as_ref()
-                .and_then(|_| {
-                    ctx
-                        .gcs_upload_method
-                        .as_ref()
-                        .map(|method| crate::upload::manifest::ArtifactUploadContext {
-                            gcs_config: crate::session::repo_changes::TraceExportConfig {
-                                bucket_url: ctx.gcs_bucket_url.clone(),
-                                service_account_key: None,
-                                prefix_dir: None,
-                                gcs_prefix: Some(format!("{}/turn_0", child_session_id.0)),
-                                absolute_paths: false,
-                                archive_name_override: None,
-                                upload_method: method.clone(),
-                            },
-                            artifact_tracker: crate::upload::manifest::new_artifact_tracker(),
-                        })
-                }),
             client_identifier: None,
             screen_mode: None,
             verbatim: true,
-            traceparent: xai_file_utils::trace_context::current_traceparent(),
             json_schema: None,
             send_now: false,
             respond_to: prompt_tx,
@@ -1608,193 +1524,7 @@ pub(crate) async fn handle_subagent_request(
             }
         }
     };
-    if let Some(trace_gcs_config) = gcs_upload_ctx
-        .upload_method
-        .as_ref()
-        .map(|method| crate::session::repo_changes::TraceExportConfig {
-            bucket_url: gcs_upload_ctx.bucket_url.clone(),
-            service_account_key: None,
-            prefix_dir: None,
-            gcs_prefix: Some(format!("{}/turn_0", child_session_id.0)),
-            absolute_paths: false,
-            archive_name_override: None,
-            upload_method: method.clone(),
-        })
-    {
-        let (copy_tx, session_copy_rx) = tokio::sync::oneshot::channel();
-        let _ = child_handle
-            .cmd_tx
-            .send(SessionCommand::CopyFile {
-                respond_to: copy_tx,
-            });
-        let turn_messages: Option<xai_chat_state::TurnCapture> = {
-            let (tx, rx) = tokio::sync::oneshot::channel();
-            if child_handle
-                .cmd_tx
-                .send(SessionCommand::TakeTurnMessages {
-                    respond_to: tx,
-                })
-                .is_ok()
-            {
-                rx.await.ok().flatten()
-            } else {
-                None
-            }
-        };
-        let streaming_partial = crate::upload::turn::take_streaming_partial(
-                &child_handle.cmd_tx,
-                child_prompt_id.clone(),
-                result.success,
-                gcs_upload_ctx.model_id.clone(),
-            )
-            .await
-            .map(|mut cap| {
-                cap.reason = Some(
-                    if result.cancelled {
-                        "subagent_cancel".to_string()
-                    } else {
-                        "subagent_non_completed".to_string()
-                    },
-                );
-                cap
-            });
-        let mut permission_events = Vec::new();
-        while let Ok(event) = permission_rx.try_recv() {
-            permission_events.push(event);
-        }
-        let trace_ctx = PromptTraceContext {
-            gcs_config: trace_gcs_config,
-            session_info: child_handle.info.clone(),
-            turn_number: 0,
-            session_handle: child_handle.clone(),
-            session_registry_enabled: false,
-            upload_queue: None,
-            artifact_tracker: crate::upload::manifest::new_artifact_tracker(),
-            auth_manager: ctx.auth_manager.clone(),
-        };
-        let session_dir = crate::session::persistence::session_dir(&child_handle.info);
-        if let Ok(prompt_bytes) = std::fs::read(session_dir.join("system_prompt.txt")) {
-            let gcs_path = format!("{}/system_prompt.txt", child_session_id.0);
-            crate::upload::trace::upload_trace_artifact(
-                    &trace_ctx,
-                    &prompt_bytes,
-                    &gcs_path,
-                    "text/plain",
-                    "system_prompt",
-                )
-                .await;
-        }
-        if let Ok(ctx_bytes) = std::fs::read(session_dir.join("prompt_context.json")) {
-            let gcs_path = format!("{}/prompt_context.json", child_session_id.0);
-            crate::upload::trace::upload_trace_artifact(
-                    &trace_ctx,
-                    &ctx_bytes,
-                    &gcs_path,
-                    "application/json",
-                    "prompt_context",
-                )
-                .await;
-        }
-        upload_session_state(
-                &trace_ctx,
-                "before",
-                before_copy_rx,
-                crate::upload::turn::UploadWait::Confirm,
-            )
-            .await;
-        let subagent_auth = ctx.auth_manager.current();
-        let metadata = PromptMetadata {
-            schema_version: GCS_SCHEMA_VERSION.to_string(),
-            session_id: child_session_id.0.to_string(),
-            turn_number: 0,
-            request_id: child_prompt_id.clone(),
-            turn_started_at: turn_started_at.clone(),
-            repo_root: None,
-            remote_url: None,
-            user_id: subagent_auth.as_ref().map(|a| a.user_id.clone()),
-            user_email: subagent_auth.as_ref().and_then(|a| a.email.clone()),
-            team_id: subagent_auth.as_ref().and_then(|a| a.team_id.clone()),
-            client_source: Some("subagent".to_string()),
-            client_version: ctx.sampling_config.client_version.clone(),
-            model: gcs_upload_ctx.model_id.clone().unwrap_or_default(),
-            reasoning_effort: child_handle
-                .reasoning_effort
-                .map(|e| e.as_str().to_string()),
-            experiment_id: None,
-            host_os: std::env::consts::OS.to_string(),
-            host_arch: std::env::consts::ARCH.to_string(),
-            prompt_has_image: Some(false),
-            prompt_was_truncated: Some(false),
-            prompt_verbatim: Some(true),
-            cwd: Some(child_handle.info.cwd.clone()),
-            agent_type: Some(request.subagent_type.clone()),
-            shell_version: Some(atelier_version::VERSION.to_string()),
-            workspace_type: None,
-            sandbox: local_sandbox_telemetry(),
-        };
-        upload_metadata(&trace_ctx, metadata).await;
-        if let Some(ref agent_config) = ctx.agent_config {
-            upload_config(&trace_ctx, agent_config).await;
-        }
-        crate::upload::config_files::upload_config_files(&trace_ctx).await;
-        let resolved_model = child_handle
-            .get_model_metadata()
-            .await
-            .resolved_model_id
-            .or_else(|| gcs_upload_ctx.model_id.clone());
-        let turn_result_meta = TurnResultMetadata {
-            schema_version: "1",
-            request_id: child_prompt_id,
-            completed: result.success,
-            stop_reason: None,
-            total_tokens: None,
-            input_tokens: turn_token_totals.map(|t| t.0),
-            cached_input_tokens: turn_token_totals.map(|t| t.1),
-            output_tokens: turn_token_totals.map(|t| t.2),
-            error: result.error.clone(),
-            finished_at: chrono::Utc::now().to_rfc3339(),
-            signals: None,
-            turn_delta: None,
-            start_prompt_mode: Some(
-                crate::session::plan_mode::PromptMode::Agent.to_string(),
-            ),
-            end_prompt_mode: Some(
-                crate::session::plan_mode::PromptMode::Agent.to_string(),
-            ),
-            resolved_model,
-            subagents_spawned: vec![],
-        };
-        upload_turn_result(
-                &trace_ctx,
-                &turn_result_meta,
-                crate::upload::turn::UploadWait::Confirm,
-            )
-            .await;
-        match complete_prompt_trace(
-                trace_ctx,
-                permission_events,
-                session_copy_rx,
-                turn_messages,
-                streaming_partial,
-                crate::upload::turn::UploadWait::Confirm,
-            )
-            .await
-        {
-            Ok(_) => {
-                tracing::debug!(
-                    subagent_id = % request.id, child_session_id = % child_session_id.0,
-                    "Subagent trace artifacts uploaded"
-                );
-            }
-            Err(e) => {
-                tracing::warn!(
-                    subagent_id = % request.id, error = % e,
-                    "Subagent trace upload failed (non-fatal)"
-                );
-            }
-        }
-    }
-    update_subagent_meta_completed(&subagent_meta_dir, &result, &gcs_upload_ctx);
+    update_subagent_meta_completed(&subagent_meta_dir, &result);
     let final_status = result.status().to_string();
     let snapshot_dispose_enabled = ctx.resolve_subagent_worktree_snapshot_enabled();
     let telemetry_tokens = if result.tool_calls > 0 || result.success {

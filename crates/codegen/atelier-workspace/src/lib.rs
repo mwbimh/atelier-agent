@@ -13,6 +13,7 @@ pub mod config;
 pub mod daemonize;
 pub mod diag_server;
 pub mod discovery;
+pub mod environment;
 pub mod envrc;
 pub mod error;
 pub mod file_system;
@@ -29,18 +30,17 @@ pub mod mcp;
 pub mod permission;
 pub mod preview_supervisor;
 pub mod project_config;
-pub mod recovery;
 pub mod rpc_envelope;
 pub mod session;
 pub mod status_config;
 pub(crate) mod telemetry;
 pub use status_config::StatusConfig;
 pub mod trust;
-pub(crate) mod upload;
 pub mod util;
 pub mod worker;
 pub mod workspace_ops;
 pub mod worktree;
+pub use atelier_hunk_tracker::HunkTrackerHandle;
 pub use atelier_workspace_client::WorkspaceClient;
 pub use atelier_workspace_types::WorkspaceEvent;
 pub use capability::CapabilityMode;
@@ -49,6 +49,7 @@ pub use config::{
     AgentSessionConfig, DEFAULT_EVENT_BUFFER_CAPACITY, HookSourceConfig, IsolationMode,
     MemoryConfig, SessionContextFactory, SessionTerminalBackend, WorkspaceConfig,
 };
+pub use environment::{WorkspaceEnvironment, WorkspaceIdentity};
 pub use error::{WorkspaceError, WorkspaceResult};
 pub use file_system::*;
 pub use handle::{
@@ -59,21 +60,17 @@ pub use hub::HubConfig;
 pub use permission::*;
 pub use session::{WorkspaceSession, WorkspaceShared};
 pub use session::{file_state, git, jj};
-pub use upload::environment::{WorkspaceEnvironment, WorkspaceIdentity};
 pub use worker::{
     MAX_WORKER_FRAME_BYTES, WORKER_PROTOCOL_VERSION, WorkerProtocolError, WorkerRequest,
     WorkerResponse, WorkspaceWorkerClient, WorkspaceWorkerFs, is_worker_method, parse_worker_args,
     read_frame, run_worker, write_frame,
 };
 pub use workspace_ops::{WorkspaceOp, WorkspaceOps};
-pub use xai_hunk_tracker::HunkTrackerHandle;
 /// Zero-init every workspace metric family so idle panels render a `0` baseline
 /// instead of "No data". Idempotent; call once at workspace-server startup.
 pub fn init_metrics() {
     handle::init_metrics();
-    recovery::init_metrics();
     session::swap_policy::init_metrics();
-    upload::init_metrics();
     permission::init_metrics();
     hub_server::init_metrics();
 }
@@ -179,10 +176,6 @@ mod init_metrics_tests {
                 })
         };
         assert!(has(
-            "atelier_workspace_upload_outcome_total",
-            &[("phase", "tool_state"), ("outcome", "succeeded")]
-        ));
-        assert!(has(
             "atelier_workspace_rpc_requests_total",
             &[("method", "unknown"), ("result", "error")]
         ));
@@ -193,10 +186,6 @@ mod init_metrics_tests {
         assert!(has(
             "atelier_workspace_toolset_swap_rejected_total",
             &[("reason", "turn_active"), ("trigger", "update_tool_config")]
-        ));
-        assert!(has(
-            "atelier_workspace_orphan_lost_total",
-            &[("reason", "sha_mismatch")]
         ));
         assert!(
             families

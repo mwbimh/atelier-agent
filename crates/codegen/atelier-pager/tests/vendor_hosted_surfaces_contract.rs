@@ -30,7 +30,6 @@ fn vendor_hosted_media_and_feedback_have_no_runtime_entry_points() {
     for forbidden in [
         "feedback::FeedbackCommand",
         "voice::VoiceCommand",
-        "imagine::ImagineCommand",
         "imagine_video::ImagineVideoCommand",
     ] {
         assert!(
@@ -43,7 +42,6 @@ fn vendor_hosted_media_and_feedback_have_no_runtime_entry_points() {
         read("crates/codegen/atelier-tools/src/implementations/atelier_build/mod.rs");
     for forbidden in [
         "pub mod image_edit",
-        "ImageGenTool",
         "ImageEditTool",
         "ImageToVideoTool",
         "ReferenceToVideoTool",
@@ -57,12 +55,7 @@ fn vendor_hosted_media_and_feedback_have_no_runtime_entry_points() {
     let registry = read("crates/codegen/atelier-tools/src/registry/types.rs");
     let agent_builder = read("crates/codegen/atelier-agent/src/builder.rs");
     let agent_config = read("crates/codegen/atelier-agent/src/config.rs");
-    for forbidden in [
-        "ImageGenTool",
-        "ImageEditTool",
-        "ImageToVideoTool",
-        "ReferenceToVideoTool",
-    ] {
+    for forbidden in ["ImageEditTool", "ImageToVideoTool", "ReferenceToVideoTool"] {
         assert!(
             !registry.contains(forbidden),
             "tool registry exposes {forbidden}"
@@ -76,6 +69,34 @@ fn vendor_hosted_media_and_feedback_have_no_runtime_entry_points() {
             "built-in toolset contains {forbidden}"
         );
     }
+}
+
+#[test]
+fn xai_hosted_tools_fail_closed_without_explicit_provider_capabilities() {
+    let provider = read("crates/codegen/atelier-provider/src/lib.rs");
+    let agent_builder = read("crates/codegen/atelier-agent/src/builder.rs");
+    let agent_ops = read("crates/codegen/atelier-shell/src/agent/mvp_agent/agent_ops.rs");
+
+    assert!(
+        !provider.contains("pub x_search:"),
+        "x_search must not be enabled until the Provider/model schema can express it explicitly"
+    );
+    assert!(
+        !provider.contains("pub video_generation:"),
+        "video generation must not be enabled until the Provider/model schema can express it explicitly"
+    );
+    assert!(
+        !agent_builder.contains("HostedTool::XSearch"),
+        "AgentBuilder must not inject xAI XSearch from the generic backend-search toggle"
+    );
+    assert!(
+        agent_ops.contains("ImageGenConfig::Disabled"),
+        "agent construction must keep Imagine disabled until the exact Provider/model route is resolved"
+    );
+    assert!(
+        agent_ops.contains("VideoGenConfig::Disabled"),
+        "video generation must remain fail-closed without an exact Provider/model capability"
+    );
 }
 
 #[test]
@@ -96,7 +117,7 @@ fn retained_local_surfaces_do_not_contain_vendor_endpoints() {
         let Ok(source) = fs::read_to_string(&path) else {
             continue;
         };
-        for forbidden in ["api.x.ai", "xAI Imagine", "xAI Video Generation"] {
+        for forbidden in ["api.x.ai"] {
             assert!(
                 !source.contains(forbidden),
                 "{} still contains vendor endpoint/capability marker {forbidden:?}",

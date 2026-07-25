@@ -174,11 +174,11 @@ fn plugin_cta_catalog_reload_empty_candidates_resets_matched_phase() {
         cta.hit_connect.rect = Some(ratatui::layout::Rect::new(0, 0, 9, 1));
         cta.hit_dismiss.rect = Some(ratatui::layout::Rect::new(10, 0, 3, 1));
     }
-    let response = xai_hooks_plugins_types::MarketplaceListResponse {
-        sources: vec![xai_hooks_plugins_types::MarketplaceScanResult {
-            source_name: atelier_plugin_marketplace::OFFICIAL_SOURCE_NAME.into(),
+    let response = atelier_hooks_plugins_types::MarketplaceListResponse {
+        sources: vec![atelier_hooks_plugins_types::MarketplaceScanResult {
+            source_name: atelier_plugin_marketplace::ATELIER_SOURCE_NAME.into(),
             source_kind: "git".into(),
-            source_url_or_path: atelier_plugin_marketplace::OFFICIAL_SOURCE_GIT_URL.into(),
+            source_url_or_path: atelier_plugin_marketplace::ATELIER_SOURCE_GIT_URL.into(),
             plugins: vec![cta_entry("figma", "installed")],
             error: None,
         }],
@@ -234,36 +234,7 @@ fn cancel_before_first_activity_resets_state_and_discards_orphan_response() {
     assert!(app.agents[&id].session.state.is_idle());
     assert_eq!(app.agents[&id].scrollback.len(), 0);
 }
-#[test]
-fn set_default_model_allowed_when_agent_chat_kind() {
-    let mut app = test_app_with_agent();
-    let id = AgentId(0);
-    let model_id = acp::ModelId::new(std::sync::Arc::from("auto"));
-    app.agents
-        .get_mut(&id)
-        .unwrap()
-        .session
-        .models
-        .available
-        .insert(
-            model_id.clone(),
-            acp::ModelInfo::new(model_id.clone(), "Auto".to_string()),
-        );
-    app.agents.get_mut(&id).unwrap().chat_kind = true;
-    let effects = dispatch(Action::SetDefaultModel(model_id.clone()), &mut app);
-    assert!(
-        effects
-            .iter()
-            .any(|e| matches!(e, Effect::SwitchModel { model_id : mid, .. }
-        if mid == & model_id)),
-        "chat_kind must still emit SwitchModel for live chat mode switches"
-    );
-    assert!(app.agents[&id].session.model_switch_pending);
-}
-/// `/model <name>` dispatches `SetDefaultModel`, but the old
-/// `[models].default` setting is no longer a second source of truth. The
-/// active session switches first; successful completion persists
-/// `roles.main` through `PersistPreferredModel`.
+/// `/model <name>` switches only the active Session.
 #[test]
 fn slash_model_valid_dispatches_switch_without_legacy_default_persist() {
     let mut app = test_app_with_agent();
@@ -868,9 +839,6 @@ fn every_setting_has_action_for_reset_arm() {
                  no-op. Add an arm to `action_for_reset` in dispatch.rs.",
             meta.key,
         );
-        if meta.key == "default_model" {
-            continue;
-        }
         let mut app = test_app_with_agent();
         move_setting_away_from_default(&mut app, meta.key);
         let _ = dispatch(action.unwrap(), &mut app);
@@ -923,121 +891,6 @@ fn every_persisting_setting_has_rollback_arm() {
             );
         }
     }
-}
-/// Clearing the old "default model override" must not unconfigure the required
-/// main Role. It canonicalizes the currently active model into `roles.main`,
-/// so the active Session and the next Session resolve the same model.
-#[test]
-fn clear_default_model_canonicalizes_current_as_main_role() {
-    use agent_client_protocol as acp;
-    use std::sync::Arc;
-    let mut app = test_app_with_agent();
-    let id = acp::ModelId::new(Arc::from("atelier-test"));
-    let info = acp::ModelInfo::new(id.clone(), "Atelier Test".to_string());
-    let agent_id = AgentId(0);
-    app.agents
-        .get_mut(&agent_id)
-        .unwrap()
-        .session
-        .models
-        .available
-        .insert(id.clone(), info);
-    app.agents
-        .get_mut(&agent_id)
-        .unwrap()
-        .session
-        .models
-        .set_current(id.clone(), None);
-    let effects = dispatch(Action::ClearDefaultModel, &mut app);
-    assert!(
-        matches!(effects.as_slice(), [Effect::PersistPreferredModel { model_id, .. }] if model_id == &id),
-        "clear must keep the current model as the explicit roles.main value: {effects:?}",
-    );
-    assert_eq!(
-        app.agents[&agent_id].session.models.current,
-        Some(id),
-        "clear must not diverge the live Session from roles.main",
-    );
-}
-
-#[test]
-fn clear_default_model_without_current_only_deletes_legacy_sources() {
-    let mut app = test_app_with_agent();
-    let agent_id = AgentId(0);
-    app.agents
-        .get_mut(&agent_id)
-        .unwrap()
-        .session
-        .models
-        .current = None;
-
-    let effects = dispatch(Action::ClearDefaultModel, &mut app);
-
-    assert!(matches!(
-        effects.as_slice(),
-        [Effect::ClearLegacyModelDefaults]
-    ));
-}
-/// `Action::SetDefaultModel(<known id>)` resolves the
-/// id against the live catalog and emits only a live `SwitchModel`. The
-/// successful switch result owns Role persistence, so the old
-/// `[models].default` path cannot diverge from `roles.main`. This is the
-/// dispatch-level analog of the slash-command's
-/// `slash_model_valid_dispatches_switch_without_legacy_default_persist`
-/// test.
-#[test]
-fn set_default_model_resolves_known_name() {
-    use agent_client_protocol as acp;
-    use std::sync::Arc;
-    let mut app = test_app_with_agent();
-    let id = acp::ModelId::new(Arc::from("atelier-4.5"));
-    let info = acp::ModelInfo::new(id.clone(), "Atelier 4.5".to_string());
-    let agent_id = AgentId(0);
-    app.agents
-        .get_mut(&agent_id)
-        .unwrap()
-        .session
-        .models
-        .available
-        .insert(id.clone(), info);
-    let effects = dispatch(Action::SetDefaultModel(id.clone()), &mut app);
-    assert_eq!(effects.len(), 1);
-    assert!(matches!(& effects[0], Effect::SwitchModel { model_id : mid, .. } if mid == & id));
-    assert_ne!(
-        app.agents[&agent_id].session.models.current,
-        Some(id),
-        "the visible model must not change before the ACP switch succeeds"
-    );
-}
-/// Re-dispatching the same live model repairs/persists `roles.main` without a
-/// redundant ACP switch or reasoning-effort reset.
-#[test]
-fn set_default_model_idempotent_when_already_current() {
-    use agent_client_protocol as acp;
-    use std::sync::Arc;
-    let mut app = test_app_with_agent();
-    let id = acp::ModelId::new(Arc::from("atelier-already"));
-    let info = acp::ModelInfo::new(id.clone(), "Atelier Already".to_string());
-    let agent_id = AgentId(0);
-    app.agents
-        .get_mut(&agent_id)
-        .unwrap()
-        .session
-        .models
-        .available
-        .insert(id.clone(), info);
-    app.agents
-        .get_mut(&agent_id)
-        .unwrap()
-        .session
-        .models
-        .set_current(id.clone(), None);
-    let effects = dispatch(Action::SetDefaultModel(id), &mut app);
-    assert!(matches!(
-        effects.as_slice(),
-        [Effect::PersistPreferredModel { model_id, .. }]
-            if model_id.0.as_ref() == "atelier-already"
-    ));
 }
 /// `clamp_max_thoughts_width` clamps
 /// out-of-range values to the registered `[40, 500]` bounds.
@@ -1234,18 +1087,6 @@ fn move_setting_away_from_default(app: &mut AppView, key: crate::settings::Setti
         }
         "permission_mode" => {
             let _ = dispatch(Action::SetYoloMode(true), app);
-        }
-        "default_model" => {
-            use agent_client_protocol as acp;
-            use std::sync::Arc;
-            if let ActiveView::Agent(aid) = app.active_view
-                && let Some(agent) = app.agents.get_mut(&aid)
-            {
-                let id = acp::ModelId::new(Arc::from("test-model-move"));
-                let info = acp::ModelInfo::new(id.clone(), "Test Model Move".to_string());
-                agent.session.models.available.insert(id.clone(), info);
-                agent.session.models.set_current(id, None);
-            }
         }
         "max_thoughts_width" => {
             let _ = dispatch(Action::SetMaxThoughtsWidth(200), app);
@@ -3251,38 +3092,6 @@ fn set_plan_mode_refreshes_open_modal_pager_snapshot() {
         cur_value,
         crate::settings::SettingValue::Enum("on"),
         "current_value_for must read the refreshed snapshot",
-    );
-}
-#[test]
-fn new_session_inherits_switched_default_model_for_welcome() {
-    use crate::acp::model_state::ModelState;
-    use std::sync::Arc;
-    let mut app = test_app_with_agent();
-    let mk = |slug: &str, name: &str| {
-        let id = acp::ModelId::new(Arc::from(slug));
-        (id.clone(), acp::ModelInfo::new(id, name.to_string()))
-    };
-    let (id_a, info_a) = mk("model-a", "Model A");
-    let (id_b, info_b) = mk("model-b", "Model B");
-    let mut models = ModelState::default();
-    models.available.insert(id_a.clone(), info_a);
-    models.available.insert(id_b.clone(), info_b);
-    models.current = Some(id_a.clone());
-    app.models = models.clone();
-    app.agents.get_mut(&AgentId(0)).unwrap().session.models = models;
-    assert!(set_default_model_inner(&mut app, &id_b));
-    assert_eq!(
-        app.models.current.as_ref(),
-        Some(&id_b),
-        "the switch must update the app-level default new sessions clone"
-    );
-    let _ = dispatch(Action::NewSession, &mut app);
-    let new_agent = app.agents.get(&AgentId(1)).expect("new session created");
-    assert_eq!(
-        new_agent.session.models.current_model_name().as_deref(),
-        Some("Model B"),
-        "the new session — and its committed welcome card — must show the \
-             switched model, not the previous default"
     );
 }
 /// Without config, the action is unregistered — Ctrl+R on scrollback does

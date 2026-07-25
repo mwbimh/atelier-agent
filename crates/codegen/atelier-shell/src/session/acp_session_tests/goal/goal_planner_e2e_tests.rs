@@ -141,7 +141,7 @@ async fn make_planner_actor(
 ) -> (StdArc<SessionActor>, TempDir) {
     let tmp = TempDir::new().expect("tempdir");
     let (gateway_tx, _gateway_rx) =
-        tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+        tokio::sync::mpsc::unbounded_channel::<atelier_acp_runtime::AcpClientMessage>();
     let (persistence_tx, _persistence_rx) =
         tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
     let mut actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
@@ -172,7 +172,7 @@ async fn make_planner_actor_capturing(
 ) {
     let tmp = TempDir::new().expect("tempdir");
     let (gateway_tx, _gateway_rx) =
-        tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+        tokio::sync::mpsc::unbounded_channel::<atelier_acp_runtime::AcpClientMessage>();
     let (persistence_tx, persistence_rx) = tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
     let mut actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
     actor.events = crate::session::events::EventTracker::new(tmp.path());
@@ -195,7 +195,7 @@ fn drain_goal_planning_flags(
 ) -> Vec<Option<bool>> {
     let mut out = Vec::new();
     while let Ok(msg) = rx.try_recv() {
-        if let PersistenceMsg::Update(crate::session::storage::SessionUpdate::Xai(n)) = msg
+        if let PersistenceMsg::Update(crate::session::storage::SessionUpdate::Extension(n)) = msg
             && let crate::extensions::notification::SessionUpdate::GoalUpdated { planning, .. } =
                 n.update
         {
@@ -276,7 +276,7 @@ async fn planner_spawn_sets_harness_only_fork_context() {
 
 #[tokio::test(flavor = "current_thread")]
 #[serial]
-async fn planner_fork_inherits_parent_model() {
+async fn planner_unknown_role_model_fails_open_to_parent() {
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
@@ -285,11 +285,8 @@ async fn planner_fork_inherits_parent_model() {
                     body: b"# Plan\n",
                 });
             let (actor, _tmp) = make_planner_actor(Some(tx), true).await;
-            // Configure an EXPLICIT planner role model different from the parent.
-            // The mirror-child fork must IGNORE it and inherit the parent model,
-            // since the radix prefix is per-model. Without the Step-7 forcing this
-            // configured model would flow through and the assertion below would
-            // catch the regression.
+            // Configure an explicit model that is absent from this test actor's
+            // model catalog. Role resolution must fail open to the parent model.
             let actor = StdArc::new(SessionActor {
                 goal_role_models: crate::session::GoalRoleModelConfig {
                     planner: crate::agent::config::GoalRoleModelChoice::Explicit(
@@ -307,14 +304,11 @@ async fn planner_fork_inherits_parent_model() {
             actor.maybe_run_goal_planner("do X").await;
 
             assert_eq!(spawn_count.load(SeqOrd::SeqCst), 1);
-            // Mirror-child fork shares the parent radix prefix (per-model), so the
-            // planner must inherit the parent session model (override == None) even
-            // though an explicit planner role model was configured above.
             let models = capture.model.lock().unwrap().clone();
             assert_eq!(
                 models,
                 vec![None],
-                "planner fork must ignore the configured role model and inherit the parent (None)"
+                "unknown planner role model must fail open to the parent (None)"
             );
         })
         .await;

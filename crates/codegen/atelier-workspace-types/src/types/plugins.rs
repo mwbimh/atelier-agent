@@ -3,7 +3,7 @@
 //! `WorkspaceEvent::HooksChanged`.
 //!
 //! TODO(workspace): align with the canonical types in
-//! `xai-hooks-plugins-types` and `atelier-plugin-marketplace`.
+//! `atelier-hooks-plugins-types` and `atelier-plugin-marketplace`.
 
 use serde::{Deserialize, Serialize};
 
@@ -40,7 +40,7 @@ pub struct HookInfo {
     /// Hook event the script attaches to (e.g. `"PreToolUse"`).
     ///
     /// TODO(workspace): the event field will become a typed enum once
-    /// aligned with `xai_hooks_plugins_types::HookEvent` -- right
+    /// aligned with `atelier_hooks_plugins_types::HookEvent` -- right
     /// now it's a free-form string for placeholder convenience, which
     /// allows typos through.
     #[serde(default)]

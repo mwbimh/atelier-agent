@@ -114,28 +114,28 @@ impl crate::types::tool_metadata::ToolMetadata for BashConciseTool {
     }
 }
 
-impl xai_tool_runtime::Tool for BashConciseTool {
+impl atelier_tool_runtime::Tool for BashConciseTool {
     type Args = BashToolInput;
     type Output = BashToolOutput;
 
-    fn id(&self) -> xai_tool_protocol::ToolId {
-        xai_tool_protocol::ToolId::new("run_terminal_cmd").expect("valid tool id")
+    fn id(&self) -> atelier_tool_protocol::ToolId {
+        atelier_tool_protocol::ToolId::new("run_terminal_cmd").expect("valid tool id")
     }
 
     fn description(
         &self,
-        _ctx: &::xai_tool_runtime::ListToolsContext,
-    ) -> xai_tool_types::ToolDescription {
-        xai_tool_types::ToolDescription::new(
+        _ctx: &::atelier_tool_runtime::ListToolsContext,
+    ) -> atelier_tool_types::ToolDescription {
+        atelier_tool_types::ToolDescription::new(
             "run_terminal_cmd",
             crate::types::tool_metadata::ToolMetadata::description_template(self),
         )
     }
 
-    fn capabilities(&self) -> xai_tool_protocol::ToolCapabilities {
-        xai_tool_protocol::ToolCapabilities {
+    fn capabilities(&self) -> atelier_tool_protocol::ToolCapabilities {
+        atelier_tool_protocol::ToolCapabilities {
             is_read_only: false,
-            tool_scope: Some(xai_tool_protocol::ToolScope::Write),
+            tool_scope: Some(atelier_tool_protocol::ToolScope::Write),
             ..Default::default()
         }
     }
@@ -143,10 +143,10 @@ impl xai_tool_runtime::Tool for BashConciseTool {
     #[tracing::instrument(name = "tool.run_terminal_cmd_concise", skip_all)]
     async fn run(
         &self,
-        ctx: xai_tool_runtime::ToolCallContext,
+        ctx: atelier_tool_runtime::ToolCallContext,
         input: BashToolInput,
-    ) -> Result<BashToolOutput, xai_tool_runtime::ToolError> {
-        let result = xai_tool_runtime::Tool::run(&BashTool, ctx, input).await?;
+    ) -> Result<BashToolOutput, atelier_tool_runtime::ToolError> {
+        let result = atelier_tool_runtime::Tool::run(&BashTool, ctx, input).await?;
 
         match result {
             // TODO: Add different concise message for auto backgrounded terminal task

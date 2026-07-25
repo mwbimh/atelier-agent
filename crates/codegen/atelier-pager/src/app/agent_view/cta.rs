@@ -606,7 +606,7 @@ impl AgentView {
             .push(super::actions::Effect::InstallPluginFromCta {
                 agent_id: self.session.id,
                 session_id,
-                source_url_or_path: atelier_plugin_marketplace::OFFICIAL_SOURCE_GIT_URL.to_string(),
+                source_url_or_path: atelier_plugin_marketplace::ATELIER_SOURCE_GIT_URL.to_string(),
                 plugin_relative_path,
             });
     }
@@ -616,8 +616,8 @@ impl AgentView {
 mod plugin_cta_notify_tests {
     use super::test_fixtures::make_agent;
 
-    fn cta_entry(name: &str) -> xai_hooks_plugins_types::MarketplacePluginEntry {
-        xai_hooks_plugins_types::MarketplacePluginEntry {
+    fn cta_entry(name: &str) -> atelier_hooks_plugins_types::MarketplacePluginEntry {
+        atelier_hooks_plugins_types::MarketplacePluginEntry {
             name: name.into(),
             version: None,
             description: None,
@@ -703,7 +703,7 @@ mod plugin_cta_notify_tests {
             } => {
                 assert_eq!(
                     source_url_or_path,
-                    atelier_plugin_marketplace::OFFICIAL_SOURCE_GIT_URL
+                    atelier_plugin_marketplace::ATELIER_SOURCE_GIT_URL
                 );
                 assert_eq!(plugin_relative_path.as_str(), "plugins/figma");
             }

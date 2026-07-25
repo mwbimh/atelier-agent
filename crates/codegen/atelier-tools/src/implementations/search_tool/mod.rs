@@ -222,37 +222,37 @@ impl crate::types::tool_metadata::ToolMetadata for SearchTool {
     }
 }
 
-impl xai_tool_runtime::Tool for SearchTool {
+impl atelier_tool_runtime::Tool for SearchTool {
     type Args = SearchToolInput;
     type Output = ToolOutput;
 
-    fn id(&self) -> xai_tool_protocol::ToolId {
-        xai_tool_protocol::ToolId::new("search_tool").expect("valid tool id")
+    fn id(&self) -> atelier_tool_protocol::ToolId {
+        atelier_tool_protocol::ToolId::new("search_tool").expect("valid tool id")
     }
 
     fn description(
         &self,
-        _ctx: &::xai_tool_runtime::ListToolsContext,
-    ) -> xai_tool_types::ToolDescription {
-        xai_tool_types::ToolDescription::new(
+        _ctx: &::atelier_tool_runtime::ListToolsContext,
+    ) -> atelier_tool_types::ToolDescription {
+        atelier_tool_types::ToolDescription::new(
             "search_tool",
             crate::types::tool_metadata::ToolMetadata::description_template(self),
         )
     }
 
-    fn capabilities(&self) -> xai_tool_protocol::ToolCapabilities {
-        xai_tool_protocol::ToolCapabilities {
+    fn capabilities(&self) -> atelier_tool_protocol::ToolCapabilities {
+        atelier_tool_protocol::ToolCapabilities {
             is_read_only: true,
-            tool_scope: Some(xai_tool_protocol::ToolScope::Read),
+            tool_scope: Some(atelier_tool_protocol::ToolScope::Read),
             ..Default::default()
         }
     }
 
     async fn run(
         &self,
-        ctx: xai_tool_runtime::ToolCallContext,
+        ctx: atelier_tool_runtime::ToolCallContext,
         input: SearchToolInput,
-    ) -> Result<ToolOutput, xai_tool_runtime::ToolError> {
+    ) -> Result<ToolOutput, atelier_tool_runtime::ToolError> {
         use crate::types::tool_metadata::shared_resources;
         let resources = shared_resources(&ctx)?;
 
@@ -350,7 +350,7 @@ mod tests {
     use crate::types::tool_index::{
         SearchSnapshot, ServerSummary, ToolIndex, ToolSearchIndex, ToolSearchResult,
     };
-    use xai_tool_runtime::Tool;
+    use atelier_tool_runtime::Tool;
 
     struct StaticToolIndex {
         snapshot: SearchSnapshot,
@@ -392,7 +392,7 @@ mod tests {
                 },
             })));
         let mut ctx =
-            xai_tool_runtime::ToolCallContext::new(xai_tool_protocol::ToolCallId::new_v7());
+            atelier_tool_runtime::ToolCallContext::new(atelier_tool_protocol::ToolCallId::new_v7());
         ctx.extensions.insert(resources);
 
         let output = SearchTool

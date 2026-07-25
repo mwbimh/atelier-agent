@@ -2602,8 +2602,8 @@ mod tests {
     #[test]
     fn grouped_entries_insert_headers() {
         let entries = vec![
-            make_entry("s1", "Fix auth", "xai"),
-            make_entry("s2", "Add streaming", "xai"),
+            make_entry("s1", "Fix auth", "repo"),
+            make_entry("s2", "Add streaming", "repo"),
             make_entry("s3", "Nuke tables", "fw-1"),
         ];
         let indices: Vec<usize> = (0..entries.len()).collect();
@@ -2617,8 +2617,8 @@ mod tests {
 
         // 2 headers + 3 rows = 5 entries
         assert_eq!(result.len(), 5);
-        // Groups are sorted alphabetically: fw-1 before xai.
-        // Header positions: 0 (fw-1), 2 (xai)
+        // Groups are sorted alphabetically: fw-1 before repo.
+        // Header positions: 0 (fw-1), 2 (repo)
         assert_eq!(non_sel.len(), 5);
         assert!(non_sel[0], "first entry should be header (non-selectable)");
         assert!(!non_sel[1], "second entry should be selectable row");
@@ -2631,7 +2631,7 @@ mod tests {
             matches!(&result[0], crate::views::picker::PickerEntry::Header { label } if label == &"fw-1")
         );
         assert!(
-            matches!(&result[2], crate::views::picker::PickerEntry::Header { label } if label == &"xai")
+            matches!(&result[2], crate::views::picker::PickerEntry::Header { label } if label == &"repo")
         );
     }
 
@@ -2672,8 +2672,8 @@ mod tests {
     #[test]
     fn grouped_entries_single_group_has_one_header() {
         let entries = vec![
-            make_entry("s1", "Fix auth", "xai"),
-            make_entry("s2", "Add streaming", "xai"),
+            make_entry("s1", "Fix auth", "repo"),
+            make_entry("s2", "Add streaming", "repo"),
         ];
         let indices: Vec<usize> = (0..entries.len()).collect();
         let state = PickerState::default();
@@ -2707,7 +2707,7 @@ mod tests {
 
     #[test]
     fn grouped_entries_rows_are_indented() {
-        let entries = vec![make_entry("s1", "Fix auth", "xai")];
+        let entries = vec![make_entry("s1", "Fix auth", "repo")];
         let indices: Vec<usize> = vec![0];
         let state = PickerState::default();
         let built = build_session_entry_data(&entries, &indices, &state, 80);
@@ -3009,11 +3009,9 @@ mod tests {
 
     #[test]
     fn hero_box_inactive_when_warning_would_overflow() {
-        // Regression: the box is forced to the full 7-row logo, so even a
-        // 3-item menu needs 11 box rows. A startup warning (error_height = 2)
-        // pushes the total past height 19, so the gate must fall back to the
-        // stacked layout instead of overflowing by a row.
-        let area = Rect::new(0, 0, 90, 19);
+        // The editable default logo is six rows, so a three-item menu needs a
+        // ten-row box. With a two-row warning, height 18 is one row short.
+        let area = Rect::new(0, 0, 90, 18);
         let with_warning = WelcomeLayout::compute(WelcomeLayoutInput {
             content_area: area,
             error_height: 2,
@@ -3095,9 +3093,8 @@ mod tests {
 
     #[test]
     fn hero_box_height_accounts_for_borders_and_padding() {
-        // At h >= 26, logo07 is used (7 lines). With menu_height=3:
-        // right_col = 2 + 0 + 0 + 1 + 3 = 6, inner = max(7, 6) = 7.
-        // hero_box_height = 2 (borders) + 2 (v_pad) + 7 = 11.
+        // The editable default logo has six lines. With menu_height=3, both
+        // columns need six inner rows, plus borders and vertical padding.
         let area = Rect::new(0, 0, 100, 50);
         let layout = WelcomeLayout::compute(WelcomeLayoutInput {
             content_area: area,
@@ -3105,7 +3102,7 @@ mod tests {
             ..Default::default()
         });
         assert!(layout.has_hero_box());
-        assert_eq!(layout.hero_box.height, 11);
+        assert_eq!(layout.hero_box.height, 10);
     }
 
     #[test]

@@ -32,11 +32,11 @@ mod tests {
         assert_eq!(MEMORY_SEARCH_TOOL_NAME, "memory_search");
         assert_eq!(MEMORY_GET_TOOL_NAME, "memory_get");
         assert_eq!(
-            xai_tool_runtime::Tool::id(&MemorySearchImpl).to_string(),
+            atelier_tool_runtime::Tool::id(&MemorySearchImpl).to_string(),
             MEMORY_SEARCH_TOOL_NAME
         );
         assert_eq!(
-            xai_tool_runtime::Tool::id(&MemoryGetImpl).to_string(),
+            atelier_tool_runtime::Tool::id(&MemoryGetImpl).to_string(),
             MEMORY_GET_TOOL_NAME
         );
     }

@@ -2,7 +2,8 @@ use serde::Serialize;
 
 use super::envelope::{FacetMap, SessionKind, SessionMetaEnvelope};
 use super::facets::{FacetRegistry, NormalizedItem};
-use crate::remote::Conversation;
+#[cfg(test)]
+use crate::local_runtime::Conversation;
 use crate::session::merge::MergedSession;
 
 #[derive(Debug, Clone)]
@@ -73,6 +74,7 @@ pub fn merged_session_to_row(m: MergedSession, reg: &FacetRegistry) -> UnifiedRo
     }
 }
 
+#[cfg(test)]
 pub fn conversation_to_row(c: Conversation, reg: &FacetRegistry) -> UnifiedRow {
     let facets = reg.extract_all(&NormalizedItem::from_conversation(&c));
     let Conversation {

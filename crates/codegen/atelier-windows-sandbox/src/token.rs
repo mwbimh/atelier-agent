@@ -6,28 +6,29 @@ use std::ptr;
 use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 use windows_sys::Win32::Foundation::{
-    CloseHandle, ERROR_INVALID_PARAMETER, ERROR_SUCCESS, GetLastError, HANDLE, HLOCAL, LUID,
-    LocalFree,
+    CloseHandle, ERROR_INVALID_PARAMETER, ERROR_SUCCESS, GENERIC_ALL, GetLastError, HANDLE, HLOCAL,
+    LUID, LocalFree,
 };
+use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
 use windows_sys::Win32::Security::Authorization::ConvertStringSidToSidW;
 use windows_sys::Win32::Security::Authorization::{
     EXPLICIT_ACCESS_W, GRANT_ACCESS, SetEntriesInAclW, TRUSTEE_IS_SID, TRUSTEE_IS_UNKNOWN,
     TRUSTEE_W,
 };
 use windows_sys::Win32::Security::{
-    ACL, AdjustTokenPrivileges, CopySid, CreateRestrictedToken, CreateWellKnownSid,
-    DISABLE_MAX_PRIVILEGE, GetLengthSid, GetTokenInformation, LUA_TOKEN, LookupPrivilegeValueW,
-    SID_AND_ATTRIBUTES, SetTokenInformation, TOKEN_ACCESS_MASK, TOKEN_ADJUST_DEFAULT,
-    TOKEN_ADJUST_PRIVILEGES, TOKEN_ADJUST_SESSIONID, TOKEN_ASSIGN_PRIMARY, TOKEN_DUPLICATE,
-    TOKEN_PRIVILEGES, TOKEN_QUERY, TokenDefaultDacl, TokenGroups,
+    ACL, AdjustTokenPrivileges, CopySid, CreateRestrictedToken, DISABLE_MAX_PRIVILEGE,
+    GetLengthSid, GetTokenInformation, LUA_TOKEN, LookupPrivilegeValueW, SID_AND_ATTRIBUTES,
+    SetTokenInformation, TOKEN_ACCESS_MASK, TOKEN_ADJUST_DEFAULT, TOKEN_ADJUST_PRIVILEGES,
+    TOKEN_ADJUST_SESSIONID, TOKEN_ASSIGN_PRIMARY, TOKEN_DUPLICATE, TOKEN_PRIVILEGES, TOKEN_QUERY,
+    TOKEN_USER, TokenDefaultDacl, TokenGroups, TokenUser,
 };
+use windows_sys::Win32::Security::{LookupAccountNameW, SID_NAME_USE};
 use windows_sys::Win32::System::Threading::{
     GetCurrentProcess, GetCurrentProcessId, OpenProcessToken,
 };
 
-const WORLD_SID: i32 = 1;
 const WRITE_RESTRICTED: u32 = 0x08;
-const GENERIC_ALL: u32 = 0x1000_0000;
+const DEFAULT_DACL_ACCESS_MASK: u32 = GENERIC_ALL;
 const SE_GROUP_LOGON_ID: u32 = 0xC000_0000;
 static PROCESS_CAPABILITY_SID: OnceLock<Result<String, String>> = OnceLock::new();
 
@@ -60,10 +61,6 @@ impl RestrictedToken {
     pub fn raw(&self) -> HANDLE {
         self.handle.raw()
     }
-
-    pub fn restricting_sids(&self, capability_sid: *mut c_void) -> [*mut c_void; 1] {
-        [capability_sid]
-    }
 }
 
 pub struct LocalSid {
@@ -75,6 +72,29 @@ fn restricted_token_flag_attempts() -> [u32; 2] {
         DISABLE_MAX_PRIVILEGE | LUA_TOKEN | WRITE_RESTRICTED,
         DISABLE_MAX_PRIVILEGE | WRITE_RESTRICTED,
     ]
+}
+
+fn sandbox_user_restricted_token_flags() -> u32 {
+    DISABLE_MAX_PRIVILEGE | WRITE_RESTRICTED
+}
+
+fn standard_policy_sids(capability: *mut c_void, logon: *mut c_void) -> [*mut c_void; 2] {
+    [capability, logon]
+}
+
+fn sandbox_user_policy_sids(
+    capability: *mut c_void,
+    user: *mut c_void,
+    logon: *mut c_void,
+) -> [*mut c_void; 3] {
+    [capability, user, logon]
+}
+
+fn restricting_entries<const N: usize>(sids: [*mut c_void; N]) -> [SID_AND_ATTRIBUTES; N] {
+    sids.map(|sid| SID_AND_ATTRIBUTES {
+        Sid: sid,
+        Attributes: 0,
+    })
 }
 
 impl LocalSid {
@@ -90,6 +110,80 @@ impl LocalSid {
 
     pub fn as_ptr(&self) -> *mut c_void {
         self.sid
+    }
+
+    pub fn from_account(name: &str) -> Result<Self> {
+        let name = to_wide(name);
+        let mut sid_len = 0u32;
+        let mut domain_len = 0u32;
+        let mut use_type: SID_NAME_USE = 0;
+        unsafe {
+            let _ = LookupAccountNameW(
+                ptr::null(),
+                name.as_ptr(),
+                ptr::null_mut(),
+                &mut sid_len,
+                ptr::null_mut(),
+                &mut domain_len,
+                &mut use_type,
+            );
+        }
+        if sid_len == 0 {
+            return Err(win_error("LookupAccountNameW size query"));
+        }
+        let mut sid = vec![0u8; sid_len as usize];
+        let mut domain = vec![0u16; domain_len as usize];
+        let ok = unsafe {
+            LookupAccountNameW(
+                ptr::null(),
+                name.as_ptr(),
+                sid.as_mut_ptr().cast(),
+                &mut sid_len,
+                domain.as_mut_ptr(),
+                &mut domain_len,
+                &mut use_type,
+            )
+        };
+        if ok == 0 {
+            return Err(win_error("LookupAccountNameW"));
+        }
+        let length = unsafe { GetLengthSid(sid.as_mut_ptr().cast()) };
+        let mut owned = ptr::null_mut();
+        let text = unsafe {
+            let mut value = ptr::null_mut();
+            if ConvertSidToStringSidW(sid.as_mut_ptr().cast(), &mut value) == 0 {
+                return Err(win_error("ConvertSidToStringSidW"));
+            }
+            let mut len = 0usize;
+            while *value.add(len) != 0 {
+                len += 1;
+            }
+            let text = String::from_utf16_lossy(std::slice::from_raw_parts(value, len));
+            LocalFree(value as HLOCAL);
+            text
+        };
+        let wide = to_wide(text);
+        if unsafe { ConvertStringSidToSidW(wide.as_ptr(), &mut owned) } == 0 || owned.is_null() {
+            return Err(win_error("ConvertStringSidToSidW"));
+        }
+        debug_assert_eq!(length, unsafe { GetLengthSid(owned) });
+        Ok(Self { sid: owned })
+    }
+
+    pub fn to_string(&self) -> Result<String> {
+        let mut value = ptr::null_mut();
+        if unsafe { ConvertSidToStringSidW(self.sid, &mut value) } == 0 || value.is_null() {
+            return Err(win_error("ConvertSidToStringSidW"));
+        }
+        let mut len = 0usize;
+        unsafe {
+            while *value.add(len) != 0 {
+                len += 1;
+            }
+        }
+        let text = unsafe { String::from_utf16_lossy(std::slice::from_raw_parts(value, len)) };
+        unsafe { LocalFree(value as HLOCAL) };
+        Ok(text)
     }
 }
 
@@ -118,30 +212,6 @@ pub fn new_capability_sid() -> Result<LocalSid> {
     LocalSid::new(value)
 }
 
-fn world_sid() -> Result<Vec<u8>> {
-    let mut size = 0u32;
-    unsafe {
-        let _ = CreateWellKnownSid(WORLD_SID, ptr::null_mut(), ptr::null_mut(), &mut size);
-    }
-    if size == 0 {
-        return Err(win_error("CreateWellKnownSid size query"));
-    }
-    let mut sid = vec![0u8; size as usize];
-    let ok = unsafe {
-        CreateWellKnownSid(
-            WORLD_SID,
-            ptr::null_mut(),
-            sid.as_mut_ptr().cast(),
-            &mut size,
-        )
-    };
-    if ok == 0 {
-        return Err(win_error("CreateWellKnownSid"));
-    }
-    sid.truncate(size as usize);
-    Ok(sid)
-}
-
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn set_default_dacl(token: HANDLE, sids: &[*mut c_void]) -> Result<()> {
     if sids.is_empty() {
@@ -151,7 +221,7 @@ unsafe fn set_default_dacl(token: HANDLE, sids: &[*mut c_void]) -> Result<()> {
     let entries: Vec<EXPLICIT_ACCESS_W> = sids
         .iter()
         .map(|sid| EXPLICIT_ACCESS_W {
-            grfAccessPermissions: GENERIC_ALL,
+            grfAccessPermissions: DEFAULT_DACL_ACCESS_MASK,
             grfAccessMode: GRANT_ACCESS,
             grfInheritance: 0,
             Trustee: TRUSTEE_W {
@@ -283,6 +353,35 @@ unsafe fn logon_sid_bytes(token: HANDLE) -> Result<Vec<u8>> {
     Err(anyhow::anyhow!("Logon SID not present on token"))
 }
 
+unsafe fn user_sid_bytes(token: HANDLE) -> Result<Vec<u8>> {
+    let mut required = 0u32;
+    let _ = GetTokenInformation(token, TokenUser, ptr::null_mut(), 0, &mut required);
+    if required < std::mem::size_of::<TOKEN_USER>() as u32 {
+        return Err(win_error("GetTokenInformation(TokenUser) size query"));
+    }
+    let mut buffer = vec![0u8; required as usize];
+    if GetTokenInformation(
+        token,
+        TokenUser,
+        buffer.as_mut_ptr().cast(),
+        required,
+        &mut required,
+    ) == 0
+    {
+        return Err(win_error("GetTokenInformation(TokenUser)"));
+    }
+    let token_user = ptr::read_unaligned(buffer.as_ptr().cast::<TOKEN_USER>());
+    let length = GetLengthSid(token_user.User.Sid);
+    if length == 0 {
+        return Err(win_error("GetLengthSid(TokenUser)"));
+    }
+    let mut sid = vec![0u8; length as usize];
+    if CopySid(length, sid.as_mut_ptr().cast(), token_user.User.Sid) == 0 {
+        return Err(win_error("CopySid(TokenUser)"));
+    }
+    Ok(sid)
+}
+
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn enable_change_notify_privilege(token: HANDLE) -> Result<()> {
     let mut luid = LUID {
@@ -326,17 +425,15 @@ pub fn create_restricted_token(capability: &LocalSid) -> Result<RestrictedToken>
     }
     let base = OwnedHandle(base);
     let mut logon = unsafe { logon_sid_bytes(base.raw()) }?;
-    let mut world = world_sid()?;
-    let restrictions = [
-        SID_AND_ATTRIBUTES {
-            Sid: capability.as_ptr(),
-            Attributes: 0,
-        },
-        SID_AND_ATTRIBUTES {
-            Sid: logon.as_mut_ptr().cast(),
-            Attributes: 0,
-        },
-    ];
+    let system_read = LocalSid::new("S-1-5-32-545")?;
+    let world_read = LocalSid::new("S-1-1-0")?;
+    let policy_sids = standard_policy_sids(capability.as_ptr(), logon.as_mut_ptr().cast());
+    let restrictions = restricting_entries([
+        policy_sids[0],
+        policy_sids[1],
+        system_read.as_ptr(),
+        world_read.as_ptr(),
+    ]);
     let attempts = restricted_token_flag_attempts();
     let mut restricted = ptr::null_mut();
     let mut last_error = ERROR_SUCCESS;
@@ -377,18 +474,77 @@ pub fn create_restricted_token(capability: &LocalSid) -> Result<RestrictedToken>
         ));
     }
     let token = OwnedHandle(restricted);
-    // Logon/world SIDs are present in the token's default DACL so the child
-    // process can initialize its standard handles and loader objects. The
-    // logon SID is retained in the restricted set because Windows rejects some
-    // tokens without it; World/Everyone is deliberately excluded so a broad
-    // Everyone ACE cannot satisfy WRITE_RESTRICTED outside granted roots.
-    let dacl_sids = [
+    // The logon SID is retained because Windows uses it for session-scoped
+    // objects. BUILTIN\Users is restricted-check-only. Everyone must also be
+    // present in the default DACL so loader/session objects can initialize;
+    // the normal token access check still gates every resource.
+    let default_dacl_sids = [policy_sids[0], policy_sids[1], world_read.as_ptr()];
+    unsafe {
+        set_default_dacl(token.raw(), &default_dacl_sids)?;
+        enable_change_notify_privilege(token.raw())?;
+    }
+    Ok(RestrictedToken { handle: token })
+}
+
+/// Derive a WRITE_RESTRICTED primary token from the dedicated sandbox
+/// account's current logon token. The sandbox account SID is included in the
+/// restricting set so access requires both the account ACL and the per-process
+/// capability ACL.
+pub fn create_restricted_token_for_sandbox_user(capability: &LocalSid) -> Result<RestrictedToken> {
+    let desired: TOKEN_ACCESS_MASK = TOKEN_DUPLICATE
+        | TOKEN_QUERY
+        | TOKEN_ASSIGN_PRIMARY
+        | TOKEN_ADJUST_DEFAULT
+        | TOKEN_ADJUST_SESSIONID
+        | TOKEN_ADJUST_PRIVILEGES;
+    let mut base = ptr::null_mut();
+    if unsafe { OpenProcessToken(GetCurrentProcess(), desired, &mut base) } == 0 || base.is_null() {
+        return Err(win_error("OpenProcessToken"));
+    }
+    let base = OwnedHandle(base);
+    let mut user = unsafe { user_sid_bytes(base.raw()) }?;
+    let mut logon = unsafe { logon_sid_bytes(base.raw()) }?;
+    let system_read = LocalSid::new("S-1-5-32-545")?;
+    let world_read = LocalSid::new("S-1-1-0")?;
+    let policy_sids = sandbox_user_policy_sids(
         capability.as_ptr(),
+        user.as_mut_ptr().cast(),
         logon.as_mut_ptr().cast(),
-        world.as_mut_ptr().cast(),
+    );
+    let restrictions = restricting_entries([
+        policy_sids[0],
+        policy_sids[1],
+        policy_sids[2],
+        system_read.as_ptr(),
+        world_read.as_ptr(),
+    ]);
+    let mut restricted = ptr::null_mut();
+    if unsafe {
+        CreateRestrictedToken(
+            base.raw(),
+            sandbox_user_restricted_token_flags(),
+            0,
+            ptr::null(),
+            0,
+            ptr::null(),
+            restrictions.len() as u32,
+            restrictions.as_ptr(),
+            &mut restricted,
+        )
+    } == 0
+        || restricted.is_null()
+    {
+        return Err(win_error("CreateRestrictedToken(sandbox user)"));
+    }
+    let token = OwnedHandle(restricted);
+    let default_dacl_sids = [
+        policy_sids[0],
+        policy_sids[1],
+        policy_sids[2],
+        world_read.as_ptr(),
     ];
     unsafe {
-        set_default_dacl(token.raw(), &dacl_sids)?;
+        set_default_dacl(token.raw(), &default_dacl_sids)?;
         enable_change_notify_privilege(token.raw())?;
     }
     Ok(RestrictedToken { handle: token })
@@ -397,8 +553,12 @@ pub fn create_restricted_token(capability: &LocalSid) -> Result<RestrictedToken>
 #[cfg(test)]
 mod tests {
     use super::{
-        DISABLE_MAX_PRIVILEGE, LUA_TOKEN, WRITE_RESTRICTED, restricted_token_flag_attempts,
+        DEFAULT_DACL_ACCESS_MASK, DISABLE_MAX_PRIVILEGE, LUA_TOKEN, WRITE_RESTRICTED,
+        restricted_token_flag_attempts, sandbox_user_policy_sids,
+        sandbox_user_restricted_token_flags, standard_policy_sids,
     };
+    use std::ffi::c_void;
+    use windows_sys::Win32::Foundation::GENERIC_ALL;
 
     #[test]
     fn restricted_token_retries_without_lua_after_invalid_parameter() {
@@ -409,5 +569,31 @@ mod tests {
                 DISABLE_MAX_PRIVILEGE | WRITE_RESTRICTED,
             ]
         );
+    }
+
+    #[test]
+    fn dedicated_sandbox_user_does_not_apply_lua_token() {
+        assert_eq!(
+            sandbox_user_restricted_token_flags(),
+            DISABLE_MAX_PRIVILEGE | WRITE_RESTRICTED
+        );
+    }
+
+    #[test]
+    fn token_default_dacl_policy_contains_only_explicit_identity_sids() {
+        let capability = 1usize as *mut c_void;
+        let user = 2usize as *mut c_void;
+        let logon = 3usize as *mut c_void;
+
+        assert_eq!(standard_policy_sids(capability, logon), [capability, logon]);
+        assert_eq!(
+            sandbox_user_policy_sids(capability, user, logon),
+            [capability, user, logon]
+        );
+    }
+
+    #[test]
+    fn default_dacl_allows_child_created_kernel_objects_to_initialize() {
+        assert_eq!(DEFAULT_DACL_ACCESS_MASK, GENERIC_ALL);
     }
 }

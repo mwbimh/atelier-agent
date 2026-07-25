@@ -3,7 +3,7 @@
 //! the MCP auto-restart wiring (`SessionRestartActions`).
 #![allow(clippy::items_after_test_module)]
 use super::*;
-use crate::remote::DEFAULT_CONTEXT_WINDOW;
+use crate::runtime_defaults::DEFAULT_CONTEXT_WINDOW;
 
 /// Adapt the session-level workspace filesystem to the tool-runtime filesystem
 /// trait without creating a second filesystem implementation. Both session
@@ -142,7 +142,7 @@ pub(crate) async fn spawn_session_actor(
     session_info: SessionInfo,
     gateway: GatewaySender,
     sampling_config: SamplingConfig,
-    credentials: xai_chat_state::Credentials,
+    credentials: atelier_chat_state::Credentials,
     auth_method_id: crate::agent::auth_method::SharedAuthMethodId,
     auth_manager: Option<Arc<AuthManager>>,
     attribution_callback: Option<atelier_sampler::SharedAttributionCallback>,
@@ -166,7 +166,7 @@ pub(crate) async fn spawn_session_actor(
     client_type: ClientType,
     auto_compact_threshold_percent: u8,
     system_prompt_label: String,
-    compaction_mode: xai_chat_state::CompactionMode,
+    compaction_mode: atelier_chat_state::CompactionMode,
     compaction_verbatim_input: bool,
     two_pass_enabled: bool,
     buffering_settings: Option<BufferingSettings>,
@@ -174,10 +174,6 @@ pub(crate) async fn spawn_session_actor(
     codebase_indexes: std::sync::Arc<parking_lot::Mutex<CodebaseIndexManager>>,
     code_nav_enabled: bool,
     fs_watch_caps: fs_watch::FsWatchCapabilities,
-    feedback_proxy_url: Option<String>,
-    feedback_user_token: Option<String>,
-    feedback_alpha_test_key: Option<String>,
-    deployment_key: Option<String>,
     client_terminal_capable: bool,
     client_fs_capable: bool,
     gateway_enabled: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -233,7 +229,7 @@ pub(crate) async fn spawn_session_actor(
     workspace_ops: atelier_workspace::WorkspaceOps,
     cli_permission_rules: Vec<atelier_workspace::permission::types::PermissionRule>,
     todo_gate: bool,
-    remote_settings: Option<crate::util::config::RemoteSettings>,
+    local_runtime_settings: Option<crate::local_runtime::LocalRuntimeSettings>,
     laziness_debug_log: Option<std::path::PathBuf>,
     parent_terminal_backend: Option<
         std::sync::Arc<dyn atelier_tools::computer::types::TerminalBackend>,
@@ -461,7 +457,7 @@ pub(crate) async fn spawn_session_actor(
         reasoning_effort: sampling_config.reasoning_effort,
         stream_tool_calls: Some(sampling_config.stream_tool_calls),
     };
-    let actor_pruning_config = xai_chat_state::PruningConfig {
+    let actor_pruning_config = atelier_chat_state::PruningConfig {
         enabled: session_pruning_config.enabled,
         keep_last_n_turns: session_pruning_config.keep_last_n_turns,
         soft_trim_threshold: session_pruning_config.soft_trim_threshold,
@@ -470,7 +466,7 @@ pub(crate) async fn spawn_session_actor(
         hard_clear_age_turns: session_pruning_config.hard_clear_age_turns,
     };
     let (chat_state_event_tx, chat_state_event_rx) = mpsc::unbounded_channel();
-    let chat_state_handle = xai_chat_state::ChatStateActor::spawn_with_pruning(
+    let chat_state_handle = atelier_chat_state::ChatStateActor::spawn_with_pruning(
         conversation.clone(),
         chat_state_sampling_config,
         actor_pruning_config,
@@ -519,7 +515,9 @@ pub(crate) async fn spawn_session_actor(
     let synthetic_trace_tx_shared: std::sync::Arc<
         std::sync::Mutex<
             Option<
-                tokio::sync::mpsc::UnboundedSender<crate::upload::turn::SyntheticTurnTraceRequest>,
+                tokio::sync::mpsc::UnboundedSender<
+                    crate::local_artifacts::turn::SyntheticTurnTraceRequest,
+                >,
             >,
         >,
     > = std::sync::Arc::new(std::sync::Mutex::new(None));
@@ -595,7 +593,7 @@ pub(crate) async fn spawn_session_actor(
         }
     };
     let persistent_local_shell = crate::util::config::resolve_persistent_local_shell(
-        remote_settings
+        local_runtime_settings
             .as_ref()
             .and_then(|r| r.persistent_local_shell),
     );
@@ -641,7 +639,7 @@ pub(crate) async fn spawn_session_actor(
     let bridge_state_path =
         crate::session::persistence::session_dir(&session_info).join("tool_state.json");
     let initial_agent_type = Some(agent_definition.name.clone());
-    let harness_metrics = if telemetry_enabled || atelier_telemetry::external::is_active() {
+    let harness_metrics = if telemetry_enabled {
         let plugin_names = plugin_registry
             .as_ref()
             .map(|reg| {
@@ -686,13 +684,13 @@ pub(crate) async fn spawn_session_actor(
         compact_model: None,
         memory_flush_enabled: memory_config.as_ref().is_some_and(|mc| mc.flush.enabled),
         wall_clock_budget_secs: crate::util::config::resolve_compaction_wall_clock_budget_secs(
-            remote_settings
+            local_runtime_settings
                 .as_ref()
                 .and_then(|r| r.compaction_wall_clock_budget_secs),
         ),
         two_pass_enabled,
     };
-    let reminder_policy = resolve_reminder_policy(remote_settings.as_ref(), todo_gate);
+    let reminder_policy = resolve_reminder_policy(local_runtime_settings.as_ref(), todo_gate);
     let (user_question_tx, user_question_rx) = tokio::sync::mpsc::unbounded_channel::<
         atelier_tools::implementations::atelier_build::ask_user_question::types::UserQuestionRequest,
     >();
@@ -1005,32 +1003,19 @@ pub(crate) async fn spawn_session_actor(
     }
     persist_chat_history_jsonl_sync(&session_info, &conversation);
     chat_state_handle.replace_conversation(conversation);
-    let _ = (
-        &feedback_proxy_url,
-        &feedback_user_token,
-        &feedback_alpha_test_key,
-        &deployment_key,
-        &auth_manager,
-    );
+    let _ = &auth_manager;
     // Feedback synchronization is a vendor data path.  Keep the manager
     // available for local signal accounting, but never construct a network
     // client from config or remote settings.
-    let feedback_client = None;
-    let has_feedback_client = feedback_client.is_some();
-    tracing::info!(
-        session_id = % session_info.id.0, has_feedback_client = has_feedback_client,
-        "Creating feedback manager"
-    );
+    tracing::info!(session_id = % session_info.id.0, "Creating local feedback manager");
     let feedback_client_type = match client_type {
-        ClientType::AtelierTUI => prod_mc_cli_chat_proxy_types::feedback_types::ClientType::Tui,
-        ClientType::AtelierWeb => prod_mc_cli_chat_proxy_types::feedback_types::ClientType::Web,
-        ClientType::Nebula => prod_mc_cli_chat_proxy_types::feedback_types::ClientType::Nebula,
-        ClientType::Extension => {
-            prod_mc_cli_chat_proxy_types::feedback_types::ClientType::Extension
-        }
-        ClientType::Generic => prod_mc_cli_chat_proxy_types::feedback_types::ClientType::Agent,
-        ClientType::Desktop => prod_mc_cli_chat_proxy_types::feedback_types::ClientType::Desktop,
-        ClientType::AtelierPager => prod_mc_cli_chat_proxy_types::feedback_types::ClientType::Tui,
+        ClientType::AtelierTUI => crate::session::feedback_types::ClientType::Tui,
+        ClientType::AtelierWeb => crate::session::feedback_types::ClientType::Web,
+        ClientType::Nebula => crate::session::feedback_types::ClientType::Nebula,
+        ClientType::Extension => crate::session::feedback_types::ClientType::Extension,
+        ClientType::Generic => crate::session::feedback_types::ClientType::Agent,
+        ClientType::Desktop => crate::session::feedback_types::ClientType::Desktop,
+        ClientType::AtelierPager => crate::session::feedback_types::ClientType::Tui,
     };
     let feedback_config = FeedbackManagerConfig {
         feedback_enabled: feedback_flags.enabled,
@@ -1041,7 +1026,7 @@ pub(crate) async fn spawn_session_actor(
     };
     let feedback_manager = Arc::new(FeedbackManager::new(
         session_info.id.0.to_string(),
-        feedback_client,
+        None,
         feedback_config,
     ));
     let signals_handle = feedback_manager.signals_handle();
@@ -1058,11 +1043,7 @@ pub(crate) async fn spawn_session_actor(
     }
     signals_handle.set_primary_model(&primary_model_id);
     signals_handle.set_tracing_config(inference_idle_timeout_secs);
-    let sync_loop_cancel = if has_feedback_client {
-        Some(tokio_util::sync::CancellationToken::new())
-    } else {
-        None
-    };
+    let sync_loop_cancel = None;
     let force_compact = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let resolved_workspace_root = atelier_workspace::session::git::find_git_root_from_path(
         std::path::Path::new(&session_info.cwd),
@@ -1102,7 +1083,7 @@ pub(crate) async fn spawn_session_actor(
             let cwd_path = std::path::Path::new(&session_info.cwd);
             let project_trusted = crate::agent::folder_trust::resolve_and_record(
                 cwd_path,
-                remote_settings.as_ref(),
+                local_runtime_settings.as_ref(),
                 false,
             );
             let git_root = atelier_workspace::session::git::find_git_root_from_path(cwd_path).ok();
@@ -1129,20 +1110,19 @@ pub(crate) async fn spawn_session_actor(
         .iter()
         .map(|e| e.to_string())
         .collect();
-    let upload_queue = Arc::new(std::sync::OnceLock::new());
     let (goal_update_tx, goal_update_rx) = tokio::sync::mpsc::unbounded_channel::<
         atelier_tools::implementations::atelier_build::update_goal::UpdateGoalEnvelope,
     >();
     let obs_bridge = {
-        let sid = xai_tool_protocol::SessionId::new(&*session_info.id.0)
-            .unwrap_or_else(|_| xai_tool_protocol::SessionId::new("unknown").expect("valid"));
-        xai_computer_hub_sdk::ObservabilityBridge::new(None, sid)
+        let sid = atelier_tool_protocol::SessionId::new(&*session_info.id.0)
+            .unwrap_or_else(|_| atelier_tool_protocol::SessionId::new("unknown").expect("valid"));
+        atelier_tool_hub_sdk::ObservabilityBridge::new(None, sid)
     };
     let mut effective_config = crate::config::load_effective_config()
         .ok()
         .and_then(|raw| crate::agent::config::Config::new_from_toml_cfg(&raw).ok())
         .unwrap_or_default();
-    effective_config.remote_settings = remote_settings.clone();
+    effective_config.local_runtime_settings = local_runtime_settings.clone();
     let goal_classifier_max_runs = effective_config.resolve_goal_classifier_max_runs().value;
     let goal_strategist_every = effective_config
         .resolve_goal_strategist_every(goal_classifier_max_runs)
@@ -1196,6 +1176,12 @@ pub(crate) async fn spawn_session_actor(
         telemetry_enabled,
         supports_backend_search: std::cell::Cell::new(sampling_config.supports_backend_search),
         role_request_payload: std::cell::RefCell::new(sampling_config.request_payload.clone()),
+        remote_compaction_endpoint: std::cell::RefCell::new(
+            sampling_config.remote_compaction_endpoint.clone(),
+        ),
+        image_generation_endpoint: std::cell::RefCell::new(
+            sampling_config.image_generation_endpoint.clone(),
+        ),
         compactions_remaining: std::cell::Cell::new(sampling_config.compactions_remaining),
         compaction_at_tokens: std::cell::Cell::new(sampling_config.compaction_at_tokens),
         doom_loop_recovery,
@@ -1272,7 +1258,6 @@ pub(crate) async fn spawn_session_actor(
         client_identifier: session_client_identifier.clone(),
         origin_client: origin_client.clone(),
         feedback_manager: feedback_manager.clone(),
-        upload_queue: upload_queue.clone(),
         sync_loop_cancel: sync_loop_cancel.clone(),
         agent: std::cell::RefCell::new(agent),
         last_reported_branch: Arc::new(Mutex::new(None)),
@@ -1378,8 +1363,11 @@ pub(crate) async fn spawn_session_actor(
         subagent_spawn_info: parking_lot::Mutex::new(HashMap::new()),
         subagent_token_records: parking_lot::Mutex::new(HashMap::new()),
         workspace_ops: workspace_ops.clone(),
-        trace_config_template: std::cell::RefCell::new(None),
     });
+    session
+        .configure_image_gen_for_current_model()
+        .await
+        .map_err(atelier_agent::AgentBuildError::InvalidConfig)?;
     {
         let drainer_session = session.clone();
         let mut sampler_event_rx = sampler_event_rx;
@@ -1662,8 +1650,6 @@ pub(crate) async fn spawn_session_actor(
             initial_client_mcp_servers,
             display_cwd: None,
             feedback_manager: feedback_manager.clone(),
-            upload_queue: upload_queue.clone(),
-            upload_failures_since_success: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             tool_context: tool_context_for_handle,
             model_id: session_model_id,
             reasoning_effort: sampling_config.reasoning_effort,
@@ -1725,7 +1711,7 @@ pub(crate) async fn spawn_session_on_thread(
     session_info: SessionInfo,
     gateway: GatewaySender,
     sampling_config: SamplingConfig,
-    credentials: xai_chat_state::Credentials,
+    credentials: atelier_chat_state::Credentials,
     auth_method_id: crate::agent::auth_method::SharedAuthMethodId,
     auth_manager: Option<Arc<AuthManager>>,
     attribution_callback: Option<atelier_sampler::SharedAttributionCallback>,
@@ -1747,7 +1733,7 @@ pub(crate) async fn spawn_session_on_thread(
     client_type: ClientType,
     auto_compact_threshold_percent: u8,
     system_prompt_label: String,
-    compaction_mode: xai_chat_state::CompactionMode,
+    compaction_mode: atelier_chat_state::CompactionMode,
     compaction_verbatim_input: bool,
     two_pass_enabled: bool,
     buffering_settings: Option<BufferingSettings>,
@@ -1755,10 +1741,6 @@ pub(crate) async fn spawn_session_on_thread(
     codebase_indexes: std::sync::Arc<parking_lot::Mutex<CodebaseIndexManager>>,
     code_nav_enabled: bool,
     fs_watch_caps: fs_watch::FsWatchCapabilities,
-    feedback_proxy_url: Option<String>,
-    feedback_user_token: Option<String>,
-    feedback_alpha_test_key: Option<String>,
-    deployment_key: Option<String>,
     client_terminal_capable: bool,
     client_fs_capable: bool,
     gateway_enabled: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -1807,7 +1789,6 @@ pub(crate) async fn spawn_session_on_thread(
     plugin_registry: Option<std::sync::Arc<atelier_agent::plugins::PluginRegistry>>,
     plugin_registry_handle: Option<atelier_agent::plugins::SharedPluginRegistryHandle>,
     models_manager: crate::agent::models::ModelsManager,
-    parent_traceparent: Option<String>,
     inherited_permission_handle: Option<atelier_workspace::permission::PermissionHandle>,
     api_key_provider: Option<atelier_tools::types::SharedApiKeyProvider>,
     image_description_model: String,
@@ -1815,7 +1796,6 @@ pub(crate) async fn spawn_session_on_thread(
     workspace_ops: atelier_workspace::WorkspaceOps,
     cli_permission_rules: Vec<atelier_workspace::permission::types::PermissionRule>,
     todo_gate: bool,
-    remote_settings: Option<crate::util::config::RemoteSettings>,
     laziness_debug_log: Option<std::path::PathBuf>,
     parent_terminal_backend: Option<
         std::sync::Arc<dyn atelier_tools::computer::types::TerminalBackend>,
@@ -1871,14 +1851,6 @@ pub(crate) async fn spawn_session_on_thread(
                 .expect("session runtime");
             let local = tokio::task::LocalSet::new();
             local.block_on(&rt, async move {
-                let _trace_span = parent_traceparent.as_ref().map(|tp| {
-                    let meta = serde_json::json!({ "traceparent" : tp })
-                        .as_object()
-                        .cloned()
-                        .unwrap_or_default();
-                    let span = xai_file_utils::trace_context::span_from_meta_traceparent(&meta);
-                    span.entered()
-                });
                 let (handle, permission_events_rx, system_prompt, session_done_rx) =
                     match spawn_session_actor(
                         session_info,
@@ -1916,10 +1888,6 @@ pub(crate) async fn spawn_session_on_thread(
                         codebase_indexes,
                         code_nav_enabled,
                         fs_watch_caps,
-                        feedback_proxy_url,
-                        feedback_user_token,
-                        feedback_alpha_test_key,
-                        deployment_key,
                         client_terminal_capable,
                         client_fs_capable,
                         gateway_enabled,
@@ -1975,7 +1943,7 @@ pub(crate) async fn spawn_session_on_thread(
                         workspace_ops,
                         cli_permission_rules,
                         todo_gate,
-                        remote_settings,
+                        None,
                         laziness_debug_log,
                         parent_terminal_backend,
                         parent_scheduler_handle,

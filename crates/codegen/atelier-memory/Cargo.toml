@@ -35,7 +35,7 @@ atelier-http = { workspace = true }
 atelier-telemetry = { workspace = true }
 atelier-tools = { workspace = true }
 atelier-version = { workspace = true }
-xai-sqlite-journal = { workspace = true }
+atelier-sqlite-journal = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 nix = { workspace = true }

@@ -9,13 +9,13 @@
 //! Note: Could be renamed to `SessionConfig` or flattened onto `SessionActor` in a future PR.
 use crate::terminal::AsyncTerminalRunner;
 use agent_client_protocol as acp;
+use atelier_acp_runtime::AcpAgentGatewaySender as GatewaySender;
+use atelier_hunk_tracker::HunkTrackerHandle;
 use atelier_paths::AbsPathBuf;
 use atelier_workspace::file_system::{AsyncFileSystem, AsyncFsWrapper};
 use atelier_workspace::session::file_state::FileStateHandle;
 use std::collections::HashMap;
 use std::sync::Arc;
-use xai_acp_lib::AcpAgentGatewaySender as GatewaySender;
-use xai_hunk_tracker::HunkTrackerHandle;
 /// RAII marker: the turn is blocked inside an interruptible wait. Increments
 /// [`ToolContext::blocking_wait_depth`] for its lifetime; `Drop` decrements
 /// (a cancelled turn can't leak the count).
@@ -81,9 +81,10 @@ pub struct ToolContext {
     /// Used by `TaskCompletionReminder` to suppress duplicate reminders.
     pub auto_wake_delivered:
         Option<atelier_tools::reminders::task_completion::AutoWakeDeliveredIds>,
-    /// Channel for requesting trace uploads for synthetic auto-wake turns.
-    pub(crate) synthetic_trace_tx:
-        Option<tokio::sync::mpsc::UnboundedSender<crate::upload::turn::SyntheticTurnTraceRequest>>,
+    /// Channel for recording local artifacts for synthetic auto-wake turns.
+    pub(crate) synthetic_trace_tx: Option<
+        tokio::sync::mpsc::UnboundedSender<crate::local_artifacts::turn::SyntheticTurnTraceRequest>,
+    >,
     /// Shared slot for the synthetic trace channel. Populated by
     /// `start_subagent_coordinator` after the notification bridge is spawned.
     /// The notification bridge reads from this slot on each completion event.
@@ -92,7 +93,7 @@ pub struct ToolContext {
             std::sync::Mutex<
                 Option<
                     tokio::sync::mpsc::UnboundedSender<
-                        crate::upload::turn::SyntheticTurnTraceRequest,
+                        crate::local_artifacts::turn::SyntheticTurnTraceRequest,
                     >,
                 >,
             >,
@@ -222,11 +223,11 @@ impl ToolContext {
 #[cfg(test)]
 mod tests {
     use crate::{terminal::AsyncTerminalRunner, tools::ToolContext};
+    use atelier_hunk_tracker::HunkTrackerHandle;
     use atelier_paths::AbsPathBuf;
     use atelier_workspace::file_system::{AsyncFileSystem, AsyncFsWrapper};
     use std::collections::HashMap;
     use std::sync::Arc;
-    use xai_hunk_tracker::HunkTrackerHandle;
     impl ToolContext {
         pub fn new_local_context(
             cwd: AbsPathBuf,

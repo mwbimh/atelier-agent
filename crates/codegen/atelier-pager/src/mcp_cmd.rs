@@ -12,19 +12,19 @@ use crate::util::display_user_atelier_path;
 const ADD_AFTER_HELP: &str = "\
 Examples:
   # Add a stdio server (everything after -- is the server command)
-  atelier mcp add xcode -- xcrun mcpbridge
+  ate mcp add xcode -- xcrun mcpbridge
 
   # Add a stdio server with environment variables
-  atelier mcp add postgres -e DATABASE_URL=postgres://localhost/mydb -- npx -y @modelcontextprotocol/server-postgres
+  ate mcp add postgres -e DATABASE_URL=postgres://localhost/mydb -- npx -y @modelcontextprotocol/server-postgres
 
   # Add a remote HTTP server
-  atelier mcp add --transport http sentry https://mcp.sentry.dev/mcp
+  ate mcp add --transport http sentry https://mcp.sentry.dev/mcp
 
   # Add a remote server with an authentication header
-  atelier mcp add --transport http api https://mcp.example.com/mcp --header \"Authorization: Bearer YOUR_TOKEN\"
+  ate mcp add --transport http api https://mcp.example.com/mcp --header \"Authorization: Bearer YOUR_TOKEN\"
 
   # Add to the project config (./.atelier/config.toml) instead of ~/.atelier/config.toml
-  atelier mcp add --scope project github -- npx -y @modelcontextprotocol/server-github";
+  ate mcp add --scope project github -- npx -y @modelcontextprotocol/server-github";
 
 #[derive(Debug, clap::Args, Clone)]
 pub struct McpArgs {
@@ -166,7 +166,7 @@ fn run_list(json: bool) -> Result<()> {
             .collect();
         println!("{}", serde_json::to_string_pretty(&payload)?);
     } else if servers.is_empty() {
-        println!("No MCP servers configured. Run `atelier mcp add --help` to get started.");
+        println!("No MCP servers configured. Run `ate mcp add --help` to get started.");
     } else {
         for (name, (config, scope)) in &servers {
             let transport = match &config.transport {
@@ -291,7 +291,7 @@ fn resolve_add(args: &AddArgs) -> Result<ResolvedAdd> {
         McpTransport::Stdio => {
             let Some(command) = source else {
                 bail!(
-                    "A command is required for stdio servers. Usage: atelier mcp add <name> -- <command> [args...]"
+                    "A command is required for stdio servers. Usage: ate mcp add <name> -- <command> [args...]"
                 );
             };
             if !args.header.is_empty() {
@@ -325,7 +325,7 @@ fn resolve_add(args: &AddArgs) -> Result<ResolvedAdd> {
                         format!("http://{command}")
                     };
                 warnings.push(format!(
-                    "Warning: '{command}' looks like a URL, but it is being added as a stdio command because --transport was not specified.\nFor a remote server, use: atelier mcp add --transport http {} {suggested_url}",
+                    "Warning: '{command}' looks like a URL, but it is being added as a stdio command because --transport was not specified.\nFor a remote server, use: ate mcp add --transport http {} {suggested_url}",
                     args.name
                 ));
             }
@@ -349,7 +349,7 @@ fn resolve_add(args: &AddArgs) -> Result<ResolvedAdd> {
             };
             let Some(url) = source else {
                 bail!(
-                    "A URL is required for {label} servers. Usage: atelier mcp add --transport {label} <name> <url>"
+                    "A URL is required for {label} servers. Usage: ate mcp add --transport {label} <name> <url>"
                 );
             };
             if !url.starts_with("http://") && !url.starts_with("https://") {
@@ -551,9 +551,7 @@ async fn run_remove(name: &str, requested_scope: Option<McpScope>) -> Result<()>
             eprintln!("MCP server '{name}' exists in multiple scopes:");
             eprintln!("  user: {}", display_user_atelier_path("config.toml"));
             eprintln!("  project: {}", project_path.display());
-            eprintln!(
-                "Specify which one to remove, e.g.: atelier mcp remove {name} --scope project"
-            );
+            eprintln!("Specify which one to remove, e.g.: ate mcp remove {name} --scope project");
             std::process::exit(1);
         }
     };

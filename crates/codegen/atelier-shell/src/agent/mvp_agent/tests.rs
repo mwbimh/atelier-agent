@@ -159,7 +159,7 @@ fn post_unblock_jwt_retry_in_flight_guard_clears_on_drop() {
 }
 mod hunk_tracking_mode {
     use super::super::{plan_hunk_tracking, resolve_hunk_tracking_mode};
-    use xai_hunk_tracker::TrackingMode;
+    use atelier_hunk_tracker::TrackingMode;
     #[test]
     fn off_and_disabled_disable_tracking() {
         assert_eq!(resolve_hunk_tracking_mode(Some("off")), None);
@@ -365,7 +365,7 @@ fn settings_allow_access_none_settings_is_blocked() {
 /// When `allow_access` is `Some(true)`, user is allowed.
 #[test]
 fn settings_allow_access_true_is_allowed() {
-    let rs = crate::util::config::RemoteSettings {
+    let rs = crate::util::config::LocalRuntimeSettings {
         allow_access: Some(true),
         ..Default::default()
     };
@@ -377,7 +377,7 @@ fn settings_allow_access_true_is_allowed() {
 /// `retry_subscription_check` unconditionally lifted the gate.
 #[test]
 fn settings_allow_access_false_is_blocked() {
-    let rs = crate::util::config::RemoteSettings {
+    let rs = crate::util::config::LocalRuntimeSettings {
         allow_access: Some(false),
         ..Default::default()
     };
@@ -387,7 +387,7 @@ fn settings_allow_access_false_is_blocked() {
 /// (`None`), default to blocked (conservative).
 #[test]
 fn settings_allow_access_field_absent_is_blocked() {
-    let rs = crate::util::config::RemoteSettings {
+    let rs = crate::util::config::LocalRuntimeSettings {
         allow_access: None,
         ..Default::default()
     };
@@ -429,54 +429,27 @@ fn harness_pair(id: &str) -> Vec<atelier_sampling_types::conversation::Conversat
         ConversationItem::tool_result(id, "<subagent_result>\nsubagent_id: skeptic-1"),
     ]
 }
-/// Agent-side upload path: each drained harness turn takes a distinct,
+/// Agent-side local persistence path: each drained harness turn takes a distinct,
 /// monotonic turn number that CONTINUES past the user turn, advances the
 /// per-session counter, and is persisted via exactly one `SetNextTraceTurn`.
-/// This is what makes each sibling `turn_{N}` reachable — without the
-/// advance every harness turn would clobber the same GCS path.
+/// This keeps each sibling `turn_{N}` in a distinct local artifact directory.
 #[tokio::test(flavor = "current_thread")]
-#[cfg(any())] // Vendor trace upload was removed from Atelier.
-async fn upload_harness_trace_turns_numbers_siblings_and_persists_counter() {
+async fn persist_harness_trace_turns_numbers_siblings_and_persists_counter() {
     let agent = build_minimal_agent_for_tests();
-    {
-        let mut cfg = agent.cfg.borrow_mut();
-        cfg.features.telemetry = Some(crate::agent::config::TelemetryMode::Enabled);
-        cfg.telemetry.trace_upload = Some(true);
-        cfg.endpoints.trace_upload_bucket = Some("gs://harness-trace-test".to_string());
-    }
-    let sid = acp::SessionId::new("harness-upload-sess");
+    let sid = acp::SessionId::new("harness-local-sess");
     let info = crate::session::info::Info {
         id: sid.clone(),
         cwd: "/tmp".to_string(),
     };
     let mut handle = make_test_handle("test-model", false, None);
     handle.info = info.clone();
-    let queue_home = tempfile::tempdir().unwrap();
-    let queue_cfg = crate::session::repo_changes::TraceExportConfig {
-        bucket_url: Some("gs://harness-trace-test".to_string()),
-        service_account_key: None,
-        prefix_dir: None,
-        gcs_prefix: None,
-        absolute_paths: false,
-        archive_name_override: None,
-        upload_method: crate::session::repo_changes::UploadMethod::Direct {
-            service_account_key: None,
-        },
-    };
-    let queue = crate::upload::trace::spawn_upload_queue(
-        queue_home.path(),
-        &queue_cfg,
-        Some(atelier_version::VERSION),
-        agent.auth_manager.clone(),
-    );
-    let _ = handle.upload_queue.set(queue);
     agent.sessions.borrow_mut().insert(sid.clone(), handle);
     for _ in 0..3 {
         agent.allocate_turn_number(&sid);
     }
     assert_eq!(agent.session_turn_number(&sid), Some(3));
     let built = agent
-        .build_harness_trace_uploads(
+        .prepare_harness_trace_artifacts(
             &sid,
             &info,
             "test-model",
@@ -493,7 +466,7 @@ async fn upload_harness_trace_turns_numbers_siblings_and_persists_counter() {
     let (cmd_tx, mut cmd_rx) =
         tokio::sync::mpsc::unbounded_channel::<crate::session::SessionCommand>();
     agent
-        .upload_harness_trace_turns(
+        .persist_harness_trace_turns(
             &sid,
             &info,
             &cmd_tx,
@@ -518,15 +491,13 @@ async fn upload_harness_trace_turns_numbers_siblings_and_persists_counter() {
     assert_eq!(
         persisted,
         vec![5],
-        "persist the advanced counter once, ahead of the spawned uploads",
+        "persist the advanced counter once, ahead of the local writes",
     );
 }
-/// With trace upload disabled the agent-side path must NOT burn a turn
-/// number or persist a counter (and spawns no upload). The buffer-clearing
-/// half of the drain is the caller's `TakeHarnessTraceTurns`; this guards
-/// the upload function's uploads-disabled branch.
+/// A missing session cannot produce a local artifact context and must not
+/// consume or persist a turn number.
 #[tokio::test(flavor = "current_thread")]
-async fn upload_harness_trace_turns_uploads_disabled_does_not_burn_counter() {
+async fn persist_harness_trace_turns_missing_session_does_not_burn_counter() {
     let agent = build_minimal_agent_for_tests();
     let sid = acp::SessionId::new("harness-disabled-sess");
     let info = crate::session::info::Info {
@@ -536,36 +507,29 @@ async fn upload_harness_trace_turns_uploads_disabled_does_not_burn_counter() {
     let (cmd_tx, mut cmd_rx) =
         tokio::sync::mpsc::unbounded_channel::<crate::session::SessionCommand>();
     agent
-        .upload_harness_trace_turns(&sid, &info, &cmd_tx, "test-model", vec![harness_pair("a")])
+        .persist_harness_trace_turns(&sid, &info, &cmd_tx, "test-model", vec![harness_pair("a")])
         .await;
     assert_eq!(
         agent.session_turn_number(&sid),
         None,
-        "uploads-disabled skip must not consume a turn number",
+        "missing-session skip must not consume a turn number",
     );
     assert!(
         cmd_rx.try_recv().is_err(),
-        "uploads-disabled path must not persist a counter",
+        "missing-session path must not persist a counter",
     );
 }
 /// Guards the per-harness-turn manifest seam: (1) every turn's ctx carries
-/// a FRESH `artifact_tracker`, so turn 1 never inherits turn 0's recorded
+/// a fresh local artifact state, so turn 1 never inherits turn 0's recorded
 /// artifacts; (2) recording the turn's metadata + turn_messages yields a
-/// manifest listing exactly those two; (3) `fully_uploaded` is true iff
-/// neither failed.
+/// manifest listing exactly those two; (3) `complete` is true iff neither
+/// failed.
 #[tokio::test(flavor = "current_thread")]
-#[cfg(any())] // Vendor trace upload was removed from Atelier.
-async fn upload_harness_trace_turns_build_per_turn_manifest() {
-    use crate::upload::manifest::{
-        ArtifactResult, ArtifactStatus, build_manifest, record_artifact, resolve_upload_method,
+async fn harness_trace_artifacts_build_per_turn_manifest() {
+    use crate::local_artifacts::manifest::{
+        ArtifactResult, ArtifactStatus, build_manifest, record_artifact,
     };
     let agent = build_minimal_agent_for_tests();
-    {
-        let mut cfg = agent.cfg.borrow_mut();
-        cfg.features.telemetry = Some(crate::agent::config::TelemetryMode::Enabled);
-        cfg.telemetry.trace_upload = Some(true);
-        cfg.endpoints.trace_upload_bucket = Some("gs://harness-trace-test".to_string());
-    }
     let sid = acp::SessionId::new("harness-manifest-sess");
     let info = crate::session::info::Info {
         id: sid.clone(),
@@ -573,28 +537,9 @@ async fn upload_harness_trace_turns_build_per_turn_manifest() {
     };
     let mut handle = make_test_handle("test-model", false, None);
     handle.info = info.clone();
-    let queue_home = tempfile::tempdir().unwrap();
-    let queue_cfg = crate::session::repo_changes::TraceExportConfig {
-        bucket_url: Some("gs://harness-trace-test".to_string()),
-        service_account_key: None,
-        prefix_dir: None,
-        gcs_prefix: None,
-        absolute_paths: false,
-        archive_name_override: None,
-        upload_method: crate::session::repo_changes::UploadMethod::Direct {
-            service_account_key: None,
-        },
-    };
-    let queue = crate::upload::trace::spawn_upload_queue(
-        queue_home.path(),
-        &queue_cfg,
-        Some(atelier_version::VERSION),
-        agent.auth_manager.clone(),
-    );
-    let _ = handle.upload_queue.set(queue);
     agent.sessions.borrow_mut().insert(sid.clone(), handle);
     let built = agent
-        .build_harness_trace_uploads(
+        .prepare_harness_trace_artifacts(
             &sid,
             &info,
             "test-model",
@@ -609,48 +554,48 @@ async fn upload_harness_trace_turns_build_per_turn_manifest() {
     );
     let ctx0 = &built[0].0;
     record_artifact(
-        &ctx0.artifact_tracker,
+        &ctx0.local_artifact_state,
         "metadata.json",
-        ArtifactResult::Succeeded,
+        ArtifactResult::Written,
     );
     record_artifact(
-        &ctx0.artifact_tracker,
+        &ctx0.local_artifact_state,
         "turn_messages.json",
-        ArtifactResult::Succeeded,
+        ArtifactResult::Written,
     );
-    let m0 = build_manifest(&ctx0.artifact_tracker, resolve_upload_method(ctx0));
+    let m0 = build_manifest(&ctx0.local_artifact_state);
     assert!(matches!(
         m0.artifacts.get("metadata.json"),
-        Some(ArtifactStatus::Succeeded)
+        Some(ArtifactStatus::Written)
     ));
     assert!(matches!(
         m0.artifacts.get("turn_messages.json"),
-        Some(ArtifactStatus::Succeeded)
+        Some(ArtifactStatus::Written)
     ));
-    assert!(m0.fully_uploaded, "both succeeded → fully_uploaded");
+    assert!(m0.complete, "both artifacts were written");
     let ctx1 = &built[1].0;
-    let before = build_manifest(&ctx1.artifact_tracker, resolve_upload_method(ctx1));
+    let before = build_manifest(&ctx1.local_artifact_state);
     assert!(
         before.artifacts.is_empty(),
         "per-turn tracker: turn 1 must not inherit turn 0's artifacts",
     );
     record_artifact(
-        &ctx1.artifact_tracker,
+        &ctx1.local_artifact_state,
         "metadata.json",
-        ArtifactResult::Succeeded,
+        ArtifactResult::Written,
     );
     record_artifact(
-        &ctx1.artifact_tracker,
+        &ctx1.local_artifact_state,
         "turn_messages.json",
         ArtifactResult::Failed {
-            reason: "upload_failed",
+            reason: "write_failed",
             error: None,
         },
     );
-    let m1 = build_manifest(&ctx1.artifact_tracker, resolve_upload_method(ctx1));
+    let m1 = build_manifest(&ctx1.local_artifact_state);
     assert!(
-        !m1.fully_uploaded,
-        "a failed turn_messages flips fully_uploaded",
+        !m1.complete,
+        "a failed turn_messages marks the local manifest incomplete",
     );
     assert_eq!(m1.artifacts.len(), 2, "no cross-turn contamination");
 }
@@ -1137,11 +1082,11 @@ fn make_test_handle(
     let (persistence_tx, _persistence_rx) = tokio::sync::mpsc::unbounded_channel();
     let (hunk_event_tx, _hunk_event_rx) = tokio::sync::mpsc::unbounded_channel();
     let hunk_cancel = tokio_util::sync::CancellationToken::new();
-    let hunk_tracker_handle = xai_hunk_tracker::HunkTrackerActor::spawn(
+    let hunk_tracker_handle = atelier_hunk_tracker::HunkTrackerActor::spawn(
         "test".to_string(),
         std::path::PathBuf::from("/tmp"),
         hunk_event_tx,
-        xai_hunk_tracker::TrackingMode::AllDirty,
+        atelier_hunk_tracker::TrackingMode::AllDirty,
         hunk_cancel,
     );
     crate::session::SessionHandle {
@@ -1157,7 +1102,7 @@ fn make_test_handle(
         },
         max_turns: None,
         hunk_tracker_handle,
-        chat_state_handle: xai_chat_state::ChatStateHandle::noop(),
+        chat_state_handle: atelier_chat_state::ChatStateHandle::noop(),
         signals_handle: crate::session::signals::SessionSignalsHandle::new(),
         gateway_enabled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         mcp_servers: vec![],
@@ -1166,8 +1111,6 @@ fn make_test_handle(
         feedback_manager: std::sync::Arc::new(
             crate::session::feedback_manager::FeedbackManager::local_only("test"),
         ),
-        upload_queue: Arc::new(OnceLock::new()),
-        upload_failures_since_success: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         tool_context: crate::tools::ToolContext::new_local_context(
             atelier_paths::AbsPathBuf::new(test_root.clone()).unwrap(),
             std::sync::Arc::new(atelier_workspace::file_system::LocalFs::new(
@@ -1467,6 +1410,8 @@ async fn provider_catalog_reload_refreshes_live_session_from_the_new_registry_sn
             context_window: Some(128_000),
             capabilities: Default::default(),
             reasoning_efforts: Vec::new(),
+            default_effort: None,
+            fast_mode: false,
             source: ModelSource::Static,
             enabled: true,
         })
@@ -2200,11 +2145,11 @@ async fn resident_activity_reports_needs_input_when_pending() {
 /// payload that carries an upserted entry (ignoring any unrelated
 /// notifications, which parse into an empty `RosterChanged`).
 fn drain_roster_changed(
-    rx: &mut tokio::sync::mpsc::UnboundedReceiver<xai_acp_lib::AcpClientMessage>,
+    rx: &mut tokio::sync::mpsc::UnboundedReceiver<atelier_acp_runtime::AcpClientMessage>,
 ) -> Option<crate::agent::roster::RosterChanged> {
     let mut found = None;
     while let Ok(msg) = rx.try_recv() {
-        if let xai_acp_lib::AcpClientMessage::ExtNotification(args) = msg {
+        if let atelier_acp_runtime::AcpClientMessage::ExtNotification(args) = msg {
             if found.is_none()
                 && let Ok(changed) = serde_json::from_str::<crate::agent::roster::RosterChanged>(
                     args.request.params.get(),
@@ -2498,6 +2443,8 @@ fn find_model_by_id_prefers_key_then_falls_back_to_slug() {
             reasoning_effort: None,
             supports_reasoning_effort: false,
             reasoning_efforts: Vec::new(),
+            accepts_images: false,
+            supports_fast_mode: false,
             supports_backend_search: false,
             compactions_remaining: None,
             compaction_at_tokens: None,
@@ -2509,6 +2456,8 @@ fn find_model_by_id_prefers_key_then_falls_back_to_slug() {
         env_key: None,
         api_base_url: None,
         request_payload: serde_json::Map::new(),
+        remote_compaction_endpoint: None,
+        image_generation_endpoint: None,
     };
     let mut models = indexmap::IndexMap::new();
     models.insert("a".to_string(), entry("target"));
@@ -2645,24 +2594,24 @@ fn orphaned_tasks_filters_rewind_dead_branches() {
     );
 }
 #[test]
-fn allow_access_from_remote_settings() {
+fn allow_access_from_local_runtime_settings() {
     let json = serde_json::json!({ "allow_access" : true });
-    let rs: crate::util::config::RemoteSettings = serde_json::from_value(json).unwrap();
+    let rs: crate::util::config::LocalRuntimeSettings = serde_json::from_value(json).unwrap();
     assert_eq!(rs.allow_access, Some(true));
     let json = serde_json::json!({ "allow_access" : false });
-    let rs: crate::util::config::RemoteSettings = serde_json::from_value(json).unwrap();
+    let rs: crate::util::config::LocalRuntimeSettings = serde_json::from_value(json).unwrap();
     assert_eq!(rs.allow_access, Some(false));
     let json = serde_json::json!({});
-    let rs: crate::util::config::RemoteSettings = serde_json::from_value(json).unwrap();
+    let rs: crate::util::config::LocalRuntimeSettings = serde_json::from_value(json).unwrap();
     assert_eq!(rs.allow_access, None);
 }
 #[test]
-fn on_demand_enabled_from_remote_settings() {
+fn on_demand_enabled_from_local_runtime_settings() {
     let json = serde_json::json!({ "on_demand_enabled" : false });
-    let rs: crate::util::config::RemoteSettings = serde_json::from_value(json).unwrap();
+    let rs: crate::util::config::LocalRuntimeSettings = serde_json::from_value(json).unwrap();
     assert_eq!(rs.on_demand_enabled, Some(false));
     let json = serde_json::json!({});
-    let rs: crate::util::config::RemoteSettings = serde_json::from_value(json).unwrap();
+    let rs: crate::util::config::LocalRuntimeSettings = serde_json::from_value(json).unwrap();
     assert_eq!(rs.on_demand_enabled, None);
 }
 /// Regression for a 401 sequence seen in production. After a long idle
@@ -2686,7 +2635,7 @@ async fn auth_type_session_based_no_current_returns_session_token() {
         );
         assert_eq!(
             agent.auth_type(),
-            xai_chat_state::AuthType::SessionToken,
+            atelier_chat_state::AuthType::SessionToken,
             "{method_id}: session-based auth must report SessionToken even \
                  without a live token -- otherwise chat_state gets locked into \
                  auth_type = ApiKey and try_refresh_session_token will skip \
@@ -2694,21 +2643,21 @@ async fn auth_type_session_based_no_current_returns_session_token() {
         );
     }
 }
-/// BYOK guard. Users with `xai.api_key` must continue to report `ApiKey`
+/// BYOK guard. Users with `provider.api_key` must continue to report `ApiKey`
 /// regardless of live-token state -- BYOK sessions have nothing to refresh,
 /// and reporting `SessionToken` would route through cli-chat-proxy paths
 /// (image_gen / video_gen base_url) that don't apply to BYOK keys.
 #[tokio::test(flavor = "current_thread")]
-async fn auth_type_xai_api_key_no_current_returns_api_key() {
+async fn auth_type_provider_api_key_no_current_returns_api_key() {
     let agent = build_minimal_agent_for_tests();
     agent.set_auth_method(acp::AuthMethodId::new(
-        crate::agent::auth_method::XAI_API_KEY_METHOD_ID,
+        crate::agent::auth_method::PROVIDER_API_KEY_METHOD_ID,
     ));
     assert!(agent.auth_manager.current().is_none());
     assert_eq!(
         agent.auth_type(),
-        xai_chat_state::AuthType::ApiKey,
-        "xai.api_key auth must report ApiKey -- BYOK has no session-token \
+        atelier_chat_state::AuthType::ApiKey,
+        "provider.api_key auth must report ApiKey -- BYOK has no session-token \
              behavior to fall back to."
     );
 }
@@ -2724,7 +2673,10 @@ async fn auth_type_session_based_with_current_returns_session_token() {
     ));
     agent.auth_manager.hot_swap(AtelierAuth::test_default());
     assert!(agent.auth_manager.current().is_some());
-    assert_eq!(agent.auth_type(), xai_chat_state::AuthType::SessionToken,);
+    assert_eq!(
+        agent.auth_type(),
+        atelier_chat_state::AuthType::SessionToken,
+    );
 }
 /// Defensive case: no `auth_method_id` selected yet (pre-`authenticate`
 /// state) and no live credential. We default to `ApiKey` so callers
@@ -2736,7 +2688,7 @@ async fn auth_type_no_method_id_no_current_returns_api_key() {
     let agent = build_minimal_agent_for_tests();
     assert!(agent.auth_method_id.load().is_none());
     assert!(agent.auth_manager.current().is_none());
-    assert_eq!(agent.auth_type(), xai_chat_state::AuthType::ApiKey,);
+    assert_eq!(agent.auth_type(), atelier_chat_state::AuthType::ApiKey,);
 }
 /// Live credential present but `auth_method_id` is still `None`. The
 /// in-memory bearer takes precedence: this is the order observed during
@@ -2750,7 +2702,10 @@ async fn auth_type_no_method_id_with_current_returns_session_token() {
     agent.auth_manager.hot_swap(AtelierAuth::test_default());
     assert!(agent.auth_method_id.load().is_none());
     assert!(agent.auth_manager.current().is_some());
-    assert_eq!(agent.auth_type(), xai_chat_state::AuthType::SessionToken,);
+    assert_eq!(
+        agent.auth_type(),
+        atelier_chat_state::AuthType::SessionToken,
+    );
 }
 /// Minimal agent whose `atelier_com_config` engages the api-key kill switch
 /// (`disable_api_key_auth = true`), mirroring a forced-IdP deployment.
@@ -2768,38 +2723,46 @@ fn build_agent_with_api_key_auth_disabled() -> MvpAgent {
     cfg.atelier_com_config.disable_api_key_auth = Some(true);
     MvpAgent::new(gateway, &cfg, auth_manager, None).expect("valid test config")
 }
-/// Deployment-key / managed-config user: `XAI_API_KEY` resolves and the kill
-/// switch is off, so a dead `cached_token` MUST fall through to `xai.api_key`
-/// (no browser). This is the exact regression the fallthrough fixes.
+
+fn add_configured_provider_credentials(agent: &MvpAgent) {
+    let mut entry = crate::agent::config::ModelEntry::fallback(
+        "provider/model",
+        &crate::agent::config::EndpointsConfig::default(),
+    );
+    entry.api_key = Some("provider-secret".to_owned());
+    agent
+        .models_manager
+        .insert_test_entry("provider/model", entry);
+}
+
+/// A dead `cached_token` falls through to non-interactive auth only when the
+/// selected Provider has explicitly configured credentials.
 #[tokio::test(flavor = "current_thread")]
 #[serial_test::serial]
-async fn cached_token_fallthrough_prefers_api_key_for_deployment_key() {
-    use crate::agent::auth_method::{XAI_API_KEY_ENV_VAR, XAI_API_KEY_METHOD_ID};
-    use atelier_test_support::EnvGuard;
-    let _lockdown = EnvGuard::unset("ATELIER_DISABLE_API_KEY_AUTH");
-    let _key = EnvGuard::set(XAI_API_KEY_ENV_VAR, "test-deployment-key");
+async fn cached_token_fallthrough_prefers_configured_provider_credentials() {
+    use crate::agent::auth_method::PROVIDER_API_KEY_METHOD_ID;
+
     let agent = build_minimal_agent_for_tests();
+    add_configured_provider_credentials(&agent);
     assert_eq!(
         agent
             .cached_token_fallthrough_method_id()
             .as_ref()
             .map(|id| id.0.as_ref()),
-        Some(XAI_API_KEY_METHOD_ID),
-        "deployment-key user (XAI_API_KEY set, no kill switch) must fall \
-         through to xai.api_key on a dead cached_token -- not interactive login",
+        Some(PROVIDER_API_KEY_METHOD_ID),
+        "configured Provider credentials must remain the non-interactive cached-token fallback",
     );
 }
-/// Forced-IdP deployment: even with `XAI_API_KEY` present, the admin kill
-/// switch keeps the fallthrough on interactive `atelier.invalid` (api-key auth is
-/// neither advertised nor an eligible fallthrough).
+
+/// The API-key auth kill switch suppresses configured Provider credentials and
+/// keeps the fallthrough on the configured interactive method.
 #[tokio::test(flavor = "current_thread")]
 #[serial_test::serial]
 async fn cached_token_fallthrough_respects_kill_switch() {
-    use crate::agent::auth_method::{ATELIER_COM_METHOD_ID, XAI_API_KEY_ENV_VAR};
-    use atelier_test_support::EnvGuard;
-    let _lockdown = EnvGuard::unset("ATELIER_DISABLE_API_KEY_AUTH");
-    let _key = EnvGuard::set(XAI_API_KEY_ENV_VAR, "test-deployment-key");
+    use crate::agent::auth_method::ATELIER_COM_METHOD_ID;
+
     let agent = build_agent_with_api_key_auth_disabled();
+    add_configured_provider_credentials(&agent);
     assert_eq!(
         agent
             .cached_token_fallthrough_method_id()
@@ -2807,111 +2770,25 @@ async fn cached_token_fallthrough_respects_kill_switch() {
             .map(|id| id.0.as_ref()),
         Some(ATELIER_COM_METHOD_ID),
         "disable_api_key_auth must keep the cached_token fallthrough on \
-         interactive atelier.invalid so XAI_API_KEY can't bypass forced IdP login",
+         the configured interactive method",
     );
 }
-/// No advertiseable credentials at all (no env key, no kill switch): the user
-/// genuinely needs to log in, so the fallthrough is interactive `atelier.invalid`.
+
 #[tokio::test(flavor = "current_thread")]
-#[serial_test::serial]
-async fn cached_token_fallthrough_falls_to_atelier_com_without_credentials() {
-    use crate::agent::auth_method::{
-        ATELIER_COM_METHOD_ID, LEGACY_XAI_API_KEY_ENV_VAR, XAI_API_KEY_ENV_VAR,
-    };
-    use atelier_test_support::EnvGuard;
-    let _lockdown = EnvGuard::unset("ATELIER_DISABLE_API_KEY_AUTH");
-    let _new = EnvGuard::unset(XAI_API_KEY_ENV_VAR);
-    let _legacy = EnvGuard::unset(LEGACY_XAI_API_KEY_ENV_VAR);
-    let agent = build_minimal_agent_for_tests();
-    assert_eq!(
-        agent
-            .cached_token_fallthrough_method_id()
-            .as_ref()
-            .map(|id| id.0.as_ref()),
-        Some(ATELIER_COM_METHOD_ID),
-        "no API-key creds and no kill switch -> interactive atelier.invalid login",
-    );
-}
-/// Verifies the 4-state matrix of `(disable_zdr_incompatible_tools, zdr_video_output_s3)`:
-///
-/// | ZDR flag | S3 config | Result                                      |
-/// |----------|-----------|---------------------------------------------|
-/// | false    | None      | Enabled, no S3 (normal non-ZDR mode)        |
-/// | true     | None      | Disabled (ZDR with no escape hatch)         |
-/// | false    | Some      | Enabled, S3 **not** threaded (non-ZDR)      |
-/// | true     | Some      | Enabled, S3 threaded (ZDR with upload path) |
-#[tokio::test(flavor = "current_thread")]
-async fn prepare_video_gen_config_disabled_when_zdr_flag_set() {
-    use atelier_tools::implementations::atelier_build::video_gen::{
-        S3AccessCredentials, VideoGenConfig, ZdrVideoOutputS3Config,
-    };
-    fn zdr_s3() -> ZdrVideoOutputS3Config {
-        ZdrVideoOutputS3Config {
-            bucket: "team-videos".into(),
-            endpoint: "https://s3.example.com".into(),
-            region: "us-east-1".into(),
-            key_prefix: "atelier-videos/".into(),
-            expires_secs: 900,
-            read_write: S3AccessCredentials {
-                access_key_id: "AKIA...".into(),
-                secret_access_key: "secret".into(),
-            },
-            read_only: None,
-        }
-    }
+async fn prepare_video_gen_config_does_not_restore_global_fallback() {
+    use atelier_tools::implementations::atelier_build::video_gen::VideoGenConfig;
     let agent = build_minimal_agent_for_tests();
     agent.sampling_config.borrow_mut().api_key = Some("test-key".to_string());
     assert!(matches!(
         agent.prepare_video_gen_config(),
-        VideoGenConfig::Enabled { .. }
+        VideoGenConfig::Disabled,
     ));
-    agent.cfg.borrow_mut().disable_zdr_incompatible_tools = true;
-    assert!(matches!(
-        agent.prepare_video_gen_config(),
-        VideoGenConfig::Disabled
-    ));
-    agent.cfg.borrow_mut().zdr_video_output_s3 = Some(zdr_s3());
-    agent.cfg.borrow_mut().disable_zdr_incompatible_tools = false;
-    let VideoGenConfig::Enabled {
-        zdr_video_output_s3: s3_when_non_zdr,
-        ..
-    } = agent.prepare_video_gen_config()
-    else {
-        panic!("expected Enabled");
-    };
-    assert!(
-        s3_when_non_zdr.is_none(),
-        "S3 config must not be threaded when ZDR flag is off"
-    );
-    agent.cfg.borrow_mut().disable_zdr_incompatible_tools = true;
-    let VideoGenConfig::Enabled {
-        zdr_video_output_s3,
-        ..
-    } = agent.prepare_video_gen_config()
-    else {
-        panic!("expected Enabled");
-    };
-    assert!(zdr_video_output_s3.as_ref().is_some_and(|c| c.is_valid()));
 }
-/// The imagine tier gate fails **open**: with no resolved auth we can't confirm
-/// a restricted personal tier, so the tools stay advertised and un-flagged (the
-/// server 429 remains the authoritative backstop). Guards against accidentally
-/// disabling a paid feature when tier info hasn't loaded.
 #[tokio::test(flavor = "current_thread")]
-async fn prepare_image_gen_config_fails_open_without_auth() {
-    use atelier_tools::implementations::atelier_build::image_gen::ImageGenConfig;
+async fn prepare_image_gen_config_does_not_restore_global_fallback() {
     let agent = build_minimal_agent_for_tests();
     agent.sampling_config.borrow_mut().api_key = Some("test-key".to_string());
-    let ImageGenConfig::Enabled {
-        tier_restricted, ..
-    } = agent.prepare_image_gen_config()
-    else {
-        panic!("expected Enabled");
-    };
-    assert!(
-        !tier_restricted,
-        "no resolved auth ⇒ fail open (tools not tier-restricted)"
-    );
+    assert!(!agent.prepare_image_gen_config().is_enabled());
 }
 #[tokio::test]
 async fn data_collection_enabled_for_normal_user() {
@@ -2930,10 +2807,6 @@ async fn data_collection_disabled_for_zdr_team() {
     assert!(
         agent.is_data_collection_disabled(),
         "ZDR team must have data collection disabled"
-    );
-    assert!(
-        agent.trace_upload_config_snapshot().is_none(),
-        "trace uploads must be disabled for ZDR team"
     );
 }
 #[tokio::test]
@@ -2956,10 +2829,6 @@ async fn data_collection_disabled_for_opted_out_team() {
     assert!(
         agent.is_data_collection_disabled(),
         "opted-out team must have data collection disabled"
-    );
-    assert!(
-        agent.trace_upload_config_snapshot().is_none(),
-        "trace uploads must be disabled for opted-out team"
     );
 }
 #[tokio::test]
@@ -3021,23 +2890,6 @@ async fn product_analytics_disabled_when_telemetry_off() {
     let agent = build_agent_with_auth(crate::auth::AtelierAuth::test_default());
     agent.cfg.borrow_mut().features.telemetry = Some(crate::agent::config::TelemetryMode::Disabled);
     assert!(!agent.product_analytics_enabled());
-}
-/// Trace uploads are removed from the private build. Config, environment,
-/// credentials, and endpoint overrides must not recreate either the regular
-/// uploader or the auth-diagnostics uploader.
-#[tokio::test]
-async fn trace_uploads_are_unconditionally_removed() {
-    let agent = build_agent_with_auth(crate::auth::AtelierAuth::test_default());
-    {
-        let mut cfg = agent.cfg.borrow_mut();
-        cfg.features.telemetry = Some(crate::agent::config::TelemetryMode::Enabled);
-        cfg.telemetry.trace_upload = Some(true);
-        cfg.endpoints.trace_upload_url = Some("https://collector.example".to_owned());
-        cfg.endpoints.trace_upload_bucket = Some("s3://collector".to_owned());
-    }
-
-    assert!(agent.trace_upload_config_snapshot().is_none());
-    assert!(agent.trace_upload_config().await.is_none());
 }
 /// `parse_session_kind` routes `session/load` to the gateway Chat path vs. the
 /// disk-backed Build path. Anything but an explicit `kind: "chat"` is Build.
@@ -3429,7 +3281,7 @@ fn disconnect_unloads_idle_session_without_finalize() {
             .bind_local_session(
                 sid.0.as_ref(),
                 workspace_root,
-                xai_hunk_tracker::HunkTrackerHandle::noop(),
+                atelier_hunk_tracker::HunkTrackerHandle::noop(),
                 std::sync::Arc::new(
                     atelier_tools::registry::types::FinalizedToolset::empty_for_test(),
                 ),
@@ -3665,7 +3517,7 @@ fn session_live_state_map_is_bounded_across_cycles() {
 /// `atelier/session/close` dispatch (`ext_method` → `handle_session_close`),
 /// not the internal helper. Proves finalize was *moved* (not removed) and
 /// guards the handler's `existed` gate. (Finalize assertion is
-/// invocation-level; see note in `finalize_session_replica`.)
+/// invocation-level; see note in `finalize_local_session`.)
 #[test]
 fn explicit_close_finalizes_the_replica() {
     run_local_for_bridge_test(|| async {
@@ -3816,7 +3668,7 @@ fn reload_after_terminal_removal_starts_clean() {
 /// `atelier/folder_trust/request` round-trip.
 fn build_agent_with_gateway_rx() -> (
     MvpAgent,
-    tokio::sync::mpsc::UnboundedReceiver<xai_acp_lib::AcpClientMessage>,
+    tokio::sync::mpsc::UnboundedReceiver<atelier_acp_runtime::AcpClientMessage>,
 ) {
     use crate::agent::config::Config as AgentConfig;
     use crate::auth::{AtelierComConfig, AuthManager};
@@ -3844,8 +3696,8 @@ fn repo_with_project_mcp_server() -> tempfile::TempDir {
     .unwrap();
     tmp
 }
-fn folder_trust_on() -> crate::util::config::RemoteSettings {
-    crate::util::config::RemoteSettings {
+fn folder_trust_on() -> crate::util::config::LocalRuntimeSettings {
+    crate::util::config::LocalRuntimeSettings {
         folder_trust_enabled: Some(true),
         ..Default::default()
     }
@@ -3853,14 +3705,14 @@ fn folder_trust_on() -> crate::util::config::RemoteSettings {
 /// Pull the next `atelier/folder_trust/request` reverse-request off the gateway and
 /// answer it with `outcome`. Returns the request's decoded params.
 async fn answer_folder_trust_request(
-    gw_rx: &mut tokio::sync::mpsc::UnboundedReceiver<xai_acp_lib::AcpClientMessage>,
+    gw_rx: &mut tokio::sync::mpsc::UnboundedReceiver<atelier_acp_runtime::AcpClientMessage>,
     outcome: &str,
 ) -> serde_json::Value {
     let msg = tokio::time::timeout(std::time::Duration::from_secs(2), gw_rx.recv())
         .await
         .expect("trust request must be sent")
         .expect("gateway channel open");
-    let xai_acp_lib::AcpClientMessage::ExtMethod(args) = msg else {
+    let atelier_acp_runtime::AcpClientMessage::ExtMethod(args) = msg else {
         panic!("expected an ext_method reverse-request, got a different message");
     };
     assert_eq!(args.request.method.as_ref(), "atelier/folder_trust/request");
@@ -3998,7 +3850,7 @@ fn interactive_trust_prompt_dormant_when_feature_off() {
     let _flag = EnvGuard::unset("ATELIER_FOLDER_TRUST");
     let repo = repo_with_project_mcp_server();
     let repo_path = repo.path().to_path_buf();
-    let remote = crate::util::config::RemoteSettings {
+    let remote = crate::util::config::LocalRuntimeSettings {
         folder_trust_enabled: Some(false),
         ..Default::default()
     };
@@ -4070,7 +3922,10 @@ fn interactive_trust_prompt_client_error_fails_closed() {
             .await
             .expect("trust request must be sent")
             .expect("gateway channel open");
-        assert!(matches!(msg, xai_acp_lib::AcpClientMessage::ExtMethod(_)));
+        assert!(matches!(
+            msg,
+            atelier_acp_runtime::AcpClientMessage::ExtMethod(_)
+        ));
         drop(msg);
         assert!(
             tokio::time::timeout(std::time::Duration::from_millis(300), cmd_rx.recv())
@@ -4109,7 +3964,10 @@ fn interactive_trust_prompt_dedups_same_workspace() {
         agent.maybe_spawn_interactive_trust_prompt(&sid, &repo_path, Some(&remote));
         let first = tokio::time::timeout(std::time::Duration::from_secs(2), gw_rx.recv()).await;
         assert!(
-            matches!(first, Ok(Some(xai_acp_lib::AcpClientMessage::ExtMethod(_)))),
+            matches!(
+                first,
+                Ok(Some(atelier_acp_runtime::AcpClientMessage::ExtMethod(_)))
+            ),
             "first prompt for an untrusted workspace must emit a request"
         );
         agent.maybe_spawn_interactive_trust_prompt(&sid, &repo_path, Some(&remote));
@@ -4229,8 +4087,8 @@ fn interactive_trust_prompt_reloads_all_same_workspace_sessions() {
 #[test]
 #[serial_test::serial]
 fn interactive_trust_prompt_reprompts_after_untrust() {
+    use atelier_hooks_plugins_types::HooksAction;
     use atelier_test_support::EnvGuard;
-    use xai_hooks_plugins_types::HooksAction;
     let home = tempfile::tempdir().unwrap();
     let _env = EnvGuard::set("ATELIER_HOME", home.path());
     let _sim = EnvGuard::set(atelier_version::TEST_VERSION_ENV, "0.0-sim");
@@ -4250,7 +4108,7 @@ fn interactive_trust_prompt_reprompts_after_untrust() {
         assert!(
             matches!(
                 tokio::time::timeout(std::time::Duration::from_secs(2), gw_rx.recv()).await,
-                Ok(Some(xai_acp_lib::AcpClientMessage::ExtMethod(_)))
+                Ok(Some(atelier_acp_runtime::AcpClientMessage::ExtMethod(_)))
             ),
             "first prompt must emit a request"
         );
@@ -4270,7 +4128,7 @@ fn interactive_trust_prompt_reprompts_after_untrust() {
         assert!(
             matches!(
                 tokio::time::timeout(std::time::Duration::from_secs(2), gw_rx.recv()).await,
-                Ok(Some(xai_acp_lib::AcpClientMessage::ExtMethod(_)))
+                Ok(Some(atelier_acp_runtime::AcpClientMessage::ExtMethod(_)))
             ),
             "after untrust clears the dedup, the workspace must be promptable again"
         );
@@ -4284,12 +4142,12 @@ fn ann(id: &str) -> atelier_announcements::RemoteAnnouncement {
         ..Default::default()
     }
 }
-/// `RemoteSettings` with only `announcements` set (callers add sentinel
+/// `LocalRuntimeSettings` with only `announcements` set (callers add sentinel
 /// fields as needed).
 fn settings_with(
     announcements: Option<Vec<atelier_announcements::RemoteAnnouncement>>,
-) -> crate::util::config::RemoteSettings {
-    crate::util::config::RemoteSettings {
+) -> crate::util::config::LocalRuntimeSettings {
+    crate::util::config::LocalRuntimeSettings {
         announcements,
         ..Default::default()
     }

@@ -2,7 +2,7 @@
 //!
 //! This crate extracts the HTTP streaming + retry logic out of
 //! `atelier-shell`'s session actor into a standalone, reusable
-//! component built on the same actor pattern as `xai-hunk-tracker`.
+//! component built on the same actor pattern as `atelier-hunk-tracker`.
 //!
 //! ## Layered API
 //!
@@ -20,10 +20,12 @@ pub mod actor;
 pub mod attribution;
 pub mod client;
 pub mod commands;
+pub mod compaction;
 pub mod config;
 pub mod doom_loop;
 pub mod events;
 pub mod handle;
+pub mod image_generation;
 pub mod metrics;
 pub mod retry;
 pub mod sampling_log;
@@ -33,10 +35,17 @@ pub mod types;
 
 // Public re-exports — the API surface consumers see.
 pub use actor::SamplerActor;
+pub use atelier_sampling_types::SamplingError;
 pub use attribution::{
     Auth401AttributionCallback, SENT_BEARER_PREFIX_LEN, SamplingConsumer, SharedAttributionCallback,
 };
-pub use client::{ApiBackend, SamplingClient, user_agent_string_for};
+pub use client::{
+    ApiBackend, SamplingClient, request_agent_user_agent_string, set_request_agent_identity,
+    user_agent_string_for,
+};
+pub use compaction::{
+    CompactClient, CompactFailureAction, CompactRequest, CompactResponse, classify_compact_failure,
+};
 pub use config::{
     AuthScheme, BearerResolver, HeaderInjector, OriginClientInfo, RetryPolicy, SamplerConfig,
     SharedBearerResolver, SharedHeaderInjector,
@@ -44,6 +53,7 @@ pub use config::{
 pub use doom_loop::DoomLoopSignalCollector;
 pub use events::{SamplingChannel, SamplingErrorInfo, SamplingErrorKind, SamplingEvent};
 pub use handle::SamplerHandle;
+pub use image_generation::{GeneratedImage, ImageGenerationClient, ImageGenerationRequest};
 pub use metrics::{InferenceLatencyStats, compute_percentiles};
 pub use retry::{
     DEFAULT_MAX_RETRIES, RATE_LIMIT_RETRY_THRESHOLD, RetryDecision, classify_error,

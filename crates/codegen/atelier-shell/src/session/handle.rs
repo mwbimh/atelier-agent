@@ -6,11 +6,10 @@
 use super::commands::SessionCommand;
 use super::persistence::{LocalFeedbackEntry, PersistenceMsg};
 use agent_client_protocol as acp;
+use atelier_hunk_tracker::HunkTrackerHandle;
 use atelier_sampling_types::ReasoningEffort;
 use std::collections::{HashMap, HashSet};
 use tokio::sync::{mpsc, oneshot};
-use xai_file_utils::queue::UploadQueue;
-use xai_hunk_tracker::HunkTrackerHandle;
 /// Coarse lifecycle state of a session as known to the leader/agent.
 ///
 /// A atelier session has no
@@ -61,7 +60,7 @@ pub struct SessionHandle {
     /// Handle to the hunk tracker for this session
     pub hunk_tracker_handle: HunkTrackerHandle,
     /// Actor-based chat state handle — lets callers inspect final conversation state.
-    pub chat_state_handle: xai_chat_state::ChatStateHandle,
+    pub chat_state_handle: atelier_chat_state::ChatStateHandle,
     /// Handle to session signals (used for completion tracking)
     pub signals_handle: super::signals::SessionSignalsHandle,
     /// Shared gate controlling whether the session actor forwards
@@ -86,19 +85,8 @@ pub struct SessionHandle {
     /// in API responses to this path so the client UI shows the original
     /// project path, not the worktree path.
     pub display_cwd: Option<String>,
-    /// Feedback manager for periodic signal sync. Exposed so callers can
-    /// attach GCS upload queue stats for snapshotting into signals.
+    /// Feedback manager for periodic signal sync.
     pub feedback_manager: std::sync::Arc<crate::session::feedback_manager::FeedbackManager>,
-    /// Session-scoped upload queue. Lazily initialized on the first turn that
-    /// enables trace uploads. `Arc<OnceLock<_>>` ensures all `SessionHandle`
-    /// clones share the same underlying queue instance.
-    pub(crate) upload_queue: std::sync::Arc<std::sync::OnceLock<UploadQueue>>,
-    /// Consecutive upload failures with no confirmed upload in between,
-    /// driving this session's upload-failure log suppression. Shared across
-    /// handle clones; per-session so one session's bucket outage cannot mute
-    /// another session's first-failure log (its unified_log artifact must
-    /// carry evidence of its own failures).
-    pub(crate) upload_failures_since_success: std::sync::Arc<std::sync::atomic::AtomicU64>,
     /// Session context captured at spawn time so callers can inherit shared runtime state.
     pub tool_context: crate::tools::ToolContext,
     /// The model this session was created with (or switched to via setModel).
@@ -165,7 +153,7 @@ pub struct SessionHandle {
 }
 impl SessionHandle {
     /// Last assistant `model_id` / `model_fingerprint` in conversation (global, not turn-scoped).
-    pub(crate) async fn get_model_metadata(&self) -> xai_chat_state::ModelMetadata {
+    pub(crate) async fn get_model_metadata(&self) -> atelier_chat_state::ModelMetadata {
         let (tx, rx) = oneshot::channel();
         if self
             .cmd_tx
@@ -174,7 +162,7 @@ impl SessionHandle {
         {
             rx.await.unwrap_or_default()
         } else {
-            xai_chat_state::ModelMetadata::default()
+            atelier_chat_state::ModelMetadata::default()
         }
     }
     /// Move a foreground bash command to background by tool_call_id.
@@ -257,7 +245,7 @@ impl SessionHandle {
         rx.await.unwrap_or(None)
     }
     /// Get hooks list for the pager modal.
-    pub async fn get_hooks_list(&self) -> Option<xai_hooks_plugins_types::HooksListResponse> {
+    pub async fn get_hooks_list(&self) -> Option<atelier_hooks_plugins_types::HooksListResponse> {
         let (tx, rx) = oneshot::channel();
         if self
             .cmd_tx
@@ -271,8 +259,8 @@ impl SessionHandle {
     /// Execute a hooks management action from the pager modal.
     pub async fn execute_hooks_action(
         &self,
-        action: xai_hooks_plugins_types::HooksAction,
-    ) -> Option<xai_hooks_plugins_types::ActionOutcome> {
+        action: atelier_hooks_plugins_types::HooksAction,
+    ) -> Option<atelier_hooks_plugins_types::ActionOutcome> {
         let (tx, rx) = oneshot::channel();
         if self
             .cmd_tx
@@ -289,8 +277,8 @@ impl SessionHandle {
     /// Execute a plugins management action from the pager modal.
     pub async fn execute_plugins_action(
         &self,
-        action: xai_hooks_plugins_types::PluginsAction,
-    ) -> Option<xai_hooks_plugins_types::ActionOutcome> {
+        action: atelier_hooks_plugins_types::PluginsAction,
+    ) -> Option<atelier_hooks_plugins_types::ActionOutcome> {
         let (tx, rx) = oneshot::channel();
         if self
             .cmd_tx

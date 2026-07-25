@@ -27,7 +27,7 @@
 use std::io::IsTerminal;
 use std::path::Path;
 
-use atelier_config_types::{BoolFlag, RemoteSettings};
+use atelier_config_types::{BoolFlag, LocalRuntimeSettings};
 use toml::Value as TomlValue;
 
 use crate::trust::{TrustStore, workspace_key};
@@ -154,12 +154,12 @@ fn is_local_build() -> bool {
 /// remote `folder_trust_enabled` > default **true** (on by default; the remote
 /// `folder_trust_enabled` kill-switch or a `[folder_trust] enabled = false`
 /// opt-out turns it back off).
-pub fn feature_enabled(remote: Option<&RemoteSettings>) -> bool {
+pub fn feature_enabled(remote: Option<&LocalRuntimeSettings>) -> bool {
     feature_enabled_for_build(remote, is_local_build())
 }
 
 /// `feature_enabled` with the local-build flag fed in so both arms are unit-testable.
-fn feature_enabled_for_build(remote: Option<&RemoteSettings>, is_local_build: bool) -> bool {
+fn feature_enabled_for_build(remote: Option<&LocalRuntimeSettings>, is_local_build: bool) -> bool {
     // Local/dev builds never gate (auto-trust): folder-trust applies only to
     // shipped, release-stamped binaries. Even an explicit ATELIER_FOLDER_TRUST/config
     // opt-in is ignored here so a self-built atelier never prompts.
@@ -760,7 +760,7 @@ mod tests {
         let _home = EnvVarGuard::set("ATELIER_HOME", home.path());
         let _flag = EnvVarGuard::unset("ATELIER_FOLDER_TRUST");
 
-        let remote = RemoteSettings {
+        let remote = LocalRuntimeSettings {
             folder_trust_enabled: Some(true),
             ..Default::default()
         };
@@ -785,7 +785,7 @@ mod tests {
         let _home = EnvVarGuard::set("ATELIER_HOME", home.path());
         let _flag = EnvVarGuard::unset("ATELIER_FOLDER_TRUST");
 
-        let remote = RemoteSettings {
+        let remote = LocalRuntimeSettings {
             folder_trust_enabled: Some(true),
             ..Default::default()
         };

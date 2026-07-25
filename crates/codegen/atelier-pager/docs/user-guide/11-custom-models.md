@@ -13,7 +13,7 @@ Set a credential in the environment, start Atelier, and configure a Provider:
 
 ```bash
 export ALLM_API_KEY="..."
-atelier
+ate
 ```
 
 ```text
@@ -58,7 +58,9 @@ selection instead of typing the complete commands.
 ```
 
 Protocols are `chat`, `responses`, and `anthropic`. Credentials are
-`env:NAME`, `cmd:PROGRAM`, or `none`.
+`env:NAME`, `cmd:PROGRAM`, `none`, or an OAuth method. The bare `/provider`,
+`/provider add`, and `/provider edit <id>` forms expose staged interactive
+pickers while the complete command forms remain copyable and scriptable.
 
 Examples:
 
@@ -67,6 +69,20 @@ Examples:
 /provider add anthropic anthropic https://api.anthropic.com env:ANTHROPIC_API_KEY
 /provider add local chat http://127.0.0.1:11434/v1 none
 ```
+
+OAuth Providers include client metadata in the Provider command and use
+`/provider login` only to start a configured flow:
+
+```text
+/provider add company responses https://api.example.com/v1 oauth authorization-code desktop-client https://login.example.com/authorize https://login.example.com/token openid,profile
+/provider login company authorization-code
+
+/provider add company-device chat https://api.example.com/v1 oauth device-code desktop-client https://login.example.com/device https://login.example.com/token openid,profile
+/provider login company-device device-code
+```
+
+Scopes are optional and comma-separated. `/provider logout <id>` removes the
+stored OAuth token without deleting the Provider configuration.
 
 Provider state is stored in `$ATELIER_HOME/providers.toml`. Prefer `/provider`
 or the `_atelier/provider/*` RPC methods over hand-editing the registry while
@@ -153,20 +169,20 @@ Provider protocol and per-model Wire API are separate controls. Inspect or
 override model-specific behavior with:
 
 ```text
-/model-config
-/model-config list
-/model-config get <provider/model>
-/model-config wire <provider/model> <chat_completions|responses|messages|default>
-/model-config override <provider/model> <wire-api|default> [json-payload]
-/model-config delete <provider/model>
-/model-config test <provider/model> [execute]
+/wire-api
+/wire-api list
+/wire-api get <provider/model>
+/wire-api wire <provider/model> <chat_completions|responses|messages|default>
+/wire-api override <provider/model> <wire-api|default> [json-payload]
+/wire-api delete <provider/model>
+/wire-api test <provider/model> [execute]
 ```
 
 Use `execute` to run the test through the Runtime sampler rather than only
 validating configuration:
 
 ```text
-/model-config test allm/deepseek-v4-flash execute
+/wire-api test allm/deepseek-v4-flash execute
 ```
 
 ## Headless Use
@@ -174,7 +190,7 @@ validating configuration:
 Configure Providers and Roles once in the selected `ATELIER_HOME`, then run:
 
 ```bash
-ATELIER_HOME=/srv/atelier-ci atelier \
+ATELIER_HOME=/srv/atelier-ci ate \
   --cwd /workspace/project \
   -p "Run the tests and explain any failures"
 ```

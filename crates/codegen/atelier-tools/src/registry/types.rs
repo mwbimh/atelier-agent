@@ -114,7 +114,7 @@ impl ToolConfig {
     ///
     /// The fully-qualified id (`"<namespace>:<id>"`) and `kind` are derived
     /// from the type via `ToolMetadata::tool_namespace()` and
-    /// `xai_tool_runtime::Tool::id()`. Use this for built-in tools known
+    /// `atelier_tool_runtime::Tool::id()`. Use this for built-in tools known
     /// at compile time — it gives compile-time checking of the tool name
     /// and auto-populates `kind` so capability-mode filtering works.
     ///
@@ -123,7 +123,7 @@ impl ToolConfig {
     /// `ToolRegistryBuilder::register`).
     pub fn for_tool<T>() -> Self
     where
-        T: crate::types::tool_metadata::ToolMetadata + xai_tool_runtime::Tool + Default,
+        T: crate::types::tool_metadata::ToolMetadata + atelier_tool_runtime::Tool + Default,
     {
         Self::from(&T::default())
     }
@@ -182,7 +182,7 @@ impl ToolConfig {
             .unwrap_or_else(|| default_id.to_owned())
     }
 }
-impl<T: crate::types::tool_metadata::ToolMetadata + xai_tool_runtime::Tool> From<&T>
+impl<T: crate::types::tool_metadata::ToolMetadata + atelier_tool_runtime::Tool> From<&T>
     for ToolConfig
 {
     fn from(tool: &T) -> Self {
@@ -190,7 +190,7 @@ impl<T: crate::types::tool_metadata::ToolMetadata + xai_tool_runtime::Tool> From
             id: format!(
                 "{}:{}",
                 tool.tool_namespace(),
-                xai_tool_runtime::Tool::id(tool).as_str()
+                atelier_tool_runtime::Tool::id(tool).as_str()
             ),
             params: None,
             name_override: None,
@@ -283,12 +283,12 @@ pub struct SessionContext {
     /// instead of using the key baked into their config at construction time.
     /// Prevents 401 failures when a session outlives the initial token lifetime.
     pub api_key_provider: Option<crate::types::SharedApiKeyProvider>,
-    /// Auth provider which returns a xai_computer_hub_sdk::AuthCredential. Can be used by
+    /// Auth provider which returns a atelier_tool_hub_sdk::AuthCredential. Can be used by
     /// tools that need to authenticate with services.
     ///
     /// Not to be confused with the api_key_provider, which is a legacy
     /// provider used by the shell's auth manager.
-    pub auth_provider: Option<xai_computer_hub_sdk::SharedAuthProvider>,
+    pub auth_provider: Option<atelier_tool_hub_sdk::SharedAuthProvider>,
     /// Optional 401-attribution callback for tool HTTP clients. When
     /// set, a 401 from `image_gen` / `video_gen` / `web_search`
     /// emits an `auth_401_attribution` event via this hook. Hosts can
@@ -321,13 +321,13 @@ impl ToolMetadata for DefaultToolMetadata {
 /// Drain a `ToolStream<TypedToolOutput>` to the terminal result's `value`.
 /// Progress items are discarded.
 pub async fn drain_value_stream(
-    mut stream: xai_tool_runtime::ToolStream<xai_tool_runtime::TypedToolOutput>,
-) -> Result<serde_json::Value, xai_tool_runtime::ToolError> {
+    mut stream: atelier_tool_runtime::ToolStream<atelier_tool_runtime::TypedToolOutput>,
+) -> Result<serde_json::Value, atelier_tool_runtime::ToolError> {
     use futures::StreamExt;
     while let Some(item) = stream.next().await {
         match item {
-            xai_tool_runtime::ToolStreamItem::Progress(_) => continue,
-            xai_tool_runtime::ToolStreamItem::Terminal(result) => {
+            atelier_tool_runtime::ToolStreamItem::Progress(_) => continue,
+            atelier_tool_runtime::ToolStreamItem::Terminal(result) => {
                 return result.map(|typed| typed.value);
             }
         }
@@ -336,8 +336,8 @@ pub async fn drain_value_stream(
 }
 /// The error yielded when a dispatch stream ends without a terminal item.
 /// Centralized so the code/message can't drift across call sites.
-fn stream_no_terminal_error() -> xai_tool_runtime::ToolError {
-    xai_tool_runtime::ToolError::custom(
+fn stream_no_terminal_error() -> atelier_tool_runtime::ToolError {
+    atelier_tool_runtime::ToolError::custom(
         "stream_no_terminal",
         "dispatch stream ended without a terminal item",
     )
@@ -351,10 +351,10 @@ type OutputConverter =
 /// `.await`.
 struct DispatchParts {
     /// Resolved `LocalRegistry` handle to dispatch through.
-    lr_handle: Arc<dyn xai_computer_hub_core::ToolHandle>,
+    lr_handle: Arc<dyn atelier_tool_hub_core::ToolHandle>,
     /// Runtime context built for the call (resources, renderer, cwd,
     /// behavior version, inner-dispatch).
-    ctx: xai_tool_runtime::ToolCallContext,
+    ctx: atelier_tool_runtime::ToolCallContext,
     /// Canonical (reverse-remapped) params to pass to dispatch.
     canonical_params: serde_json::Value,
     /// Converts the dispatch's `serde_json::Value` back to `ToolOutput`.
@@ -390,11 +390,13 @@ struct ToolEntry {
     /// Noop when `T::Params = ()`.
     register_params: Box<dyn Fn(&mut Resources) + Send + Sync>,
     parse_input: Box<
-        dyn Fn(serde_json::Value) -> Result<ToolInput, xai_tool_runtime::ToolError> + Send + Sync,
+        dyn Fn(serde_json::Value) -> Result<ToolInput, atelier_tool_runtime::ToolError>
+            + Send
+            + Sync,
     >,
     /// Registers this tool into a `LocalRegistry` using the concrete type.
     /// Captured at `register::<T>()` time when T is known.
-    register_in_local: Box<dyn Fn(&xai_computer_hub_sdk::LocalRegistry) + Send + Sync>,
+    register_in_local: Box<dyn Fn(&atelier_tool_hub_sdk::LocalRegistry) + Send + Sync>,
 }
 /// Per-reminder metadata stored in the builder.
 struct ReminderEntry {
@@ -430,7 +432,9 @@ struct FinalizedTool {
     reverse_params: HashMap<String, String>,
     /// useful for parsing input to specific type
     parse_input: Arc<
-        dyn Fn(serde_json::Value) -> Result<ToolInput, xai_tool_runtime::ToolError> + Send + Sync,
+        dyn Fn(serde_json::Value) -> Result<ToolInput, atelier_tool_runtime::ToolError>
+            + Send
+            + Sync,
     >,
     /// Resolved behavior contract version for this tool (e.g. `"current"`,
     /// `"legacy-0.4.10"`). `None` for unmanaged tools and dynamically
@@ -450,7 +454,7 @@ pub struct FinalizedToolset {
     scheduler_cancel: Option<tokio_util::sync::CancellationToken>,
     /// Shared local registry for in-process dispatch.
     /// Contains only config-enabled tools. Can be shared with ToolHarness.
-    local_registry: xai_computer_hub_sdk::LocalRegistry,
+    local_registry: atelier_tool_hub_sdk::LocalRegistry,
     /// Lock-free access to the template renderer for tool name/param resolution.
     /// Cloned into `ToolCallContext::extensions` on each `call()` so tools
     /// can resolve names without acquiring the `resources` mutex.
@@ -459,7 +463,7 @@ pub struct FinalizedToolset {
     system_reminder_tag: &'static str,
     /// Per-user feature-flag bag stamped on every dispatch ctx by
     /// `prepare_dispatch`. `None` outside a workspace bind.
-    workspace_viewer_ctx: Option<xai_tool_runtime::WorkspaceViewerContext>,
+    workspace_viewer_ctx: Option<atelier_tool_runtime::WorkspaceViewerContext>,
 }
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct RequirementError {
@@ -519,7 +523,7 @@ impl RequirementError {
 pub struct ToolRegistryBuilder {
     tools: HashMap<String, ToolEntry>,
     reminders: Vec<ReminderEntry>,
-    shared_local_registry: Option<xai_computer_hub_sdk::LocalRegistry>,
+    shared_local_registry: Option<atelier_tool_hub_sdk::LocalRegistry>,
 }
 impl Default for ToolRegistryBuilder {
     fn default() -> Self {
@@ -535,7 +539,7 @@ impl ToolRegistryBuilder {
     /// [`register_tool_pack`] can contribute tool registrations.
     pub fn register<T>(&mut self)
     where
-        T: xai_tool_runtime::Tool
+        T: atelier_tool_runtime::Tool
             + ToolMetadata
             + std::fmt::Debug
             + Default
@@ -557,7 +561,7 @@ impl ToolRegistryBuilder {
     /// [`register_tool_pack`] can contribute tool registrations.
     pub fn register_with_params<T, P>(&mut self)
     where
-        T: xai_tool_runtime::Tool
+        T: atelier_tool_runtime::Tool
             + ToolMetadata
             + std::fmt::Debug
             + Default
@@ -578,10 +582,10 @@ impl ToolRegistryBuilder {
         let name = format!(
             "{}:{}",
             tool.tool_namespace(),
-            xai_tool_runtime::Tool::id(&tool).as_str()
+            atelier_tool_runtime::Tool::id(&tool).as_str()
         );
         let namespace = tool.tool_namespace().to_string();
-        let id = xai_tool_runtime::Tool::id(&tool).as_str().to_string();
+        let id = atelier_tool_runtime::Tool::id(&tool).as_str().to_string();
         let kind = tool.kind();
         let requires = tool.requires_expr();
         self.tools.insert(
@@ -613,7 +617,7 @@ impl ToolRegistryBuilder {
                     let typed = serde_json::from_value::<T::Args>(json)?;
                     Ok(typed.into())
                 }),
-                register_in_local: Box::new(|lr: &xai_computer_hub_sdk::LocalRegistry| {
+                register_in_local: Box::new(|lr: &atelier_tool_hub_sdk::LocalRegistry| {
                     lr.register(T::default());
                 }),
             },
@@ -678,6 +682,7 @@ impl ToolRegistryBuilder {
         b.register::<atelier_build::TaskTool>();
         b.register::<atelier_build::WebSearchTool>();
         b.register_with_params::<atelier_build::WebFetchTool, atelier_build::web_fetch::WebFetchParams>();
+        b.register::<atelier_build::ImageGenTool>();
         b.register::<atelier_build::LspTool>();
         b.register::<atelier_build::EnterPlanModeTool>();
         b.register::<atelier_build::ExitPlanModeTool>();
@@ -740,7 +745,7 @@ impl ToolRegistryBuilder {
         }
         b
     }
-    pub fn with_local_registry(mut self, registry: xai_computer_hub_sdk::LocalRegistry) -> Self {
+    pub fn with_local_registry(mut self, registry: atelier_tool_hub_sdk::LocalRegistry) -> Self {
         self.shared_local_registry = Some(registry);
         self
     }
@@ -925,11 +930,17 @@ impl ToolRegistryBuilder {
     /// `workspace_viewer_ctx` is `None` outside a workspace bind.
     pub fn finalize_with_trunc_config(
         mut self,
-        config: ToolServerConfig,
+        mut config: ToolServerConfig,
         ctx: SessionContext,
         truncation_config: crate::types::context::TruncationConfig,
-        workspace_viewer_ctx: Option<xai_tool_runtime::WorkspaceViewerContext>,
+        workspace_viewer_ctx: Option<atelier_tool_runtime::WorkspaceViewerContext>,
     ) -> Result<FinalizedToolset, Vec<RequirementError>> {
+        let image_gen_runtime = ctx.image_gen_config.runtime();
+        if image_gen_runtime.is_none() {
+            config.tools.retain(|tool| {
+                !crate::implementations::atelier_build::image_gen::is_image_gen_tool_id(&tool.id)
+            });
+        }
         let errors = self.validate_config(&config);
         if !errors.is_empty() {
             return Err(errors);
@@ -1011,6 +1022,9 @@ impl ToolRegistryBuilder {
                     tracing::warn!("Failed to create WebFetchClient: {e}");
                 }
             }
+        }
+        if let Some(runtime) = image_gen_runtime {
+            resources.insert(runtime);
         }
         let concise_ns = crate::types::tool::ToolNamespace::AtelierBuildConcise.to_string();
         let has_concise_tools = config.tools.iter().any(|tc| {
@@ -1186,7 +1200,7 @@ impl Drop for FinalizedToolset {
 /// Stored in [`InnerDispatch`] inside `ToolCallContext::extensions` —
 /// stack-bounded, dropped when `Tool::run()` returns.
 ///
-/// Implements the canonical `xai_tool_runtime::ToolDispatch` trait so the
+/// Implements the canonical `atelier_tool_runtime::ToolDispatch` trait so the
 /// dispatch contract is uniform across all boundaries. The impedance
 /// mismatch (`ToolStream<Value>` vs `Result<ToolOutput>`) is bridged by
 /// serializing `ToolOutput` to `Value` in the stream; callers use
@@ -1195,27 +1209,27 @@ struct InnerDispatchForToolset {
     toolset: Arc<FinalizedToolset>,
 }
 #[async_trait::async_trait]
-impl xai_tool_runtime::ToolDispatch for InnerDispatchForToolset {
+impl atelier_tool_runtime::ToolDispatch for InnerDispatchForToolset {
     async fn call(
         &self,
-        tool_id: xai_tool_protocol::ToolId,
+        tool_id: atelier_tool_protocol::ToolId,
         args: serde_json::Value,
-        ctx: xai_tool_runtime::ToolCallContext,
-    ) -> xai_tool_runtime::ToolStream<xai_tool_runtime::TypedToolOutput> {
+        ctx: atelier_tool_runtime::ToolCallContext,
+    ) -> atelier_tool_runtime::ToolStream<atelier_tool_runtime::TypedToolOutput> {
         let result = self
             .toolset
             .call_raw(tool_id.as_str(), args, ctx)
             .await
             .and_then(|output| {
                 let value = serde_json::to_value(&output).map_err(|e| {
-                    xai_tool_runtime::ToolError::custom("output_encoding", e.to_string())
+                    atelier_tool_runtime::ToolError::custom("output_encoding", e.to_string())
                 })?;
-                Ok(xai_tool_runtime::TypedToolOutput::from_value(
+                Ok(atelier_tool_runtime::TypedToolOutput::from_value(
                     tool_id.clone(),
                     value,
                 ))
             });
-        xai_tool_runtime::terminal_only(result)
+        atelier_tool_runtime::terminal_only(result)
     }
 }
 impl FinalizedToolset {
@@ -1231,7 +1245,7 @@ impl FinalizedToolset {
             )),
             resources_persistence: Arc::new(ResourcesPersistence::noop()),
             scheduler_cancel: None,
-            local_registry: xai_computer_hub_sdk::LocalRegistry::new(),
+            local_registry: atelier_tool_hub_sdk::LocalRegistry::new(),
             renderer: Arc::new(TemplateRenderer::new(
                 std::collections::HashMap::new(),
                 std::collections::HashMap::new(),
@@ -1240,7 +1254,7 @@ impl FinalizedToolset {
             workspace_viewer_ctx: None,
         }
     }
-    pub fn local_registry(&self) -> &xai_computer_hub_sdk::LocalRegistry {
+    pub fn local_registry(&self) -> &atelier_tool_hub_sdk::LocalRegistry {
         &self.local_registry
     }
     /// Get all tool definitions to send to the client.
@@ -1268,6 +1282,66 @@ impl FinalizedToolset {
     }
     pub async fn update_resource<T: Send + Sync + 'static>(&self, resource: T) {
         self.resources.lock().await.insert(resource);
+    }
+    /// Enable or disable the built-in image generation tool at runtime.
+    /// Configuration changes update both the executor resource and the tool
+    /// definition before the next caller snapshots `tool_definitions()`.
+    pub async fn configure_image_gen(
+        &self,
+        config: crate::implementations::atelier_build::image_gen::ImageGenConfig,
+    ) -> Result<(), atelier_tool_runtime::ToolError> {
+        use crate::implementations::atelier_build::image_gen::{
+            IMAGE_GEN_TOOL_NAME, ImageGenInput, ImageGenRuntime, ImageGenTool, ImageGenToolOutput,
+        };
+
+        let Some(runtime) = config.runtime() else {
+            self.unregister_tool_by_name(IMAGE_GEN_TOOL_NAME);
+            let tool_id = atelier_tool_protocol::ToolId::new(IMAGE_GEN_TOOL_NAME)
+                .expect("image_gen is a valid tool id");
+            self.local_registry.unregister(&tool_id);
+            self.resources.lock().await.remove::<ImageGenRuntime>();
+            return Ok(());
+        };
+        self.resources.lock().await.insert(runtime);
+        if self
+            .tools
+            .read()
+            .iter()
+            .any(|tool| tool.client_name == IMAGE_GEN_TOOL_NAME)
+        {
+            return Ok(());
+        }
+
+        let tool = ImageGenTool;
+        let input_schema = generate_schema::<ImageGenInput>();
+        let description = tool.description_template().to_owned();
+        let definition = ToolDefinition::function(
+            IMAGE_GEN_TOOL_NAME,
+            Some(&description),
+            input_schema.clone(),
+        );
+        self.local_registry.register(ImageGenTool);
+        self.tools.write().push(FinalizedTool {
+            namespace: ToolNamespace::AtelierBuild.to_string(),
+            id: IMAGE_GEN_TOOL_NAME.to_owned(),
+            registry_id: IMAGE_GEN_TOOL_NAME.to_owned(),
+            client_name: IMAGE_GEN_TOOL_NAME.to_owned(),
+            metadata: Arc::new(tool),
+            output_converter: Arc::new(|value| {
+                let typed: ImageGenToolOutput = serde_json::from_value(value)?;
+                Ok(typed.into())
+            }),
+            definition,
+            effective_params: serde_json::Value::Object(Default::default()),
+            input_schema,
+            reverse_params: HashMap::new(),
+            parse_input: Arc::new(|json| {
+                let typed = serde_json::from_value::<ImageGenInput>(json)?;
+                Ok(ToolInput::ImageGen(typed))
+            }),
+            contract_version: None,
+        });
+        Ok(())
     }
     /// Clone a typed resource out of this toolset, if present.
     ///
@@ -1316,16 +1390,16 @@ impl FinalizedToolset {
             .find(|t| t.client_name == tool_name)
             .map(|t| crate::normalization::tool_identity_of(t.metadata.as_ref()))
     }
-    fn tool_not_found_error(tool_name: &str) -> xai_tool_runtime::ToolError {
-        let tid = xai_tool_protocol::ToolId::new(tool_name)
-            .unwrap_or_else(|_| xai_tool_protocol::ToolId::new("unknown").expect("valid"));
-        xai_tool_runtime::ToolError::not_found(tid, format!("Tool not found: {tool_name}"))
+    fn tool_not_found_error(tool_name: &str) -> atelier_tool_runtime::ToolError {
+        let tid = atelier_tool_protocol::ToolId::new(tool_name)
+            .unwrap_or_else(|_| atelier_tool_protocol::ToolId::new("unknown").expect("valid"));
+        atelier_tool_runtime::ToolError::not_found(tid, format!("Tool not found: {tool_name}"))
     }
     pub async fn try_parse(
         &self,
         tool_name: &str,
         tool_params: &serde_json::Value,
-    ) -> Result<ToolInput, xai_tool_runtime::ToolError> {
+    ) -> Result<ToolInput, atelier_tool_runtime::ToolError> {
         let (reverse_params, parse_input) = {
             let tools = self.tools.read();
             let tool = tools
@@ -1361,8 +1435,8 @@ impl FinalizedToolset {
         &self,
         tool_name: &str,
         tool_args: serde_json::Value,
-        parent_ctx: xai_tool_runtime::ToolCallContext,
-    ) -> Result<crate::types::output::ToolOutput, xai_tool_runtime::ToolError> {
+        parent_ctx: atelier_tool_runtime::ToolCallContext,
+    ) -> Result<crate::types::output::ToolOutput, atelier_tool_runtime::ToolError> {
         let (registry_id, output_converter, reverse_params) = {
             let tools = self.tools.read();
             let entry = tools
@@ -1380,16 +1454,16 @@ impl FinalizedToolset {
         } else {
             remap_json_keys(tool_args, &reverse_params)
         };
-        let mut ctx = xai_tool_runtime::ToolCallContext::new(parent_ctx.call_id.clone());
+        let mut ctx = atelier_tool_runtime::ToolCallContext::new(parent_ctx.call_id.clone());
         ctx.extensions.insert(self.resources.clone());
         ctx.extensions.insert_arc(Arc::clone(&self.renderer));
-        if let Some(cwd) = parent_ctx.extensions.get::<xai_tool_runtime::Cwd>() {
+        if let Some(cwd) = parent_ctx.extensions.get::<atelier_tool_runtime::Cwd>() {
             ctx.extensions.insert((*cwd).clone());
         }
-        let tool_id = xai_tool_protocol::ToolId::new(&registry_id)
-            .unwrap_or_else(|_| xai_tool_protocol::ToolId::new("unknown").expect("valid"));
+        let tool_id = atelier_tool_protocol::ToolId::new(&registry_id)
+            .unwrap_or_else(|_| atelier_tool_protocol::ToolId::new("unknown").expect("valid"));
         let lr_handle = self.local_registry.find(&tool_id).ok_or_else(|| {
-            xai_tool_runtime::ToolError::not_found(
+            atelier_tool_runtime::ToolError::not_found(
                 tool_id,
                 format!("Tool not found in LocalRegistry: {registry_id}"),
             )
@@ -1397,7 +1471,7 @@ impl FinalizedToolset {
         let stream = lr_handle.execute(ctx, canonical_params).await;
         let value = drain_value_stream(stream).await?;
         (output_converter)(value)
-            .map_err(|e| xai_tool_runtime::ToolError::custom("output_decoding", e.to_string()))
+            .map_err(|e| atelier_tool_runtime::ToolError::custom("output_decoding", e.to_string()))
     }
     /// Dispatch a tool call by client-facing name with client-facing params.
     ///
@@ -1411,13 +1485,13 @@ impl FinalizedToolset {
         tool_args: serde_json::Value,
         tool_call_id: &str,
         cwd_override: Option<std::path::PathBuf>,
-    ) -> Result<ToolRunResult, xai_tool_runtime::ToolError> {
+    ) -> Result<ToolRunResult, atelier_tool_runtime::ToolError> {
         use futures::StreamExt;
         let mut stream = self.call_streaming(tool_name, tool_args, tool_call_id, cwd_override);
         while let Some(item) = stream.next().await {
             match item {
-                xai_tool_runtime::ToolStreamItem::Progress(_) => continue,
-                xai_tool_runtime::ToolStreamItem::Terminal(result) => return result,
+                atelier_tool_runtime::ToolStreamItem::Progress(_) => continue,
+                atelier_tool_runtime::ToolStreamItem::Terminal(result) => return result,
             }
         }
         Err(stream_no_terminal_error())
@@ -1434,15 +1508,15 @@ impl FinalizedToolset {
     /// all `.await` and `Arc::clone(self)` happen *inside* the stream block so
     /// nothing borrows `self` across the stream.
     ///
-    /// [`ToolStream`]: xai_tool_runtime::ToolStream
-    /// [`ToolStreamItem::Progress`]: xai_tool_runtime::ToolStreamItem::Progress
+    /// [`ToolStream`]: atelier_tool_runtime::ToolStream
+    /// [`ToolStreamItem::Progress`]: atelier_tool_runtime::ToolStreamItem::Progress
     pub fn call_streaming(
         self: &Arc<Self>,
         tool_name: &str,
         tool_args: serde_json::Value,
         tool_call_id: &str,
         cwd_override: Option<std::path::PathBuf>,
-    ) -> xai_tool_runtime::ToolStream<ToolRunResult> {
+    ) -> atelier_tool_runtime::ToolStream<ToolRunResult> {
         use futures::StreamExt;
         let this = Arc::clone(self);
         let tool_name = tool_name.to_owned();
@@ -1450,20 +1524,20 @@ impl FinalizedToolset {
         Box::pin(async_stream::stream! {
             let parts = match this.prepare_dispatch(& tool_name, tool_args, &
             tool_call_id, cwd_override,) { Ok(parts) => parts, Err(e) => { yield
-            xai_tool_runtime::ToolStreamItem::Terminal(Err(e)); return; } }; let
+            atelier_tool_runtime::ToolStreamItem::Terminal(Err(e)); return; } }; let
             DispatchParts { lr_handle, ctx, canonical_params, output_converter,
             effective_tool_name, } = parts; let mut inner = lr_handle.execute(ctx,
             canonical_params). await; while let Some(item) = inner.next(). await {
-            match item { xai_tool_runtime::ToolStreamItem::Progress(p) => { yield
-            xai_tool_runtime::ToolStreamItem::Progress(p); }
-            xai_tool_runtime::ToolStreamItem::Terminal(Err(e)) => { yield
-            xai_tool_runtime::ToolStreamItem::Terminal(Err(e)); return; }
-            xai_tool_runtime::ToolStreamItem::Terminal(Ok(typed)) => { let run_result
+            match item { atelier_tool_runtime::ToolStreamItem::Progress(p) => { yield
+            atelier_tool_runtime::ToolStreamItem::Progress(p); }
+            atelier_tool_runtime::ToolStreamItem::Terminal(Err(e)) => { yield
+            atelier_tool_runtime::ToolStreamItem::Terminal(Err(e)); return; }
+            atelier_tool_runtime::ToolStreamItem::Terminal(Ok(typed)) => { let run_result
             = this.finalize_output(typed.value, & output_converter,
             effective_tool_name). await; yield
-            xai_tool_runtime::ToolStreamItem::Terminal(run_result); return; } } }
+            atelier_tool_runtime::ToolStreamItem::Terminal(run_result); return; } } }
             yield
-            xai_tool_runtime::ToolStreamItem::Terminal(Err(stream_no_terminal_error()));
+            atelier_tool_runtime::ToolStreamItem::Terminal(Err(stream_no_terminal_error()));
         })
     }
     /// Pre-dispatch setup shared by [`call`] / [`call_streaming`].
@@ -1478,7 +1552,7 @@ impl FinalizedToolset {
         tool_args: serde_json::Value,
         tool_call_id: &str,
         cwd_override: Option<std::path::PathBuf>,
-    ) -> Result<DispatchParts, xai_tool_runtime::ToolError> {
+    ) -> Result<DispatchParts, atelier_tool_runtime::ToolError> {
         let (registry_id, output_converter, reverse_params) = {
             let tools = self.tools.read();
             let entry = tools
@@ -1506,17 +1580,17 @@ impl FinalizedToolset {
             None
         };
         let contract_version = self.get_contract_version(tool_name);
-        let rt_call_id = xai_tool_protocol::ToolCallId::new(tool_call_id)
-            .unwrap_or_else(|_| xai_tool_protocol::ToolCallId::new_v7());
-        let mut ctx = xai_tool_runtime::ToolCallContext::new(rt_call_id);
+        let rt_call_id = atelier_tool_protocol::ToolCallId::new(tool_call_id)
+            .unwrap_or_else(|_| atelier_tool_protocol::ToolCallId::new_v7());
+        let mut ctx = atelier_tool_runtime::ToolCallContext::new(rt_call_id);
         ctx.extensions.insert(self.resources.clone());
         ctx.extensions.insert_arc(Arc::clone(&self.renderer));
         if let Some(cwd) = cwd_override {
-            ctx.extensions.insert(xai_tool_runtime::Cwd(cwd));
+            ctx.extensions.insert(atelier_tool_runtime::Cwd(cwd));
         }
         if let Some(ref version) = contract_version {
             ctx.extensions
-                .insert(xai_tool_runtime::BehaviorVersion(version.clone()));
+                .insert(atelier_tool_runtime::BehaviorVersion(version.clone()));
         }
         ctx.extensions.insert(InnerDispatch(std::sync::Arc::new(
             InnerDispatchForToolset {
@@ -1526,10 +1600,10 @@ impl FinalizedToolset {
         if let Some(wvc) = self.workspace_viewer_ctx.as_ref() {
             ctx.extensions.insert(wvc.clone());
         }
-        let tool_id = xai_tool_protocol::ToolId::new(&registry_id)
-            .unwrap_or_else(|_| xai_tool_protocol::ToolId::new("unknown").expect("valid"));
+        let tool_id = atelier_tool_protocol::ToolId::new(&registry_id)
+            .unwrap_or_else(|_| atelier_tool_protocol::ToolId::new("unknown").expect("valid"));
         let lr_handle = self.local_registry.find(&tool_id).ok_or_else(|| {
-            xai_tool_runtime::ToolError::not_found(
+            atelier_tool_runtime::ToolError::not_found(
                 tool_id,
                 format!("Tool not found in LocalRegistry: {registry_id}"),
             )
@@ -1553,9 +1627,10 @@ impl FinalizedToolset {
         value: serde_json::Value,
         output_converter: &OutputConverter,
         effective_tool_name: Option<String>,
-    ) -> Result<ToolRunResult, xai_tool_runtime::ToolError> {
-        let output = (output_converter)(value)
-            .map_err(|e| xai_tool_runtime::ToolError::custom("output_decoding", e.to_string()))?;
+    ) -> Result<ToolRunResult, atelier_tool_runtime::ToolError> {
+        let output = (output_converter)(value).map_err(|e| {
+            atelier_tool_runtime::ToolError::custom("output_decoding", e.to_string())
+        })?;
         let reminders_enabled;
         {
             reminders_enabled = self
@@ -1616,7 +1691,7 @@ impl FinalizedToolset {
     }
     /// Register a tool at runtime (e.g., MCP tools).
     ///
-    /// The tool must implement `xai_tool_runtime::Tool + ToolMetadata`.
+    /// The tool must implement `atelier_tool_runtime::Tool + ToolMetadata`.
     /// MCP tools typically use:
     /// - `type Args = serde_json::Value` (untyped JSON passthrough)
     /// - `kind() -> ToolKind::Other`
@@ -1635,20 +1710,20 @@ impl FinalizedToolset {
         name: String,
         tool: T,
         input_schema_override: Option<serde_json::Value>,
-    ) -> Result<(), xai_tool_runtime::ToolError>
+    ) -> Result<(), atelier_tool_runtime::ToolError>
     where
-        T: xai_tool_runtime::Tool + ToolMetadata + std::fmt::Debug + Send + Sync + 'static,
+        T: atelier_tool_runtime::Tool + ToolMetadata + std::fmt::Debug + Send + Sync + 'static,
         T::Output: serde::Serialize,
     {
         let mut tools = self.tools.write();
         if tools.iter().any(|t| t.client_name == name) {
-            return Err(xai_tool_runtime::ToolError::invalid_arguments(format!(
+            return Err(atelier_tool_runtime::ToolError::invalid_arguments(format!(
                 "Tool already registered: {name}"
             )));
         }
         let description = tool.description_template().to_string();
         let kind = tool.kind();
-        let registry_id = xai_tool_runtime::Tool::id(&tool).as_str().to_owned();
+        let registry_id = atelier_tool_runtime::Tool::id(&tool).as_str().to_owned();
         let input_schema = input_schema_override.unwrap_or_else(generate_schema::<T::Args>);
         let definition = ToolDefinition::function(&name, Some(&description), input_schema.clone());
         self.local_registry.register(tool);
@@ -1687,7 +1762,7 @@ impl FinalizedToolset {
         let to_remove: Vec<_> = tools
             .iter()
             .filter(|t| t.client_name.starts_with(prefix))
-            .filter_map(|t| xai_tool_protocol::ToolId::new(&t.registry_id).ok())
+            .filter_map(|t| atelier_tool_protocol::ToolId::new(&t.registry_id).ok())
             .collect();
         tools.retain(|t| !t.client_name.starts_with(prefix));
         for tid in &to_remove {
@@ -1700,7 +1775,7 @@ impl FinalizedToolset {
         let tool_id = tools
             .iter()
             .find(|t| t.client_name == name)
-            .and_then(|t| xai_tool_protocol::ToolId::new(&t.registry_id).ok());
+            .and_then(|t| atelier_tool_protocol::ToolId::new(&t.registry_id).ok());
         let before = tools.len();
         tools.retain(|t| t.client_name != name);
         let removed = tools.len() < before;
@@ -1958,6 +2033,22 @@ mod tests {
     use super::*;
     use std::sync::Arc;
     use tempfile::TempDir;
+
+    #[derive(Debug)]
+    struct RegistryImageExecutor;
+
+    #[async_trait::async_trait]
+    impl crate::implementations::atelier_build::image_gen::ImageGenExecutor for RegistryImageExecutor {
+        async fn execute(
+            &self,
+            _request: crate::implementations::atelier_build::image_gen::ImageGenRequest,
+        ) -> Result<
+            crate::implementations::atelier_build::image_gen::ImageGenExecutorResponse,
+            crate::implementations::atelier_build::image_gen::ImageGenExecutorError,
+        > {
+            unreachable!("registration tests do not execute the tool")
+        }
+    }
     /// Build a `SessionContext` for tests using a temp dir and real local
     /// filesystem/terminal backends.
     fn test_session_context(tmp: &TempDir) -> SessionContext {
@@ -1989,6 +2080,111 @@ mod tests {
             attribution_callback: None,
             system_reminder_tag: crate::reminders::DEFAULT_REMINDER_TAG,
         }
+    }
+
+    #[tokio::test]
+    async fn disabled_image_gen_config_omits_tool_from_finalized_toolset() {
+        let tmp = TempDir::new().unwrap();
+        let config = ToolServerConfig {
+            tools: vec![ToolConfig::from(
+                &crate::implementations::atelier_build::image_gen::ImageGenTool,
+            )],
+            behavior_preset: None,
+        };
+
+        let toolset = ToolRegistryBuilder::new()
+            .finalize(config, test_session_context(&tmp))
+            .expect("disabled image_gen must be omitted, not rejected");
+
+        assert!(toolset.tool_definitions().is_empty());
+    }
+
+    #[tokio::test]
+    async fn executor_enabled_image_gen_config_registers_tool() {
+        let tmp = TempDir::new().unwrap();
+        let config = ToolServerConfig {
+            tools: vec![ToolConfig::from(
+                &crate::implementations::atelier_build::image_gen::ImageGenTool,
+            )],
+            behavior_preset: None,
+        };
+        let mut ctx = test_session_context(&tmp);
+        ctx.image_gen_config =
+            crate::implementations::atelier_build::image_gen::ImageGenConfig::enabled(Arc::new(
+                RegistryImageExecutor,
+            ));
+
+        let toolset = ToolRegistryBuilder::new()
+            .finalize(config, ctx)
+            .expect("executor-enabled image_gen must finalize");
+
+        assert!(toolset.tool_definitions().iter().any(|definition| {
+            definition.function.name
+                == crate::implementations::atelier_build::image_gen::IMAGE_GEN_TOOL_NAME
+        }));
+    }
+
+    #[tokio::test]
+    async fn image_gen_can_be_disabled_and_reenabled_at_runtime() {
+        let tmp = TempDir::new().unwrap();
+        let toolset = ToolRegistryBuilder::new()
+            .finalize(
+                ToolServerConfig {
+                    tools: vec![ToolConfig::from(
+                        &crate::implementations::atelier_build::image_gen::ImageGenTool,
+                    )],
+                    behavior_preset: None,
+                },
+                test_session_context(&tmp),
+            )
+            .expect("disabled image_gen must finalize");
+
+        toolset
+            .configure_image_gen(
+                crate::implementations::atelier_build::image_gen::ImageGenConfig::enabled(
+                    Arc::new(RegistryImageExecutor),
+                ),
+            )
+            .await
+            .unwrap();
+        assert!(toolset.tool_definitions().iter().any(|definition| {
+            definition.function.name
+                == crate::implementations::atelier_build::image_gen::IMAGE_GEN_TOOL_NAME
+        }));
+
+        toolset
+            .configure_image_gen(
+                crate::implementations::atelier_build::image_gen::ImageGenConfig::Disabled,
+            )
+            .await
+            .unwrap();
+        assert!(toolset.tool_definitions().is_empty());
+        let tool_id = atelier_tool_protocol::ToolId::new(
+            crate::implementations::atelier_build::image_gen::IMAGE_GEN_TOOL_NAME,
+        )
+        .unwrap();
+        assert!(!toolset.local_registry().contains(&tool_id));
+
+        toolset
+            .configure_image_gen(
+                crate::implementations::atelier_build::image_gen::ImageGenConfig::enabled(
+                    Arc::new(RegistryImageExecutor),
+                ),
+            )
+            .await
+            .unwrap();
+        assert!(toolset.local_registry().contains(&tool_id));
+        assert_eq!(
+            toolset
+                .tool_definitions()
+                .iter()
+                .filter(|definition| {
+                    definition.function.name
+                        == crate::implementations::atelier_build::image_gen::IMAGE_GEN_TOOL_NAME
+                })
+                .count(),
+            1
+        );
     }
     /// Regression test: `kind_params` must merge input params from ALL tools
     /// that share a `ToolKind`, not just the first one.
@@ -2796,23 +2992,23 @@ mod tests {
             &self.description
         }
     }
-    impl xai_tool_runtime::Tool for FakeMcpTool {
+    impl atelier_tool_runtime::Tool for FakeMcpTool {
         type Args = serde_json::Value;
         type Output = String;
-        fn id(&self) -> xai_tool_protocol::ToolId {
-            xai_tool_protocol::ToolId::new("fake_mcp").expect("valid")
+        fn id(&self) -> atelier_tool_protocol::ToolId {
+            atelier_tool_protocol::ToolId::new("fake_mcp").expect("valid")
         }
         fn description(
             &self,
-            _ctx: &::xai_tool_runtime::ListToolsContext,
-        ) -> xai_tool_types::ToolDescription {
-            xai_tool_types::ToolDescription::new("fake_mcp", &self.description)
+            _ctx: &::atelier_tool_runtime::ListToolsContext,
+        ) -> atelier_tool_types::ToolDescription {
+            atelier_tool_types::ToolDescription::new("fake_mcp", &self.description)
         }
         async fn run(
             &self,
-            _ctx: xai_tool_runtime::ToolCallContext,
+            _ctx: atelier_tool_runtime::ToolCallContext,
             _input: serde_json::Value,
-        ) -> Result<String, xai_tool_runtime::ToolError> {
+        ) -> Result<String, atelier_tool_runtime::ToolError> {
             Ok("ok".into())
         }
     }
@@ -2874,23 +3070,23 @@ mod tests {
             "non-streaming stub"
         }
     }
-    impl xai_tool_runtime::Tool for NonStreamingStub {
+    impl atelier_tool_runtime::Tool for NonStreamingStub {
         type Args = serde_json::Value;
         type Output = String;
-        fn id(&self) -> xai_tool_protocol::ToolId {
-            xai_tool_protocol::ToolId::new("non_streaming_stub").expect("valid")
+        fn id(&self) -> atelier_tool_protocol::ToolId {
+            atelier_tool_protocol::ToolId::new("non_streaming_stub").expect("valid")
         }
         fn description(
             &self,
-            _ctx: &::xai_tool_runtime::ListToolsContext,
-        ) -> xai_tool_types::ToolDescription {
-            xai_tool_types::ToolDescription::new("non_streaming_stub", "non-streaming stub")
+            _ctx: &::atelier_tool_runtime::ListToolsContext,
+        ) -> atelier_tool_types::ToolDescription {
+            atelier_tool_types::ToolDescription::new("non_streaming_stub", "non-streaming stub")
         }
         async fn run(
             &self,
-            _ctx: xai_tool_runtime::ToolCallContext,
+            _ctx: atelier_tool_runtime::ToolCallContext,
             _input: serde_json::Value,
-        ) -> Result<String, xai_tool_runtime::ToolError> {
+        ) -> Result<String, atelier_tool_runtime::ToolError> {
             Ok("stub-output".into())
         }
     }
@@ -2910,35 +3106,37 @@ mod tests {
             "streaming stub"
         }
     }
-    impl xai_tool_runtime::Tool for StreamingStub {
+    impl atelier_tool_runtime::Tool for StreamingStub {
         type Args = serde_json::Value;
         type Output = String;
-        fn id(&self) -> xai_tool_protocol::ToolId {
-            xai_tool_protocol::ToolId::new("streaming_stub").expect("valid")
+        fn id(&self) -> atelier_tool_protocol::ToolId {
+            atelier_tool_protocol::ToolId::new("streaming_stub").expect("valid")
         }
         fn description(
             &self,
-            _ctx: &::xai_tool_runtime::ListToolsContext,
-        ) -> xai_tool_types::ToolDescription {
-            xai_tool_types::ToolDescription::new("streaming_stub", "streaming stub")
+            _ctx: &::atelier_tool_runtime::ListToolsContext,
+        ) -> atelier_tool_types::ToolDescription {
+            atelier_tool_types::ToolDescription::new("streaming_stub", "streaming stub")
         }
         async fn run(
             &self,
-            _ctx: xai_tool_runtime::ToolCallContext,
+            _ctx: atelier_tool_runtime::ToolCallContext,
             _input: serde_json::Value,
-        ) -> Result<String, xai_tool_runtime::ToolError> {
+        ) -> Result<String, atelier_tool_runtime::ToolError> {
             Ok("terminal-value".into())
         }
         async fn execute(
             &self,
-            _ctx: xai_tool_runtime::ToolCallContext,
+            _ctx: atelier_tool_runtime::ToolCallContext,
             _input: serde_json::Value,
-        ) -> xai_tool_runtime::ToolStream<String> {
+        ) -> atelier_tool_runtime::ToolStream<String> {
             Box::pin(futures::stream::iter(vec![
-                xai_tool_runtime::ToolStreamItem::Progress(xai_tool_runtime::ToolProgress::Text {
-                    text: "progress-1".into(),
-                }),
-                xai_tool_runtime::ToolStreamItem::Terminal(Ok("terminal-value".to_string())),
+                atelier_tool_runtime::ToolStreamItem::Progress(
+                    atelier_tool_runtime::ToolProgress::Text {
+                        text: "progress-1".into(),
+                    },
+                ),
+                atelier_tool_runtime::ToolStreamItem::Terminal(Ok("terminal-value".to_string())),
             ]))
         }
     }
@@ -2999,15 +3197,15 @@ mod tests {
         let mut terminal: Option<ToolRunResult> = None;
         while let Some(item) = stream.next().await {
             match item {
-                xai_tool_runtime::ToolStreamItem::Progress(p) => {
+                atelier_tool_runtime::ToolStreamItem::Progress(p) => {
                     assert!(
                         terminal.is_none(),
                         "progress must arrive before the terminal"
                     );
-                    assert!(matches!(p, xai_tool_runtime::ToolProgress::Text { .. }));
+                    assert!(matches!(p, atelier_tool_runtime::ToolProgress::Text { .. }));
                     progress_count += 1;
                 }
-                xai_tool_runtime::ToolStreamItem::Terminal(result) => {
+                atelier_tool_runtime::ToolStreamItem::Terminal(result) => {
                     assert!(terminal.is_none(), "exactly one terminal");
                     terminal = Some(result.expect("terminal should be Ok"));
                 }
@@ -3045,30 +3243,30 @@ mod tests {
             "no-terminal stub"
         }
     }
-    impl xai_tool_runtime::Tool for NoTerminalStub {
+    impl atelier_tool_runtime::Tool for NoTerminalStub {
         type Args = serde_json::Value;
         type Output = String;
-        fn id(&self) -> xai_tool_protocol::ToolId {
-            xai_tool_protocol::ToolId::new("no_terminal_stub").expect("valid")
+        fn id(&self) -> atelier_tool_protocol::ToolId {
+            atelier_tool_protocol::ToolId::new("no_terminal_stub").expect("valid")
         }
         fn description(
             &self,
-            _ctx: &::xai_tool_runtime::ListToolsContext,
-        ) -> xai_tool_types::ToolDescription {
-            xai_tool_types::ToolDescription::new("no_terminal_stub", "no-terminal stub")
+            _ctx: &::atelier_tool_runtime::ListToolsContext,
+        ) -> atelier_tool_types::ToolDescription {
+            atelier_tool_types::ToolDescription::new("no_terminal_stub", "no-terminal stub")
         }
         async fn run(
             &self,
-            _ctx: xai_tool_runtime::ToolCallContext,
+            _ctx: atelier_tool_runtime::ToolCallContext,
             _input: serde_json::Value,
-        ) -> Result<String, xai_tool_runtime::ToolError> {
+        ) -> Result<String, atelier_tool_runtime::ToolError> {
             Ok("unused".into())
         }
         async fn execute(
             &self,
-            _ctx: xai_tool_runtime::ToolCallContext,
+            _ctx: atelier_tool_runtime::ToolCallContext,
             _input: serde_json::Value,
-        ) -> xai_tool_runtime::ToolStream<String> {
+        ) -> atelier_tool_runtime::ToolStream<String> {
             Box::pin(futures::stream::empty())
         }
     }
@@ -4341,7 +4539,7 @@ mod tests {
         }
     }
     fn toolset_with_viewer_ctx(
-        viewer_ctx: Option<xai_tool_runtime::WorkspaceViewerContext>,
+        viewer_ctx: Option<atelier_tool_runtime::WorkspaceViewerContext>,
     ) -> (Arc<FinalizedToolset>, TempDir) {
         let tmp = TempDir::new().unwrap();
         let builder = ToolRegistryBuilder::new();
@@ -4371,7 +4569,7 @@ mod tests {
     #[tokio::test]
     async fn prepare_dispatch_stamps_workspace_viewer_ctx_when_present() {
         let (toolset, _tmp) =
-            toolset_with_viewer_ctx(Some(xai_tool_runtime::WorkspaceViewerContext {
+            toolset_with_viewer_ctx(Some(atelier_tool_runtime::WorkspaceViewerContext {
                 stream_tool_progress: true,
             }));
         let parts = toolset
@@ -4385,7 +4583,7 @@ mod tests {
         let wvc = parts
             .ctx
             .extensions
-            .get::<xai_tool_runtime::WorkspaceViewerContext>()
+            .get::<atelier_tool_runtime::WorkspaceViewerContext>()
             .expect("WorkspaceViewerContext must be stamped on the ctx");
         assert!(wvc.stream_tool_progress);
     }
@@ -4404,7 +4602,7 @@ mod tests {
             parts
                 .ctx
                 .extensions
-                .get::<xai_tool_runtime::WorkspaceViewerContext>()
+                .get::<atelier_tool_runtime::WorkspaceViewerContext>()
                 .is_none(),
             "no extension must be stamped when workspace_viewer_ctx is None",
         );
@@ -4440,7 +4638,7 @@ mod tests {
                     config,
                     ctx,
                     crate::types::context::TruncationConfig::default(),
-                    Some(xai_tool_runtime::WorkspaceViewerContext {
+                    Some(atelier_tool_runtime::WorkspaceViewerContext {
                         stream_tool_progress: true,
                     }),
                 )
@@ -4459,8 +4657,8 @@ mod tests {
         let mut got_terminal = false;
         while let Some(item) = stream.next().await {
             match item {
-                xai_tool_runtime::ToolStreamItem::Progress(_) => progress_count += 1,
-                xai_tool_runtime::ToolStreamItem::Terminal(r) => {
+                atelier_tool_runtime::ToolStreamItem::Progress(_) => progress_count += 1,
+                atelier_tool_runtime::ToolStreamItem::Terminal(r) => {
                     r.expect("terminal must succeed");
                     got_terminal = true;
                 }

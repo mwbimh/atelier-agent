@@ -88,6 +88,8 @@ mod tests {
             temperature: None,
             top_p: None,
             request_payload: Default::default(),
+            remote_compaction_endpoint: None,
+            image_generation_endpoint: None,
             api_backend: ApiBackend::ChatCompletions,
             auth_scheme: Default::default(),
             extra_headers: IndexMap::new(),

@@ -10,7 +10,7 @@ use crate::views::permission_view::SubagentInfo;
 use std::path::PathBuf;
 use std::time::Instant;
 use atelier_shell::extensions::notification::RetryState;
-use atelier_shell::extensions::notification::SessionUpdate as XaiSessionUpdate;
+use atelier_shell::extensions::notification::SessionUpdate as ExtensionSessionUpdate;
 pub(super) fn make_session(session_id: Option<&str>) -> AgentSession {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     AgentSession {
@@ -320,8 +320,8 @@ pub(super) fn subagent_ext_replay(
 pub(super) fn make_exit_plan_ext(
     plan_content: Option<&str>,
 ) -> (
-    xai_acp_lib::AcpArgs<acp::ExtRequest>,
-    tokio::sync::oneshot::Receiver<xai_acp_lib::AcpResult<acp::ExtResponse>>,
+    atelier_acp_runtime::AcpArgs<acp::ExtRequest>,
+    tokio::sync::oneshot::Receiver<atelier_acp_runtime::AcpResult<acp::ExtResponse>>,
 ) {
     make_exit_plan_ext_with_tool_call_id("call-plan", plan_content)
 }
@@ -329,8 +329,8 @@ pub(super) fn make_exit_plan_ext_with_tool_call_id(
     tool_call_id: &str,
     plan_content: Option<&str>,
 ) -> (
-    xai_acp_lib::AcpArgs<acp::ExtRequest>,
-    tokio::sync::oneshot::Receiver<xai_acp_lib::AcpResult<acp::ExtResponse>>,
+    atelier_acp_runtime::AcpArgs<acp::ExtRequest>,
+    tokio::sync::oneshot::Receiver<atelier_acp_runtime::AcpResult<acp::ExtResponse>>,
 ) {
     let raw = serde_json::value::to_raw_value(
             &serde_json::json!(
@@ -342,7 +342,7 @@ pub(super) fn make_exit_plan_ext_with_tool_call_id(
     let request = acp::ExtRequest::new("atelier/exit_plan_mode", raw.into());
     let (tx, rx) = tokio::sync::oneshot::channel();
     (
-        xai_acp_lib::AcpArgs {
+        atelier_acp_runtime::AcpArgs {
             request,
             response_tx: tx,
         },
@@ -444,7 +444,7 @@ pub(super) fn send_tool_call_update(
     }
     let (tx, _rx) = tokio::sync::oneshot::channel();
     handle(
-        AcpClientMessage::SessionNotification(xai_acp_lib::AcpArgs {
+        AcpClientMessage::SessionNotification(atelier_acp_runtime::AcpArgs {
             request: acp::SessionNotification::new(
                     acp::SessionId::new("sess-1"),
                     acp::SessionUpdate::ToolCall(
@@ -506,7 +506,7 @@ pub(super) fn make_fired_notif(
 ) -> acp::ExtNotification {
     let notif = SessionNotification {
         session_id: acp::SessionId::new(session_id),
-        update: XaiSessionUpdate::ScheduledTaskFired {
+        update: ExtensionSessionUpdate::ScheduledTaskFired {
             task_id: task_id.into(),
             prompt: prompt.into(),
             human_schedule: human_schedule.into(),
@@ -581,7 +581,7 @@ pub(super) fn make_created_ext_notif(
 ) -> acp::ExtNotification {
     let notif = SessionNotification {
         session_id: acp::SessionId::new(session_id),
-        update: XaiSessionUpdate::ScheduledTaskCreated {
+        update: ExtensionSessionUpdate::ScheduledTaskCreated {
             task_id: task_id.into(),
             prompt: prompt.into(),
             human_schedule: human_schedule.into(),
@@ -598,7 +598,7 @@ pub(super) fn make_deleted_ext_notif(
 ) -> acp::ExtNotification {
     let notif = SessionNotification {
         session_id: acp::SessionId::new(session_id),
-        update: XaiSessionUpdate::ScheduledTaskDeleted {
+        update: ExtensionSessionUpdate::ScheduledTaskDeleted {
             task_id: task_id.into(),
         },
         meta: None,
@@ -620,7 +620,7 @@ pub(super) fn make_token_notification_message(
             ),
         )
         .meta(serde_json::json!({ "totalTokens" : total_tokens, }).as_object().cloned());
-    AcpClientMessage::SessionNotification(xai_acp_lib::AcpArgs {
+    AcpClientMessage::SessionNotification(atelier_acp_runtime::AcpArgs {
         request,
         response_tx: tx,
     })
@@ -638,7 +638,7 @@ pub(super) fn make_agent_chunk_message(
             acp::ContentChunk::new(acp::ContentBlock::Text(acp::TextContent::new(text))),
         ),
     );
-    AcpClientMessage::SessionNotification(xai_acp_lib::AcpArgs {
+    AcpClientMessage::SessionNotification(atelier_acp_runtime::AcpArgs {
         request,
         response_tx: tx,
     })
@@ -667,7 +667,7 @@ pub(super) fn make_agent_chunk_meta(
             ),
         )
         .meta(serde_json::Value::Object(meta).as_object().cloned());
-    AcpClientMessage::SessionNotification(xai_acp_lib::AcpArgs {
+    AcpClientMessage::SessionNotification(atelier_acp_runtime::AcpArgs {
         request,
         response_tx: tx,
     })
@@ -730,7 +730,7 @@ pub(super) fn plan_update_msg(
         meta.insert("eventId".to_string(), serde_json::json!(eid));
     }
     let (tx, _rx) = tokio::sync::oneshot::channel();
-    AcpClientMessage::SessionNotification(xai_acp_lib::AcpArgs {
+    AcpClientMessage::SessionNotification(atelier_acp_runtime::AcpArgs {
         request: acp::SessionNotification::new(
                 acp::SessionId::new(session_id),
                 acp::SessionUpdate::Plan(acp::Plan::new(entries)),
@@ -742,13 +742,13 @@ pub(super) fn plan_update_msg(
 pub(super) fn todo_contents(app: &AppView, id: AgentId) -> Vec<String> {
     app.agents[&id].todo.todos().iter().map(|t| t.content.clone()).collect()
 }
-pub(super) fn xai_model_switch_notif(
+pub(super) fn extension_model_switch_notif(
     session_id: &str,
     event_id: &str,
 ) -> acp::ExtNotification {
     let payload = SessionNotification {
         session_id: acp::SessionId::new(session_id),
-        update: XaiSessionUpdate::ModelAutoSwitched {
+        update: ExtensionSessionUpdate::ModelAutoSwitched {
             previous_model_id: "m-old".into(),
             new_model_id: "m-new".into(),
             reason: "gone".into(),
@@ -760,13 +760,13 @@ pub(super) fn xai_model_switch_notif(
         std::sync::Arc::from(serde_json::value::to_raw_value(&payload).unwrap()),
     )
 }
-pub(super) fn xai_unhandled_notif(
+pub(super) fn extension_unhandled_notif(
     session_id: &str,
     event_id: &str,
 ) -> acp::ExtNotification {
     let payload = SessionNotification {
         session_id: acp::SessionId::new(session_id),
-        update: XaiSessionUpdate::MemoryFlushStarted,
+        update: ExtensionSessionUpdate::MemoryFlushStarted,
         meta: Some(serde_json::json!({ "eventId" : event_id })),
     };
     acp::ExtNotification::new(
@@ -795,7 +795,7 @@ pub(super) fn make_token_notification_with_event(
                 .as_object()
                 .cloned(),
         );
-    AcpClientMessage::SessionNotification(xai_acp_lib::AcpArgs {
+    AcpClientMessage::SessionNotification(atelier_acp_runtime::AcpArgs {
         request,
         response_tx: tx,
     })
@@ -876,7 +876,7 @@ pub(super) fn make_viewer_chunk_with_turn_start(
                 .as_object()
                 .cloned(),
         );
-    AcpClientMessage::SessionNotification(xai_acp_lib::AcpArgs {
+    AcpClientMessage::SessionNotification(atelier_acp_runtime::AcpArgs {
         request,
         response_tx: tx,
     })
@@ -884,7 +884,7 @@ pub(super) fn make_viewer_chunk_with_turn_start(
 /// Build a durable `TurnCompleted` update on the `atelier/session/update` rail,
 /// optionally stamped `isReplay`. Built through the typed `SessionNotification`
 /// so the wire shape can't drift from what the dispatch parses.
-pub(super) fn xai_turn_completed_notif(
+pub(super) fn extension_turn_completed_notif(
     session_id: &str,
     prompt_id: &str,
     stop_reason: &str,
@@ -892,7 +892,7 @@ pub(super) fn xai_turn_completed_notif(
 ) -> acp::ExtNotification {
     let payload = SessionNotification {
         session_id: acp::SessionId::new(session_id),
-        update: XaiSessionUpdate::TurnCompleted {
+        update: ExtensionSessionUpdate::TurnCompleted {
             prompt_id: prompt_id.into(),
             stop_reason: stop_reason.into(),
             agent_result: None,
@@ -907,7 +907,7 @@ pub(super) fn xai_turn_completed_notif(
 }
 /// A live durable `TurnCompleted`, optionally stamped with the shell
 /// completion clock (`agentTimestampMs`) the wake marker's elapsed reads.
-pub(super) fn xai_wake_turn_completed_notif(
+pub(super) fn extension_wake_turn_completed_notif(
     session_id: &str,
     prompt_id: &str,
     agent_timestamp_ms: Option<i64>,
@@ -918,7 +918,7 @@ pub(super) fn xai_wake_turn_completed_notif(
     }
     let payload = SessionNotification {
         session_id: acp::SessionId::new(session_id),
-        update: XaiSessionUpdate::TurnCompleted {
+        update: ExtensionSessionUpdate::TurnCompleted {
             prompt_id: prompt_id.into(),
             stop_reason: "end_turn".into(),
             agent_result: None,
@@ -946,7 +946,7 @@ pub(super) fn last_marker_block(
 /// Build a `HookExecution` update (one successful run) on the
 /// `atelier/session/update` rail, optionally stamped `isReplay`.
 /// `prompt_id == None` models pre-attribution shells.
-pub(super) fn xai_hook_execution_notif_for_prompt(
+pub(super) fn extension_hook_execution_notif_for_prompt(
     session_id: &str,
     event_name: &str,
     prompt_id: Option<&str>,
@@ -955,7 +955,7 @@ pub(super) fn xai_hook_execution_notif_for_prompt(
     use atelier_shell::extensions::notification::{HookRunEntryDto, HookRunStatusDto};
     let payload = SessionNotification {
         session_id: acp::SessionId::new(session_id),
-        update: XaiSessionUpdate::HookExecution {
+        update: ExtensionSessionUpdate::HookExecution {
             event_name: event_name.into(),
             tool_name: None,
             prompt_id: prompt_id.map(str::to_string),
@@ -971,12 +971,12 @@ pub(super) fn xai_hook_execution_notif_for_prompt(
         serde_json::value::to_raw_value(&payload).unwrap().into(),
     )
 }
-pub(super) fn xai_hook_execution_notif(
+pub(super) fn extension_hook_execution_notif(
     session_id: &str,
     event_name: &str,
     is_replay: bool,
 ) -> acp::ExtNotification {
-    xai_hook_execution_notif_for_prompt(session_id, event_name, None, is_replay)
+    extension_hook_execution_notif_for_prompt(session_id, event_name, None, is_replay)
 }
 pub(super) fn count_lifecycle_blocks(
     sb: &crate::scrollback::state::ScrollbackState,
@@ -1094,7 +1094,7 @@ pub(super) fn make_plan_message(session_id: &str, entries: &[&str]) -> AcpClient
         acp::SessionId::new(session_id),
         acp::SessionUpdate::Plan(acp::Plan::new(plan_entries)),
     );
-    AcpClientMessage::SessionNotification(xai_acp_lib::AcpArgs {
+    AcpClientMessage::SessionNotification(atelier_acp_runtime::AcpArgs {
         request,
         response_tx: tx,
     })
@@ -1115,7 +1115,7 @@ pub(super) fn make_commands_update_message(
             acp::AvailableCommandsUpdate::new(commands),
         ),
     );
-    AcpClientMessage::SessionNotification(xai_acp_lib::AcpArgs {
+    AcpClientMessage::SessionNotification(atelier_acp_runtime::AcpArgs {
         request,
         response_tx: tx,
     })
@@ -1144,7 +1144,7 @@ pub(super) fn make_bash_stdout_message(
             ),
         ),
     );
-    AcpClientMessage::SessionNotification(xai_acp_lib::AcpArgs {
+    AcpClientMessage::SessionNotification(atelier_acp_runtime::AcpArgs {
         request,
         response_tx: tx,
     })
@@ -1152,7 +1152,7 @@ pub(super) fn make_bash_stdout_message(
 /// Build an `ExtNotification` envelope for `atelier/session_notification`.
 pub(super) fn make_ext_session_notification(
     session_id: &str,
-    update: XaiSessionUpdate,
+    update: ExtensionSessionUpdate,
 ) -> AcpClientMessage {
     make_ext_session_notification_with_method(
         session_id,
@@ -1160,11 +1160,11 @@ pub(super) fn make_ext_session_notification(
         update,
     )
 }
-/// Build an `ExtNotification` envelope with an explicit xAI session method.
+/// Build an `ExtNotification` envelope with an explicit extension session method.
 pub(super) fn make_ext_session_notification_with_method(
     session_id: &str,
     method: &str,
-    update: XaiSessionUpdate,
+    update: ExtensionSessionUpdate,
 ) -> AcpClientMessage {
     let (tx, _rx) = tokio::sync::oneshot::channel();
     let payload = SessionNotification {
@@ -1174,7 +1174,7 @@ pub(super) fn make_ext_session_notification_with_method(
     };
     let raw = serde_json::value::to_raw_value(&payload).unwrap();
     let request = acp::ExtNotification::new(method, raw.into());
-    AcpClientMessage::ExtNotification(xai_acp_lib::AcpArgs {
+    AcpClientMessage::ExtNotification(atelier_acp_runtime::AcpArgs {
         request,
         response_tx: tx,
     })
@@ -1183,8 +1183,8 @@ use crate::scrollback::blocks::SubagentBlockKind;
 pub(super) fn test_subagent_spawned(
     parent_sid: &str,
     child_sid: &str,
-) -> XaiSessionUpdate {
-    XaiSessionUpdate::SubagentSpawned {
+) -> ExtensionSessionUpdate {
+    ExtensionSessionUpdate::SubagentSpawned {
         subagent_id: child_sid.into(),
         parent_session_id: parent_sid.into(),
         parent_prompt_id: None,
@@ -1200,14 +1200,14 @@ pub(super) fn test_subagent_spawned(
         resumed_from: None,
     }
 }
-pub(super) fn test_subagent_finished(child_sid: &str) -> XaiSessionUpdate {
+pub(super) fn test_subagent_finished(child_sid: &str) -> ExtensionSessionUpdate {
     test_subagent_finished_with_wake(child_sid, false)
 }
 pub(super) fn test_subagent_finished_with_wake(
     child_sid: &str,
     will_wake: bool,
-) -> XaiSessionUpdate {
-    XaiSessionUpdate::SubagentFinished {
+) -> ExtensionSessionUpdate {
+    ExtensionSessionUpdate::SubagentFinished {
         subagent_id: child_sid.into(),
         child_session_id: child_sid.into(),
         status: "completed".into(),
@@ -1223,8 +1223,8 @@ pub(super) fn test_subagent_finished_with_wake(
 pub(super) fn test_subagent_progress(
     parent_sid: &str,
     child_sid: &str,
-) -> XaiSessionUpdate {
-    XaiSessionUpdate::SubagentProgress {
+) -> ExtensionSessionUpdate {
+    ExtensionSessionUpdate::SubagentProgress {
         subagent_id: child_sid.into(),
         parent_session_id: parent_sid.into(),
         child_session_id: child_sid.into(),
@@ -1479,7 +1479,7 @@ pub(super) fn dispatch_goal_update(
     let raw = serde_json::value::to_raw_value(&raw_payload).unwrap();
     let (tx, _rx) = tokio::sync::oneshot::channel();
     handle(
-        AcpClientMessage::ExtNotification(xai_acp_lib::AcpArgs {
+        AcpClientMessage::ExtNotification(atelier_acp_runtime::AcpArgs {
             request: acp::ExtNotification::new("atelier/session_notification", raw.into()),
             response_tx: tx,
         }),
@@ -1517,7 +1517,7 @@ pub(super) fn make_permission_message(
             "Allow once", acp::PermissionOptionKind::AllowOnce,)
         ],
     );
-    let msg = AcpClientMessage::RequestPermission(xai_acp_lib::AcpArgs {
+    let msg = AcpClientMessage::RequestPermission(atelier_acp_runtime::AcpArgs {
         request,
         response_tx: tx,
     });
@@ -1532,7 +1532,7 @@ pub(super) fn interaction_resolved_ext(
 ) -> acp::ExtNotification {
     let notif = SessionNotification {
         session_id: acp::SessionId::new(session_id),
-        update: XaiSessionUpdate::InteractionResolved {
+        update: ExtensionSessionUpdate::InteractionResolved {
             tool_call_id: tool_call_id.into(),
         },
         meta: None,
@@ -1563,7 +1563,7 @@ pub(super) fn make_task_backgrounded_notif(
 ) -> acp::ExtNotification {
     let notif = SessionNotification {
         session_id: acp::SessionId::new(session_id),
-        update: XaiSessionUpdate::TaskBackgrounded {
+        update: ExtensionSessionUpdate::TaskBackgrounded {
             tool_call_id: tool_call_id.into(),
             task_id: task_id.into(),
             command: command.into(),
@@ -1588,7 +1588,7 @@ pub(super) fn make_replayed_task_backgrounded_notif(
 ) -> acp::ExtNotification {
     let notif = SessionNotification {
         session_id: acp::SessionId::new(session_id),
-        update: XaiSessionUpdate::TaskBackgrounded {
+        update: ExtensionSessionUpdate::TaskBackgrounded {
             tool_call_id: tool_call_id.into(),
             task_id: task_id.into(),
             command: command.into(),
@@ -1705,7 +1705,7 @@ pub(super) fn task_completed_notif(
     use atelier_tools::types::TaskSnapshot;
     let notif = SessionNotification {
         session_id: acp::SessionId::new(session_id),
-        update: XaiSessionUpdate::TaskCompleted {
+        update: ExtensionSessionUpdate::TaskCompleted {
             task_snapshot: TaskSnapshot {
                 task_id: task_id.into(),
                 command: command.into(),
@@ -1738,7 +1738,7 @@ pub(super) fn make_monitor_event_notif(
 ) -> acp::ExtNotification {
     let notif = SessionNotification {
         session_id: acp::SessionId::new(session_id),
-        update: XaiSessionUpdate::MonitorEvent {
+        update: ExtensionSessionUpdate::MonitorEvent {
             task_id: task_id.into(),
             description: "test monitor".into(),
             event_text: event_text.into(),
@@ -1806,7 +1806,7 @@ pub(super) fn model_changed_ext(
 ) -> acp::ExtNotification {
     let payload = SessionNotification {
         session_id: acp::SessionId::new(session_id),
-        update: XaiSessionUpdate::ModelChanged {
+        update: ExtensionSessionUpdate::ModelChanged {
             model_id: model_id.to_string(),
             reasoning_effort: reasoning_effort.map(String::from),
         },
@@ -1822,7 +1822,7 @@ pub(super) fn model_changed_ext_with_event(
 ) -> acp::ExtNotification {
     let payload = SessionNotification {
         session_id: acp::SessionId::new(session_id),
-        update: XaiSessionUpdate::ModelChanged {
+        update: ExtensionSessionUpdate::ModelChanged {
             model_id: model_id.to_string(),
             reasoning_effort: None,
         },

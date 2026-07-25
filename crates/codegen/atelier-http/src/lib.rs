@@ -2,13 +2,11 @@
 //!
 //! Building a `reqwest::Client` is expensive (~95ms) because it loads
 //! TLS root certificates from the OS trust store. This module
-//! provides four clients for non-sampling traffic (the first three
+//! provides three clients for non-sampling traffic (the first two
 //! public and cached, the last crate-internal and built on demand):
 //!
 //! - `shared_client` -- a `OnceLock`-cached async client for general
 //!   use (telemetry, feedback, settings, etc.).
-//! - `shared_upload_client` -- a `OnceLock`-cached client for GCS
-//!   uploads with aggressive connection pool eviction.
 //! - `shared_blocking_client` -- a blocking client for the early
 //!   model prefetch (runs before the async runtime is available).
 //! - `fresh_http1_client` -- a crate-internal, on-demand, pool-less
@@ -89,77 +87,6 @@ pub fn origin_client_info_from_client_type(
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct PlatformInfo {
-    os: String,
-    arch: String,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct UserAgent {
-    origin: OriginClientInfo,
-    agent_product: &'static str,
-    agent_version: String,
-    platform: PlatformInfo,
-}
-
-impl PlatformInfo {
-    fn current() -> Self {
-        let os = match std::env::consts::OS {
-            "macos" => "macos",
-            "windows" => "windows",
-            other => other,
-        }
-        .to_string();
-
-        let arch = match std::env::consts::ARCH {
-            "arm64" => "aarch64",
-            "x86_64" => "x86_64",
-            other => other,
-        }
-        .to_string();
-
-        Self { os, arch }
-    }
-}
-
-impl UserAgent {
-    fn render(&self) -> String {
-        if self.origin.product == self.agent_product
-            && self.origin.version.as_deref() == Some(self.agent_version.as_str())
-        {
-            return format!(
-                "{}/{} ({}; {})",
-                self.agent_product, self.agent_version, self.platform.os, self.platform.arch,
-            );
-        }
-
-        match self.origin.version.as_deref() {
-            Some(origin_version) => format!(
-                "{}/{} {}/{} ({}; {})",
-                self.origin.product,
-                origin_version,
-                self.agent_product,
-                self.agent_version,
-                self.platform.os,
-                self.platform.arch,
-            ),
-            None => format!(
-                "{} {}/{} ({}; {})",
-                self.origin.product,
-                self.agent_product,
-                self.agent_version,
-                self.platform.os,
-                self.platform.arch,
-            ),
-        }
-    }
-}
-
-fn agent_version() -> String {
-    atelier_version::VERSION.to_string()
-}
-
 /// Set the process-level fallback origin client type for `User-Agent`.
 pub fn set_client_name(client_type: ClientType) {
     CLIENT_TYPE
@@ -167,32 +94,18 @@ pub fn set_client_name(client_type: ClientType) {
         .expect("set_client_name called more than once");
 }
 
-pub fn process_user_agent_string() -> String {
-    let agent_version = agent_version();
-    let origin = origin_client_info_from_env().unwrap_or_else(|| {
-        origin_client_info_from_client_type(
-            CLIENT_TYPE.get().copied().unwrap_or(ClientType::Generic),
-            Some(agent_version.clone()),
-        )
-    });
-
-    UserAgent {
-        origin,
-        agent_product: "atelier-shell",
-        agent_version,
-        platform: PlatformInfo::current(),
-    }
-    .render()
+/// Set the process-wide identity used in outbound HTTP `User-Agent` headers.
+/// Must run before the first shared HTTP or sampling client is constructed.
+pub fn set_request_agent_identity(name: String, version: Option<String>) -> Result<(), String> {
+    atelier_sampler::set_request_agent_identity(name, version)
 }
 
-pub fn session_user_agent_string(origin: &OriginClientInfo) -> String {
-    UserAgent {
-        origin: origin.clone(),
-        agent_product: "atelier-shell",
-        agent_version: agent_version(),
-        platform: PlatformInfo::current(),
-    }
-    .render()
+pub fn process_user_agent_string() -> String {
+    atelier_sampler::request_agent_user_agent_string()
+}
+
+pub fn session_user_agent_string(_origin: &OriginClientInfo) -> String {
+    atelier_sampler::request_agent_user_agent_string()
 }
 
 pub fn origin_client_info_from_meta(
@@ -306,41 +219,6 @@ pub fn with_auth_retry(
     reqwest_middleware::ClientBuilder::new(client)
         .with(atelier_auth::AuthRetryMiddleware::new(credentials, 1))
         .build()
-}
-
-/// Returns a shared [`reqwest::Client`] for GCS uploads, creating it on first call.
-///
-/// Unlike `shared_client()`, this client has aggressive connection pool eviction
-/// to avoid reusing stale/poisoned connections during retry loops. When uploads
-/// fail and trigger exponential backoff (1s, 2s, 4s...), idle connections may be
-/// closed by the server, Cloudflare, or load balancers. Without pool eviction,
-/// all retries would reuse the same dead connection and fail.
-///
-/// Settings:
-/// - HTTP/1.1 only — avoids HTTP/2 connection-poisoning where a degraded
-///   multiplexed connection silently drops multipart request bodies, causing
-///   cascading 400 errors across all concurrent uploads
-/// - Small connection pool (2 per host) for parallel chunk uploads
-/// - Short idle timeout (10s) to evict stale connections before backoff completes
-pub fn shared_upload_client() -> reqwest::Client {
-    static UPLOAD_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
-    UPLOAD_CLIENT
-        .get_or_init(|| {
-            reqwest::Client::builder()
-                // Force HTTP/1.1: batch_upload multipart bodies are silently
-                // dropped when an HTTP/2 connection degrades (GOAWAY, flow-control
-                // exhaustion). Because all streams share one connection, a single
-                // bad connection causes every subsequent request to arrive with
-                // Content-Length: 0, producing thousands of 400s until the process
-                // restarts. HTTP/1.1 isolates failures to individual connections.
-                .http1_only()
-                .pool_max_idle_per_host(2)
-                .pool_idle_timeout(std::time::Duration::from_secs(10))
-                .user_agent(process_user_agent_string())
-                .build()
-                .expect("failed to build shared upload HTTP client")
-        })
-        .clone()
 }
 
 /// A fresh, pool-less HTTP/1.1 [`reqwest::Client`], deliberately NOT cached:
@@ -600,37 +478,18 @@ mod tests {
     }
 
     #[test]
-    fn session_user_agent_string_renders_expected_variants() {
+    fn session_user_agent_string_uses_the_request_agent_identity() {
         let with_version = session_user_agent_string(&OriginClientInfo {
             product: "atelier-desktop".to_string(),
             version: Some("1.2.3".to_string()),
         });
-        assert!(with_version.starts_with("atelier-desktop/1.2.3 atelier-shell/"));
-        assert!(with_version.contains(" ("));
+        assert!(with_version.starts_with(&format!("Atelier/{} (", atelier_version::VERSION)));
+        assert!(!with_version.contains("atelier-desktop"));
 
         let without_version = session_user_agent_string(&OriginClientInfo {
             product: "atelier-web".to_string(),
             version: None,
         });
-        assert!(without_version.starts_with("atelier-web atelier-shell/"));
-        assert!(!without_version.starts_with("atelier-web/"));
-    }
-
-    #[test]
-    fn user_agent_render_collapses_duplicate_origin_and_agent_identity() {
-        let ua = UserAgent {
-            origin: OriginClientInfo {
-                product: "atelier-shell".to_string(),
-                version: Some("0.1.171".to_string()),
-            },
-            agent_product: "atelier-shell",
-            agent_version: "0.1.171".to_string(),
-            platform: PlatformInfo {
-                os: "macos".to_string(),
-                arch: "aarch64".to_string(),
-            },
-        };
-
-        assert_eq!(ua.render(), "atelier-shell/0.1.171 (macos; aarch64)");
+        assert_eq!(without_version, with_version);
     }
 }

@@ -59,16 +59,16 @@ Runtime task、request snapshot 和 replay buffer 当前由运行中的 Atelier 
 模型默认协议和 Provider + Model 覆盖可以在运行时修改：
 
 ```text
-/model-config list
-/model-config get proxy/gpt-5
-/model-config wire proxy/gpt-5 responses
-/model-config override proxy/gpt-5 chat_completions {"temperature":0.2}
-/model-config test proxy/gpt-5
-/model-config test proxy/gpt-5 execute
-/model-config delete proxy/gpt-5
+/wire-api list
+/wire-api get proxy/gpt-5
+/wire-api wire proxy/gpt-5 responses
+/wire-api override proxy/gpt-5 chat_completions {"temperature":0.2}
+/wire-api test proxy/gpt-5
+/wire-api test proxy/gpt-5 execute
+/wire-api delete proxy/gpt-5
 ```
 
-直接输入 `/model-config` 或 `/models` 会进入参数交互入口。解析顺序是：
+直接输入 `/wire-api` 会进入参数交互入口。解析顺序是：
 
 ```text
 Provider-Model override

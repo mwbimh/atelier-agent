@@ -1,6 +1,6 @@
 use super::*;
-use crate::remote::DEFAULT_CONTEXT_WINDOW;
-use xai_chat_state::conversation_util::replace_or_insert_system_head;
+use crate::runtime_defaults::DEFAULT_CONTEXT_WINDOW;
+use atelier_chat_state::conversation_util::replace_or_insert_system_head;
 impl SessionActor {
     pub(super) async fn handle_set_session_model(
         &self,
@@ -51,6 +51,10 @@ impl SessionActor {
             .set(auto_compact_threshold_percent);
         self.supports_backend_search
             .set(sampling_config.supports_backend_search);
+        *self.remote_compaction_endpoint.borrow_mut() =
+            sampling_config.remote_compaction_endpoint.clone();
+        *self.image_generation_endpoint.borrow_mut() =
+            sampling_config.image_generation_endpoint.clone();
         self.compactions_remaining
             .set(sampling_config.compactions_remaining);
         self.compaction_at_tokens
@@ -84,7 +88,7 @@ impl SessionActor {
             .as_ref()
             .and_then(|am| am.current_or_expired().map(|a| a.key));
         self.chat_state_handle
-            .update_credentials(xai_chat_state::Credentials {
+            .update_credentials(atelier_chat_state::Credentials {
                 api_key: sampling_config.api_key.clone(),
                 auth_type: crate::agent::config::resolve_chat_state_auth_type(
                     sampling_config.model.as_str(),
@@ -94,6 +98,11 @@ impl SessionActor {
                 alpha_test_key: existing.alpha_test_key,
                 client_version: sampling_config.client_version.clone(),
             });
+        self.configure_image_gen_for_current_model()
+            .await
+            .map_err(|error| {
+                acp::Error::internal_error().data(format!("failed to configure image_gen: {error}"))
+            })?;
         self.model_auth_facts.replace(None);
         if persist_model_change {
             self.signals_handle()
@@ -156,6 +165,16 @@ impl SessionActor {
         )
         .await
     }
+
+    pub(super) async fn configure_image_gen_for_current_model(&self) -> Result<(), String> {
+        let sampler_config = self.reconstruct_full_config().await;
+        let image_gen_config = crate::tools::image_gen::config_from_sampler(sampler_config)
+            .map_err(|error| error.to_string())?;
+        self.tool_bridge_handle()
+            .configure_image_gen(image_gen_config)
+            .await
+            .map_err(|error| error.to_string())
+    }
     /// Handle [`SessionCommand::RebuildAgentForDefinition`].
     ///
     /// Builds a fresh [`atelier_agent::Agent`] from the cached
@@ -213,6 +232,13 @@ impl SessionActor {
         }
         self.compaction.prefire.clear();
         *self.agent.borrow_mut() = new_agent;
+        self.configure_image_gen_for_current_model()
+            .await
+            .map_err(|error| {
+                acp::Error::internal_error().data(format!(
+                    "failed to restore image_gen after agent rebuild: {error}"
+                ))
+            })?;
         *self.active_agent_type.lock() = Some(new_agent_name.clone());
         self.queue_exit_reminder_on_approved_exit.store(
             self.is_cursor_harness(),

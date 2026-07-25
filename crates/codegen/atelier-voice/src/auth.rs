@@ -26,14 +26,17 @@ pub type SharedVoiceAuth = Arc<dyn VoiceAuthProvider>;
 #[cfg(feature = "audio")]
 pub(crate) async fn require_bearer(auth: &SharedVoiceAuth) -> Result<String, VoiceError> {
     auth.bearer().await.ok_or_else(|| {
-        VoiceError::Auth("not signed in — run `atelier login` or set XAI_API_KEY".into())
+        VoiceError::Auth(
+            "no Provider credential available — configure a Provider or set ATELIER_VOICE_API_KEY"
+                .into(),
+        )
     })
 }
 
 /// A fixed bearer that never refreshes.
 ///
 /// Used by the standalone `voice-probe` binary and tests, where there is no
-/// `AuthManager` — only a raw `XAI_API_KEY`.
+/// Provider credential source — only a raw `ATELIER_VOICE_API_KEY`.
 pub struct StaticVoiceAuth(pub String);
 
 impl std::fmt::Debug for StaticVoiceAuth {

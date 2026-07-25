@@ -9,33 +9,16 @@ impl MvpAgent {
             let _ = handle.cmd_tx.send(SessionCommand::Shutdown);
         }
     }
-    /// Finalize the cloud session replica (fire-and-forget, "Hook 4").
-    ///
-    /// Marks the session **done** upstream, so this MUST only run on a genuine
-    /// session end — a terminal/explicit close (`atelier/session/close`). It must
-    /// NOT run on a mere client disconnect or a dead-actor reap: those leave the
-    /// conversation resumable on disk, and finalizing would wrongly mark a still
-    /// running/resumable session "done".
-    pub(super) fn finalize_session_replica(&self, id: &acp::SessionId) {
+    /// Record explicit local session finalization for lifecycle observability.
+    pub(super) fn finalize_local_session(&self, id: &acp::SessionId) {
         #[cfg(test)]
         self.finalize_spy.borrow_mut().push(id.0.to_string());
-        if let Some(client) = self.session_registry_client() {
-            let sid = id.0.to_string();
-            tokio::spawn(async move {
-                if let Err(e) = client.finalize(&sid).await {
-                    tracing::warn!(
-                        error = % e, "session registry finalize failed (non-fatal)"
-                    );
-                }
-            });
-        }
     }
-    /// Remove a session and its thread handle **without** finalizing the cloud
-    /// replica.
+    /// Remove a session and its thread handle without explicit finalization.
     ///
     /// Used for dead-actor reaping and idle-unload: the conversation stays
-    /// resumable on disk, so it must NOT be marked "done" upstream. Genuine
-    /// terminal closes go through [`MvpAgent::close_session_explicit`]. Also
+    /// resumable on disk. Genuine terminal closes go through
+    /// [`MvpAgent::close_session_explicit`]. Also
     /// drops the `session_live_state` entry so that map stays bounded.
     pub(crate) fn remove_session(&self, id: &acp::SessionId) {
         self.sessions.borrow_mut().remove(id);
@@ -58,10 +41,10 @@ impl MvpAgent {
             .clone()
     }
     /// Close a session in response to an **explicit** terminal close
-    /// (`atelier/session/close`). Finalizes the cloud replica (genuine session
-    /// end), then removes the session terminally as `Completed`.
+    /// (`atelier/session/close`). Records local finalization, then removes the
+    /// session terminally as `Completed`.
     pub(crate) fn close_session_explicit(&self, id: &acp::SessionId) {
-        self.finalize_session_replica(id);
+        self.finalize_local_session(id);
         self.remove_session_terminal(id, SessionLiveState::Completed);
     }
     /// Record the coarse lifecycle state for a session.

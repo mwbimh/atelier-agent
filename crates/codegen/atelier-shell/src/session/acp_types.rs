@@ -88,11 +88,11 @@ pub struct ClientFeedbackInput {
     pub session_id: String,
 
     /// Type of client submitting feedback
-    pub client_type: prod_mc_cli_chat_proxy_types::feedback_types::ClientType,
+    pub client_type: crate::session::feedback_types::ClientType,
 
     /// Rating type (thumbs, stars, nps)
     #[serde(default)]
-    pub rating_type: Option<prod_mc_cli_chat_proxy_types::feedback_types::RatingType>,
+    pub rating_type: Option<crate::session::feedback_types::RatingType>,
 
     /// Rating value (interpretation depends on rating_type):
     /// - thumbs: -1 (down), 0 (neutral), 1 (up)
@@ -113,7 +113,7 @@ pub struct ClientFeedbackInput {
 
     /// Context type for the feedback
     #[serde(default)]
-    pub context_type: Option<prod_mc_cli_chat_proxy_types::feedback_types::ContextType>,
+    pub context_type: Option<crate::session::feedback_types::ContextType>,
 
     /// 0-based turn number this feedback is about.
     #[serde(default, alias = "turnNumber")]
@@ -134,7 +134,7 @@ pub struct ClientFeedbackInput {
 
     /// Terminal environment snapshot from the client.
     #[serde(default)]
-    pub terminal_info: Option<prod_mc_cli_chat_proxy_types::feedback_types::FeedbackTerminalInfo>,
+    pub terminal_info: Option<crate::session::feedback_types::FeedbackTerminalInfo>,
 }
 
 impl ClientFeedbackInput {
@@ -144,10 +144,10 @@ impl ClientFeedbackInput {
     /// - stars: 1 to 5
     /// - nps: 0 to 10
     fn clamp_rating_value(
-        rating_type: Option<prod_mc_cli_chat_proxy_types::feedback_types::RatingType>,
+        rating_type: Option<crate::session::feedback_types::RatingType>,
         rating_value: Option<i32>,
     ) -> Option<i32> {
-        use prod_mc_cli_chat_proxy_types::feedback_types::RatingType;
+        use crate::session::feedback_types::RatingType;
 
         match (rating_type, rating_value) {
             (Some(RatingType::Thumbs), Some(v)) => Some(v.clamp(-1, 1)),
@@ -175,8 +175,8 @@ impl ClientFeedbackInput {
         resolved_model_id: Option<String>,
         model_fingerprint: Option<String>,
         turn_number: Option<i64>,
-    ) -> prod_mc_cli_chat_proxy_types::feedback_types::FeedbackSubmission {
-        use prod_mc_cli_chat_proxy_types::feedback_types::FeedbackContent;
+    ) -> crate::session::feedback_types::FeedbackSubmission {
+        use crate::session::feedback_types::FeedbackContent;
 
         let clamped_rating_value = Self::clamp_rating_value(self.rating_type, self.rating_value);
         let content = match (
@@ -416,7 +416,7 @@ impl TokenUsageCategory {
     pub fn skills_listing(text: &str, skill_count: usize) -> Self {
         Self {
             label: "Skills".to_string(),
-            tokens: xai_token_estimation::estimate_tokens(text),
+            tokens: atelier_token_estimation::estimate_tokens(text),
             detail: Some(count_detail(skill_count as u64, "skill")),
         }
     }
@@ -426,7 +426,7 @@ impl TokenUsageCategory {
     pub fn mcp_servers(text: &str, server_count: usize) -> Self {
         Self {
             label: "MCP servers".to_string(),
-            tokens: xai_token_estimation::estimate_tokens(text),
+            tokens: atelier_token_estimation::estimate_tokens(text),
             detail: Some(count_detail(server_count as u64, "server")),
         }
     }
@@ -476,8 +476,8 @@ impl ContextInfo {
         Self {
             used,
             total,
-            usage_pct: xai_token_estimation::usage_percentage_u8(used, total),
-            free_tokens: xai_token_estimation::free_tokens(total, used),
+            usage_pct: atelier_token_estimation::usage_percentage_u8(used, total),
+            free_tokens: atelier_token_estimation::free_tokens(total, used),
             auto_compact_threshold_percent: DEFAULT_AUTO_COMPACT_THRESHOLD_PERCENT,
             ..Self::default()
         }
@@ -576,7 +576,7 @@ pub struct SessionInfoResponse {
 pub struct FeedbackContext {
     pub last_user_message: Option<String>,
     pub last_assistant_message: Option<String>,
-    pub tool_outcomes: Vec<prod_mc_cli_chat_proxy_types::feedback_types::FeedbackToolOutcome>,
+    pub tool_outcomes: Vec<crate::session::feedback_types::FeedbackToolOutcome>,
     pub compaction_count: i64,
     pub context_window_usage: u8,
     pub context_tokens_used: u64,
@@ -650,16 +650,19 @@ mod tests {
         let input: ClientFeedbackInput = serde_json::from_str(json).unwrap();
         assert_eq!(
             input.client_type,
-            prod_mc_cli_chat_proxy_types::feedback_types::ClientType::Desktop
+            crate::session::feedback_types::ClientType::Desktop
         );
         assert_eq!(input.session_id, "sess-1");
 
         let submission = input.to_submission(Some("atelier-3".into()), None, None, Some(5));
         assert_eq!(
             submission.client_type,
-            prod_mc_cli_chat_proxy_types::feedback_types::ClientType::Desktop
+            crate::session::feedback_types::ClientType::Desktop
         );
-        assert_eq!(submission.client_type.to_string(), "desktop");
+        assert_eq!(
+            serde_json::to_value(submission.client_type).unwrap(),
+            serde_json::json!("desktop")
+        );
     }
 
     /// Verify that per-turn feedback can carry a `turn_number` (or its

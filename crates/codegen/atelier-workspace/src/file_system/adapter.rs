@@ -11,8 +11,8 @@
 use std::path::Path;
 
 use agent_client_protocol as acp;
+use atelier_acp_runtime::AcpAgentGatewaySender as GatewaySender;
 use atelier_tools::computer::types::{AsyncFileSystem, ComputerError};
-use xai_acp_lib::AcpAgentGatewaySender as GatewaySender;
 
 /// Wraps atelier-shell's ACP gateway to satisfy atelier-tools' AsyncFileSystem.
 ///

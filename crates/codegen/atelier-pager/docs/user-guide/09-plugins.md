@@ -115,18 +115,18 @@ Manage plugins without starting an interactive session.
 ### Plugin commands
 
 ```bash
-atelier plugin list [--json] [--available]   # List installed plugins (--available requires --json)
-atelier plugin install <source> --trust      # Git URL, GitHub shorthand (user/repo), or local path
-atelier plugin uninstall <name> [--confirm] [--keep-data]   # Aliases: rm, remove
-atelier plugin update [<name>]               # Omit the name to update all plugins
-atelier plugin enable <name>
-atelier plugin disable <name>
-atelier plugin details <name>                # Show the plugin's component inventory
-atelier plugin validate [<path>]             # Validate plugin.json (default: current directory)
-atelier plugin tag [<path>] [--push] [--force] [--dry-run]   # Tag a release from the manifest version
+ate plugin list [--json] [--available]   # List installed plugins (--available requires --json)
+ate plugin install <source> --trust      # Git URL, GitHub shorthand (user/repo), or local path
+ate plugin uninstall <name> [--confirm] [--keep-data]   # Aliases: rm, remove
+ate plugin update [<name>]               # Omit the name to update all plugins
+ate plugin enable <name>
+ate plugin disable <name>
+ate plugin details <name>                # Show the plugin's component inventory
+ate plugin validate [<path>]             # Validate plugin.json (default: current directory)
+ate plugin tag [<path>] [--push] [--force] [--dry-run]   # Tag a release from the manifest version
 ```
 
-Run `atelier plugin install <source>` without `--trust` and Atelier prints the source and warns that installing will activate the plugin's hooks, MCP servers, and skills, then stops without installing. Add `--trust` to install it.
+Run `ate plugin install <source>` without `--trust` and Atelier prints the source and warns that installing will activate the plugin's hooks, MCP servers, and skills, then stops without installing. Add `--trust` to install it.
 
 The `<source>` argument accepts:
 
@@ -140,27 +140,27 @@ The `<source>` argument accepts:
 ### Marketplace commands
 
 ```bash
-atelier plugin marketplace list [--json]
-atelier plugin marketplace add <url>         # Git URL, GitHub shorthand (user/repo), or local path
-atelier plugin marketplace remove <url>      # Git URL or local path of a configured source
-atelier plugin marketplace update [<name>]   # Omit the name to refresh all sources
+ate plugin marketplace list [--json]
+ate plugin marketplace add <url>         # Git URL, GitHub shorthand (user/repo), or local path
+ate plugin marketplace remove <url>      # Git URL or local path of a configured source
+ate plugin marketplace update [<name>]   # Omit the name to refresh all sources
 ```
 
 ### Example: set up a team marketplace
 
 ```bash
-atelier plugin marketplace add my-org/team-plugins
-atelier plugin marketplace list
-atelier plugin install my-org/team-plugins --trust
-atelier plugin list
-atelier plugin update
+ate plugin marketplace add my-org/team-plugins
+ate plugin marketplace list
+ate plugin install my-org/team-plugins --trust
+ate plugin list
+ate plugin update
 ```
 
 ---
 
 ## Slash commands
 
-In an interactive session, these commands open the modal on a specific tab. They take no arguments — manage plugins from the modal or with the `atelier plugin` CLI.
+In an interactive session, these commands open the modal on a specific tab. They take no arguments — manage plugins from the modal or with the `ate plugin` CLI.
 
 | Command | Opens |
 |---------|-------|
@@ -183,7 +183,7 @@ disabled = ["user/a1b2c3d4/noisy-plugin"]    # Plugin IDs or names to skip
 enabled = ["project/9f8e7d6c/team-tools"]    # Plugin IDs or names to force on
 ```
 
-List a plugin in `disabled` to discover it but skip loading its components. List a plugin in `enabled` to activate it — plugins are disabled by default unless a CLI override or an explicit config path enables them, so add them here to turn them on. Each entry is either a plain plugin name (as shown by `atelier plugin list`) or a full plugin ID in the form `<scope>/<hash>/<name>`.
+List a plugin in `disabled` to discover it but skip loading its components. List a plugin in `enabled` to activate it — plugins are disabled by default unless a CLI override or an explicit config path enables them, so add them here to turn them on. Each entry is either a plain plugin name (as shown by `ate plugin list`) or a full plugin ID in the form `<scope>/<hash>/<name>`.
 
 ### Hide the plugins UI
 
@@ -238,18 +238,18 @@ Enabling a plugin loads its skills, slash commands, and agents. Trust is separat
 Atelier trusts plugins from `~/.atelier/plugins/` automatically. Project plugins in `.atelier/plugins/` require explicit trust. To trust a plugin, install it with `--trust`:
 
 ```bash
-atelier plugin install <source> --trust
+ate plugin install <source> --trust
 ```
 
 ---
 
 ## Inspect plugins
 
-Run `atelier inspect` to see every discovered plugin and what it provides:
+Run `ate inspect` to see every discovered plugin and what it provides:
 
 ```bash
-atelier inspect          # Show plugins with their skills, agents, hooks, and MCP servers
-atelier inspect --json   # Emit machine-readable JSON
+ate inspect          # Show plugins with their skills, agents, hooks, and MCP servers
+ate inspect --json   # Emit machine-readable JSON
 ```
 
 Plugin-provided components appear in their sections (Skills, Agents, MCP Servers, and so on) with a `plugin: <name>` label, so you can see where each component originates.

@@ -205,7 +205,7 @@ pub(super) fn cmp_total_order(a: &UnifiedRow, b: &UnifiedRow) -> Ordering {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::remote::Conversation;
+    use crate::local_runtime::Conversation;
     use crate::session::merge::MergedSession;
     use crate::session::unified_list::{
         conversation_to_row, facet_registry, merged_session_to_row,

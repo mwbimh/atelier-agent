@@ -12,6 +12,50 @@ pub fn default_atelier_home() -> Option<std::path::PathBuf> {
         .map(|home| home.join(".atelier"))
 }
 
+pub fn environment_for_sandbox_child(parent_environment: &[u16]) -> Vec<u16> {
+    let mut parent = parse_environment_block(parent_environment);
+    let atelier_home = parent
+        .iter()
+        .find(|(key, _)| key.eq_ignore_ascii_case(ATELIER_HOME_ENV))
+        .map(|(_, value)| std::path::PathBuf::from(value));
+    parent.retain(|key, _| !is_user_identity_environment_name(key));
+    let overrides = parent
+        .into_iter()
+        .map(|(key, value)| (OsString::from(key), OsString::from(value)))
+        .collect();
+    make_environment_block(&overrides, atelier_home.as_deref())
+}
+
+fn parse_environment_block(block: &[u16]) -> BTreeMap<String, String> {
+    block
+        .split(|value| *value == 0)
+        .take_while(|entry| !entry.is_empty())
+        .filter_map(|entry| {
+            let item = String::from_utf16_lossy(entry);
+            let (key, value) = item.split_once('=')?;
+            (!key.is_empty()).then(|| (key.to_owned(), value.to_owned()))
+        })
+        .collect()
+}
+
+fn is_user_identity_environment_name(name: &str) -> bool {
+    matches!(
+        name.to_ascii_uppercase().as_str(),
+        "USERPROFILE"
+            | "HOME"
+            | "HOMEDRIVE"
+            | "HOMEPATH"
+            | "APPDATA"
+            | "LOCALAPPDATA"
+            | "TEMP"
+            | "TMP"
+            | "USERNAME"
+            | "USERDOMAIN"
+            | "USERDOMAIN_ROAMINGPROFILE"
+            | "LOGONSERVER"
+    )
+}
+
 pub fn make_environment_block(
     overrides: &BTreeMap<OsString, OsString>,
     atelier_home: Option<&Path>,
@@ -116,6 +160,42 @@ fn is_sensitive_environment_name(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sandbox_child_environment_keeps_parent_toolchain_but_not_parent_identity() {
+        let parent = BTreeMap::from([
+            ("CARGO_HOME".to_owned(), r"C:\parent-cargo".to_owned()),
+            (ATELIER_HOME_ENV.to_owned(), r"C:\parent-atelier".to_owned()),
+            ("USERPROFILE".to_owned(), r"C:\Users\parent".to_owned()),
+            ("TEMP".to_owned(), r"C:\Users\parent\Temp".to_owned()),
+        ]);
+        let mut block = Vec::new();
+        for (key, value) in parent {
+            let mut item = to_wide(format!("{key}={value}"));
+            item.pop();
+            block.extend(item);
+            block.push(0);
+        }
+        block.push(0);
+
+        let child = parse_environment_block(&environment_for_sandbox_child(&block));
+        assert_eq!(
+            child.get("CARGO_HOME").map(String::as_str),
+            Some(r"C:\parent-cargo")
+        );
+        assert_eq!(
+            child.get(ATELIER_HOME_ENV).map(String::as_str),
+            Some(r"C:\parent-atelier")
+        );
+        assert_ne!(
+            child.get("USERPROFILE").map(String::as_str),
+            Some(r"C:\Users\parent")
+        );
+        assert_ne!(
+            child.get("TEMP").map(String::as_str),
+            Some(r"C:\Users\parent\Temp")
+        );
+    }
 
     #[test]
     fn sandbox_environment_drops_common_credentials_but_keeps_toolchain_state() {

@@ -1307,7 +1307,6 @@ pub(super) fn dispatch_dashboard_dispatch_slash(app: &mut AppView, text: String)
                 yolo_mode: app.default_yolo,
                 auto_mode: app.current_ui.permission_mode.as_deref() == Some("auto")
                     && !app.default_yolo,
-                current_model_name: app.models.current_model_name(),
                 available_models: app
                     .models
                     .available
@@ -1384,22 +1383,9 @@ pub(super) fn dispatch_dashboard_dispatch_slash(app: &mut AppView, text: String)
         }
         // `/model` on the session-less dashboard stages the model for the
         // NEXT spawned agent instead of switching a (nonexistent) session.
-        // Both the effort-bearing (`SwitchModel`) and bare
-        // (`SetDefaultModel`) forms map to the same per-spawn staging and
-        // persist that exact selection to `roles.main`.
         CommandResult::Action(Action::SwitchModel { model_id, effort }) => {
             stage_dashboard_model(app, model_id.clone(), effort);
-            vec![Effect::PersistPreferredModel {
-                model_id,
-                reasoning_effort: effort,
-            }]
-        }
-        CommandResult::Action(Action::SetDefaultModel(model_id)) => {
-            stage_dashboard_model(app, model_id.clone(), None);
-            vec![Effect::PersistPreferredModel {
-                model_id,
-                reasoning_effort: None,
-            }]
+            vec![]
         }
         // `/plan` toggles whether the next spawned agent starts in plan
         // mode. The command always reports `On` here (the dashboard's

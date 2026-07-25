@@ -358,7 +358,7 @@ async fn make_actor_with_cap(
 ) -> (StdArc<SessionActor>, tempfile::TempDir) {
     let tmp = tempfile::TempDir::new().expect("tempdir");
     let (gateway_tx, _gateway_rx) =
-        tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+        tokio::sync::mpsc::unbounded_channel::<atelier_acp_runtime::AcpClientMessage>();
     let (persistence_tx, _persistence_rx) =
         tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
     let mut actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
@@ -1676,8 +1676,6 @@ async fn goal_classifier_nudge_suppresses_subsequent_goal_summary() {
                         "seed".to_string(),
                     ))],
                     prompt_mode: crate::session::plan_mode::PromptMode::Agent,
-                    trace_gcs_config: None,
-                    artifact_tracker: None,
                     client_identifier: None,
                     screen_mode: None,
                     verbatim: true,
@@ -2589,7 +2587,7 @@ fn render_ack_cap_reached_is_tool_error_with_cap_code() {
 /// `ToolError::custom(code, ...)`. The code lives in
 /// `details["code"]`; `kind` is always `ToolErrorKind::Custom`
 /// for custom-built errors.
-fn tool_error_code(err: &xai_tool_runtime::ToolError) -> &str {
+fn tool_error_code(err: &atelier_tool_runtime::ToolError) -> &str {
     err.details
         .as_ref()
         .and_then(|v| v.get("code"))
@@ -2710,6 +2708,8 @@ fn catalog_with(
                 env_key: None,
                 api_base_url: None,
                 request_payload: serde_json::Map::new(),
+                remote_compaction_endpoint: None,
+                image_generation_endpoint: None,
             },
         );
     }
@@ -2737,7 +2737,7 @@ async fn make_role_model_actor(
 ) -> (StdArc<SessionActor>, tempfile::TempDir) {
     let tmp = tempfile::TempDir::new().expect("tempdir");
     let (gateway_tx, _gateway_rx) =
-        tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+        tokio::sync::mpsc::unbounded_channel::<atelier_acp_runtime::AcpClientMessage>();
     let (persistence_tx, _persistence_rx) =
         tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
     let mut actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;

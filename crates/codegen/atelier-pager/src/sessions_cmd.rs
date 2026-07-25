@@ -1,6 +1,5 @@
 use anyhow::Result;
 use atelier_shell::agent::config::Config as AgentConfig;
-use atelier_shell::auth::AuthManager;
 use atelier_shell::session::merge::MergedSession;
 use atelier_shell::util::atelier_home::atelier_home;
 use clap::Subcommand;
@@ -34,10 +33,6 @@ enum SessionsCommand {
 }
 
 pub async fn run(args: SessionsArgs, _agent_config: &AgentConfig) -> Result<()> {
-    // Session history is local-only in Atelier. Never construct the legacy
-    // session-registry client or attempt vendor auth while listing/searching.
-    let auth_manager = std::sync::Arc::new(AuthManager::new_local(&atelier_home()));
-
     let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
 
     match args.command {
@@ -89,13 +84,8 @@ pub async fn run(args: SessionsArgs, _agent_config: &AgentConfig) -> Result<()> 
         SessionsCommand::Delete { id } => {
             // Pass `cwd = None` so the local session is found by id regardless
             // of which workspace it was created in.
-            let deletion = atelier_shell::session::persistence::delete_session_history(
-                &id,
-                None,
-                false,
-                auth_manager.clone(),
-            )
-            .await?;
+            let deletion =
+                atelier_shell::session::persistence::delete_session_history(&id, None).await?;
 
             if deletion.any_removed() {
                 println!("Deleted session {id}");

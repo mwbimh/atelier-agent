@@ -8,7 +8,7 @@ use crate::app::actions::Action;
 use crate::docs::{all_titles, find_doc};
 use crate::slash::command::{AppCtx, ArgItem, CommandExecCtx, CommandResult, SlashCommand};
 
-/// Online Build docs landing page (hardcoded like other TUI deep-links; docs.x.ai can redirect if the path moves).
+/// Online Build docs landing page (hardcoded like other TUI deep-links; the docs host can redirect if the path moves).
 pub const BUILD_DOCS_URL: &str = "https://docs.atelier/build/overview";
 
 /// Open How-to Guides or online Build docs.

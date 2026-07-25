@@ -20,54 +20,30 @@ pub(crate) fn new_shared_auth_method_id(initial: Option<acp::AuthMethodId>) -> S
     ))
 }
 
-/// Env var that, when set, advertises `xai.api_key` as a viable auth method.
-///
-/// Kept as a constant so test code and the production check stay in sync.
-pub const XAI_API_KEY_ENV_VAR: &str = "XAI_API_KEY";
-
-/// Legacy env var name. Checked as a fallback when `XAI_API_KEY` is not set,
-/// so existing deployments that use the old name keep working.
-pub const LEGACY_XAI_API_KEY_ENV_VAR: &str = "ATELIER_CODE_XAI_API_KEY";
-
-/// Read the API key from the environment.
-///
-/// Checks `XAI_API_KEY` first, then falls back to the legacy
-/// `ATELIER_CODE_XAI_API_KEY` for backward compatibility.
-pub fn read_xai_api_key_env() -> Result<String, std::env::VarError> {
-    std::env::var(XAI_API_KEY_ENV_VAR).or_else(|_| std::env::var(LEGACY_XAI_API_KEY_ENV_VAR))
-}
-
-/// Returns `true` if either `XAI_API_KEY` or `ATELIER_CODE_XAI_API_KEY` is set.
-pub fn has_xai_api_key_env() -> bool {
-    read_xai_api_key_env().is_ok()
-}
-
-/// Whether `xai.api_key` should be advertised (and pushed FIRST) when building
+/// Whether a non-interactive Provider credential should be advertised when building
 /// the `auth_methods` list at `initialize()` time.
 ///
-/// Regression: `xai.api_key` must stay first when only per-model credentials
-/// exist (no global `XAI_API_KEY`). Deferring it made BYOK users hit the login
+/// A non-interactive Provider credential must stay first when available.
+/// Deferring it made Provider-key users hit the login
 /// screen because the pager uses `auth_methods.first()` for startup metadata.
 ///
 /// [`build_auth_methods`] consumes this predicate and pins the ordering;
 /// its tests catch call-site and predicate regressions.
 ///
-/// Probes `std::env` at call time and consults each `ModelEntry` for a
-/// resolvable api_key/env_key -- both inputs can change between calls, so the
-/// result is not cached.
+/// Credentials are resolved only from configured Provider model entries. No
+/// process-global environment key participates in this decision.
 ///
 /// `disable_api_key_auth` (`[atelier_com_config] disable_api_key_auth` /
 /// `ATELIER_DISABLE_API_KEY_AUTH`) is the admin kill switch: when true the
-/// method is never advertised, regardless of available credentials, so
-/// `XAI_API_KEY` can't bypass a deployment's forced IdP login.
-pub fn should_advertise_xai_api_key<'a, I>(disable_api_key_auth: bool, models: I) -> bool
+/// method is never advertised, regardless of available Provider credentials.
+pub fn should_advertise_provider_api_key<'a, I>(disable_api_key_auth: bool, models: I) -> bool
 where
     I: IntoIterator<Item = &'a ModelEntry>,
 {
     if disable_api_key_auth {
         return false;
     }
-    has_xai_api_key_env() || models.into_iter().any(ModelEntry::has_own_credentials)
+    models.into_iter().any(ModelEntry::has_own_credentials)
 }
 
 /// Inputs to [`build_auth_methods`].
@@ -77,13 +53,13 @@ where
 /// (`AuthManager`). The list-construction logic itself is pure so it can be
 /// unit-tested without any of that machinery.
 pub struct AuthMethodsBuildInputs<'a> {
-    /// True for the private Provider-backed runtime. In this mode no legacy
-    /// xAI/OIDC method is advertised, even if stale credentials exist on disk.
+    /// True for the private Provider-backed runtime. In this mode no hosted
+    /// login method is advertised, even if stale credentials exist on disk.
     pub vendorless: bool,
     /// Whether at least one enabled local Provider model is available.
     pub has_local_provider: bool,
-    /// True if `xai.api_key` should be advertised AT ALL. Caller computes via
-    /// [`should_advertise_xai_api_key`]. When `preferred_method` is `Oidc`,
+    /// True if `provider.api_key` should be advertised AT ALL. Caller computes via
+    /// [`should_advertise_provider_api_key`]. When `preferred_method` is `Oidc`,
     /// this is ignored (API key is never advertised under that pin).
     pub has_external_api_key: bool,
     /// True if a cached session token is available (either present at startup
@@ -111,7 +87,7 @@ pub struct BuiltAuthMethods {
     /// interactive login is needed.
     pub methods: Vec<acp::AuthMethod>,
     /// The default `auth_method_id` to install on the agent. When unpinned,
-    /// `cached_token` wins over `xai.api_key` when both are present. When
+    /// `cached_token` wins over `provider.api_key` when both are present. When
     /// pinned, only the preferred method may appear; `None` means unavailable
     /// (fail auth — no cross-method fallthrough).
     pub default_auth_method_id: Option<acp::AuthMethodId>,
@@ -121,12 +97,12 @@ pub struct BuiltAuthMethods {
 /// pre-computed inputs.
 ///
 /// REGRESSION GUARD: when unpinned and
-/// `has_external_api_key` is true, the **first** entry MUST be `xai.api_key`.
+/// `has_external_api_key` is true, the **first** entry MUST be `provider.api_key`.
 /// A prior change deferred it to the END for per-model credentials, which made
 /// the pager send per-model-key users to the login screen. Unit tests lock this.
 ///
 /// Unpinned ordering (when each method is enabled):
-/// 1. `xai.api_key`     (if `has_external_api_key`)
+/// 1. `provider.api_key` (if `has_external_api_key`)
 /// 2. `cached_token`    (if `has_cached_token`)
 /// 3. exactly one of:
 ///    - `oidc`          (if `has_enterprise_oidc`)
@@ -134,12 +110,12 @@ pub struct BuiltAuthMethods {
 ///
 /// Unpinned `default_auth_method_id`:
 /// - `cached_token` if `has_cached_token`
-/// - `xai.api_key`  else if `has_external_api_key`
+/// - `provider.api_key` else if `has_external_api_key`
 /// - `None`         otherwise
 ///
 /// Pinned (`preferred_method`):
-/// - `ApiKey`: only `xai.api_key` if available; else empty list + `None` (fail).
-/// - `Oidc`: `cached_token` (if any) + interactive login; never `xai.api_key`.
+/// - `ApiKey`: only `provider.api_key` if available; else empty list + `None` (fail).
+/// - `Oidc`: `cached_token` (if any) + interactive login; never `provider.api_key`.
 ///   Default is `cached_token` when present, else `None` (interactive).
 pub fn build_auth_methods(inputs: AuthMethodsBuildInputs<'_>) -> BuiltAuthMethods {
     let AuthMethodsBuildInputs {
@@ -206,8 +182,8 @@ fn build_pinned_api_key(has_external_api_key: bool) -> BuiltAuthMethods {
         };
     }
     BuiltAuthMethods {
-        methods: vec![xai_api_key_auth_method()],
-        default_auth_method_id: Some(acp::AuthMethodId::new(XAI_API_KEY_METHOD_ID)),
+        methods: vec![provider_api_key_auth_method()],
+        default_auth_method_id: Some(acp::AuthMethodId::new(PROVIDER_API_KEY_METHOD_ID)),
     }
 }
 
@@ -252,19 +228,19 @@ fn build_unpinned(
     let mut default_auth_method_id: Option<acp::AuthMethodId> = None;
 
     if has_external_api_key {
-        methods.push(xai_api_key_auth_method());
-        default_auth_method_id = Some(acp::AuthMethodId::new(XAI_API_KEY_METHOD_ID));
+        methods.push(provider_api_key_auth_method());
+        default_auth_method_id = Some(acp::AuthMethodId::new(PROVIDER_API_KEY_METHOD_ID));
     }
 
     if has_cached_token {
         methods.push(cached_token_auth_method());
-        // cached_token wins over xai.api_key for default_auth_method_id so
+        // cached_token wins over provider.api_key for default_auth_method_id so
         // is_session_based_auth() returns true and OIDC refresh stays alive.
         let overrode_api_key = default_auth_method_id.is_some();
         default_auth_method_id = Some(acp::AuthMethodId::new(CACHED_TOKEN_AUTH_METHOD_ID));
         if overrode_api_key {
             atelier_telemetry::unified_log::info(
-                "auth method priority: cached_token overrides xai.api_key for default_auth_method_id",
+                "auth method priority: cached_token overrides provider.api_key for default_auth_method_id",
                 None,
                 Some(serde_json::json!({
                     "has_external_api_key": has_external_api_key,
@@ -317,7 +293,7 @@ fn push_interactive_login(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuthMethodKind {
     LocalProvider,
-    XaiApiKey,
+    ProviderApiKey,
     CachedToken,
     AtelierCom,
     Oidc,
@@ -328,7 +304,7 @@ impl AuthMethodKind {
     pub fn from_id(id: &acp::AuthMethodId) -> Self {
         match id.0.as_ref() {
             LOCAL_PROVIDER_AUTH_METHOD_ID => Self::LocalProvider,
-            XAI_API_KEY_METHOD_ID => Self::XaiApiKey,
+            PROVIDER_API_KEY_METHOD_ID => Self::ProviderApiKey,
             CACHED_TOKEN_AUTH_METHOD_ID => Self::CachedToken,
             ATELIER_COM_METHOD_ID => Self::AtelierCom,
             OIDC_METHOD_ID => Self::Oidc,
@@ -338,7 +314,7 @@ impl AuthMethodKind {
 
     /// API key auth: no auth.json, no refresh, no user interaction.
     pub fn is_api_key(self) -> bool {
-        matches!(self, Self::LocalProvider | Self::XaiApiKey)
+        matches!(self, Self::LocalProvider | Self::ProviderApiKey)
     }
 
     /// `true` for session-based methods (cached_token, atelier.invalid, oidc).
@@ -390,8 +366,8 @@ impl ModelByok {
 /// Whether this session+model uses a refreshable session token.
 ///
 /// Gates on stable inputs, not `Credentials.auth_type`: that field collapses
-/// to `ApiKey` when the session-token cache is momentarily empty and
-/// `XAI_API_KEY` is set, which demoted live OIDC sessions to non-refreshable
+/// to `ApiKey` when the session-token cache is momentarily empty, which can
+/// demote live OIDC sessions to non-refreshable
 /// api-key mode and 401'd every prompt until restart. `model_byok` still
 /// excludes genuine per-model BYOK, whose keys are not refreshable.
 ///
@@ -421,12 +397,13 @@ pub fn session_token_auth_gate(
 pub const AUTH_ERROR_SESSION_EXPIRED: &str =
     "Session expired. Run `atelier login` to re-authenticate.";
 
-pub const AUTH_ERROR_API_KEY: &str = "Authentication failed. Run `atelier login`, set XAI_API_KEY, or add api_key to ~/.atelier/config.toml.";
+pub const AUTH_ERROR_API_KEY: &str =
+    "Authentication failed. Configure or log in to the selected Provider with `/provider`.";
 
 /// Next ACP method id when `cached_token` cannot proceed (missing / expired /
 /// legacy WebLogin), or `None` when fallthrough is forbidden.
 ///
-/// Unpinned: prefer non-interactive `xai.api_key` when advertiseable, else
+/// Unpinned: prefer non-interactive `provider.api_key` when available, else
 /// interactive `atelier.invalid`.
 ///
 /// Pinned `oidc`: **no** fallthrough to api_key — return `None` so the caller
@@ -439,7 +416,7 @@ pub fn method_id_after_cached_token_unavailable(
     match preferred_method {
         Some(PreferredAuthMethod::Oidc) | Some(PreferredAuthMethod::ApiKey) => None,
         None => Some(if has_external_api_key {
-            XAI_API_KEY_METHOD_ID
+            PROVIDER_API_KEY_METHOD_ID
         } else {
             ATELIER_COM_METHOD_ID
         }),
@@ -447,13 +424,14 @@ pub fn method_id_after_cached_token_unavailable(
 }
 
 /// Error when `preferred_method=api_key` but no key/BYOK credentials exist.
-pub const PREFERRED_API_KEY_UNAVAILABLE: &str = "preferred_method=api_key but no API key is configured (set XAI_API_KEY or model api_key/env_key in config.toml).";
+pub const PREFERRED_API_KEY_UNAVAILABLE: &str =
+    "preferred_method=api_key but no configured Provider credential is available.";
 
 /// Error when `preferred_method=oidc` but the session path cannot proceed.
 pub const PREFERRED_OIDC_UNAVAILABLE: &str =
     "preferred_method=oidc but no session is available. Run `atelier login` to authenticate.";
 
-pub const XAI_API_KEY_METHOD_ID: &str = "xai.api_key";
+pub const PROVIDER_API_KEY_METHOD_ID: &str = "provider.api_key";
 
 pub const LOCAL_PROVIDER_AUTH_METHOD_ID: &str = "atelier.provider";
 
@@ -473,15 +451,15 @@ fn local_provider_auth_method_with_description(description: &str) -> acp::AuthMe
     )
 }
 
-pub fn xai_api_key_auth_method() -> acp::AuthMethod {
+pub fn provider_api_key_auth_method() -> acp::AuthMethod {
     acp::AuthMethod::Agent(
         acp::AuthMethodAgent::new(
-            acp::AuthMethodId::new(XAI_API_KEY_METHOD_ID),
-            "xai.api_key".to_string(),
+            acp::AuthMethodId::new(PROVIDER_API_KEY_METHOD_ID),
+            "provider.api_key".to_string(),
         )
-        .description(Some(format!(
-            "{XAI_API_KEY_ENV_VAR} or api_key/env_key in config.toml"
-        ))),
+        .description(Some(
+            "Credentials are resolved from providers.toml".to_string(),
+        )),
     )
 }
 
@@ -498,7 +476,7 @@ pub fn cached_token_auth_method() -> acp::AuthMethod {
 
 pub const ATELIER_COM_METHOD_ID: &str = "atelier.invalid";
 
-/// xAI OAuth2/OIDC auth. Method id `"atelier.invalid"` kept for ACP wire-compat.
+/// Legacy interactive OAuth2/OIDC auth.
 pub fn atelier_com_auth_method(
     label: Option<&str>,
     has_auth_provider_command: bool,
@@ -540,16 +518,16 @@ mod tests {
     use serial_test::serial;
 
     /// When API-key credentials are advertiseable, fall through from a dead
-    /// `cached_token` to non-interactive `xai.api_key` (not browser OAuth).
+    /// `cached_token` to non-interactive `provider.api_key` (not browser OAuth).
     /// Covers the both-advertised case (`has_cached_token` true at initialize
     /// but session later missing/expired/legacy): advertise order still puts
-    /// `xai.api_key` first, while `default_auth_method_id` prefers session;
-    /// after session fails, this helper must still pick `xai.api_key`.
+    /// `provider.api_key` first, while `default_auth_method_id` prefers session;
+    /// after session fails, this helper must still pick `provider.api_key`.
     #[test]
     fn after_cached_token_unavailable_prefers_api_key_when_advertiseable() {
         assert_eq!(
             method_id_after_cached_token_unavailable(true, None),
-            Some(XAI_API_KEY_METHOD_ID),
+            Some(PROVIDER_API_KEY_METHOD_ID),
         );
     }
 
@@ -595,7 +573,7 @@ mod tests {
                 "{method_id}: wrapper must agree"
             );
         }
-        let api_id = acp::AuthMethodId::new(XAI_API_KEY_METHOD_ID);
+        let api_id = acp::AuthMethodId::new(PROVIDER_API_KEY_METHOD_ID);
         let api_kind = AuthMethodKind::from_id(&api_id);
         assert!(!api_kind.is_session_based());
         assert!(api_kind.is_api_key());
@@ -667,11 +645,11 @@ mod tests {
     }
 
     // build_auth_methods regression: pin production call-site ordering.
-    // Reordering so `xai.api_key` is after login methods must fail the tests below.
+    // Reordering so `provider.api_key` is after login methods must fail the tests below.
 
-    /// BYOK with only per-model `env_key` must list `xai.api_key` first.
+    /// BYOK with only per-model `env_key` must list `provider.api_key` first.
     #[test]
-    fn enterprise_byok_first_method_is_xai_api_key() {
+    fn enterprise_byok_first_method_is_provider_api_key() {
         let inputs = AuthMethodsBuildInputs {
             has_external_api_key: true, // enterprise user with resolved per-model env_key
             has_cached_token: false,
@@ -681,8 +659,8 @@ mod tests {
 
         assert_eq!(
             first_kind(&built.methods),
-            Some(AuthMethodKind::XaiApiKey),
-            "BYOK enterprise-style: auth_methods.first() MUST be xai.api_key \
+            Some(AuthMethodKind::ProviderApiKey),
+            "BYOK enterprise-style: auth_methods.first() MUST be provider.api_key \
              (deferred-to-last ordering sends users to the login screen)",
         );
         assert_eq!(
@@ -690,22 +668,22 @@ mod tests {
                 .default_auth_method_id
                 .as_ref()
                 .map(|id| id.0.as_ref()),
-            Some(XAI_API_KEY_METHOD_ID),
+            Some(PROVIDER_API_KEY_METHOD_ID),
         );
         // Cross-check with the pager-side predicate: the first method must
         // not require interactive login, which is the exact condition the
         // pager's `startup_auth_metadata()` uses.
         assert!(
             !AuthMethodKind::from_id(built.methods[0].id()).needs_interactive_login(),
-            "first method MUST NOT need interactive login when xai.api_key is available",
+            "first method MUST NOT need interactive login when provider.api_key is available",
         );
     }
 
-    /// BYOK + cached session token: xai.api_key stays first in the methods
+    /// BYOK + cached session token: provider.api_key stays first in the methods
     /// list (skips login screen), but `default_auth_method_id` is
     /// `cached_token` (keeps OIDC refresh alive).
     #[test]
-    fn byok_with_cached_token_keeps_xai_api_key_first() {
+    fn byok_with_cached_token_keeps_provider_api_key_first() {
         let inputs = AuthMethodsBuildInputs {
             has_external_api_key: true,
             has_cached_token: true,
@@ -715,8 +693,8 @@ mod tests {
 
         assert_eq!(
             first_kind(&built.methods),
-            Some(AuthMethodKind::XaiApiKey),
-            "xai.api_key MUST precede cached_token in advertised order",
+            Some(AuthMethodKind::ProviderApiKey),
+            "provider.api_key MUST precede cached_token in advertised order",
         );
         // Sanity: cached_token still appears, just second.
         assert!(
@@ -774,7 +752,7 @@ mod tests {
         assert_eq!(built.methods.len(), 1);
     }
 
-    /// Enterprise OIDC replaces `atelier.invalid` (mutually exclusive). xai.api_key,
+    /// Enterprise OIDC replaces `atelier.invalid` (mutually exclusive). Provider API key,
     /// when present, still leads.
     #[test]
     fn enterprise_oidc_replaces_atelier_com_but_xai_api_key_still_first() {
@@ -787,7 +765,10 @@ mod tests {
         };
         let built = build_auth_methods(inputs);
 
-        assert_eq!(first_kind(&built.methods), Some(AuthMethodKind::XaiApiKey));
+        assert_eq!(
+            first_kind(&built.methods),
+            Some(AuthMethodKind::ProviderApiKey)
+        );
         assert!(
             built
                 .methods
@@ -833,23 +814,19 @@ mod tests {
 
     /// END-TO-END REGRESSION TEST: parses the literal enterprise-style
     /// `~/.atelier/config.toml` skeleton from the bug report, walks it through
-    /// the same predicate (`should_advertise_xai_api_key`) and the same
+    /// the same predicate (`should_advertise_provider_api_key`) and the same
     /// list-builder (`build_auth_methods`) that `MvpAgent::initialize()` uses
-    /// in production, and asserts that `auth_methods.first()` is `xai.api_key`
+    /// in production, and asserts that `auth_methods.first()` is `provider.api_key`
     /// (which causes the pager to skip the login screen).
     ///
     /// This is the test that *would have caught* that regression -- if you mentally
-    /// re-introduce that bug (push xai.api_key LAST when has_external_api_key
+    /// re-introduce that bug (push provider.api_key LAST when has_external_api_key
     /// && !global env var), this test fails because `first_kind` is no longer
-    /// `XaiApiKey`.
+    /// `ProviderApiKey`.
     #[test]
     #[serial]
     fn enterprise_byok_config_does_not_require_login() {
         const TEST_ENV_VAR: &str = "TEST_ENTERPRISE_REGRESSION_AUTH_TOKEN";
-
-        // Make sure no global key is masking the per-model path we're trying
-        // to exercise. Held until end-of-scope so we restore on panic too.
-        let _global = EnvGuard::unset(XAI_API_KEY_ENV_VAR);
 
         let dm = crate::models::default_model();
         let toml: toml::Value = toml::from_str(&format!(
@@ -875,7 +852,7 @@ mod tests {
         // login method. Confirms the predicate isn't trivially true.
         {
             let _unset = EnvGuard::unset(TEST_ENV_VAR);
-            let has_external_api_key = should_advertise_xai_api_key(false, models.values());
+            let has_external_api_key = should_advertise_provider_api_key(false, models.values());
             assert!(!has_external_api_key);
             let built = build_auth_methods(AuthMethodsBuildInputs {
                 has_external_api_key,
@@ -883,17 +860,17 @@ mod tests {
             });
             assert_ne!(
                 first_kind(&built.methods),
-                Some(AuthMethodKind::XaiApiKey),
-                "without env_key resolved, xai.api_key must NOT be advertised first",
+                Some(AuthMethodKind::ProviderApiKey),
+                "without env_key resolved, provider.api_key must NOT be advertised first",
             );
         }
 
         // With the env var present (the actual enterprise scenario), the predicate
-        // returns true and the builder MUST put `xai.api_key` first so the
+        // returns true and the builder MUST put `provider.api_key` first so the
         // pager's `startup_auth_metadata()` returns `needs_login = false`.
         {
             let _set = EnvGuard::set(TEST_ENV_VAR, "enterprise-secret-token");
-            let has_external_api_key = should_advertise_xai_api_key(false, models.values());
+            let has_external_api_key = should_advertise_provider_api_key(false, models.values());
             assert!(has_external_api_key);
             let built = build_auth_methods(AuthMethodsBuildInputs {
                 has_external_api_key,
@@ -904,8 +881,8 @@ mod tests {
             });
             assert_eq!(
                 first_kind(&built.methods),
-                Some(AuthMethodKind::XaiApiKey),
-                "BYOK: xai.api_key must be auth_methods.first(); deferred-to-last \
+                Some(AuthMethodKind::ProviderApiKey),
+                "BYOK: provider.api_key must be auth_methods.first(); deferred-to-last \
                  ordering sends enterprise users to the login screen",
             );
             assert!(
@@ -917,41 +894,28 @@ mod tests {
         }
     }
 
-    /// `XAI_API_KEY` alone (no per-model creds) also triggers
-    /// advertising `xai.api_key` as the first method. Historical "external
-    /// key" path; covered here so the predicate keeps treating env-var-only
-    /// users the same as per-model users.
-    #[test]
-    #[serial]
-    fn global_external_api_key_advertises_xai_api_key_first() {
-        let _set = EnvGuard::set(XAI_API_KEY_ENV_VAR, "xai-external-key");
-        let cfg = Config::default();
-        let models = resolve_model_list(&cfg, None);
-        let has_external_api_key = should_advertise_xai_api_key(false, models.values());
-        assert!(has_external_api_key);
-        let built = build_auth_methods(AuthMethodsBuildInputs {
-            has_external_api_key,
-            ..default_inputs()
-        });
-        assert_eq!(first_kind(&built.methods), Some(AuthMethodKind::XaiApiKey));
-    }
-
     /// Admin kill switch (`disable_api_key_auth`): the predicate must return
-    /// false even when credentials are available everywhere (global env var
-    /// AND per-model env_key), so the builder never advertises `xai.api_key`
+    /// false even when an explicit Provider credential is available, so the
+    /// builder never advertises `provider.api_key`
     /// and the pager sends the user to the deployment's login method instead.
     #[test]
-    #[serial]
-    fn disable_api_key_auth_suppresses_xai_api_key_method() {
-        let _set = EnvGuard::set(XAI_API_KEY_ENV_VAR, "xai-external-key");
-        let cfg = Config::default();
+    fn disable_api_key_auth_suppresses_provider_api_key_method() {
+        let dm = crate::models::default_model();
+        let cfg = Config::new_from_toml_cfg(
+            &toml::from_str(&format!(
+                r#"
+                [model."{dm}"]
+                api_key = "provider-key"
+                "#,
+            ))
+            .unwrap(),
+        )
+        .unwrap();
         let models = resolve_model_list(&cfg, None);
 
-        // Flag off: today's behavior (advertised first).
-        assert!(should_advertise_xai_api_key(false, models.values()));
+        assert!(should_advertise_provider_api_key(false, models.values()));
 
-        // Flag on: never advertised, regardless of credentials.
-        let has_external_api_key = should_advertise_xai_api_key(true, models.values());
+        let has_external_api_key = should_advertise_provider_api_key(true, models.values());
         assert!(!has_external_api_key);
         let built = build_auth_methods(AuthMethodsBuildInputs {
             has_external_api_key,
@@ -961,8 +925,8 @@ mod tests {
             !built
                 .methods
                 .iter()
-                .any(|m| AuthMethodKind::from_id(m.id()) == AuthMethodKind::XaiApiKey),
-            "xai.api_key must not be advertised when disable_api_key_auth is set",
+                .any(|m| AuthMethodKind::from_id(m.id()) == AuthMethodKind::ProviderApiKey),
+            "provider.api_key must not be advertised when disable_api_key_auth is set",
         );
         assert_eq!(
             first_kind(&built.methods),
@@ -971,32 +935,6 @@ mod tests {
              must lead so the pager requires interactive login",
         );
         assert!(built.default_auth_method_id.is_none());
-    }
-
-    /// Legacy `ATELIER_CODE_XAI_API_KEY` env var is accepted as a fallback
-    /// when `XAI_API_KEY` is not set, ensuring existing deployments keep working.
-    #[test]
-    #[serial]
-    fn legacy_env_var_fallback_advertises_xai_api_key() {
-        let _unset_new = EnvGuard::unset(XAI_API_KEY_ENV_VAR);
-        let _set_legacy = EnvGuard::set(LEGACY_XAI_API_KEY_ENV_VAR, "xai-legacy-key");
-        assert!(has_xai_api_key_env());
-        assert_eq!(read_xai_api_key_env().unwrap(), "xai-legacy-key");
-
-        let cfg = Config::default();
-        let models = resolve_model_list(&cfg, None);
-        let has_external_api_key = should_advertise_xai_api_key(false, models.values());
-        assert!(has_external_api_key);
-    }
-
-    /// When both `XAI_API_KEY` and `ATELIER_CODE_XAI_API_KEY` are set,
-    /// the new name takes precedence.
-    #[test]
-    #[serial]
-    fn new_env_var_takes_precedence_over_legacy() {
-        let _new = EnvGuard::set(XAI_API_KEY_ENV_VAR, "new-key");
-        let _legacy = EnvGuard::set(LEGACY_XAI_API_KEY_ENV_VAR, "old-key");
-        assert_eq!(read_xai_api_key_env().unwrap(), "new-key");
     }
 
     // -- atelier login --legacy regression coverage ------------------------
@@ -1027,8 +965,6 @@ mod tests {
 
         // Ensure clean slate for "no other auth available".
         let _g1 = EnvGuard::unset("ATELIER_AUTH_PATH");
-        let _g2 = EnvGuard::unset(XAI_API_KEY_ENV_VAR);
-
         // Construct a legacy-style token exactly as `atelier login --legacy`
         // produces: WebLogin mode, no OIDC fields, no refresh_token, no
         // expires_at (is_expired falls back to 30-day age check).
@@ -1140,8 +1076,8 @@ mod tests {
             preferred_method: Some(PreferredAuthMethod::ApiKey),
             ..default_inputs()
         });
-        assert_eq!(method_ids(&built), vec![XAI_API_KEY_METHOD_ID]);
-        assert_eq!(default_id(&built), Some(XAI_API_KEY_METHOD_ID));
+        assert_eq!(method_ids(&built), vec![PROVIDER_API_KEY_METHOD_ID]);
+        assert_eq!(default_id(&built), Some(PROVIDER_API_KEY_METHOD_ID));
     }
 
     #[test]

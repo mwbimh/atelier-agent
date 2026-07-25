@@ -279,28 +279,28 @@ Use for any task with 3+ steps. Skip for trivial single-step work."#
     }
 }
 
-impl xai_tool_runtime::Tool for TodoWriteTool {
+impl atelier_tool_runtime::Tool for TodoWriteTool {
     type Args = TodoWriteInput;
     type Output = TodoWriteOutput;
 
-    fn id(&self) -> xai_tool_protocol::ToolId {
-        xai_tool_protocol::ToolId::new("todo_write").expect("valid tool id")
+    fn id(&self) -> atelier_tool_protocol::ToolId {
+        atelier_tool_protocol::ToolId::new("todo_write").expect("valid tool id")
     }
 
     fn description(
         &self,
-        _ctx: &::xai_tool_runtime::ListToolsContext,
-    ) -> xai_tool_types::ToolDescription {
-        xai_tool_types::ToolDescription::new(
+        _ctx: &::atelier_tool_runtime::ListToolsContext,
+    ) -> atelier_tool_types::ToolDescription {
+        atelier_tool_types::ToolDescription::new(
             "todo_write",
             crate::types::tool_metadata::ToolMetadata::description_template(self),
         )
     }
 
-    fn capabilities(&self) -> xai_tool_protocol::ToolCapabilities {
-        xai_tool_protocol::ToolCapabilities {
+    fn capabilities(&self) -> atelier_tool_protocol::ToolCapabilities {
+        atelier_tool_protocol::ToolCapabilities {
             is_read_only: true,
-            tool_scope: Some(xai_tool_protocol::ToolScope::Read),
+            tool_scope: Some(atelier_tool_protocol::ToolScope::Read),
             ..Default::default()
         }
     }
@@ -312,9 +312,9 @@ impl xai_tool_runtime::Tool for TodoWriteTool {
     )]
     async fn run(
         &self,
-        ctx: xai_tool_runtime::ToolCallContext,
+        ctx: atelier_tool_runtime::ToolCallContext,
         input: TodoWriteInput,
-    ) -> Result<TodoWriteOutput, xai_tool_runtime::ToolError> {
+    ) -> Result<TodoWriteOutput, atelier_tool_runtime::ToolError> {
         use crate::types::tool_metadata::shared_resources;
         let resources = shared_resources(&ctx)?;
 
@@ -392,7 +392,7 @@ mod tests {
     fn name_and_description() {
         use crate::types::tool_metadata::ToolMetadata;
         let tool = TodoWriteTool;
-        assert_eq!(xai_tool_runtime::Tool::id(&tool).as_str(), "todo_write");
+        assert_eq!(atelier_tool_runtime::Tool::id(&tool).as_str(), "todo_write");
         assert!(ToolMetadata::description_template(&tool).contains("task list"));
     }
 
@@ -411,7 +411,7 @@ mod tests {
 
         let shared = resources.into_shared();
         let output = expect_success(
-            xai_tool_runtime::Tool::run(&tool, test_ctx(shared.clone()), input)
+            atelier_tool_runtime::Tool::run(&tool, test_ctx(shared.clone()), input)
                 .await
                 .unwrap(),
         );
@@ -440,7 +440,7 @@ mod tests {
                 Some(TodoStatus::Completed),
             )],
         };
-        xai_tool_runtime::Tool::run(&tool, test_ctx(shared.clone()), input1)
+        atelier_tool_runtime::Tool::run(&tool, test_ctx(shared.clone()), input1)
             .await
             .unwrap();
 
@@ -454,7 +454,7 @@ mod tests {
             )],
         };
         let output = expect_success(
-            xai_tool_runtime::Tool::run(&tool, test_ctx(shared.clone()), input2)
+            atelier_tool_runtime::Tool::run(&tool, test_ctx(shared.clone()), input2)
                 .await
                 .unwrap(),
         );
@@ -477,7 +477,7 @@ mod tests {
                 make_update("2", Some("Run tests"), Some(TodoStatus::Pending)),
             ],
         };
-        xai_tool_runtime::Tool::run(&tool, test_ctx(shared.clone()), input1)
+        atelier_tool_runtime::Tool::run(&tool, test_ctx(shared.clone()), input1)
             .await
             .unwrap();
 
@@ -490,7 +490,7 @@ mod tests {
             ],
         };
         let output = expect_success(
-            xai_tool_runtime::Tool::run(&tool, test_ctx(shared.clone()), input2)
+            atelier_tool_runtime::Tool::run(&tool, test_ctx(shared.clone()), input2)
                 .await
                 .unwrap(),
         );
@@ -516,7 +516,7 @@ mod tests {
             todos: vec![make_update("explore", None, Some(TodoStatus::Completed))],
         };
         let output = expect_success(
-            xai_tool_runtime::Tool::run(&tool, test_ctx(resources.into_shared()), input)
+            atelier_tool_runtime::Tool::run(&tool, test_ctx(resources.into_shared()), input)
                 .await
                 .unwrap(),
         );
@@ -538,9 +538,10 @@ mod tests {
                 make_update("dup", Some("B"), Some(TodoStatus::Pending)),
             ],
         };
-        let result = xai_tool_runtime::Tool::run(&tool, test_ctx(resources.into_shared()), input)
-            .await
-            .unwrap();
+        let result =
+            atelier_tool_runtime::Tool::run(&tool, test_ctx(resources.into_shared()), input)
+                .await
+                .unwrap();
         assert!(
             matches!(result, TodoWriteOutput::DuplicateId(ref msg) if msg.contains("dup")),
             "expected DuplicateId variant, got {result:?}"
@@ -557,7 +558,7 @@ mod tests {
             todos: vec![],
         };
         let output = expect_success(
-            xai_tool_runtime::Tool::run(&tool, test_ctx(resources.into_shared()), input)
+            atelier_tool_runtime::Tool::run(&tool, test_ctx(resources.into_shared()), input)
                 .await
                 .unwrap(),
         );
@@ -575,7 +576,7 @@ mod tests {
             todos: vec![make_update("1", Some("Task"), Some(TodoStatus::Pending))],
         };
         let output = expect_success(
-            xai_tool_runtime::Tool::run(&tool, test_ctx(resources.into_shared()), input)
+            atelier_tool_runtime::Tool::run(&tool, test_ctx(resources.into_shared()), input)
                 .await
                 .unwrap(),
         );
@@ -600,7 +601,7 @@ mod tests {
             ],
         };
         let shared = resources.into_shared();
-        xai_tool_runtime::Tool::run(&tool, test_ctx(shared.clone()), input)
+        atelier_tool_runtime::Tool::run(&tool, test_ctx(shared.clone()), input)
             .await
             .unwrap();
 
@@ -854,7 +855,7 @@ mod tests {
                 make_update("3", Some("Write tests"), Some(TodoStatus::Pending)),
             ],
         };
-        xai_tool_runtime::Tool::run(&tool, test_ctx(shared.clone()), input1)
+        atelier_tool_runtime::Tool::run(&tool, test_ctx(shared.clone()), input1)
             .await
             .unwrap();
 
@@ -868,7 +869,7 @@ mod tests {
             ],
         };
         let output = expect_success(
-            xai_tool_runtime::Tool::run(&tool, test_ctx(shared.clone()), input2)
+            atelier_tool_runtime::Tool::run(&tool, test_ctx(shared.clone()), input2)
                 .await
                 .unwrap(),
         );

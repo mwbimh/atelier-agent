@@ -6,9 +6,9 @@
 
 use crate::session::events::{Event, GoalPlannerFailClosedReason, GoalRoleModelFailOpenReason};
 use crate::session::goal_role_tools::RoleToolNames;
+use atelier_runtime_events::events::EventWriter;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use xai_file_utils::events::EventWriter;
 
 // Shared per-role model override + spawn-and-retry-once fail-open wrapper
 
@@ -188,6 +188,13 @@ const GOAL_PLANNER_SUBAGENT_DESCRIPTION: &str = "goal plan writer";
 
 const GOAL_PLANNER_PROMPT_TEMPLATE: &str = include_str!("templates/goal_planner_prompt.md");
 
+fn goal_planner_prompt_template() -> String {
+    atelier_config::runtime_defaults::runtime_context_prompt(
+        atelier_config::runtime_defaults::ContextPrompt::GoalPlanner,
+        GOAL_PLANNER_PROMPT_TEMPLATE,
+    )
+}
+
 // Outcome + spawner abstraction
 
 /// Result of one planner attempt. `Planned` carries the path the
@@ -261,7 +268,7 @@ pub(crate) struct ChannelSpawner {
     pub(crate) cwd: Option<String>,
     /// Trace-artifact sink + resolved `task` tool name; `None` disables
     /// recording. See [`super::goal_classifier::record_subagent_trace`].
-    pub(crate) trace_sink: Option<(xai_chat_state::ChatStateHandle, String)>,
+    pub(crate) trace_sink: Option<(atelier_chat_state::ChatStateHandle, String)>,
     /// Resolved per-role model+toolset override. Default (inherit) keeps the
     /// historic `::default()` spawn behavior.
     pub(crate) role_override: RoleSpawnOverride,
@@ -427,7 +434,7 @@ pub(crate) async fn run_goal_planner(
     }
 
     let plan_file_str = inputs.plan_file.to_string_lossy();
-    let with_plan_file = GOAL_PLANNER_PROMPT_TEMPLATE.replace("{PLAN_FILE}", &plan_file_str);
+    let with_plan_file = goal_planner_prompt_template().replace("{PLAN_FILE}", &plan_file_str);
     // Render once per toolset: `primary` for the resolved toolset, `fallback`
     // for the default/parent toolset the explicit-pair retry falls back to.
     let render = |tool_names: &RoleToolNames| -> String {
@@ -1502,7 +1509,7 @@ mod tests {
     #[tokio::test]
     async fn fail_open_retry_emits_spawn_failed_event() {
         let dir = tempfile::tempdir().unwrap();
-        let writer = xai_file_utils::events::EventWriter::open(dir.path());
+        let writer = atelier_runtime_events::events::EventWriter::open(dir.path());
         let ov = RoleSpawnOverride {
             model: Some("m".into()),
             agent_type: Some("t".into()),

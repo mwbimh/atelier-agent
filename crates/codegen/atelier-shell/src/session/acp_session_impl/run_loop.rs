@@ -33,7 +33,7 @@ fn cleanup_session_scratch(_session: &SessionActor) {}
 pub(super) async fn run_session(
     session: Arc<SessionActor>,
     mut cmd_rx: mpsc::UnboundedReceiver<SessionCommand>,
-    mut chat_state_event_rx: mpsc::UnboundedReceiver<xai_chat_state::ChatStateEvent>,
+    mut chat_state_event_rx: mpsc::UnboundedReceiver<atelier_chat_state::ChatStateEvent>,
     mut event_rx: mpsc::UnboundedReceiver<SessionEvent>,
     fs_notify_config: Option<ClientFsConfig>,
     codebase_indexes: std::sync::Arc<parking_lot::Mutex<CodebaseIndexManager>>,
@@ -180,11 +180,11 @@ pub(super) async fn run_session(
             .changed() => { if changed.is_ok() { let new_gen = * model_switch_rx
             .borrow_and_update(); session.handle_model_switch_for_laziness(new_gen).
             await; } } event = chat_state_event_rx.recv() => { match event {
-            Some(xai_chat_state::ChatStateEvent::ConversationReset { new_len }) => {
+            Some(atelier_chat_state::ChatStateEvent::ConversationReset { new_len }) => {
             session.last_idle_flush_conversation_len.store(new_len,
             std::sync::atomic::Ordering::Relaxed); session.memory.context_injected
             .store(false, std::sync::atomic::Ordering::Relaxed); }
-            Some(xai_chat_state::ChatStateEvent::ImageBudget { body_bytes, trigger_bytes,
+            Some(atelier_chat_state::ChatStateEvent::ImageBudget { body_bytes, trigger_bytes,
             reclaim_target_bytes, inline_images, needs_image_compaction, evicted,
             body_bytes_after, }) => {
             atelier_telemetry::unified_log::info("shell.image_budget", Some(session
@@ -193,8 +193,8 @@ pub(super) async fn run_session(
             trigger_bytes, "reclaim_target_bytes" : reclaim_target_bytes, "inline_images"
             : inline_images, "images_remaining" : inline_images.saturating_sub(evicted),
             "needs_image_compaction" : needs_image_compaction, "evicted" : evicted,
-            })),); } Some(xai_chat_state::ChatStateEvent::PromptIndexChanged { .. }) |
-            Some(xai_chat_state::ChatStateEvent::TokensUpdated { .. }) => {} None => {} }
+            })),); } Some(atelier_chat_state::ChatStateEvent::PromptIndexChanged { .. }) |
+            Some(atelier_chat_state::ChatStateEvent::TokensUpdated { .. }) => {} None => {} }
             } maybe_event = event_rx.recv() => { if let Some(event) = maybe_event { match
             event { SessionEvent::Notification(notification) => { let out = replay_buffer
             .consume_chunk(notification); match out { None => {} Some((first, second)) =>
@@ -252,7 +252,7 @@ pub(super) async fn run_session(
             "MEMORY_SESSION_END: channel closed, session summary saved"); if let crate
             ::session::memory::hooks::SessionEndResult::Written(ref path_str) = result {
             session.reindex_and_embed(std::path::Path::new(path_str), "session"). await;
-            session.send_xai_notification(XaiSessionUpdate::MemorySessionSaved { path :
+            session.send_extension_notification(ExtensionSessionUpdate::MemorySessionSaved { path :
             path_str.clone(), }). await; } } } else { tracing::debug!(target :
             atelier_telemetry::memory_log::TARGET,
             "MEMORY_SUBAGENT_SKIP: skipping on_session_end for subagent session"); }
@@ -267,7 +267,7 @@ pub(super) async fn run_session(
             signals.turn_count as u64, tool_call_count : signals.tool_call_count as u64,
             compaction_count : signals.compaction_count as u64, model_id, },); } } if let
             Some(cancel) = & session.sync_loop_cancel { cancel.cancel(); } session
-            .feedback_manager.shutdown(session.upload_queue.get()). await; if ! session
+            .feedback_manager.shutdown(). await; if ! session
             .startup_hints.is_subagent { session.persist_background_task_manifest().
             await; } cleanup_session_scratch(& session); return; }; match cmd {
             SessionCommand::Initialize { system_prompt } => { session
@@ -279,7 +279,7 @@ pub(super) async fn run_session(
             let completion_tx = completion_tx.clone(); tokio::task::spawn_local(async
             move { s.resume_plan_approval(completion_tx). await; }); }
             SessionCommand::Prompt { prompt_id, prompt_blocks, prompt_mode,
-            artifact_upload_ctx, client_identifier, screen_mode, verbatim, traceparent,
+            client_identifier, screen_mode, verbatim,
             json_schema, send_now, respond_to, persist_ack, parsed_prompt_tx } => {
             session.ensure_prefix_ready(). await; let origin =
             super::PromptOrigin::from_prompt_id(& prompt_id); if ! origin.is_synthetic()
@@ -290,13 +290,9 @@ pub(super) async fn run_session(
             .is_some(); let queue_depth = state.pending_inputs.len(); drop(state);
             tracing::info!(prompt_id = % prompt_id, has_running_task = has_running,
             queue_depth = queue_depth,
-            "auto-wake: session actor received synthetic prompt"); } if let Some(ref tp)
-            = traceparent { let meta = serde_json::json!({ "traceparent" : tp });
-            xai_file_utils::trace_context::link_current_span_to_meta(& meta); } let
-            (trace_gcs_config, artifact_tracker) = match artifact_upload_ctx { Some(tu)
-            => (Some(tu.gcs_config), Some(tu.artifact_tracker)), None => (None, None), };
+            "auto-wake: session actor received synthetic prompt"); }
             let cancel_for_send_now = session.queue_input(prompt_blocks, prompt_id,
-            prompt_mode, trace_gcs_config, artifact_tracker, client_identifier,
+            prompt_mode, client_identifier,
             screen_mode, verbatim, json_schema, send_now, respond_to, persist_ack,
             parsed_prompt_tx). await; if cancel_for_send_now { session
             .cancel_turn_for_send_now(& mut replay_buffer). await; }
@@ -316,6 +312,9 @@ pub(super) async fn run_session(
             .send(updated_model_id); }
             SessionCommand::GetRequestPayload { responds_to } => { let _ = responds_to
             .send(session.role_request_payload.borrow().clone()); }
+            SessionCommand::SetRoleFastMode { enabled, responds_to } => {
+            session.role_request_payload.borrow_mut().insert("fast_mode".to_owned(),
+            serde_json::Value::Bool(enabled)); let _ = responds_to.send(()); }
             SessionCommand::RebuildAgentForDefinition { definition, responds_to } => {
             let outcome = session.handle_rebuild_agent_for_definition(definition). await;
             let _ = responds_to.send(outcome); } SessionCommand::OverrideModelName {
@@ -334,7 +333,7 @@ pub(super) async fn run_session(
             .get_credentials(). await; if let Some(r) = crate
             ::agent::config::try_resolve_model_credentials(model_name.as_str(), existing
             .api_key.as_deref()) { session.chat_state_handle
-            .update_credentials(xai_chat_state::Credentials { api_key : r.api_key,
+            .update_credentials(atelier_chat_state::Credentials { api_key : r.api_key,
             auth_type : r.auth_type, alpha_test_key : existing.alpha_test_key,
             client_version : existing.client_version, }); } session.model_auth_facts
             .replace(None); } } SessionCommand::GetCurrentModel { responds_to } => { let
@@ -364,12 +363,12 @@ pub(super) async fn run_session(
             }; let project_trusted = crate
             ::agent::folder_trust::project_scope_allowed(std::path::Path::new(& session
             .session_info.cwd),); let _ = respond_to
-            .send(xai_hooks_plugins_types::HooksListResponse { hooks, project_trusted,
+            .send(atelier_hooks_plugins_types::HooksListResponse { hooks, project_trusted,
             load_errors : session.hook_load_errors.borrow().clone(), }); }
             SessionCommand::HooksAction { action, respond_to } => { let outcome = session
             .handle_hooks_action(action). await; let _ = respond_to.send(outcome); }
             SessionCommand::NotifyPluginUpdates { updates } => { session
-            .send_xai_notification(XaiSessionUpdate::PluginUpdatesInstalled { updates },)
+            .send_extension_notification(ExtensionSessionUpdate::PluginUpdatesInstalled { updates },)
             . await; } SessionCommand::PluginsAction { action, respond_to } => { let
             outcome = session.handle_plugins_action(action). await; let _ = respond_to
             .send(outcome); } SessionCommand::PluginsList { respond_to } => { let _ =
@@ -483,8 +482,8 @@ pub(super) async fn run_session(
             .send(session.rewind_file_counts(). await); }
             SessionCommand::ReconcileRewindTracker { target_prompt_index } => { session
             .merge_rewind_tracker_from(target_prompt_index). await; }
-            SessionCommand::XaiSessionNotification { notification } => { session
-            .handle_xai_session_notification(notification). await; }
+            SessionCommand::ExtensionSessionNotification { notification } => { session
+            .handle_extension_session_notification(notification). await; }
             SessionCommand::RecordSubagentUsage { by_model, parent_prompt_id, incomplete,
             respond_to, } => { use super::updates::SubagentUsageApply; match session
             .record_subagent_usage(& by_model, parent_prompt_id.as_deref(), incomplete,).
@@ -541,7 +540,7 @@ pub(super) async fn run_session(
             .ensure_mcp_tools_initialized(). await; let _ = respond_to.send(Ok(())); });
             } SessionCommand::ToggleMcpServer { server_name, enabled, server_config,
             respond_to } => { session.events
-            .emit(xai_file_utils::events::Event::McpServerToggled { server_name :
+            .emit(atelier_runtime_events::events::Event::McpServerToggled { server_name :
             server_name.clone(), enabled, }); let mut mcp_state = session.mcp_state
             .lock(). await; let mut configs = mcp_state.configs.clone(); if enabled { let
             already_present = configs.iter().any(| c | crate
@@ -702,7 +701,7 @@ pub(super) async fn run_session(
             await; session.send_hook_execution("session_start", None, None, & results).
             await; } } SessionCommand::GetFeedbackContext { turn_number, responds_to } =>
             { let s = session.clone(); tokio::task::spawn_local(async move { use
-            prod_mc_cli_chat_proxy_types::feedback_types::FeedbackToolOutcome; let
+            crate::session::feedback_types::FeedbackToolOutcome; let
             turn_idx = turn_number.and_then(| n | usize::try_from(n).ok()); let
             (last_user_message, last_assistant_message) = match turn_idx { Some(n) => {
             let conv = s.chat_state_handle.get_conversation(). await;
@@ -761,7 +760,7 @@ pub(super) async fn run_session(
             (respond_to, _) = tokio::sync::oneshot::channel(); { let mut state = session
             .state.lock(). await; state.pending_inputs.push_back(InputItem { prompt_id,
             prompt_blocks, prompt_mode : crate ::session::plan_mode::PromptMode::Agent,
-            trace_gcs_config : None, artifact_tracker : None, client_identifier : None,
+            client_identifier : None,
             screen_mode : None, verbatim : true, json_schema : None, origin :
             super::PromptOrigin::GoalSummary, respond_to, persist_ack : None,
             parsed_prompt_tx : None, queue_meta : None, send_now : false, }); }
@@ -817,7 +816,7 @@ pub(super) async fn run_session(
             "MEMORY_SESSION_END: session summary saved"); if let crate
             ::session::memory::hooks::SessionEndResult::Written(ref path_str) = result {
             session.reindex_and_embed(std::path::Path::new(path_str), "session"). await;
-            session.send_xai_notification(XaiSessionUpdate::MemorySessionSaved { path :
+            session.send_extension_notification(ExtensionSessionUpdate::MemorySessionSaved { path :
             path_str.clone(), }). await; } } } else { tracing::debug!(target :
             atelier_telemetry::memory_log::TARGET,
             "MEMORY_SUBAGENT_SKIP: skipping on_session_end for subagent session"); }
@@ -825,7 +824,7 @@ pub(super) async fn run_session(
             .telemetry_snapshot(); session.emit_memory_session_summary(& telem,
             total_chunks_at_end, session_end_result); if let Some(cancel) = & session
             .sync_loop_cancel { cancel.cancel(); } session.feedback_manager
-            .shutdown(session.upload_queue.get()). await; if ! session.startup_hints
+            .shutdown(). await; if ! session.startup_hints
             .is_subagent { session.persist_background_task_manifest(). await; }
             cleanup_session_scratch(& session); return; } } }
         }
@@ -850,7 +849,7 @@ pub(super) fn turn_texts_for_feedback(
         return (None, None);
     };
     let raw = conversation[start].text_content();
-    let extracted = xai_chat_state::compaction_utils::extract_user_query(&raw);
+    let extracted = atelier_chat_state::compaction_utils::extract_user_query(&raw);
     let user_text = (!extracted.is_empty()).then_some(extracted);
     let assistant_text = conversation
         .iter()

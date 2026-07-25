@@ -814,15 +814,6 @@ fn action_for_string(
     snapshot: &PagerLocalSnapshot,
 ) -> Option<Action> {
     match key {
-        "default_model" => {
-            if value.is_empty() {
-                Some(Action::ClearDefaultModel)
-            } else {
-                snapshot
-                    .resolve_model_name(&value)
-                    .map(Action::SetDefaultModel)
-            }
-        }
         "fork_secondary_model" => {
             if value.is_empty() {
                 Some(Action::ClearForkSecondaryModel)
@@ -3116,12 +3107,8 @@ fn display_for_enum_canonical<'a>(kind: &'a SettingKind, canonical: &'a str) -> 
     canonical
 }
 
-fn empty_dynamic_enum_display(key: &str) -> &'static str {
-    if key == "default_model" {
-        "Keep current as main Role"
-    } else {
-        "(no override)"
-    }
+fn empty_dynamic_enum_display(_key: &str) -> &'static str {
+    "(no override)"
 }
 
 fn dynamic_enum_choices_for_key(
@@ -3129,16 +3116,8 @@ fn dynamic_enum_choices_for_key(
     source: DynamicEnumSource,
     snapshot: &PagerLocalSnapshot,
 ) -> Vec<OwnedEnumChoice> {
-    let mut choices = dynamic_enum_choices(source, snapshot);
-    if key == "default_model"
-        && let Some(reset) = choices.first_mut()
-        && reset.canonical.is_empty()
-    {
-        reset.display = "Keep current as main Role".to_owned();
-        reset.description =
-            "Delete obsolete defaults and retain the current model as roles.main".to_owned();
-    }
-    choices
+    let _ = key;
+    dynamic_enum_choices(source, snapshot)
 }
 
 /// Word-wrap a description string. Returns owned lines for re-styling.
@@ -5510,16 +5489,13 @@ mod tests {
     /// editor's commit path returns `None` and the Enter keystroke
     /// silently no-ops (after exiting EditingValue mode).
     ///
-    /// The empty-string path is
-    /// the canonical "clear default" entry-point — every
-    /// registered String setting must produce SOME action for
-    /// empty input (even if it's `ClearDefaultModel` rather than a
-    /// `SetX` variant).
+    /// The empty-string path is the canonical clear entry-point — every
+    /// registered String setting must produce some action for empty input.
     ///
     /// **Vacuous-passing note**: today no
-    /// production setting uses `SettingKind::String` — both
-    /// `default_model` and `fork_secondary_model` use
-    /// `DynamicEnum`, and `coding_data_sharing` / `permission_mode`
+    /// production setting uses `SettingKind::String` —
+    /// `fork_secondary_model` uses `DynamicEnum`, and
+    /// `coding_data_sharing` / `permission_mode`
     /// / `plan_mode` are `Enum`. The loop body skips every meta, so
     /// this assertion passes vacuously today. It STILL fires as a
     /// CI guard the first time a future change registers a String
@@ -5571,26 +5547,10 @@ mod tests {
             if !matches!(meta.kind, SettingKind::DynamicEnum { .. }) {
                 continue;
             }
-            // Discriminate on the Action variant, not
-            // just `is_some()`. A future refactor that swallowed the
-            // typed `SetDefaultModel` / `SetForkSecondaryModel` into
-            // a generic `Action::DynamicSettingChanged(...)` would
-            // pass `is_some()` while breaking the typed dispatch.
+            // Discriminate on the Action variant, not just `is_some()`.
             let empty_action = action_for_string(meta.key, String::new(), &snapshot);
             let nonempty_action = action_for_string(meta.key, "Test Model".to_string(), &snapshot);
             match meta.key {
-                "default_model" => {
-                    assert!(
-                        matches!(empty_action, Some(Action::ClearDefaultModel)),
-                        "default_model empty canonical must produce ClearDefaultModel, \
-                         got {empty_action:?}",
-                    );
-                    assert!(
-                        matches!(nonempty_action, Some(Action::SetDefaultModel(_))),
-                        "default_model non-empty canonical must produce \
-                         SetDefaultModel(_), got {nonempty_action:?}",
-                    );
-                }
                 "fork_secondary_model" => {
                     assert!(
                         matches!(empty_action, Some(Action::ClearForkSecondaryModel)),
@@ -5831,8 +5791,6 @@ mod tests {
                 "toolset.ask_user_question.timeout_enabled",
                 // PAGER-owned plan_mode (Agent category).
                 "plan_mode",
-                // SHELL-owned default_model (Models category).
-                "default_model",
                 // Models category. `default_reasoning_effort`,
                 // `web_search_model`, and `session_summary_model` are
                 // not exposed in the modal.
@@ -6700,26 +6658,22 @@ mod tests {
     // -- render-buffer tests for the
     // editor's cursor and validation-error display. --
 
-    /// Build an editor state pre-positioned at the start of a known
-    /// buffer for `default_model`. Catalog populated so the
-    /// `KnownModel` validator has data to validate against.
+    /// Build an editor state pre-positioned at the start of a known-model
+    /// buffer. Catalog populated so the validator has data.
     fn editor_render_fixture(buffer: &str, cursor_byte: usize) -> SettingsModalState {
         use agent_client_protocol as acp;
         use std::sync::Arc;
-        // An earlier fixture used `default_model` (a SHELL `String`
-        // setting) to exercise the inline editor. `default_model` is
-        // now a `SettingKind::DynamicEnum`, so the
-        // String editor no longer has a registered consumer in the
+        // The String editor has no registered model consumer in the
         // production catalog. We construct a synthetic registry
         // with a single `KnownModel`-validated String entry to keep
         // the editor-render contract under test — the production
         // editor code path stays exercised even though no live
         // setting wires it up today.
         let synthetic_meta = SettingMeta {
-            key: "default_model",
+            key: "synthetic_model",
             category: SettingCategory::Models,
             owner: crate::settings::SettingOwner::Shell,
-            label: "Default model (synthetic)",
+            label: "Synthetic model",
             // Short description so it fits in 1 line even at the
             // narrowest test width (the editor's word-wrap path
             // would otherwise push the input
@@ -6749,7 +6703,7 @@ mod tests {
             &s.pager_snapshot.available_models,
         );
         s.mode = SettingsModalMode::EditingValue {
-            key: "default_model",
+            key: "synthetic_model",
             buffer: buffer.to_string(),
             cursor_byte,
             validation_error,
@@ -9209,29 +9163,10 @@ mod tests {
     }
 
     #[test]
-    fn main_model_reset_label_does_not_leak_into_fork_model_picker() {
-        let snapshot = PagerLocalSnapshot::default();
-
-        let main = dynamic_enum_choices_for_key(
-            "default_model",
-            DynamicEnumSource::ActiveModelCatalog,
-            &snapshot,
-        );
-        let fork = dynamic_enum_choices_for_key(
-            "fork_secondary_model",
-            DynamicEnumSource::ActiveModelCatalog,
-            &snapshot,
-        );
-
-        assert_eq!(main[0].display, "Keep current as main Role");
-        assert_eq!(fork[0].display, "(no override)");
-    }
-
-    #[test]
     fn editing_value_esc_returns_to_browse() {
         let mut s = make_state();
         s.mode = SettingsModalMode::EditingValue {
-            key: "default_model",
+            key: "synthetic_model",
             buffer: "atelier-4".to_string(),
             cursor_byte: "atelier-4".len(),
             validation_error: None,

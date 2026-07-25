@@ -1,13 +1,13 @@
 mod display;
 
 use anyhow::{Result, bail};
+use atelier_fast_worktree::WorktreeRecord;
 use clap::Subcommand;
 use tokio_util::sync::CancellationToken;
-use xai_fast_worktree::WorktreeRecord;
 
 use agent_client_protocol as acp;
+use atelier_acp_runtime::acp_send;
 use atelier_shell::agent::config::Config as AgentConfig;
-use xai_acp_lib::acp_send;
 
 /// Local response types matching the ACP response shapes.
 #[derive(Debug, serde::Deserialize)]
@@ -122,7 +122,7 @@ pub async fn run(args: WorktreeArgs, agent_config: &AgentConfig) -> Result<()> {
     result
 }
 
-async fn dispatch(command: WorktreeCommand, tx: &xai_acp_lib::AcpAgentTx) -> Result<()> {
+async fn dispatch(command: WorktreeCommand, tx: &atelier_acp_runtime::AcpAgentTx) -> Result<()> {
     match command {
         WorktreeCommand::List {
             repo,
@@ -161,7 +161,7 @@ struct ExtEnvelope<T> {
 }
 
 async fn ext_call<T: serde::de::DeserializeOwned>(
-    tx: &xai_acp_lib::AcpAgentTx,
+    tx: &atelier_acp_runtime::AcpAgentTx,
     method: &str,
     params: &impl serde::Serialize,
 ) -> Result<T> {
@@ -181,7 +181,7 @@ async fn ext_call<T: serde::de::DeserializeOwned>(
 }
 
 async fn cmd_list(
-    tx: &xai_acp_lib::AcpAgentTx,
+    tx: &atelier_acp_runtime::AcpAgentTx,
     repo: Option<String>,
     types: Vec<String>,
     json: bool,
@@ -206,7 +206,7 @@ async fn cmd_list(
     Ok(())
 }
 
-async fn cmd_show(tx: &xai_acp_lib::AcpAgentTx, id_or_path: &str) -> Result<()> {
+async fn cmd_show(tx: &atelier_acp_runtime::AcpAgentTx, id_or_path: &str) -> Result<()> {
     let rec: Option<WorktreeRecord> = ext_call(
         tx,
         "atelier/git/worktree/show",
@@ -232,7 +232,7 @@ struct RemoveResponse {
 }
 
 async fn cmd_rm(
-    tx: &xai_acp_lib::AcpAgentTx,
+    tx: &atelier_acp_runtime::AcpAgentTx,
     ids: Vec<String>,
     force: bool,
     dry_run: bool,
@@ -265,7 +265,7 @@ async fn cmd_rm(
 }
 
 async fn cmd_gc(
-    tx: &xai_acp_lib::AcpAgentTx,
+    tx: &atelier_acp_runtime::AcpAgentTx,
     dry_run: bool,
     max_age: Option<String>,
     force: bool,
@@ -288,7 +288,7 @@ async fn cmd_gc(
     Ok(())
 }
 
-async fn cmd_db(tx: &xai_acp_lib::AcpAgentTx, command: WorktreeDbCommand) -> Result<()> {
+async fn cmd_db(tx: &atelier_acp_runtime::AcpAgentTx, command: WorktreeDbCommand) -> Result<()> {
     match command {
         WorktreeDbCommand::Stats => {
             let stats: DbStats = ext_call(tx, "atelier/git/worktree/db/stats", &()).await?;
@@ -322,7 +322,7 @@ mod tests {
         let req = ext_request(
             "atelier/git/worktree/list",
             &serde_json::json!({
-                "repo": "xai",
+                "repo": "repo",
                 "type": ["session"],
                 "includeAll": true,
             }),
@@ -330,7 +330,7 @@ mod tests {
         .unwrap();
         assert_eq!(req.method.as_ref(), "atelier/git/worktree/list");
         let params: serde_json::Value = serde_json::from_str(req.params.get()).unwrap();
-        assert_eq!(params["repo"], "xai");
+        assert_eq!(params["repo"], "repo");
         assert_eq!(params["includeAll"], true);
     }
 

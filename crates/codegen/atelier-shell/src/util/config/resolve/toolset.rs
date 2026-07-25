@@ -1,4 +1,4 @@
-use crate::util::config::RemoteSettings;
+use crate::util::config::LocalRuntimeSettings;
 use atelier_tools::implementations::atelier_build::ask_user_question;
 use toml::Value as TomlValue;
 
@@ -331,7 +331,7 @@ fn resolve_ask_user_question_timeout_secs(
 /// fields resolve to concrete values, so the tool's legacy env fallback only
 /// runs for consumers that skip this resolver.
 pub(crate) fn resolve_ask_user_question_params_from_disk(
-    remote: Option<&RemoteSettings>,
+    remote: Option<&LocalRuntimeSettings>,
 ) -> atelier_tools::implementations::atelier_build::ask_user_question::AskUserQuestionParams {
     let requirements = crate::config::load_merged_requirements();
     let layers = match crate::config::ConfigLayers::load() {

@@ -11,8 +11,6 @@ impl SessionActor {
         prompt_blocks: Vec<acp::ContentBlock>,
         prompt_id: String,
         prompt_mode: PromptMode,
-        trace_gcs_config: Option<crate::session::repo_changes::TraceExportConfig>,
-        artifact_tracker: Option<crate::upload::manifest::ArtifactTracker>,
         client_identifier: Option<String>,
         screen_mode: Option<String>,
         verbatim: bool,
@@ -72,52 +70,11 @@ impl SessionActor {
             crate::session::prompt_history::append_prompt_async(cwd, entry).await;
         }
 
-        // Capture trace config template from the first real user prompt so
-        // synthetic auto-wake turns can reuse the same GCS bucket/method.
-        let (trace_gcs_config, artifact_tracker) = if let Some(ref cfg) = trace_gcs_config {
-            *self.trace_config_template.borrow_mut() = Some(TraceConfigTemplate {
-                bucket_url: cfg.bucket_url.clone(),
-                upload_method: cfg.upload_method.clone(),
-            });
-            (trace_gcs_config, artifact_tracker)
-        } else {
-            (trace_gcs_config, artifact_tracker)
-        };
-
         // Pre-mark auto-wake completion IDs so TaskCompletionReminder doesn't
         // duplicate the notification the model already sees in the synthetic prompt.
         if let Some(id) = origin.completion_id() {
             self.mark_completions_reported(&[id]).await;
         }
-
-        // For synthetic prompts, derive trace config from the template
-        // captured during the first real user prompt.
-        let (trace_gcs_config, artifact_tracker) =
-            if origin.is_synthetic() && trace_gcs_config.is_none() {
-                if let Some(template) = self.trace_config_template.borrow().clone() {
-                    let cfg = crate::session::repo_changes::TraceExportConfig {
-                        bucket_url: template.bucket_url,
-                        service_account_key: None,
-                        prefix_dir: None,
-                        gcs_prefix: Some(format!(
-                            "{}/turn_{}",
-                            self.session_info.id.0,
-                            self.chat_state_handle.get_prompt_index().await,
-                        )),
-                        absolute_paths: false,
-                        archive_name_override: None,
-                        upload_method: template.upload_method,
-                    };
-                    (
-                        Some(cfg),
-                        Some(crate::upload::manifest::new_artifact_tracker()),
-                    )
-                } else {
-                    (None, None)
-                }
-            } else {
-                (trace_gcs_config, artifact_tracker)
-            };
 
         let mut state = self.state.lock().await;
 
@@ -183,8 +140,6 @@ impl SessionActor {
             prompt_id,
             prompt_blocks,
             prompt_mode,
-            trace_gcs_config,
-            artifact_tracker,
             client_identifier,
             screen_mode,
             verbatim,

@@ -398,29 +398,29 @@ mod tests {
     #[cfg(any())] // xAI first-party session classification was removed with vendor authentication.
     #[test]
     fn is_xai_auth_matrix() {
-        use crate::auth::XAI_OAUTH2_ISSUER;
+        use crate::auth::TEST_OIDC_ISSUER;
         let with_issuer = |mode: AuthMode, issuer: Option<&str>| AtelierAuth {
             oidc_issuer: issuer.map(str::to_owned),
             ..make_auth(mode)
         };
 
         // Only Oidc/External qualify, and only with an x.ai issuer.
-        assert!(with_issuer(AuthMode::Oidc, Some(XAI_OAUTH2_ISSUER)).is_xai_auth());
-        assert!(with_issuer(AuthMode::External, Some(XAI_OAUTH2_ISSUER)).is_xai_auth());
+        assert!(with_issuer(AuthMode::Oidc, Some(TEST_OIDC_ISSUER)).is_xai_auth());
+        assert!(with_issuer(AuthMode::External, Some(TEST_OIDC_ISSUER)).is_xai_auth());
         assert!(!with_issuer(AuthMode::Oidc, None).is_xai_auth());
         assert!(!with_issuer(AuthMode::External, None).is_xai_auth());
         assert!(!with_issuer(AuthMode::Oidc, Some("https://idp.acme.example")).is_xai_auth());
         assert!(!with_issuer(AuthMode::External, Some("https://idp.acme.example")).is_xai_auth());
 
         // ApiKey / WebLogin stay false even with an x.ai issuer set.
-        assert!(!with_issuer(AuthMode::ApiKey, Some(XAI_OAUTH2_ISSUER)).is_xai_auth());
-        assert!(!with_issuer(AuthMode::WebLogin, Some(XAI_OAUTH2_ISSUER)).is_xai_auth());
+        assert!(!with_issuer(AuthMode::ApiKey, Some(TEST_OIDC_ISSUER)).is_xai_auth());
+        assert!(!with_issuer(AuthMode::WebLogin, Some(TEST_OIDC_ISSUER)).is_xai_auth());
     }
 
     #[cfg(any())] // xAI first-party session classification was removed with vendor authentication.
     #[test]
     fn is_session_auth_requires_first_party_for_external() {
-        use crate::auth::XAI_OAUTH2_ISSUER;
+        use crate::auth::TEST_OIDC_ISSUER;
         let with_issuer = |mode: AuthMode, issuer: Option<&str>| AtelierAuth {
             oidc_issuer: issuer.map(str::to_owned),
             ..make_auth(mode)
@@ -432,14 +432,14 @@ mod tests {
         assert!(with_issuer(AuthMode::Oidc, Some("https://idp.acme.example")).is_session_auth());
 
         // External qualifies only when first-party (devbox-login parity).
-        assert!(with_issuer(AuthMode::External, Some(XAI_OAUTH2_ISSUER)).is_session_auth());
+        assert!(with_issuer(AuthMode::External, Some(TEST_OIDC_ISSUER)).is_session_auth());
         assert!(!with_issuer(AuthMode::External, None).is_session_auth());
         assert!(
             !with_issuer(AuthMode::External, Some("https://idp.acme.example")).is_session_auth()
         );
 
         // Plain API keys never do.
-        assert!(!with_issuer(AuthMode::ApiKey, Some(XAI_OAUTH2_ISSUER)).is_session_auth());
+        assert!(!with_issuer(AuthMode::ApiKey, Some(TEST_OIDC_ISSUER)).is_session_auth());
     }
 
     #[test]

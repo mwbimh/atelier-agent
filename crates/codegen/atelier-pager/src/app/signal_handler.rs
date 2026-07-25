@@ -11,7 +11,7 @@
 //! in normal Rust context (not actual signal-handler context), so it can use
 //! the full [`super::emit_terminal_teardown_sequences`] path
 //! (`with_locked_stderr`, conditional cursor-style reset, multiplexer flush) plus
-//! `disable_raw_mode`, then flush Sentry/OpenTelemetry, then exit.
+//! `disable_raw_mode`, then flush local diagnostics, then exit.
 //!
 //! SIGPIPE is intentionally left alone. The current disposition is `SIG_IGN`
 //! (Rust's stdlib default), which means writes to a closed pipe return
@@ -168,7 +168,7 @@ fn request_graceful_or_exit(code: i32) {
 
 /// Restore the terminal first, then flush observability, then exit.
 ///
-/// Restore must precede the (up to 2-second) Sentry flush; otherwise the
+/// Restore must precede diagnostic shutdown; otherwise the
 /// user stares at a raw-mode + alt-screen + mouse-SGR terminal for that
 /// whole window. Best-effort: a frame queued on the writer thread microseconds
 /// before the signal can still land after our teardown writes -- the writer
@@ -204,11 +204,9 @@ fn flush_telemetry_and_exit(exit_code: i32) -> ! {
     // Reap detached (setsid) background children before the hard exit. This tail
     // runs on the force/second-signal and agent-mode paths that skip the
     // graceful quit; the graceful path reaps them in `app::run`'s teardown.
-    xai_tty_utils::global_process_scope().kill_all();
-    // Restore fd 2 so Sentry/OTEL flushes reach the terminal.
-    xai_tty_utils::restore_native_stderr();
-    atelier_telemetry::sentry::flush_on_shutdown();
-    atelier_telemetry::otel_layer::shutdown_otel();
+    atelier_tty_utils::global_process_scope().kill_all();
+    // Restore fd 2 before flushing local diagnostics.
+    atelier_tty_utils::restore_native_stderr();
     // Flush the --debug firehose on TUI signal exit (this path bypasses main's flush).
     atelier_telemetry::debug_log::flush();
     std::process::exit(exit_code);

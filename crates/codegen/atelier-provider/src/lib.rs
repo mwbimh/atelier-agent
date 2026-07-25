@@ -5,7 +5,9 @@
 //! making the runtime guess capabilities from a model name.
 
 use serde::{Deserialize, Serialize};
+pub mod auth;
 pub mod roles;
+mod storage_v2;
 
 pub use roles::{RoleConfig, RoleError, RoleId, RoleRegistry, merge_payloads};
 use serde_json::{Map, Value};
@@ -21,7 +23,7 @@ use url::Url;
 #[cfg(windows)]
 mod windows_credentials;
 
-const CURRENT_SCHEMA_VERSION: u32 = 1;
+const CURRENT_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct SecretString(String);
@@ -80,6 +82,7 @@ pub enum CredentialErrorCode {
     SecretStoreUnsupported,
     SecretStoreOperationFailed,
     SecretStoreAccountMismatch,
+    OAuthCredentialUnavailable,
 }
 
 #[derive(Debug, Clone, Error, PartialEq, Eq)]
@@ -122,6 +125,8 @@ pub enum CredentialError {
     },
     #[error("SecretStore credential account does not match: service={service}, account={account}")]
     SecretStoreAccountMismatch { service: String, account: String },
+    #[error("OAuth credential is unavailable for Provider {provider_id}: {reason}")]
+    OAuthCredentialUnavailable { provider_id: String, reason: String },
 }
 
 impl CredentialError {
@@ -152,6 +157,9 @@ impl CredentialError {
             }
             Self::SecretStoreAccountMismatch { .. } => {
                 CredentialErrorCode::SecretStoreAccountMismatch
+            }
+            Self::OAuthCredentialUnavailable { .. } => {
+                CredentialErrorCode::OAuthCredentialUnavailable
             }
         }
     }
@@ -353,6 +361,10 @@ pub enum CredentialRef {
         program: String,
         args: Vec<String>,
     },
+    OAuth {
+        provider_id: String,
+        methods: Vec<auth::ProviderOAuthMethod>,
+    },
 }
 
 impl CredentialRef {
@@ -403,6 +415,36 @@ impl CredentialRef {
                         kind: "command",
                         reason: "arguments must not contain NUL".into(),
                     });
+                }
+                Ok(())
+            }
+            Self::OAuth {
+                provider_id,
+                methods,
+            } => {
+                if methods.is_empty() {
+                    return Err(CredentialError::InvalidReference {
+                        kind: "oauth",
+                        reason: "at least one OAuth method must be configured".into(),
+                    });
+                }
+                let mut flows = std::collections::BTreeSet::new();
+                for method in methods {
+                    method.validate(provider_id).map_err(|error| {
+                        CredentialError::InvalidReference {
+                            kind: "oauth",
+                            reason: error.to_string(),
+                        }
+                    })?;
+                    if !flows.insert(method.flow_name()) {
+                        return Err(CredentialError::InvalidReference {
+                            kind: "oauth",
+                            reason: format!(
+                                "OAuth flow {} is configured more than once",
+                                method.flow_name()
+                            ),
+                        });
+                    }
                 }
                 Ok(())
             }
@@ -473,6 +515,11 @@ impl CredentialRef {
                 }
                 Ok(Some(SecretString::new(value)))
             }
+            Self::OAuth { provider_id, .. } => auth::resolve_system_access_token(provider_id)
+                .map_err(|error| CredentialError::OAuthCredentialUnavailable {
+                    provider_id: provider_id.clone(),
+                    reason: error.to_string(),
+                }),
         }
     }
 
@@ -652,6 +699,15 @@ fn is_sensitive_header_name(name: &str) -> bool {
         || normalized.contains("credential")
 }
 
+fn is_reserved_transport_header_name(name: &str) -> bool {
+    let normalized: String = name
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .map(|character| character.to_ascii_lowercase())
+        .collect();
+    normalized == "useragent"
+}
+
 fn redacted_snapshot_headers(headers: &BTreeMap<String, String>) -> BTreeMap<String, String> {
     headers
         .keys()
@@ -667,6 +723,14 @@ impl ProviderConfig {
     pub fn validate(&self) -> Result<(), ProviderError> {
         validate_identifier(&self.id, "provider id")?;
         self.credential.validate()?;
+        if let CredentialRef::OAuth { provider_id, .. } = &self.credential
+            && provider_id != &self.id
+        {
+            return Err(ProviderError::InvalidProvider(format!(
+                "OAuth credential Provider id {provider_id} does not match {}",
+                self.id
+            )));
+        }
         if let Some(name) = self
             .extra_headers
             .keys()
@@ -674,6 +738,15 @@ impl ProviderConfig {
         {
             return Err(ProviderError::InvalidProvider(format!(
                 "extra header '{name}' contains credential material; use the provider credential reference instead"
+            )));
+        }
+        if let Some(name) = self
+            .extra_headers
+            .keys()
+            .find(|name| is_reserved_transport_header_name(name))
+        {
+            return Err(ProviderError::InvalidProvider(format!(
+                "extra header '{name}' cannot override the configured User-Agent"
             )));
         }
         if self.display_name.trim().is_empty() {
@@ -801,6 +874,19 @@ pub struct CapabilityOverrides {
 }
 
 impl CapabilityOverrides {
+    fn from_capabilities(capabilities: &ModelCapabilities) -> Self {
+        Self {
+            text_input: Some(capabilities.text_input),
+            image_input: Some(capabilities.image_input),
+            tool_calls: Some(capabilities.tool_calls),
+            parallel_tool_calls: Some(capabilities.parallel_tool_calls),
+            reasoning_effort: Some(capabilities.reasoning_effort),
+            web_search: Some(capabilities.web_search),
+            image_generation: Some(capabilities.image_generation),
+            server_compaction: Some(capabilities.server_compaction),
+        }
+    }
+
     fn apply_to(&self, mut capabilities: ModelCapabilities) -> ModelCapabilities {
         if let Some(value) = self.text_input {
             capabilities.text_input = value;
@@ -859,9 +945,70 @@ pub struct ModelDescriptor {
     #[serde(default)]
     pub reasoning_efforts: Vec<String>,
     #[serde(default)]
+    pub default_effort: Option<String>,
+    #[serde(default)]
+    pub fast_mode: bool,
+    #[serde(default)]
     pub source: ModelSource,
     #[serde(default = "default_enabled")]
     pub enabled: bool,
+}
+
+/// Experimental Provider-specific endpoint. Endpoints are relative to the
+/// Provider base URL; absolute URLs are rejected so a model profile cannot
+/// silently redirect credentials to another origin.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ExperimentalEndpoint {
+    #[serde(default)]
+    pub enabled: bool,
+    pub endpoint: String,
+}
+
+impl ExperimentalEndpoint {
+    fn validate(&self) -> Result<(), ProviderError> {
+        let endpoint = self.endpoint.trim();
+        let unsafe_segment = endpoint
+            .split('/')
+            .any(|segment| segment.is_empty() || matches!(segment, "." | ".."));
+        if endpoint.is_empty()
+            || endpoint != self.endpoint
+            || endpoint.starts_with(['/', '\\'])
+            || endpoint.contains(['\\', '?', '#', '%'])
+            || endpoint.chars().any(char::is_control)
+            || Url::parse(endpoint).is_ok()
+            || unsafe_segment
+        {
+            return Err(ProviderError::InvalidProvider(format!(
+                "experimental endpoint must be a safe Provider-relative path: {}",
+                self.endpoint
+            )));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ExperimentalModelFeatures {
+    #[serde(default)]
+    pub remote_compaction: Option<ExperimentalEndpoint>,
+    #[serde(default)]
+    pub image_generation: Option<ExperimentalEndpoint>,
+}
+
+impl ExperimentalModelFeatures {
+    fn validate(&self) -> Result<(), ProviderError> {
+        if let Some(endpoint) = &self.remote_compaction {
+            endpoint.validate()?;
+        }
+        if let Some(endpoint) = &self.image_generation {
+            endpoint.validate()?;
+        }
+        Ok(())
+    }
+
+    fn is_empty(&self) -> bool {
+        self == &Self::default()
+    }
 }
 
 pub fn parse_openai_models_response(
@@ -926,6 +1073,9 @@ fn parse_openai_model_value(
         ),
         capabilities,
         reasoning_efforts: parse_reasoning_efforts(object),
+        default_effort: json_string(object, &["default_effort", "defaultEffort"]),
+        fast_mode: json_bool(object, &["fast_mode", "fastMode", "supports_fast_mode"])
+            .unwrap_or(false),
         source: ModelSource::Remote,
         enabled: true,
     })
@@ -1066,14 +1216,11 @@ struct RegistryFile {
     providers: BTreeMap<String, ProviderConfig>,
     #[serde(default)]
     models: BTreeMap<String, StoredModel>,
-    #[serde(default)]
-    default_model: Option<ModelKey>,
-    #[serde(default)]
     roles: RoleRegistry,
     #[serde(default)]
     model_provider_overrides: BTreeMap<String, ProviderModelOverride>,
-    #[serde(default)]
-    model_configs: BTreeMap<String, ModelConfig>,
+    #[serde(skip)]
+    model_profiles: BTreeMap<String, storage_v2::ModelProfileDisk>,
 }
 
 impl Default for RegistryFile {
@@ -1082,10 +1229,9 @@ impl Default for RegistryFile {
             schema_version: CURRENT_SCHEMA_VERSION,
             providers: BTreeMap::new(),
             models: BTreeMap::new(),
-            default_model: None,
             roles: RoleRegistry::default(),
             model_provider_overrides: BTreeMap::new(),
-            model_configs: BTreeMap::new(),
+            model_profiles: BTreeMap::new(),
         }
     }
 }
@@ -1094,17 +1240,19 @@ impl Default for RegistryFile {
 pub struct ProviderSnapshot {
     pub providers: Vec<ProviderConfig>,
     pub models: Vec<ModelDescriptor>,
-    pub default_model: Option<ModelKey>,
-    #[serde(default)]
     pub model_provider_overrides: BTreeMap<String, ProviderModelOverride>,
+    /// Provider/model-exact experimental controls. This map is populated only
+    /// from `models/providers/<provider>/models.toml`; common presets and
+    /// discovery metadata can never contribute entries.
+    #[serde(default)]
+    pub experimental_model_features: BTreeMap<String, ExperimentalModelFeatures>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum WireApiSource {
     ProviderModelOverride,
-    ModelSetting,
-    DefaultChatCompletions,
+    ProviderDefault,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1131,8 +1279,8 @@ struct ProviderSnapshotProvider<'a> {
 struct ProviderSnapshotWire<'a> {
     providers: Vec<ProviderSnapshotProvider<'a>>,
     models: &'a [ModelDescriptor],
-    default_model: &'a Option<ModelKey>,
     model_provider_overrides: &'a BTreeMap<String, ProviderModelOverride>,
+    experimental_model_features: &'a BTreeMap<String, ExperimentalModelFeatures>,
 }
 
 impl Serialize for ProviderSnapshot {
@@ -1157,8 +1305,8 @@ impl Serialize for ProviderSnapshot {
         ProviderSnapshotWire {
             providers,
             models: &self.models,
-            default_model: &self.default_model,
             model_provider_overrides: &self.model_provider_overrides,
+            experimental_model_features: &self.experimental_model_features,
         }
         .serialize(serializer)
     }
@@ -1190,91 +1338,126 @@ impl ProviderSnapshot {
                 provider: key.provider_id.clone(),
                 model: key.model_id.clone(),
                 wire_api,
-                source: WireApiSource::ModelSetting,
+                source: WireApiSource::ProviderModelOverride,
             });
         }
+        let provider = self
+            .providers
+            .iter()
+            .find(|provider| provider.id == key.provider_id)
+            .ok_or_else(|| ProviderError::ProviderNotFound(key.provider_id.clone()))?;
         Ok(ResolvedWireApi {
             provider: key.provider_id.clone(),
             model: key.model_id.clone(),
-            wire_api: WireApi::ChatCompletions,
-            source: WireApiSource::DefaultChatCompletions,
+            wire_api: WireApi::from_provider_protocol(&provider.protocol),
+            source: WireApiSource::ProviderDefault,
         })
+    }
+
+    /// Resolve an active remote-compaction endpoint for one exact
+    /// Provider/model pair. A configured endpoint is inert unless the exact
+    /// profile enables it and the effective wire API is Responses.
+    pub fn resolve_remote_compaction_endpoint(
+        &self,
+        key: &ModelKey,
+    ) -> Result<Option<String>, ProviderError> {
+        if self.resolve_wire_api(key)?.wire_api != WireApi::Responses {
+            return Ok(None);
+        }
+        let Some(endpoint) = self
+            .experimental_model_features
+            .get(&key.to_string())
+            .and_then(|features| features.remote_compaction.as_ref())
+            .filter(|endpoint| endpoint.enabled)
+        else {
+            return Ok(None);
+        };
+        endpoint.validate()?;
+        Ok(Some(endpoint.endpoint.clone()))
+    }
+
+    /// Resolve an active OpenAI Images-compatible endpoint for one exact
+    /// Provider/model pair. Common presets and discovery metadata never enter
+    /// `experimental_model_features`, so a same-named model under another
+    /// Provider cannot inherit this route.
+    pub fn resolve_image_generation_endpoint(
+        &self,
+        key: &ModelKey,
+    ) -> Result<Option<String>, ProviderError> {
+        if self.resolve_wire_api(key)?.wire_api == WireApi::Messages {
+            return Ok(None);
+        }
+        let Some(endpoint) = self
+            .experimental_model_features
+            .get(&key.to_string())
+            .and_then(|features| features.image_generation.as_ref())
+            .filter(|endpoint| endpoint.enabled)
+        else {
+            return Ok(None);
+        };
+        endpoint.validate()?;
+        Ok(Some(endpoint.endpoint.clone()))
     }
 }
 
 #[derive(Debug, Clone)]
 pub struct ProviderRegistry {
-    path: Option<PathBuf>,
+    paths: Option<storage_v2::RegistryPaths>,
     state: RegistryFile,
 }
 
 impl ProviderRegistry {
     pub fn in_memory() -> Self {
         Self {
-            path: None,
+            paths: None,
             state: RegistryFile::default(),
         }
     }
 
     pub fn load_or_create(path: impl Into<PathBuf>) -> Result<Self, ProviderError> {
-        let path = path.into();
-        if !path.exists() {
-            return Ok(Self {
-                path: Some(path),
-                state: RegistryFile::default(),
-            });
-        }
-        let source = std::fs::read_to_string(&path)?;
-        let state: RegistryFile = toml::from_str(&source)?;
-        if state.schema_version != CURRENT_SCHEMA_VERSION {
-            return Err(ProviderError::InvalidProvider(format!(
-                "unsupported provider registry schema version {}",
-                state.schema_version
-            )));
-        }
-        for provider in state.providers.values() {
-            provider.validate()?;
-        }
+        let paths = storage_v2::RegistryPaths::from_provider_path(path.into());
+        let state = storage_v2::load(&paths)?;
         Ok(Self {
-            path: Some(path),
+            paths: Some(paths),
             state,
         })
     }
 
     pub fn snapshot(&self) -> ProviderSnapshot {
-        let mut model_provider_overrides = self.state.model_provider_overrides.clone();
-        for (model_id, config) in &self.state.model_configs {
-            for (provider_id, override_config) in &config.provider_overrides {
-                model_provider_overrides
-                    .insert(format!("{provider_id}/{model_id}"), override_config.clone());
-            }
-        }
+        let model_provider_overrides = self.state.model_provider_overrides.clone();
+        let experimental_model_features = self
+            .state
+            .model_profiles
+            .iter()
+            .filter_map(|(key, profile)| {
+                (!profile.experimental.is_empty())
+                    .then(|| (key.clone(), profile.experimental.clone()))
+            })
+            .collect();
         ProviderSnapshot {
             providers: self.state.providers.values().cloned().collect(),
             models: self
                 .state
                 .models
                 .values()
-                .map(|stored| {
-                    let mut descriptor = stored.descriptor.clone();
-                    if let Some(wire_api) = self
-                        .state
-                        .model_configs
-                        .get(&descriptor.key.model_id)
-                        .and_then(|config| config.wire_api)
-                    {
-                        descriptor.wire_api = Some(wire_api);
-                    }
-                    descriptor
-                })
+                .map(|stored| stored.descriptor.clone())
                 .collect(),
-            default_model: self.state.default_model.clone(),
             model_provider_overrides,
+            experimental_model_features,
         }
     }
 
     pub fn model_config(&self, model_id: &str) -> Option<ModelConfig> {
-        self.state.model_configs.get(model_id).cloned()
+        self.state
+            .models
+            .values()
+            .find(|stored| stored.descriptor.key.model_id == model_id)
+            .map(|stored| ModelConfig {
+                id: model_id.to_owned(),
+                display_name: stored.descriptor.display_name.clone(),
+                wire_api: stored.descriptor.wire_api,
+                provider_overrides: BTreeMap::new(),
+            })
     }
 
     pub fn providers(&self) -> impl Iterator<Item = &ProviderConfig> {
@@ -1363,16 +1546,9 @@ impl ProviderRegistry {
 
     pub fn model_provider_override(&self, key: &ModelKey) -> Option<ProviderModelOverride> {
         self.state
-            .model_configs
-            .get(&key.model_id)
-            .and_then(|config| config.provider_overrides.get(&key.provider_id))
+            .model_provider_overrides
+            .get(&key.to_string())
             .cloned()
-            .or_else(|| {
-                self.state
-                    .model_provider_overrides
-                    .get(&key.to_string())
-                    .cloned()
-            })
     }
 
     pub fn set_model_wire_api(
@@ -1386,13 +1562,28 @@ impl ProviderRegistry {
             .get_mut(&key.to_string())
             .ok_or_else(|| ProviderError::ModelNotFound(key.to_string()))?;
         stored.descriptor.wire_api = wire_api;
-        let display_name = stored.descriptor.display_name.clone();
-        let config = self
+        let profile = self
             .state
-            .model_configs
-            .entry(key.model_id.clone())
-            .or_insert_with(|| ModelConfig::new(key.model_id.clone(), display_name));
-        config.wire_api = wire_api;
+            .model_profiles
+            .entry(key.to_string())
+            .or_default();
+        profile.wire_api = wire_api;
+        if let Some(wire_api) = wire_api {
+            self.state
+                .model_provider_overrides
+                .entry(key.to_string())
+                .or_insert_with(ProviderModelOverride::empty)
+                .wire_api = Some(wire_api);
+        } else if let Some(override_config) = self
+            .state
+            .model_provider_overrides
+            .get_mut(&key.to_string())
+        {
+            override_config.wire_api = None;
+            if override_config.payload.is_empty() {
+                self.state.model_provider_overrides.remove(&key.to_string());
+            }
+        }
         Ok(())
     }
 
@@ -1407,25 +1598,21 @@ impl ProviderRegistry {
         }
         if override_config.wire_api.is_none() && override_config.payload.is_empty() {
             self.state.model_provider_overrides.remove(&key.to_string());
-            if let Some(config) = self.state.model_configs.get_mut(&key.model_id) {
-                config.provider_overrides.remove(&key.provider_id);
-                if config.wire_api.is_none() && config.provider_overrides.is_empty() {
-                    self.state.model_configs.remove(&key.model_id);
-                }
-            }
-        } else {
-            let display_name = self
+            let profile = self
                 .state
-                .models
-                .get(&key.to_string())
-                .map(|stored| stored.descriptor.display_name.clone())
-                .unwrap_or_else(|| key.model_id.clone());
-            self.state
-                .model_configs
-                .entry(key.model_id.clone())
-                .or_insert_with(|| ModelConfig::new(key.model_id.clone(), display_name))
-                .provider_overrides
-                .insert(key.provider_id.clone(), override_config.clone());
+                .model_profiles
+                .entry(key.to_string())
+                .or_default();
+            profile.wire_api = None;
+            profile.payload.clear();
+        } else {
+            let profile = self
+                .state
+                .model_profiles
+                .entry(key.to_string())
+                .or_default();
+            profile.wire_api = override_config.wire_api;
+            profile.payload = override_config.payload.clone();
             self.state
                 .model_provider_overrides
                 .insert(key.to_string(), override_config);
@@ -1440,26 +1627,35 @@ impl ProviderRegistry {
         if !self.state.models.contains_key(&key.to_string()) {
             return Err(ProviderError::ModelNotFound(key.to_string()));
         }
-        let legacy_removed = self
+        let removed = self
             .state
             .model_provider_overrides
             .remove(&key.to_string())
             .is_some();
-        let nested_removed = self
-            .state
-            .model_configs
-            .get_mut(&key.model_id)
-            .map(|config| config.provider_overrides.remove(&key.provider_id).is_some())
-            .unwrap_or(false);
-        Ok(legacy_removed || nested_removed)
+        if let Some(profile) = self.state.model_profiles.get_mut(&key.to_string()) {
+            profile.wire_api = None;
+            profile.payload.clear();
+        }
+        Ok(removed)
     }
 
     pub fn resolve_wire_api(&self, key: &ModelKey) -> Result<ResolvedWireApi, ProviderError> {
         self.snapshot().resolve_wire_api(key)
     }
 
-    pub fn default_model(&self) -> Option<&ModelKey> {
-        self.state.default_model.as_ref()
+    pub fn experimental_model_features(
+        &self,
+        key: &ModelKey,
+    ) -> Result<ExperimentalModelFeatures, ProviderError> {
+        if !self.state.models.contains_key(&key.to_string()) {
+            return Err(ProviderError::ModelNotFound(key.to_string()));
+        }
+        Ok(self
+            .state
+            .model_profiles
+            .get(&key.to_string())
+            .map(|profile| profile.experimental.clone())
+            .unwrap_or_default())
     }
 
     pub fn upsert_provider(&mut self, config: ProviderConfig) -> Result<(), ProviderError> {
@@ -1478,14 +1674,9 @@ impl ProviderRegistry {
         self.state
             .model_provider_overrides
             .retain(|key, _| !key.starts_with(&format!("{provider_id}/")));
-        for config in self.state.model_configs.values_mut() {
-            config.provider_overrides.remove(provider_id);
-        }
         self.state
-            .model_configs
-            .retain(|_, config| config.wire_api.is_some() || !config.provider_overrides.is_empty());
-        // Deliberately preserve default_model. A deleted provider must surface
-        // as unavailable instead of silently switching to another provider.
+            .model_profiles
+            .retain(|key, _| !key.starts_with(&format!("{provider_id}/")));
         Ok(())
     }
 
@@ -1523,6 +1714,7 @@ impl ProviderRegistry {
             ));
         }
         let id = descriptor.key.to_string();
+        let persist_profile = descriptor.source != ModelSource::Remote;
         let overrides = self
             .state
             .models
@@ -1542,7 +1734,7 @@ impl ProviderRegistry {
             descriptor.source = ModelSource::UserOverride;
         }
         self.state.models.insert(
-            id,
+            id.clone(),
             StoredModel {
                 descriptor,
                 overrides,
@@ -1550,6 +1742,25 @@ impl ProviderRegistry {
                 base_source: Some(base_source),
             },
         );
+        if persist_profile {
+            let stored = &self.state.models[&id].descriptor;
+            self.state.model_profiles.insert(
+                id,
+                storage_v2::ModelProfileDisk {
+                    display_name: Some(stored.display_name.clone()),
+                    description: stored.description.clone(),
+                    wire_api: stored.wire_api,
+                    context_window: stored.context_window,
+                    reasoning_efforts: stored.reasoning_efforts.clone(),
+                    default_effort: stored.default_effort.clone(),
+                    fast_mode: Some(stored.fast_mode),
+                    capabilities: CapabilityOverrides::from_capabilities(&stored.capabilities),
+                    payload: Map::new(),
+                    enabled: Some(stored.enabled),
+                    experimental: ExperimentalModelFeatures::default(),
+                },
+            );
+        }
         Ok(())
     }
 
@@ -1617,6 +1828,11 @@ impl ProviderRegistry {
             .clone()
             .unwrap_or_else(|| stored.descriptor.source.clone());
         stored.overrides = overrides;
+        self.state
+            .model_profiles
+            .entry(key.to_string())
+            .or_default()
+            .capabilities = stored.overrides.clone();
         stored.base_capabilities = Some(base_capabilities.clone());
         stored.descriptor.capabilities = stored.overrides.apply_to(base_capabilities);
         stored.descriptor.source = if stored.overrides.is_empty() {
@@ -1627,16 +1843,6 @@ impl ProviderRegistry {
         Ok(())
     }
 
-    pub fn set_default_model(&mut self, key: Option<ModelKey>) -> Result<(), ProviderError> {
-        if let Some(key) = &key
-            && !self.state.models.contains_key(&key.to_string())
-        {
-            return Err(ProviderError::ModelNotFound(key.to_string()));
-        }
-        self.state.default_model = key;
-        Ok(())
-    }
-
     pub fn save(&self) -> Result<(), ProviderError> {
         for provider in self.state.providers.values() {
             provider.validate()?;
@@ -1644,25 +1850,14 @@ impl ProviderRegistry {
         for override_config in self.state.model_provider_overrides.values() {
             override_config.validate()?;
         }
-        for config in self.state.model_configs.values() {
-            for override_config in config.provider_overrides.values() {
-                override_config.validate()?;
-            }
-        }
         self.state.roles.validate()?;
-        let path = self.path.as_ref().ok_or_else(|| {
+        let paths = self.paths.as_ref().ok_or_else(|| {
             ProviderError::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
                 "in-memory provider registry has no persistence path",
             ))
         })?;
-        let parent = path.parent().unwrap_or_else(|| Path::new("."));
-        std::fs::create_dir_all(parent)?;
-        let content = toml::to_string_pretty(&self.state)?;
-        let mut temp = tempfile::NamedTempFile::new_in(parent)?;
-        temp.write_all(content.as_bytes())?;
-        temp.as_file().sync_all()?;
-        persist_provider_temp_file(temp, path)
+        storage_v2::save(paths, &self.state)
     }
 }
 
@@ -1720,6 +1915,9 @@ pub mod rpc {
     pub const PROVIDER_DELETE: &str = "_atelier/provider/delete";
     pub const PROVIDER_TEST: &str = "_atelier/provider/test";
     pub const PROVIDER_REFRESH_MODELS: &str = "_atelier/provider/refresh_models";
+    pub const PROVIDER_OAUTH_BEGIN: &str = "_atelier/provider/oauth_begin";
+    pub const PROVIDER_OAUTH_COMPLETE: &str = "_atelier/provider/oauth_complete";
+    pub const PROVIDER_OAUTH_LOGOUT: &str = "_atelier/provider/oauth_logout";
     pub const MODEL_LIST: &str = "_atelier/model/list";
     pub const MODEL_UPDATE: &str = "_atelier/model/update";
     pub const MODEL_GET: &str = "_atelier/model/get";
@@ -1728,7 +1926,6 @@ pub mod rpc {
     pub const MODEL_PROVIDER_OVERRIDE_SET: &str = "_atelier/model_provider_override/set";
     pub const MODEL_PROVIDER_OVERRIDE_DELETE: &str = "_atelier/model_provider_override/delete";
     pub const MODEL_PROVIDER_OVERRIDE_TEST: &str = "_atelier/model_provider_override/test";
-    pub const MODEL_SET_DEFAULT: &str = "_atelier/model/set_default";
     pub const CREDENTIAL_STATUS: &str = "_atelier/credential/status";
     pub const CREDENTIAL_SET: &str = "_atelier/credential/set";
     pub const CREDENTIAL_DELETE: &str = "_atelier/credential/delete";

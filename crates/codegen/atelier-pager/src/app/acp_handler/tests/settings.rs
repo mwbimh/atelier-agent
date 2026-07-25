@@ -73,7 +73,7 @@
         let user_config = atelier_shell::config::load_from_disk().ok();
         let managed_config = atelier_shell::config::load_managed_config().ok();
         let resolve = |remote_val: Option<bool>| {
-            let remote = atelier_shell::util::config::RemoteSettings {
+            let remote = atelier_shell::util::config::LocalRuntimeSettings {
                 group_tool_verbs: remote_val,
                 ..Default::default()
             };
@@ -128,7 +128,7 @@
         let user_config = atelier_shell::config::load_from_disk().ok();
         let managed_config = atelier_shell::config::load_managed_config().ok();
         let resolve = |remote_val: Option<bool>| {
-            let remote = atelier_shell::util::config::RemoteSettings {
+            let remote = atelier_shell::util::config::LocalRuntimeSettings {
                 collapsed_edit_blocks: remote_val,
                 ..Default::default()
             };
@@ -334,7 +334,7 @@
 
         let mut leave_auto_notifs = 0;
         while let Ok(msg) = rx.try_recv() {
-            if let xai_acp_lib::AcpAgentMessage::ExtNotification(args) = msg {
+            if let atelier_acp_runtime::AcpAgentMessage::ExtNotification(args) = msg {
                 if args.request.method.as_ref() != "atelier/yolo_mode_changed" {
                     continue;
                 }

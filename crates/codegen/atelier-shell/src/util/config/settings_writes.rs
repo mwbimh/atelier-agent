@@ -80,28 +80,8 @@ pub async fn set_auto_light_theme(value: String) -> Result<()> {
     update_config(|cfg| cfg.ui.auto_light_theme = Some(value)).await
 }
 
-/// Maximum length (in bytes) accepted by [`set_default_model`].
-/// Defense against callers bypassing catalog validation.
+/// Maximum length accepted for a model-valued UI setting.
 pub const MAX_DEFAULT_MODEL_LEN: usize = 256;
-
-/// Persist `[models].default` and dismiss any active campaign nudging it (an
-/// explicit user pick wins over the soft campaign default).
-///
-/// This is the only sanctioned writer of `models.default`; it routes through
-/// [`super::campaigns::persist_models_default`] so a user pick always dismisses
-/// an active campaign. Do not persist `models.default` via raw `update_config`,
-/// or a campaign would keep overriding the user's choice.
-///
-/// Caller must validate `value` against the model catalog first.
-/// Empty string clears the field (falls back to remote/built-in default).
-/// Length over [`MAX_DEFAULT_MODEL_LEN`] returns `Err`.
-pub async fn set_default_model(value: String) -> Result<()> {
-    super::campaigns::persist_models_default(
-        if value.is_empty() { None } else { Some(value) },
-        None,
-    )
-    .await
-}
 
 /// Persist `[ui].fork_secondary_model` via `update_config`.
 ///

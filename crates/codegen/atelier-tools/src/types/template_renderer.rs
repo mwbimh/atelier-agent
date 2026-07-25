@@ -254,12 +254,12 @@ impl TemplateRenderer {
     pub async fn resolve(
         resources: &crate::types::resources::SharedResources,
         template: &str,
-    ) -> Result<String, xai_tool_runtime::ToolError> {
+    ) -> Result<String, atelier_tool_runtime::ToolError> {
         let res = resources.lock().await;
         let renderer = res.require::<Self>()?;
         renderer
             .render(template)
-            .map_err(|e| xai_tool_runtime::ToolError::invalid_arguments(e.to_string()))
+            .map_err(|e| atelier_tool_runtime::ToolError::invalid_arguments(e.to_string()))
     }
 
     /// Look up a tool's client-facing name by kind from shared resources.

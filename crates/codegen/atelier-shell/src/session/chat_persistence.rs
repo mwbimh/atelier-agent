@@ -3,9 +3,9 @@
 //! Wraps an `mpsc::UnboundedSender<PersistenceMsg>` and translates
 //! `ChatPersistence` trait calls into the appropriate `PersistenceMsg` variants.
 
+use atelier_chat_state::ChatPersistence;
 use atelier_sampling_types::ConversationItem;
 use tokio::sync::mpsc;
-use xai_chat_state::ChatPersistence;
 
 use super::persistence::PersistenceMsg;
 

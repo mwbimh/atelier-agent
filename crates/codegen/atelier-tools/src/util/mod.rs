@@ -18,6 +18,7 @@ pub mod truncate;
 pub mod unicode_confusables;
 
 pub use atelier_home::{atelier_application, atelier_home};
+pub use atelier_tty_utils::detach_std_command;
 pub use command_display::strip_redundant_session_cd;
 #[cfg(unix)]
 pub use env::detach_from_tty;
@@ -33,4 +34,3 @@ pub use truncate::{
     DEFAULT_SOFT_WRAP_WIDTH, ceil_char_boundary, estimate_tokens, floor_char_boundary,
     soft_wrap_line, soft_wrap_lines, truncate_line, truncate_str, truncate_str_with_marker,
 };
-pub use xai_tty_utils::detach_std_command;

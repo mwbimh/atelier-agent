@@ -282,7 +282,7 @@ async fn check_server_start(
     cwd: &Path,
 ) -> Result<(mcp_servers::McpClient, Check), Check> {
     let start = std::time::Instant::now();
-    let noop = xai_file_utils::events::EventWriter::noop();
+    let noop = atelier_runtime_events::events::EventWriter::noop();
     match mcp_servers::start_mcp_server(
         acp_server,
         None,
@@ -474,7 +474,7 @@ pub async fn run_doctor(cwd: &Path, name_filter: Option<&str>) -> DoctorReport {
     // name primitive as the session/agent-pool gates.
     //
     // `remote = None` is intentional: standalone `atelier mcp doctor` has no loaded
-    // `RemoteSettings`, so a remote-only org `folder_trust_enabled = false`
+    // `LocalRuntimeSettings`, so a remote-only org `folder_trust_enabled = false`
     // opt-out isn't seen here — gating conservatively (treating the feature as
     // enabled) is the deliberate fail-secure direction. Local env/user/managed
     // config disable is still honored by `feature_enabled`.

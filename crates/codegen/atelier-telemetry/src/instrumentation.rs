@@ -13,7 +13,7 @@ use tracing_subscriber::fmt::writer::BoxMakeWriter;
 use tracing_subscriber::layer::{Context, Layer};
 use tracing_subscriber::registry::LookupSpan;
 
-use atelier_config::atelier_home;
+use crate::home::atelier_home;
 
 const ENV_ENABLED: &str = "ATELIER_INSTRUMENTATION";
 const ENV_LOG_PATH: &str = "ATELIER_INSTRUMENTATION_LOG";
@@ -28,7 +28,6 @@ pub enum InstrumentationMode {
     Disabled,
     Log,
     Chrome,
-    Server,
 }
 
 static INSTRUMENTATION_MODE: OnceLock<InstrumentationMode> = OnceLock::new();
@@ -44,7 +43,6 @@ fn mode() -> InstrumentationMode {
                     Some(InstrumentationMode::Log)
                 }
                 "chrome" | "trace" | "trace.json" => Some(InstrumentationMode::Chrome),
-                "server" => Some(InstrumentationMode::Server),
                 "" | "0" | "false" | "off" | "disabled" | "none" => {
                     Some(InstrumentationMode::Disabled)
                 }
@@ -57,8 +55,7 @@ fn mode() -> InstrumentationMode {
             return mode;
         }
 
-        // Send instrumentation to the configured OpenTelemetry endpoint by default
-        InstrumentationMode::Server
+        InstrumentationMode::Log
     })
 }
 
@@ -82,10 +79,7 @@ fn default_output_path(mode: InstrumentationMode) -> PathBuf {
     let root = atelier_home().join(DEFAULT_LOG_DIR);
     match mode {
         InstrumentationMode::Chrome => root.join(DEFAULT_TRACE_FILE),
-        // Server uses OTLP export, not file output
-        InstrumentationMode::Log | InstrumentationMode::Disabled | InstrumentationMode::Server => {
-            root.join(DEFAULT_LOG_FILE)
-        }
+        InstrumentationMode::Log | InstrumentationMode::Disabled => root.join(DEFAULT_LOG_FILE),
     }
 }
 
@@ -326,10 +320,7 @@ where
     match mode {
         InstrumentationMode::Chrome => build_chrome_layer(),
         InstrumentationMode::Log => build_log_layer(mode),
-        // Server uses the OTEL layer in tracing.rs, not this instrumentation layer
-        InstrumentationMode::Disabled | InstrumentationMode::Server => {
-            build_log_layer(InstrumentationMode::Disabled)
-        }
+        InstrumentationMode::Disabled => build_log_layer(InstrumentationMode::Disabled),
     }
 }
 
@@ -351,7 +342,7 @@ pub fn install_panic_hook() {
             .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()));
         // `location` is the panic's source `file:line:col` (no user content);
         // path-scrubbed by the redact layer. Gives the panic counter a place
-        // to point without exporting the message/stack.
+        // to point without recording the message/stack.
         let err_span = tracing::info_span!(
             "internal_error",
             error_type = "panic",
@@ -361,12 +352,6 @@ pub fn install_panic_hook() {
             err_span.record("location", loc);
         }
         err_span.in_scope(|| {});
-        // External OTEL stream: error class only — no message, no location
-        // (RQ5). Synchronous queue hand-off; no-op unless the stream is
-        // active. The internal pipelines keep the richer span/event above.
-        crate::external::emit(&crate::events::InternalError {
-            error_type: "panic".to_owned(),
-        });
         tracing::error!(
             error_type = "panic",
             panic.message = %message,

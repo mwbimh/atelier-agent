@@ -18,9 +18,9 @@ use crate::session::goal_planner::{
     spawn_with_fail_open_retry,
 };
 use crate::session::goal_role_tools::RoleToolNames;
+use atelier_runtime_events::events::EventWriter;
 use std::path::Path;
 use std::sync::Arc;
-use xai_file_utils::events::EventWriter;
 
 // Constants
 
@@ -34,6 +34,13 @@ const GOAL_SUMMARIZER_SUBAGENT_TYPE: &str = GOAL_ROLE_SUBAGENT_TYPE;
 pub(crate) const GOAL_SUMMARIZER_SUBAGENT_DESCRIPTION: &str = "goal summarizer";
 
 const GOAL_SUMMARIZER_PROMPT_TEMPLATE: &str = include_str!("templates/goal_summarizer_prompt.md");
+
+fn goal_summarizer_prompt_template() -> String {
+    atelier_config::runtime_defaults::runtime_context_prompt(
+        atelier_config::runtime_defaults::ContextPrompt::GoalSummary,
+        GOAL_SUMMARIZER_PROMPT_TEMPLATE,
+    )
+}
 
 /// Hard backstop on the surfaced summary length, in chars (`chars().take` is
 /// char-boundary-safe). Sits well above a compliant summary — it only clips a
@@ -89,7 +96,7 @@ pub(crate) struct ChannelSpawner {
     pub(crate) cwd: Option<String>,
     /// Trace-artifact sink + resolved `task` tool name; `None` disables
     /// recording. See [`crate::session::goal_classifier::record_subagent_trace`].
-    pub(crate) trace_sink: Option<(xai_chat_state::ChatStateHandle, String)>,
+    pub(crate) trace_sink: Option<(atelier_chat_state::ChatStateHandle, String)>,
     /// Event sink for the spawn-and-retry-once fail-open telemetry; `None` in
     /// tests / when no event log is wired.
     pub(crate) events: Option<EventWriter>,
@@ -155,10 +162,10 @@ impl ChannelSpawner {
         model: Option<String>,
         harness_agent_type: Option<String>,
     ) -> Result<String, SpawnError> {
+        use atelier_tool_types::SubagentCapabilityMode;
         use atelier_tools::implementations::atelier_build::task::types::{
             SubagentEvent, SubagentRequest, SubagentRuntimeOverrides,
         };
-        use xai_tool_types::SubagentCapabilityMode;
         let (result_tx, result_rx) = tokio::sync::oneshot::channel();
         let request = SubagentRequest {
             id: id.to_string(),
@@ -242,7 +249,7 @@ pub(crate) async fn run_goal_summarizer(
     let plan_file_str = inputs.plan_file.to_string_lossy();
     let details_str = inputs.details_file.unwrap_or("(unavailable)");
     let traces_dir_str = inputs.session_traces_dir.to_string_lossy();
-    let with_paths = GOAL_SUMMARIZER_PROMPT_TEMPLATE
+    let with_paths = goal_summarizer_prompt_template()
         .replace("{PLAN_FILE}", &plan_file_str)
         .replace("{DETAILS_FILE}", details_str)
         .replace("{SESSION_TRACES_DIR}", &traces_dir_str);
@@ -631,10 +638,10 @@ mod tests {
 
     #[tokio::test]
     async fn channel_spawner_request_is_harness_internal_and_read_only() {
+        use atelier_tool_types::SubagentCapabilityMode;
         use atelier_tools::implementations::atelier_build::task::types::{
             SubagentEvent, SubagentResult,
         };
-        use xai_tool_types::SubagentCapabilityMode;
 
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let spawner = ChannelSpawner {

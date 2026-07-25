@@ -25,11 +25,11 @@ async fn persist_ack_waits_for_disk_flush_before_success() {
             ));
             let terminal = Arc::new(DummyTerminal {});
             let (hunk_tx, _hunk_rx) = tokio::sync::mpsc::unbounded_channel();
-            let hunk_tracker_handle = xai_hunk_tracker::HunkTrackerActor::spawn(
+            let hunk_tracker_handle = atelier_hunk_tracker::HunkTrackerActor::spawn(
                 "test-persist-ack".to_string(),
                 cwd.to_path_buf(),
                 hunk_tx,
-                xai_hunk_tracker::TrackingMode::AgentOnly,
+                atelier_hunk_tracker::TrackingMode::AgentOnly,
                 tokio_util::sync::CancellationToken::new(),
             );
             let tool_context =
@@ -46,6 +46,8 @@ async fn persist_ack_waits_for_disk_flush_before_success() {
                 temperature: None,
                 top_p: None,
                 request_payload: Default::default(),
+                remote_compaction_endpoint: None,
+                image_generation_endpoint: None,
                 api_backend: Default::default(),
                 auth_scheme: Default::default(),
                 extra_headers: Default::default(),
@@ -82,10 +84,10 @@ async fn persist_ack_waits_for_disk_flush_before_success() {
             .await
             .expect("persistence actor should start");
             let (gateway_tx, _gateway_rx) =
-                tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                tokio::sync::mpsc::unbounded_channel::<atelier_acp_runtime::AcpClientMessage>();
             let (event_tx, _event_rx) = tokio::sync::mpsc::unbounded_channel::<SessionEvent>();
             let (chat_event_tx, _chat_event_rx) = tokio::sync::mpsc::unbounded_channel();
-            let chat_state_handle = xai_chat_state::ChatStateActor::spawn(
+            let chat_state_handle = atelier_chat_state::ChatStateActor::spawn(
                 vec![],
                 atelier_sampling_types::SamplingConfig {
                     base_url: "http://localhost".to_string(),
@@ -141,6 +143,8 @@ async fn persist_ack_waits_for_disk_flush_before_success() {
                 turn_prompt_mode: Arc::new(parking_lot::Mutex::new(PromptMode::Agent)),
                 telemetry_enabled: false,
                 role_request_payload: std::cell::RefCell::new(serde_json::Map::new()),
+                remote_compaction_endpoint: std::cell::RefCell::new(None),
+                image_generation_endpoint: std::cell::RefCell::new(None),
                 supports_backend_search: std::cell::Cell::new(false),
                 compactions_remaining: std::cell::Cell::new(None),
                 compaction_at_tokens: std::cell::Cell::new(None),
@@ -157,7 +161,7 @@ async fn persist_ack_waits_for_disk_flush_before_success() {
                     count: std::sync::atomic::AtomicU64::new(0),
                     auto_compact_suppressed: std::sync::atomic::AtomicU8::new(0),
                     previous_model: std::cell::Cell::new(None),
-                    compaction_mode: xai_chat_state::CompactionMode::Transcript,
+                    compaction_mode: atelier_chat_state::CompactionMode::Transcript,
                     verbatim_input: true,
                     prefire: crate::session::compaction_config::PrefireState::default(),
                     prefix_released: std::sync::atomic::AtomicBool::new(false),
@@ -198,7 +202,6 @@ async fn persist_ack_waits_for_disk_flush_before_success() {
                 client_identifier: None,
                 origin_client: None,
                 feedback_manager: Arc::new(FeedbackManager::local_only("test-session")),
-                upload_queue: Arc::new(OnceLock::new()),
                 sync_loop_cancel: None,
                 agent: std::cell::RefCell::new(test_agent_default().await),
                 last_reported_branch: std::sync::Arc::new(parking_lot::Mutex::new(None)),
@@ -256,7 +259,7 @@ async fn persist_ack_waits_for_disk_flush_before_success() {
                 user_input_generation: std::sync::atomic::AtomicU64::new(0),
                 laziness_debug_log: None,
                 deferred_prefix: TaskSlot::new(),
-                extension_registry: xai_agent_lifecycle::LocalExtensionRegistry::default(),
+                extension_registry: atelier_agent_lifecycle::LocalExtensionRegistry::default(),
                 last_announced_local_date: std::cell::Cell::new(chrono::Local::now().date_naive()),
                 last_search_prompt_index: std::sync::atomic::AtomicI64::new(-1),
                 last_api_request_at: std::sync::atomic::AtomicI64::new(0),
@@ -285,7 +288,6 @@ async fn persist_ack_waits_for_disk_flush_before_success() {
                 subagent_spawn_info: parking_lot::Mutex::new(HashMap::new()),
                 subagent_token_records: parking_lot::Mutex::new(HashMap::new()),
                 workspace_ops: atelier_workspace::WorkspaceOps::for_test(),
-                trace_config_template: std::cell::RefCell::new(None),
             });
             let prompt_blocks = vec![acp::ContentBlock::Text(acp::TextContent::new(
                 "hello persist".to_string(),
@@ -298,8 +300,6 @@ async fn persist_ack_waits_for_disk_flush_before_success() {
                         "persist-ack-test",
                         prompt_blocks,
                         PromptMode::Agent,
-                        None,
-                        None,
                         None,
                         None,
                         true,
@@ -347,6 +347,8 @@ async fn first_turn_memory_injection_persists_to_chat_history() {
                 temperature: None,
                 top_p: None,
                 request_payload: Default::default(),
+                remote_compaction_endpoint: None,
+                image_generation_endpoint: None,
                 api_backend: Default::default(),
                 auth_scheme: Default::default(),
                 context_window: 100_000,
@@ -383,7 +385,7 @@ async fn first_turn_memory_injection_persists_to_chat_history() {
             .expect("persistence actor should start");
             let (_event_tx, _event_rx) = tokio::sync::mpsc::unbounded_channel::<SessionEvent>();
             let (chat_event_tx, _chat_event_rx) = tokio::sync::mpsc::unbounded_channel();
-            let chat_state_handle = xai_chat_state::ChatStateActor::spawn(
+            let chat_state_handle = atelier_chat_state::ChatStateActor::spawn(
                 vec![
                     ConversationItem::system("sys"),
                     ConversationItem::user("<user_info>OS Version: macos</user_info>"),
@@ -464,11 +466,11 @@ async fn first_turn_memory_injection_disabled_does_not_persist_to_chat_history()
             ));
             let terminal = Arc::new(DummyTerminal {});
             let (hunk_tx, _hunk_rx) = tokio::sync::mpsc::unbounded_channel();
-            let hunk_tracker_handle = xai_hunk_tracker::HunkTrackerActor::spawn(
+            let hunk_tracker_handle = atelier_hunk_tracker::HunkTrackerActor::spawn(
                 "test-memory-disabled".to_string(),
                 cwd.to_path_buf(),
                 hunk_tx,
-                xai_hunk_tracker::TrackingMode::AgentOnly,
+                atelier_hunk_tracker::TrackingMode::AgentOnly,
                 tokio_util::sync::CancellationToken::new(),
             );
             let tool_context =
@@ -482,6 +484,8 @@ async fn first_turn_memory_injection_disabled_does_not_persist_to_chat_history()
                 temperature: None,
                 top_p: None,
                 request_payload: Default::default(),
+                remote_compaction_endpoint: None,
+                image_generation_endpoint: None,
                 api_backend: Default::default(),
                 auth_scheme: Default::default(),
                 context_window: 100_000,
@@ -517,7 +521,7 @@ async fn first_turn_memory_injection_disabled_does_not_persist_to_chat_history()
             .await
             .expect("persistence actor should start");
             let (gateway_tx, _gateway_rx) =
-                tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                tokio::sync::mpsc::unbounded_channel::<atelier_acp_runtime::AcpClientMessage>();
             let (chat_event_tx, _chat_event_rx) = tokio::sync::mpsc::unbounded_channel();
             let initial_conversation = vec![
                 ConversationItem::system("sys"),
@@ -525,7 +529,7 @@ async fn first_turn_memory_injection_disabled_does_not_persist_to_chat_history()
                     "<user_info>OS Version: macos</user_info>\n\n<user_query>hello</user_query>",
                 ),
             ];
-            let chat_state_handle = xai_chat_state::ChatStateActor::spawn(
+            let chat_state_handle = atelier_chat_state::ChatStateActor::spawn(
                 initial_conversation.clone(),
                 atelier_sampling_types::SamplingConfig {
                     base_url: "http://localhost".to_string(),
@@ -598,6 +602,8 @@ async fn first_turn_memory_injection_disabled_does_not_persist_to_chat_history()
                 turn_prompt_mode: Arc::new(parking_lot::Mutex::new(PromptMode::Agent)),
                 telemetry_enabled: false,
                 role_request_payload: std::cell::RefCell::new(serde_json::Map::new()),
+                remote_compaction_endpoint: std::cell::RefCell::new(None),
+                image_generation_endpoint: std::cell::RefCell::new(None),
                 supports_backend_search: std::cell::Cell::new(false),
                 compactions_remaining: std::cell::Cell::new(None),
                 compaction_at_tokens: std::cell::Cell::new(None),
@@ -614,7 +620,7 @@ async fn first_turn_memory_injection_disabled_does_not_persist_to_chat_history()
                     count: std::sync::atomic::AtomicU64::new(0),
                     auto_compact_suppressed: std::sync::atomic::AtomicU8::new(0),
                     previous_model: std::cell::Cell::new(None),
-                    compaction_mode: xai_chat_state::CompactionMode::Transcript,
+                    compaction_mode: atelier_chat_state::CompactionMode::Transcript,
                     verbatim_input: true,
                     prefire: crate::session::compaction_config::PrefireState::default(),
                     prefix_released: std::sync::atomic::AtomicBool::new(false),
@@ -658,7 +664,6 @@ async fn first_turn_memory_injection_disabled_does_not_persist_to_chat_history()
                 client_identifier: None,
                 origin_client: None,
                 feedback_manager: Arc::new(FeedbackManager::local_only("test-session")),
-                upload_queue: Arc::new(OnceLock::new()),
                 sync_loop_cancel: None,
                 agent: std::cell::RefCell::new(test_agent_default().await),
                 last_reported_branch: std::sync::Arc::new(parking_lot::Mutex::new(None)),
@@ -716,7 +721,7 @@ async fn first_turn_memory_injection_disabled_does_not_persist_to_chat_history()
                 user_input_generation: std::sync::atomic::AtomicU64::new(0),
                 laziness_debug_log: None,
                 deferred_prefix: TaskSlot::new(),
-                extension_registry: xai_agent_lifecycle::LocalExtensionRegistry::default(),
+                extension_registry: atelier_agent_lifecycle::LocalExtensionRegistry::default(),
                 last_announced_local_date: std::cell::Cell::new(chrono::Local::now().date_naive()),
                 last_search_prompt_index: std::sync::atomic::AtomicI64::new(-1),
                 last_api_request_at: std::sync::atomic::AtomicI64::new(0),
@@ -745,10 +750,9 @@ async fn first_turn_memory_injection_disabled_does_not_persist_to_chat_history()
                 subagent_spawn_info: parking_lot::Mutex::new(HashMap::new()),
                 subagent_token_records: parking_lot::Mutex::new(HashMap::new()),
                 workspace_ops: atelier_workspace::WorkspaceOps::for_test(),
-                trace_config_template: std::cell::RefCell::new(None),
             });
             let _ = actor
-                .process_conversation_turn_with_recovery("disabled-memory", None, None, None)
+                .process_conversation_turn_with_recovery("disabled-memory", None)
                 .await;
             let (flush_tx, flush_rx) = tokio::sync::oneshot::channel();
             persistence
@@ -789,7 +793,7 @@ async fn cancel_running_task_teardown_clears_running_and_pending_work() {
     local
         .run_until(async {
             let (gateway_tx, _gateway_rx) = tokio::sync::mpsc::unbounded_channel::<
-                xai_acp_lib::AcpClientMessage,
+                atelier_acp_runtime::AcpClientMessage,
             >();
             let (persistence_tx, _persistence_rx) = tokio::sync::mpsc::unbounded_channel::<
                 PersistenceMsg,
@@ -800,11 +804,11 @@ async fn cancel_running_task_teardown_clears_running_and_pending_work() {
             );
             let terminal = Arc::new(DummyTerminal {});
             let (hunk_tx, _hunk_rx) = tokio::sync::mpsc::unbounded_channel();
-            let hunk_tracker_handle = xai_hunk_tracker::HunkTrackerActor::spawn(
+            let hunk_tracker_handle = atelier_hunk_tracker::HunkTrackerActor::spawn(
                 "test-cancel".to_string(),
                 cwd.to_path_buf(),
                 hunk_tx,
-                xai_hunk_tracker::TrackingMode::AgentOnly,
+                atelier_hunk_tracker::TrackingMode::AgentOnly,
                 tokio_util::sync::CancellationToken::new(),
             );
             let tool_context = ToolContext::new(
@@ -857,7 +861,7 @@ async fn cancel_running_task_teardown_clears_running_and_pending_work() {
                 deny_read_globs: Vec::new(),
                 mcp_state: Arc::new(TokioMutex::new(McpState::new(vec![]))),
                 mcp_strategy: McpInitStrategy::Blocking,
-                chat_state_handle: xai_chat_state::ChatStateHandle::noop(),
+                chat_state_handle: atelier_chat_state::ChatStateHandle::noop(),
                 current_prompt_id: std::sync::Arc::new(
                     std::sync::Mutex::new(Some("running".to_string())),
                 ),
@@ -871,6 +875,8 @@ async fn cancel_running_task_teardown_clears_running_and_pending_work() {
                 turn_prompt_mode: Arc::new(parking_lot::Mutex::new(PromptMode::Agent)),
                 telemetry_enabled: false,
                 role_request_payload: std::cell::RefCell::new(serde_json::Map::new()),
+                remote_compaction_endpoint: std::cell::RefCell::new(None),
+                image_generation_endpoint: std::cell::RefCell::new(None),
                 supports_backend_search: std::cell::Cell::new(false),
                 compactions_remaining: std::cell::Cell::new(None),
                 compaction_at_tokens: std::cell::Cell::new(None),
@@ -889,7 +895,7 @@ async fn cancel_running_task_teardown_clears_running_and_pending_work() {
                     count: std::sync::atomic::AtomicU64::new(0),
                     auto_compact_suppressed: std::sync::atomic::AtomicU8::new(0),
                     previous_model: std::cell::Cell::new(None),
-                    compaction_mode: xai_chat_state::CompactionMode::Transcript,
+                    compaction_mode: atelier_chat_state::CompactionMode::Transcript,
                     verbatim_input: true,
                     prefire: crate::session::compaction_config::PrefireState::default(),
                     prefix_released: std::sync::atomic::AtomicBool::new(false),
@@ -932,7 +938,6 @@ async fn cancel_running_task_teardown_clears_running_and_pending_work() {
                 client_identifier: None,
                 origin_client: None,
                 feedback_manager: Arc::new(FeedbackManager::local_only("test-session")),
-                upload_queue: Arc::new(OnceLock::new()),
                 sync_loop_cancel: None,
                 agent: std::cell::RefCell::new(agent),
                 last_reported_branch: std::sync::Arc::new(parking_lot::Mutex::new(None)),
@@ -999,7 +1004,7 @@ async fn cancel_running_task_teardown_clears_running_and_pending_work() {
                 user_input_generation: std::sync::atomic::AtomicU64::new(0),
                 laziness_debug_log: None,
                 deferred_prefix: TaskSlot::new(),
-                extension_registry: xai_agent_lifecycle::LocalExtensionRegistry::default(),
+                extension_registry: atelier_agent_lifecycle::LocalExtensionRegistry::default(),
                 last_announced_local_date: std::cell::Cell::new(
                     chrono::Local::now().date_naive(),
                 ),
@@ -1034,7 +1039,6 @@ async fn cancel_running_task_teardown_clears_running_and_pending_work() {
                 subagent_spawn_info: parking_lot::Mutex::new(HashMap::new()),
                 subagent_token_records: parking_lot::Mutex::new(HashMap::new()),
                 workspace_ops: atelier_workspace::WorkspaceOps::for_test(),
-                trace_config_template: std::cell::RefCell::new(None),
             };
             let (tx, rx) = tokio::sync::oneshot::channel();
             let bridge = actor.agent.borrow().tool_bridge().clone();
@@ -1053,8 +1057,6 @@ async fn cancel_running_task_teardown_clears_running_and_pending_work() {
                         prompt_id: "queued".into(),
                         prompt_blocks: vec![],
                         prompt_mode: PromptMode::Agent,
-                        trace_gcs_config: None,
-                        artifact_tracker: None,
                         client_identifier: None,
                         screen_mode: None,
                         verbatim: false,
@@ -1117,7 +1119,7 @@ async fn cancel_records_mid_turn_abort_interrupt_marker() {
     local
         .run_until(async {
             let (gateway_tx, _gateway_rx) =
-                tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                tokio::sync::mpsc::unbounded_channel::<atelier_acp_runtime::AcpClientMessage>();
             let (persistence_tx, _persistence_rx) =
                 tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
             let actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
@@ -1159,7 +1161,7 @@ async fn cancel_without_active_tool_arms_interrupt_reminder() {
     local
         .run_until(async {
             let (gateway_tx, _gateway_rx) =
-                tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                tokio::sync::mpsc::unbounded_channel::<atelier_acp_runtime::AcpClientMessage>();
             let (persistence_tx, _persistence_rx) =
                 tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
             let actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
@@ -1201,7 +1203,7 @@ async fn send_now_cancel_arms_no_interrupt_signals_and_resets_wait_depth() {
     local
         .run_until(async {
             let (gateway_tx, _gateway_rx) =
-                tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                tokio::sync::mpsc::unbounded_channel::<atelier_acp_runtime::AcpClientMessage>();
             let (persistence_tx, _persistence_rx) =
                 tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
             let actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
@@ -1262,7 +1264,7 @@ async fn cancel_with_dangling_tool_call_skips_interrupt_reminder() {
     local
         .run_until(async {
             let (gateway_tx, _gateway_rx) =
-                tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                tokio::sync::mpsc::unbounded_channel::<atelier_acp_runtime::AcpClientMessage>();
             let (persistence_tx, _persistence_rx) =
                 tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
             let actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
@@ -1348,7 +1350,7 @@ async fn maybe_inject_interrupt_reminder_injects_once() {
 /// gateway/persistence drains run on the `LocalSet` for the test's lifetime.
 async fn actor_with_persistence_drain() -> std::sync::Arc<SessionActor> {
     let (gateway_tx, mut gateway_rx) =
-        tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+        tokio::sync::mpsc::unbounded_channel::<atelier_acp_runtime::AcpClientMessage>();
     tokio::task::spawn_local(async move { while gateway_rx.recv().await.is_some() {} });
     let (persistence_tx, mut persistence_rx) =
         tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
@@ -1387,8 +1389,6 @@ async fn handle_prompt_injects_interrupt_reminder_before_user_message() {
                         "interrupt-wiring-test",
                         prompt_blocks,
                         PromptMode::Agent,
-                        None,
-                        None,
                         None,
                         None,
                         true,
@@ -1452,8 +1452,6 @@ async fn handle_prompt_synthetic_origin_preserves_interrupt_reminder() {
                         PromptMode::Agent,
                         None,
                         None,
-                        None,
-                        None,
                         true,
                         None,
                         Some(ack_tx),
@@ -1489,8 +1487,6 @@ async fn cancel_running_task_interactive_preserves_queued_work() {
             prompt_id: prompt_id.to_string(),
             prompt_blocks: vec![],
             prompt_mode: PromptMode::Agent,
-            trace_gcs_config: None,
-            artifact_tracker: None,
             client_identifier: None,
             screen_mode: None,
             verbatim: false,
@@ -1515,7 +1511,7 @@ async fn cancel_running_task_interactive_preserves_queued_work() {
     local
         .run_until(async {
             let (gateway_tx, _gateway_rx) =
-                tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                tokio::sync::mpsc::unbounded_channel::<atelier_acp_runtime::AcpClientMessage>();
             let (persistence_tx, _persistence_rx) =
                 tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
             let actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
@@ -1599,7 +1595,7 @@ async fn cancel_after_own_completion_sweep_preserves_queued_user_prompt() {
     local
         .run_until(async {
             let (gateway_tx, _gateway_rx) =
-                tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                tokio::sync::mpsc::unbounded_channel::<atelier_acp_runtime::AcpClientMessage>();
             let (persistence_tx, _persistence_rx) =
                 tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
             let actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
@@ -1683,8 +1679,6 @@ async fn cancel_resolves_front_when_running_task_is_none() {
             prompt_id: prompt_id.to_string(),
             prompt_blocks: vec![],
             prompt_mode: PromptMode::Agent,
-            trace_gcs_config: None,
-            artifact_tracker: None,
             client_identifier: None,
             screen_mode: None,
             verbatim: false,
@@ -1709,7 +1703,7 @@ async fn cancel_resolves_front_when_running_task_is_none() {
     local
         .run_until(async {
             let (gateway_tx, _gateway_rx) =
-                tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                tokio::sync::mpsc::unbounded_channel::<atelier_acp_runtime::AcpClientMessage>();
             let (persistence_tx, _persistence_rx) =
                 tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
             let actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
@@ -1803,6 +1797,8 @@ async fn cancel_propagates_to_sampler_handle_so_no_further_emission() {
                 temperature: None,
                 top_p: None,
                 request_payload: Default::default(),
+                remote_compaction_endpoint: None,
+                image_generation_endpoint: None,
                 api_backend: atelier_sampler::ApiBackend::Responses,
                 auth_scheme: Default::default(),
                 extra_headers: Default::default(),
@@ -1834,7 +1830,7 @@ async fn cancel_propagates_to_sampler_handle_so_no_further_emission() {
                 sampler_event_tx,
             );
             let (gateway_tx, _gateway_rx) = tokio::sync::mpsc::unbounded_channel::<
-                xai_acp_lib::AcpClientMessage,
+                atelier_acp_runtime::AcpClientMessage,
             >();
             let (persistence_tx, _persistence_rx) = tokio::sync::mpsc::unbounded_channel::<
                 PersistenceMsg,
@@ -1845,11 +1841,11 @@ async fn cancel_propagates_to_sampler_handle_so_no_further_emission() {
             );
             let terminal = Arc::new(DummyTerminal {});
             let (hunk_tx, _hunk_rx) = tokio::sync::mpsc::unbounded_channel();
-            let hunk_tracker_handle = xai_hunk_tracker::HunkTrackerActor::spawn(
+            let hunk_tracker_handle = atelier_hunk_tracker::HunkTrackerActor::spawn(
                 "test-cancel-sampler".to_string(),
                 cwd.to_path_buf(),
                 hunk_tx,
-                xai_hunk_tracker::TrackingMode::AgentOnly,
+                atelier_hunk_tracker::TrackingMode::AgentOnly,
                 tokio_util::sync::CancellationToken::new(),
             );
             let tool_context = ToolContext::new(
@@ -1902,7 +1898,7 @@ async fn cancel_propagates_to_sampler_handle_so_no_further_emission() {
                 deny_read_globs: Vec::new(),
                 mcp_state: Arc::new(TokioMutex::new(McpState::new(vec![]))),
                 mcp_strategy: McpInitStrategy::Blocking,
-                chat_state_handle: xai_chat_state::ChatStateHandle::noop(),
+                chat_state_handle: atelier_chat_state::ChatStateHandle::noop(),
                 current_prompt_id: std::sync::Arc::new(
                     std::sync::Mutex::new(Some("running".to_string())),
                 ),
@@ -1916,6 +1912,8 @@ async fn cancel_propagates_to_sampler_handle_so_no_further_emission() {
                 turn_prompt_mode: Arc::new(parking_lot::Mutex::new(PromptMode::Agent)),
                 telemetry_enabled: false,
                 role_request_payload: std::cell::RefCell::new(serde_json::Map::new()),
+                remote_compaction_endpoint: std::cell::RefCell::new(None),
+                image_generation_endpoint: std::cell::RefCell::new(None),
                 supports_backend_search: std::cell::Cell::new(false),
                 compactions_remaining: std::cell::Cell::new(None),
                 compaction_at_tokens: std::cell::Cell::new(None),
@@ -1934,7 +1932,7 @@ async fn cancel_propagates_to_sampler_handle_so_no_further_emission() {
                     count: std::sync::atomic::AtomicU64::new(0),
                     auto_compact_suppressed: std::sync::atomic::AtomicU8::new(0),
                     previous_model: std::cell::Cell::new(None),
-                    compaction_mode: xai_chat_state::CompactionMode::Transcript,
+                    compaction_mode: atelier_chat_state::CompactionMode::Transcript,
                     verbatim_input: true,
                     prefire: crate::session::compaction_config::PrefireState::default(),
                     prefix_released: std::sync::atomic::AtomicBool::new(false),
@@ -1977,7 +1975,6 @@ async fn cancel_propagates_to_sampler_handle_so_no_further_emission() {
                 client_identifier: None,
                 origin_client: None,
                 feedback_manager: Arc::new(FeedbackManager::local_only("test-session")),
-                upload_queue: Arc::new(OnceLock::new()),
                 sync_loop_cancel: None,
                 agent: std::cell::RefCell::new(agent),
                 last_reported_branch: std::sync::Arc::new(parking_lot::Mutex::new(None)),
@@ -2044,7 +2041,7 @@ async fn cancel_propagates_to_sampler_handle_so_no_further_emission() {
                 user_input_generation: std::sync::atomic::AtomicU64::new(0),
                 laziness_debug_log: None,
                 deferred_prefix: TaskSlot::new(),
-                extension_registry: xai_agent_lifecycle::LocalExtensionRegistry::default(),
+                extension_registry: atelier_agent_lifecycle::LocalExtensionRegistry::default(),
                 last_announced_local_date: std::cell::Cell::new(
                     chrono::Local::now().date_naive(),
                 ),
@@ -2079,7 +2076,6 @@ async fn cancel_propagates_to_sampler_handle_so_no_further_emission() {
                 subagent_spawn_info: parking_lot::Mutex::new(HashMap::new()),
                 subagent_token_records: parking_lot::Mutex::new(HashMap::new()),
                 workspace_ops: atelier_workspace::WorkspaceOps::for_test(),
-                trace_config_template: std::cell::RefCell::new(None),
             };
             let request_id = atelier_sampler::RequestId::random();
             let request_id_for_task = request_id.clone();
@@ -2211,8 +2207,6 @@ async fn cancel_keeps_remaining_queued_prompts_visible_to_clients() {
             prompt_id: prompt_id.to_string(),
             prompt_blocks: vec![],
             prompt_mode: PromptMode::Agent,
-            trace_gcs_config: None,
-            artifact_tracker: None,
             client_identifier: None,
             screen_mode: None,
             verbatim: false,
@@ -2236,7 +2230,7 @@ async fn cancel_keeps_remaining_queued_prompts_visible_to_clients() {
     local
         .run_until(async {
             let (gateway_tx, _gateway_rx) =
-                tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                tokio::sync::mpsc::unbounded_channel::<atelier_acp_runtime::AcpClientMessage>();
             let (persistence_tx, _persistence_rx) =
                 tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
             let actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;

@@ -138,7 +138,7 @@ pub(crate) fn tall_response(sentinel: &str, rows: usize) -> String {
 /// Spawn a pager with fake session (OAuth) auth and a 1s announcements poll,
 /// then drive it into a live session (welcome → prompt → mock response).
 /// Session auth matters: the settings poll requires `auth_manager.auth()`, and
-/// the harness's default `XAI_API_KEY` (ApiKey/BYOK mode, no auth.json entry)
+/// the harness's default credential-free Provider path has no session auth and
 /// would never fetch `/v1/settings`. Spawns WITHOUT `ATELIER_ANNOUNCEMENTS_OVERRIDE`
 /// (the env override beats pushed lists in the pager and would mask updates).
 /// Call `content.set_response(..)` BEFORE this so the entry prompt streams.

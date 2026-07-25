@@ -14,8 +14,8 @@
 //! The `cwd` column is intentionally excluded from the FTS table — it is a
 //! filter dimension only, applied via JOIN on `session_docs`.
 
+use atelier_sqlite_journal::JournalMode;
 use rusqlite::{Connection, OptionalExtension, params};
-use xai_sqlite_journal::JournalMode;
 
 /// Bump when making breaking schema changes that require dropping and
 /// recreating tables, or to force a rebuild of stale index content

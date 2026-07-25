@@ -1,4 +1,4 @@
-//! `/model-config` and `/models` -- inspect and edit model Wire API settings.
+//! `/wire-api` -- inspect and edit model Wire API settings.
 
 use serde_json::{Map, Value, json};
 
@@ -16,11 +16,7 @@ pub struct ModelConfigCommand;
 
 impl SlashCommand for ModelConfigCommand {
     fn name(&self) -> &str {
-        "model-config"
-    }
-
-    fn aliases(&self) -> &[&str] {
-        &["models"]
+        "wire-api"
     }
 
     fn description(&self) -> &str {
@@ -28,7 +24,7 @@ impl SlashCommand for ModelConfigCommand {
     }
 
     fn usage(&self) -> &str {
-        "/model-config [list|get|wire|override|delete|test] ..."
+        "/wire-api [list|get|wire|override|delete|test] ..."
     }
 
     fn takes_args(&self) -> bool {
@@ -129,14 +125,14 @@ impl SlashCommand for ModelConfigCommand {
         match command {
             "list" => {
                 if tokens.len() != 1 {
-                    return CommandResult::Error("Usage: /model-config list".to_owned());
+                    return CommandResult::Error("Usage: /wire-api list".to_owned());
                 }
                 extension(MODEL_LIST, json!({}))
             }
             "get" => {
                 let [_, model_key] = tokens.as_slice() else {
                     return CommandResult::Error(
-                        "Usage: /model-config get <provider/model>".to_owned(),
+                        "Usage: /wire-api get <provider/model>".to_owned(),
                     );
                 };
                 extension(MODEL_GET, json!({ "modelKey": model_key }))
@@ -144,7 +140,7 @@ impl SlashCommand for ModelConfigCommand {
             "wire" => {
                 let [_, model_key, wire_api] = tokens.as_slice() else {
                     return CommandResult::Error(
-                        "Usage: /model-config wire <provider/model> <wire-api|default>".to_owned(),
+                        "Usage: /wire-api wire <provider/model> <wire-api|default>".to_owned(),
                     );
                 };
                 extension(
@@ -162,10 +158,10 @@ impl SlashCommand for ModelConfigCommand {
                 let mut raw_parts = args.trim().splitn(4, char::is_whitespace);
                 let _ = raw_parts.next();
                 let Some(model_key) = raw_parts.next() else {
-                    return CommandResult::Error("Usage: /model-config override <provider/model> <wire-api|default> [json-payload]".to_owned());
+                    return CommandResult::Error("Usage: /wire-api override <provider/model> <wire-api|default> [json-payload]".to_owned());
                 };
                 let Some(wire_api) = raw_parts.next() else {
-                    return CommandResult::Error("Usage: /model-config override <provider/model> <wire-api|default> [json-payload]".to_owned());
+                    return CommandResult::Error("Usage: /wire-api override <provider/model> <wire-api|default> [json-payload]".to_owned());
                 };
                 let payload = match raw_parts
                     .next()
@@ -207,7 +203,7 @@ impl SlashCommand for ModelConfigCommand {
             "delete" => {
                 let [_, model_key] = tokens.as_slice() else {
                     return CommandResult::Error(
-                        "Usage: /model-config delete <provider/model>".to_owned(),
+                        "Usage: /wire-api delete <provider/model>".to_owned(),
                     );
                 };
                 extension(OVERRIDE_DELETE, json!({ "modelKey": model_key }))
@@ -215,7 +211,7 @@ impl SlashCommand for ModelConfigCommand {
             "test" => {
                 let Some(model_key) = tokens.get(1) else {
                     return CommandResult::Error(
-                        "Usage: /model-config test <provider/model> [execute]".to_owned(),
+                        "Usage: /wire-api test <provider/model> [execute]".to_owned(),
                     );
                 };
                 if tokens.len() > 3
@@ -224,7 +220,7 @@ impl SlashCommand for ModelConfigCommand {
                         .is_some_and(|value| value.as_str() != "execute")
                 {
                     return CommandResult::Error(
-                        "Usage: /model-config test <provider/model> [execute]".to_owned(),
+                        "Usage: /wire-api test <provider/model> [execute]".to_owned(),
                     );
                 }
                 extension(
@@ -318,11 +314,11 @@ mod tests {
     }
 
     #[test]
-    fn bare_model_config_opens_interactive_entry() {
+    fn bare_wire_api_opens_interactive_entry() {
         let mut command_ctx = ctx();
         assert!(matches!(
             ModelConfigCommand.run(&mut command_ctx, ""),
-            CommandResult::Action(Action::OpenSlashArgPicker { command }) if command == "model-config"
+            CommandResult::Action(Action::OpenSlashArgPicker { command }) if command == "wire-api"
         ));
     }
 

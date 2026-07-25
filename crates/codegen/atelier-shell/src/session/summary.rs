@@ -5,14 +5,16 @@
 //! session registry, and notify the client. The persistence actor just
 //! calls [`SummaryGenerator::update`] — all state transitions are internal.
 
-use crate::extensions::notification::{SessionNotification, SessionUpdate as XaiSessionUpdate};
+use crate::extensions::notification::{
+    SessionNotification, SessionUpdate as ExtensionSessionUpdate,
+};
 use crate::sampling::Client as OaiCompatClient;
 use crate::session::helpers::session_summary::generate_session_summary;
 use crate::session::info::Info;
 use crate::session::persistence::PersistenceMsg;
 use agent_client_protocol as acp;
+use atelier_acp_runtime::AcpAgentGatewaySender as GatewaySender;
 use tokio::sync::mpsc;
-use xai_acp_lib::AcpAgentGatewaySender as GatewaySender;
 
 /// Internal state for the summary generation lifecycle.
 enum State {
@@ -156,7 +158,7 @@ pub(crate) fn notify_client(gateway: &Option<GatewaySender>, info: &Info, title:
 
     let notification = SessionNotification {
         session_id: info.id.clone(),
-        update: XaiSessionUpdate::SessionSummaryGenerated {
+        update: ExtensionSessionUpdate::SessionSummaryGenerated {
             session_summary: title.to_owned(),
         },
         meta: None,

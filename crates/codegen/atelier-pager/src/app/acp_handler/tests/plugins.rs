@@ -8,7 +8,7 @@
         let mut app = make_app_with_agent("sess-plugins");
         let mut modal = ExtensionsModalState::new(ExtensionsTab::Plugins);
         modal.plugins_data =
-            TabDataState::Loaded(xai_hooks_plugins_types::PluginsListResponse { plugins: vec![] });
+            TabDataState::Loaded(atelier_hooks_plugins_types::PluginsListResponse { plugins: vec![] });
         modal.plugins_groups_seeded = true;
         modal
             .plugins_collapsed_groups
@@ -18,10 +18,10 @@
         let handled = handle(
             make_ext_session_notification(
                 "sess-plugins",
-                XaiSessionUpdate::PluginsChanged {
+                ExtensionSessionUpdate::PluginsChanged {
                     plugins: vec![crate::views::extensions_modal::test_plugin_info(
                         "user-tool",
-                        Some(xai_hooks_plugins_types::PluginOrigin::UserAtelier),
+                        Some(atelier_hooks_plugins_types::PluginOrigin::UserAtelier),
                     )],
                 },
             ),
@@ -56,15 +56,15 @@
         let handled = handle(
             make_ext_session_notification(
                 "sess-plugins",
-                XaiSessionUpdate::PluginsChanged {
+                ExtensionSessionUpdate::PluginsChanged {
                     plugins: vec![
                         crate::views::extensions_modal::test_plugin_info(
                             "user-tool",
-                            Some(xai_hooks_plugins_types::PluginOrigin::UserAtelier),
+                            Some(atelier_hooks_plugins_types::PluginOrigin::UserAtelier),
                         ),
                         crate::views::extensions_modal::test_plugin_info(
                             "claude-tool",
-                            Some(xai_hooks_plugins_types::PluginOrigin::UserClaude),
+                            Some(atelier_hooks_plugins_types::PluginOrigin::UserClaude),
                         ),
                     ],
                 },
@@ -100,10 +100,10 @@
         let handled = handle(
             make_ext_session_notification(
                 "sess-plugins",
-                XaiSessionUpdate::PluginsChanged {
+                ExtensionSessionUpdate::PluginsChanged {
                     plugins: vec![crate::views::extensions_modal::test_plugin_info(
                         "user-tool",
-                        Some(xai_hooks_plugins_types::PluginOrigin::UserAtelier),
+                        Some(atelier_hooks_plugins_types::PluginOrigin::UserAtelier),
                     )],
                 },
             ),

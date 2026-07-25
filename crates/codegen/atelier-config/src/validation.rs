@@ -7,11 +7,14 @@ use crate::loader::{apply_version_overrides_with_registered, load_toml_file};
 use crate::paths::{system_config_dir, user_atelier_home};
 use crate::version_overrides::{VersionOverrideError, apply_version_overrides};
 
-use prod_mc_cli_chat_proxy_types::FAIL_CLOSED_KEY;
-/// The canonical opt-in key + string parse live in the shared types crate, next to
-/// the signed payload that carries the flag, so the server-side signer and this
-/// client parse the same semantics.
-pub use prod_mc_cli_chat_proxy_types::fail_closed_flag_from_str;
+const FAIL_CLOSED_KEY: &str = "fail_closed";
+
+pub fn fail_closed_flag_from_str(requirements: &str) -> bool {
+    toml::from_str::<toml::Value>(requirements)
+        .ok()
+        .and_then(|value| value.get(FAIL_CLOSED_KEY).and_then(toml::Value::as_bool))
+        .unwrap_or(false)
+}
 
 /// Read the `fail_closed` opt-in from a parsed requirements layer — same semantics as
 /// [`fail_closed_flag_from_str`]. Env tightening (file vs `ATELIER_MANAGED_CONFIG_FAIL_CLOSED`)

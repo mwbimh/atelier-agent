@@ -20,7 +20,7 @@ pub use crate::link_opener;
 pub mod edit_highlight_worker;
 /// Off-thread Mermaid diagram render worker (out of process) + per-session cache.
 pub mod mermaid_worker;
-pub use xai_prompt_queue as prompt_queue;
+pub use atelier_prompt_queue as prompt_queue;
 mod acp_handler;
 mod csi_filter;
 mod dispatch;
@@ -250,7 +250,7 @@ pub(crate) const MOUSE_OFF_HINT_PROMPT: &str =
     "/toggle-mouse-reporting to enable mouse reporting and restore TUI features";
 /// Terminal type for the pager.
 ///
-/// Uses [`xai_ratatui_inline::Terminal`] instead of stock `ratatui::Terminal`
+/// Uses [`atelier_ratatui_inline::Terminal`] instead of stock `ratatui::Terminal`
 /// because our `flush()` returns `bool` indicating whether any cells actually
 /// changed. This lets [`crate::render::draw::draw_frame`] skip cursor escape
 /// sequences on frames with empty diffs (e.g., off-screen animation ticks),
@@ -356,7 +356,7 @@ pub fn resolve_use_leader(
     leader_flag: bool,
     no_leader_flag: bool,
     raw_config: &toml::Value,
-    _remote_settings: Option<&atelier_shell::util::config::RemoteSettings>,
+    _local_runtime_settings: Option<&atelier_shell::util::config::LocalRuntimeSettings>,
     eligible: bool,
 ) -> (bool, Option<&'static str>) {
     if no_leader_flag {
@@ -372,7 +372,7 @@ pub fn resolve_use_leader(
         return (v, (!v).then_some("config"));
     }
     #[cfg(feature = "release-dist")]
-    if let Some(remote_val) = _remote_settings.and_then(|s| s.leader_mode) {
+    if let Some(remote_val) = _local_runtime_settings.and_then(|s| s.leader_mode) {
         return (remote_val, (!remote_val).then_some("remote"));
     }
     (false, None)
@@ -404,7 +404,7 @@ fn resolve_hunk_tracker_mode(
 /// Returns `Ok(true)` when the user accepted a pending update. The caller
 /// should print a message telling the user to relaunch `atelier`.
 pub async fn run(args: PagerArgs) -> anyhow::Result<bool> {
-    xai_tty_utils::redirect_native_stderr();
+    atelier_tty_utils::redirect_native_stderr();
     let screen_mode_override = screen_mode_relaunch::take_screen_mode_env_override();
     let cancel = CancellationToken::new();
     let startup_start = std::time::Instant::now();
@@ -415,11 +415,7 @@ pub async fn run(args: PagerArgs) -> anyhow::Result<bool> {
     if let Ok(cwd) = std::env::current_dir() {
         crate::git_info::populate_from_cwd_async(cwd);
     }
-    let remote_settings: Option<atelier_shell::util::config::RemoteSettings> = None;
-    atelier_shell::util::config::cache_remote_auto_mode(
-        remote_settings.as_ref().and_then(|s| s.auto_mode.clone()),
-    );
-    atelier_shell::util::config::set_remote_campaigns_from_settings(remote_settings.as_ref());
+    let local_runtime_settings: Option<atelier_shell::util::config::LocalRuntimeSettings> = None;
     let raw_config = atelier_shell::config::load_effective_config()
         .map_err(|e| anyhow::anyhow!("Failed to load config: {e}"))?;
     let prefetch_elapsed = startup_start.elapsed();
@@ -427,7 +423,7 @@ pub async fn run(args: PagerArgs) -> anyhow::Result<bool> {
         args.leader,
         args.no_leader,
         &raw_config,
-        remote_settings.as_ref(),
+        local_runtime_settings.as_ref(),
         true,
     );
     tracing::info!(
@@ -522,7 +518,7 @@ pub async fn run(args: PagerArgs) -> anyhow::Result<bool> {
         env_hunk_tracker_mode.as_deref(),
         config_hunk_tracker_mode,
     );
-    let remote_permission_mode = remote_settings
+    let remote_permission_mode = local_runtime_settings
         .as_ref()
         .and_then(|s| s.permission_mode.as_deref());
     let launch_yolo = atelier_shell::util::config::effective_yolo_for_launch(
@@ -549,7 +545,7 @@ pub async fn run(args: PagerArgs) -> anyhow::Result<bool> {
         fs_read: args.fs_read,
         fs_write: args.fs_write,
         installer: args.installer.clone(),
-        remote_settings: remote_settings.clone(),
+        local_runtime_settings: local_runtime_settings.clone(),
         system_prompt_override: args.system_prompt_override.clone(),
         rules: args.rules.clone(),
         reasoning_effort_override: args
@@ -662,7 +658,7 @@ pub async fn run(args: PagerArgs) -> anyhow::Result<bool> {
         &mut config_watcher,
         &effective_args,
         session_cwd,
-        remote_settings,
+        local_runtime_settings,
         term_state,
         materialized,
     )
@@ -670,7 +666,7 @@ pub async fn run(args: PagerArgs) -> anyhow::Result<bool> {
     crate::unified_log::flush_blocking().await;
     let _ = restore_terminal(terminal, writer_thread, screen_mode);
     cancel.cancel();
-    xai_tty_utils::global_process_scope().kill_all();
+    atelier_tty_utils::global_process_scope().kill_all();
     match result {
         Ok(run_result) => {
             if run_result.quit_for_update {
@@ -731,7 +727,7 @@ fn print_relaunch_failure_hint(
 /// and panic paths where stderr may already be broken.
 fn disable_mouse_paste_raw() {
     atelier_shell::util::with_locked_stderr(|stderr| {
-        let _ = stderr.write_all(xai_crash_handler::terminal::MOUSE_PASTE_RESET);
+        let _ = stderr.write_all(atelier_crash_handler::terminal::MOUSE_PASTE_RESET);
         let _ = stderr.flush();
     });
 }
@@ -979,7 +975,7 @@ fn init_terminal(
     writer_sync: crate::render::draw::WriterSync,
     cursor_blink: Option<bool>,
 ) -> io::Result<(PagerTerminal, ScreenMode)> {
-    xai_crash_handler::enable_terminal_escape_restore();
+    atelier_crash_handler::enable_terminal_escape_restore();
     terminal::enable_raw_mode()?;
     #[cfg(windows)]
     configure_windows_console();
@@ -1010,7 +1006,7 @@ fn init_terminal(
             if !want_minimal {
                 execute!(stderr, event::EnableMouseCapture)?;
             } else if crate::terminal::terminal_context().mouse_reporting_leaks_as_raw_text() {
-                let _ = stderr.write_all(xai_crash_handler::terminal::MOUSE_TRACKING_RESET);
+                let _ = stderr.write_all(atelier_crash_handler::terminal::MOUSE_TRACKING_RESET);
             }
             execute!(
                 stderr,
@@ -1076,7 +1072,7 @@ fn init_terminal(
             let backend =
                 CrosstermBackend::new(crate::render::draw::TermWriter::new(frame_tx, writer_sync));
             Ok((
-                xai_ratatui_inline::Terminal::new(backend)?,
+                atelier_ratatui_inline::Terminal::new(backend)?,
                 ScreenMode::Fullscreen,
             ))
         } else {
@@ -1090,7 +1086,7 @@ fn init_terminal(
                 frame_tx.clone(),
                 writer_sync.clone(),
             ));
-            if let Ok(term) = xai_ratatui_inline::Terminal::with_options(
+            if let Ok(term) = atelier_ratatui_inline::Terminal::with_options(
                 probe_backend,
                 ratatui::TerminalOptions {
                     viewport: ratatui::Viewport::Inline(viewport_rows),
@@ -1117,7 +1113,7 @@ fn init_terminal(
                     frame_tx.clone(),
                     writer_sync.clone(),
                 ));
-                if let Ok(term) = xai_ratatui_inline::Terminal::with_options(
+                if let Ok(term) = atelier_ratatui_inline::Terminal::with_options(
                     retry_backend,
                     ratatui::TerminalOptions {
                         viewport: ratatui::Viewport::Inline(rows),
@@ -1137,7 +1133,7 @@ fn init_terminal(
             })?;
             let backend =
                 CrosstermBackend::new(crate::render::draw::TermWriter::new(frame_tx, writer_sync));
-            let term = xai_ratatui_inline::Terminal::with_options(
+            let term = atelier_ratatui_inline::Terminal::with_options(
                 backend,
                 ratatui::TerminalOptions {
                     viewport: ratatui::Viewport::Fixed(ratatui::layout::Rect::new(
@@ -1152,7 +1148,7 @@ fn init_terminal(
         emit_terminal_teardown_sequences(mode, None);
         let _ = terminal::disable_raw_mode();
         signal_handler::mark_restored();
-        xai_crash_handler::disable_terminal_escape_restore();
+        atelier_crash_handler::disable_terminal_escape_restore();
     })
 }
 /// Drop the terminal (closing the writer mpsc channel) and join the
@@ -1246,8 +1242,8 @@ fn restore_terminal(
     drain_pending_events_with_timeout(std::time::Duration::from_millis(10));
     let _ = terminal::disable_raw_mode();
     signal_handler::mark_restored();
-    xai_crash_handler::disable_terminal_escape_restore();
-    xai_tty_utils::restore_native_stderr();
+    atelier_crash_handler::disable_terminal_escape_restore();
+    atelier_tty_utils::restore_native_stderr();
     Ok(())
 }
 pub(crate) fn set_terminal_title(title: &str) {
@@ -1276,9 +1272,9 @@ fn set_panic_hook(mode: ScreenMode) {
         emit_terminal_teardown_sequences(mode, None);
         let _ = terminal::disable_raw_mode();
         signal_handler::mark_restored();
-        xai_crash_handler::disable_terminal_escape_restore();
-        xai_tty_utils::restore_native_stderr();
-        xai_tty_utils::global_process_scope().kill_all();
+        atelier_crash_handler::disable_terminal_escape_restore();
+        atelier_tty_utils::restore_native_stderr();
+        atelier_tty_utils::global_process_scope().kill_all();
         hook(info);
     }));
 }
@@ -1448,15 +1444,15 @@ mod tests {
         assert!(matches!(args.command, Some(Command::Agent(_))));
     }
     #[test]
-    fn remote_settings_none_falls_through_to_default() {
+    fn local_runtime_settings_none_falls_through_to_default() {
         let (use_leader, reason) = resolve_use_leader(false, false, &empty_config(), None, true);
         assert!(!use_leader);
         assert_eq!(reason, None);
     }
     #[cfg(feature = "release-dist")]
     #[test]
-    fn remote_settings_leader_mode_true_enables_leader() {
-        let rs = atelier_shell::util::config::RemoteSettings {
+    fn local_runtime_settings_leader_mode_true_enables_leader() {
+        let rs = atelier_shell::util::config::LocalRuntimeSettings {
             leader_mode: Some(true),
             ..Default::default()
         };
@@ -1467,8 +1463,8 @@ mod tests {
     }
     #[cfg(feature = "release-dist")]
     #[test]
-    fn remote_settings_leader_mode_false_disables_leader() {
-        let rs = atelier_shell::util::config::RemoteSettings {
+    fn local_runtime_settings_leader_mode_false_disables_leader() {
+        let rs = atelier_shell::util::config::LocalRuntimeSettings {
             leader_mode: Some(false),
             ..Default::default()
         };
@@ -1479,8 +1475,8 @@ mod tests {
     }
     #[cfg(feature = "release-dist")]
     #[test]
-    fn remote_settings_unknown_leader_mode_is_not_policy_disable() {
-        let rs = atelier_shell::util::config::RemoteSettings {
+    fn local_runtime_settings_unknown_leader_mode_is_not_policy_disable() {
+        let rs = atelier_shell::util::config::LocalRuntimeSettings {
             leader_mode: None,
             ..Default::default()
         };
@@ -1491,8 +1487,8 @@ mod tests {
     }
     #[cfg(feature = "release-dist")]
     #[test]
-    fn config_toml_overrides_remote_settings() {
-        let rs = atelier_shell::util::config::RemoteSettings {
+    fn config_toml_overrides_local_runtime_settings() {
+        let rs = atelier_shell::util::config::LocalRuntimeSettings {
             leader_mode: Some(true),
             ..Default::default()
         };
@@ -1682,9 +1678,9 @@ mod tests {
         assert!(!args.no_alt_screen);
     }
     #[test]
-    fn cli_command_name_is_atelier() {
+    fn cli_command_name_is_ate() {
         use clap::CommandFactory;
-        assert_eq!(PagerArgs::command().get_name(), "atelier");
+        assert_eq!(PagerArgs::command().get_name(), "ate");
     }
     #[test]
     fn cli_help_output_header() {
@@ -1696,7 +1692,7 @@ mod tests {
             vec![
                 "Atelier terminal coding agent",
                 "",
-                "Usage: atelier [OPTIONS] [PROMPT] [COMMAND]",
+                "Usage: ate [OPTIONS] [PROMPT] [COMMAND]",
                 "",
                 "Arguments:",
             ]

@@ -528,10 +528,10 @@ impl MvpAgent {
         let trust = *self
             .launch_dir_trust
             .get_or_init(|| {
-                let remote_settings = self.cfg.borrow().remote_settings.clone();
+                let local_runtime_settings = self.cfg.borrow().local_runtime_settings.clone();
                 folder_trust::resolve_launch_dir_trust(
                     &self.launch_cwd,
-                    remote_settings.as_ref(),
+                    local_runtime_settings.as_ref(),
                 )
             });
         (&self.launch_cwd, trust)
@@ -542,7 +542,7 @@ impl MvpAgent {
     pub(super) fn spawn_initialize_launch_mcp_setup(&self) {
         let cwd = self.launch_cwd.clone();
         let compat = self.cfg.borrow().compat_resolved;
-        let remote_settings = self.cfg.borrow().remote_settings.clone();
+        let local_runtime_settings = self.cfg.borrow().local_runtime_settings.clone();
         let gateway = self.gateway.clone();
         let agent_mcp_state = self.agent_mcp_state.clone();
         tokio::task::spawn_local(async move {
@@ -550,7 +550,7 @@ impl MvpAgent {
                     let local = crate::util::config::load_mcp_servers(&cwd, &compat);
                     folder_trust::resolve_and_record(
                         &cwd,
-                        remote_settings.as_ref(),
+                        local_runtime_settings.as_ref(),
                         false,
                     );
                     folder_trust::filter_untrusted_project_mcp(&cwd, local)
@@ -624,9 +624,9 @@ impl MvpAgent {
     pub fn set_memory_config(&mut self, config: crate::config::MemoryConfig) {
         self.memory_config = if config.enabled { Some(config) } else { None };
     }
-    /// Adopt the leader's [`AgentActivity`] so the auto-update checker sees
-    /// the agent's live view of running turns/subagents and can flush
-    /// sessions at shutdown.
+    /// Adopt the leader's [`AgentActivity`] so an explicit relaunch drain sees
+    /// the agent's live view of running turns/subagents and can flush sessions
+    /// at shutdown.
     ///
     /// Must be called right after construction: entries registered on the
     /// constructor-created default instance are NOT migrated.
@@ -663,103 +663,13 @@ impl MvpAgent {
             );
         }
     }
-    /// Extract feedback credentials when proxy credentials are available.
-    ///
-    /// Returns `(base_url, user_token, optional_extra_access_key, deployment_key)`.
-    /// Used by both [`feedback_client`] and session spawning to avoid
-    /// duplicating the credential assembly logic.
-    #[allow(clippy::type_complexity)]
-    fn feedback_credentials(
-        &self,
-    ) -> Option<(String, Option<String>, Option<String>, Option<String>)> {
-        if !self.has_proxy_credentials() {
-            return None;
-        }
-        let user_token = self
-            .auth_manager
-            .current_or_expired()
-            .filter(|a| a.is_xai_auth())
-            .map(|a| a.key.clone());
-        let cfg = self.cfg.borrow();
-        let base_url = cfg.endpoints.resolve_feedback_base_url();
-        let alpha_test_key = cfg.endpoints.alpha_test_key.clone();
-        let deployment_key = cfg.endpoints.deployment_key.clone();
-        Some((base_url, user_token, alpha_test_key, deployment_key))
-    }
     pub(super) fn ensure_telemetry_client(&self) {
-        crate::auth::credential_provider::sync_external_otel_identity();
-        let cfg = self.cfg.borrow();
-        let mode = cfg.resolve_telemetry_mode().value;
-        if !mode.is_disabled() {
-            let Some(auth) = self
-                .auth_manager
-                .current()
-                .filter(|a| {
-                    a.is_xai_auth() || a.auth_mode == crate::auth::AuthMode::ApiKey
-                }) else {
-                return;
-            };
-            let subscription_tier = resolve_subscription_tier_for_telemetry(
-                cfg
-                    .remote_settings
-                    .as_ref()
-                    .and_then(|rs| rs.subscription_tier_display.clone()),
-                Some(&auth),
-            );
-            let (user_id, team_id) = if auth.is_xai_auth() {
-                (Some(auth.user_id), auth.team_id)
-            } else {
-                (None, auth.team_id)
-            };
-            atelier_telemetry::client::init_if_needed(
-                cfg.telemetry.clone(),
-                mode,
-                user_id,
-                team_id,
-                cfg.endpoints.deployment_key.clone(),
-                self.origin_client_info_from_meta(None),
-                atelier_version::VERSION.to_owned(),
-                subscription_tier,
-                crate::http::shared_client(),
-            );
-        }
+        // Local observability is initialized by the process composition root.
     }
-    /// Build a `FeedbackClient` with resolved feedback URL and credentials.
-    pub(crate) fn feedback_client(&self) -> Option<FeedbackClient> {
-        let _ = self;
-        None
-    }
-    /// Build a `RegistryConfig` if the feature is enabled (for passing to persistence actor).
-    pub(super) fn build_registry_config(
+    pub(crate) fn local_session_catalog(
         &self,
-    ) -> Option<crate::session::RegistryConfig> {
-        let _ = self;
+    ) -> Option<crate::agent::local_session_catalog::LocalSessionCatalog> {
         None
-    }
-    /// Build a `SessionRegistryClient` if the feature is enabled.
-    /// Delegates to `build_registry_config()` for the enabled check + config.
-    pub(crate) fn session_registry_client(
-        &self,
-    ) -> Option<crate::agent::session_registry_client::SessionRegistryClient> {
-        let cfg = self.build_registry_config()?;
-        Some(
-            crate::agent::session_registry_client::SessionRegistryClient::new(
-                    cfg.base_url,
-                    cfg.user_token,
-                )
-                .with_deployment_key(cfg.deployment_key)
-                .with_alpha_test_key(cfg.alpha_test_key)
-                .with_auth(self.auth_manager.clone()),
-        )
-    }
-    pub(crate) fn conversations_client(
-        &self,
-    ) -> Option<crate::remote::ConversationsClient> {
-        let _ = self;
-        None
-    }
-    pub(crate) fn workspaces_client(&self) -> crate::remote::WorkspacesClient {
-        crate::remote::WorkspacesClient::new(self.auth_manager.clone())
     }
     /// Pre-session command availability snapshot.
     ///
@@ -796,17 +706,6 @@ impl MvpAgent {
     pub(crate) fn product_analytics_enabled(&self) -> bool {
         self.cfg.borrow().is_telemetry_enabled()
             && !self.auth_manager.current_or_expired().is_some_and(|a| a.is_zdr_team())
-    }
-    /// Re-sync the `Send` mirror of `cfg.is_trace_upload_enabled()` that the
-    /// per-session collection gates read (`cfg` is `!Send`; the gates run on
-    /// the tokio pool). Must be called after any mid-session config change
-    /// that can flip the switch — i.e. every `remote_settings` rewrite.
-    pub(super) fn sync_collection_config_gate(&self) {
-        self.trace_upload_live
-            .store(
-                self.cfg.borrow().is_trace_upload_enabled(),
-                std::sync::atomic::Ordering::Relaxed,
-            );
     }
     /// Current client type as set by the most recent `initialize()` call.
     pub(crate) fn client_type(&self) -> ClientType {
@@ -969,22 +868,22 @@ impl MvpAgent {
     ///
     /// The session-based clause is load-bearing: without it, chat_state can get
     /// locked into `auth_type = ApiKey` and skip token refresh on later prompts.
-    pub(crate) fn auth_type(&self) -> xai_chat_state::AuthType {
+    pub(crate) fn auth_type(&self) -> atelier_chat_state::AuthType {
         if self.auth_manager.current().is_some() || self.is_session_based_auth() {
-            xai_chat_state::AuthType::SessionToken
+            atelier_chat_state::AuthType::SessionToken
         } else {
-            xai_chat_state::AuthType::ApiKey
+            atelier_chat_state::AuthType::ApiKey
         }
     }
-    /// When `cached_token` cannot proceed, prefer non-interactive `xai.api_key`
-    /// iff `should_advertise_xai_api_key`; otherwise `atelier.invalid`. Returns `None`
+    /// When `cached_token` cannot proceed, prefer non-interactive Provider credentials;
+    /// otherwise use the configured interactive method. Returns `None`
     /// when `preferred_method` is pinned (fail-closed — no cross-method fallthrough).
     pub(super) fn cached_token_fallthrough_method_id(
         &self,
     ) -> Option<acp::AuthMethodId> {
         let preferred = self.cfg.borrow().atelier_com_config.preferred_method;
         let id = auth_method::method_id_after_cached_token_unavailable(
-            auth_method::should_advertise_xai_api_key(
+            auth_method::should_advertise_provider_api_key(
                 self.cfg.borrow().atelier_com_config.api_key_auth_disabled(),
                 self.models_manager.models().values(),
             ),
@@ -1112,17 +1011,17 @@ impl MvpAgent {
         );
         if matches!(preferred, Some(crate ::auth::PreferredAuthMethod::Oidc))
             && !model.has_own_credentials()
-            && credentials.auth_type == xai_chat_state::AuthType::ApiKey
+            && credentials.auth_type == atelier_chat_state::AuthType::ApiKey
         {
             credentials.api_key = None;
-            credentials.auth_type = xai_chat_state::AuthType::SessionToken;
+            credentials.auth_type = atelier_chat_state::AuthType::SessionToken;
         }
         crate::agent::config::enforce_disable_api_key_auth(
             &mut credentials,
             self.cfg.borrow().atelier_com_config.api_key_auth_disabled(),
             session.as_ref().map(|a| a.key.as_str()),
         );
-        if !has_session_key && credentials.auth_type == xai_chat_state::AuthType::ApiKey
+        if !has_session_key && credentials.auth_type == atelier_chat_state::AuthType::ApiKey
             && !model.has_own_credentials() && self.is_session_based_auth()
         {
             tracing::info!(
@@ -1134,7 +1033,7 @@ impl MvpAgent {
                 None,
                 Some(serde_json::json!({ "model" : model.info().model.as_str() })),
             );
-            credentials.auth_type = xai_chat_state::AuthType::SessionToken;
+            credentials.auth_type = atelier_chat_state::AuthType::SessionToken;
         }
         if !has_session_key && !model.has_own_credentials() {
             tracing::warn!(
@@ -1216,78 +1115,15 @@ impl MvpAgent {
         );
         (id.clone(), new_config)
     }
-    /// Whether the current session is a personal atelier.invalid account on a gated
-    /// tier (free / X Basic). The Imagine tools stay advertised to the model but
-    /// are flagged tier-restricted so they short-circuit at call time with the
-    /// SuperAtelier upsell prose (see `ImageGenConfig`/`VideoGenConfig`'s
-    /// `tier_restricted`).
-    ///
-    /// Fails **open** (returns `false`) whenever we can't positively confirm a
-    /// restricted personal tier — no auth yet, BYOK / API-key sessions, team
-    /// accounts, and an unknown/absent tier all pass. The server
-    /// authoritatively zero-limits Imagine for free & X Basic (429), so this
-    /// client gate is a UX optimization (a clean in-chat upsell instead of a
-    /// doomed request), never the security boundary — under-restricting is safe,
-    /// over-restricting would wrongly disable a paid feature.
-    ///
-    /// Mirrors the pager's cosmetic slash-command gate
-    /// ([`crate::tier::is_restricted_tier_name`]); the only difference is the
-    /// absent-tier policy (the pager hides on `None`, we fail open on `None`).
-    fn is_tier_restricted_capability(&self) -> bool {
-        let Some(auth) = self.auth_manager.current() else {
-            return false;
-        };
-        if !auth.is_xai_auth() || auth.team_id.is_some() {
-            return false;
-        }
-        let tier = self
-            .cfg
-            .borrow()
-            .remote_settings
-            .as_ref()
-            .and_then(|rs| rs.subscription_tier_display.clone())
-            .or_else(|| jwt_tier_claim(&auth.key));
-        tier.as_deref().is_some_and(crate::tier::is_restricted_tier_name)
-    }
-    /// Build image generation config.
-    ///
-    /// Both BYOK and session (OAuth) users go direct to `xai_api_base_url`.
-    /// `sampling_config.api_key` carries the OAuth bearer for session users (the
-    /// `api_key_provider` refreshes it per request), so IC authenticates and
-    /// meters Imagine usage per-user.
+    /// Image generation is configured from the active exact Provider/model
+    /// sampler route after the session actor has reconstructed dynamic auth.
+    /// Keep agent construction disabled so rebuilds cannot restore a stale
+    /// endpoint or the removed global xAI fallback.
     pub(super) fn prepare_image_gen_config(
         &self,
     ) -> atelier_tools::implementations::atelier_build::image_gen::ImageGenConfig {
         use atelier_tools::implementations::atelier_build::image_gen::ImageGenConfig;
-        let sampling_config = self.sampling_config.borrow();
-        let Some(ref api_key) = sampling_config.api_key else {
-            return ImageGenConfig::Disabled;
-        };
-        let tier_restricted = self.is_tier_restricted_capability();
-        let cfg = self.cfg.borrow();
-        let base_url = cfg.endpoints.xai_api_base_url.clone();
-        let version = cfg
-            .client_version
-            .clone()
-            .unwrap_or_else(|| atelier_version::VERSION.to_string());
-        let alpha_test_key = cfg.endpoints.alpha_test_key.clone();
-        let mut headers = indexmap::IndexMap::new();
-        headers.insert("user-agent".to_string(), format!("atelier-build/{version}"));
-        inject_proxy_headers(
-            &mut headers,
-            cfg.client_version.as_deref(),
-            alpha_test_key.as_deref(),
-            &base_url,
-        );
-        ImageGenConfig::Enabled {
-            api_key: api_key.clone(),
-            base_url,
-            extra_headers: headers,
-            image_gen_enabled: cfg.resolve_image_gen().value,
-            image_edit_enabled: cfg.resolve_image_edit().value,
-            model_override: cfg.resolve_image_gen_model_override(),
-            tier_restricted,
-        }
+        ImageGenConfig::Disabled
     }
     /// Build deploy-service config. The tool talks directly to the deployer service.
     pub(super) fn prepare_app_builder_deployer_config(
@@ -1296,46 +1132,13 @@ impl MvpAgent {
         use atelier_tools::implementations::atelier_build::deploy_app::AppBuilderDeployerConfig;
         AppBuilderDeployerConfig::Disabled
     }
-    /// Build video generation config. Video tools call the xAI API directly.
+    /// Video generation requires an exact Provider/model route. The removed
+    /// process-global vendor endpoint must never be reconstructed here.
     pub(super) fn prepare_video_gen_config(
         &self,
     ) -> atelier_tools::implementations::atelier_build::video_gen::VideoGenConfig {
         use atelier_tools::implementations::atelier_build::video_gen::VideoGenConfig;
-        let Some(api_key) = self.sampling_config.borrow().api_key.clone() else {
-            return VideoGenConfig::Disabled;
-        };
-        let tier_restricted = self.is_tier_restricted_capability();
-        let cfg = self.cfg.borrow();
-        let zdr_video_output_s3 = cfg
-            .disable_zdr_incompatible_tools
-            .then(|| cfg.zdr_video_output_s3.clone())
-            .flatten()
-            .filter(|s3| s3.is_valid());
-        if cfg.disable_zdr_incompatible_tools && zdr_video_output_s3.is_none() {
-            tracing::info!("video_gen disabled by tools.disable_zdr_incompatible_tools");
-            return VideoGenConfig::Disabled;
-        }
-        let base_url = cfg.endpoints.xai_api_base_url.clone();
-        let version = cfg
-            .client_version
-            .clone()
-            .unwrap_or_else(|| atelier_version::VERSION.to_string());
-        let alpha_test_key = cfg.endpoints.alpha_test_key.clone();
-        let mut headers = indexmap::IndexMap::new();
-        headers.insert("user-agent".to_string(), format!("atelier-build/{version}"));
-        inject_proxy_headers(
-            &mut headers,
-            cfg.client_version.as_deref(),
-            alpha_test_key.as_deref(),
-            &base_url,
-        );
-        VideoGenConfig::Enabled {
-            api_key,
-            base_url,
-            extra_headers: headers,
-            zdr_video_output_s3: zdr_video_output_s3.map(Box::new),
-            tier_restricted,
-        }
+        VideoGenConfig::Disabled
     }
     pub(super) fn prepare_web_search_sampling_config(&self) -> Option<SamplingConfig> {
         let model_id = self.cfg.borrow().web_search_model.clone();
@@ -1391,7 +1194,7 @@ impl MvpAgent {
         if cfg.disable_web_search {
             return WebFetchConfig::Disabled;
         }
-        let remote = cfg.remote_settings.as_ref();
+        let remote = cfg.local_runtime_settings.as_ref();
         let enabled = cfg.resolve_web_fetch();
         if !enabled.value {
             return WebFetchConfig::Disabled;
@@ -1422,7 +1225,6 @@ impl MvpAgent {
     ) -> Self {
         models_manager.set_gateway(gateway.clone());
         let sampling_config = models_manager.sampling_config();
-        crate::upload::trace::spawn_purge_stale_upload_scratch();
         let storage_mode = cfg.storage_mode;
         let default_yolo_mode = cfg.default_yolo_mode;
         let default_auto_mode = cfg.default_auto_mode;
@@ -1431,11 +1233,11 @@ impl MvpAgent {
         let raw = config_root.as_ref().unwrap_or(&empty_config);
         let (worktree_type, wt_source) = crate::util::config::resolve_worktree_type(
             raw,
-            cfg.remote_settings.as_ref(),
+            cfg.local_runtime_settings.as_ref(),
         );
         let restore_code = crate::util::config::resolve_restore_code(
             raw,
-            cfg.remote_settings.as_ref(),
+            cfg.local_runtime_settings.as_ref(),
         );
         let session_registry_local = config_root
             .as_ref()
@@ -1444,11 +1246,6 @@ impl MvpAgent {
             worktree_type = ? worktree_type, source = wt_source,
             "WORKTREE_CONFIG_SHELL: resolved worktree type at agent startup"
         );
-        if cfg.telemetry.trace_upload == Some(false) {
-            tracing::info!(
-                enabled = false, reason = "feature_off", "trace_upload_status"
-            );
-        }
         let (subagent_event_tx, subagent_event_rx) = tokio::sync::mpsc::unbounded_channel();
         let activity = crate::agent::activity::AgentActivity::default();
         let mut subagent_coordinator = crate::agent::subagent::SubagentCoordinator::new();
@@ -1480,15 +1277,6 @@ impl MvpAgent {
                 .map(|(name, p)| p.render_io_summary(name))
                 .collect(),
             models_manager,
-            chat_modes: {
-                let chat_modes = crate::agent::chat_modes::ChatModesManager::new(
-                    auth_manager.clone(),
-                );
-                if crate::agent::chat_modes::process_chat_mode_enabled() {
-                    chat_modes.warm_in_background();
-                }
-                chat_modes
-            },
             cfg: RefCell::new(cfg.clone()),
             auth_method_id: crate::agent::auth_method::new_shared_auth_method_id(None),
             sampling_config: RefCell::new(sampling_config),
@@ -1505,9 +1293,6 @@ impl MvpAgent {
             storage_mode,
             default_yolo_mode,
             default_auto_mode,
-            trace_upload_live: Arc::new(
-                std::sync::atomic::AtomicBool::new(cfg.is_trace_upload_enabled()),
-            ),
             memory_config: None,
             config_watcher_path_tx: None,
             buffering_settings: RefCell::new(None),
@@ -1568,12 +1353,6 @@ impl MvpAgent {
         instance
             .auth_manager
             .configure_refresher(instance.cfg.borrow().atelier_com_config.auth_provider_command.clone());
-        crate::auth::credential_provider::wire_otel_auth_manager(
-            instance.auth_manager.clone(),
-        );
-        if let Some(ref dk) = instance.cfg.borrow().endpoints.deployment_key {
-            crate::auth::credential_provider::wire_otel_deployment_key(dk.clone());
-        }
         instance
     }
     /// Handle `atelier/internal/evict_sessions` — the leader server tells us a
@@ -1931,7 +1710,7 @@ impl MvpAgent {
     pub async fn list_hooks(
         &self,
         session_id: &acp::SessionId,
-    ) -> Option<xai_hooks_plugins_types::HooksListResponse> {
+    ) -> Option<atelier_hooks_plugins_types::HooksListResponse> {
         let handle = self.get_session_handle(session_id)?;
         handle.get_hooks_list().await
     }
@@ -1939,9 +1718,9 @@ impl MvpAgent {
     pub async fn execute_hooks_action(
         &self,
         session_id: &acp::SessionId,
-        action: xai_hooks_plugins_types::HooksAction,
-    ) -> Option<xai_hooks_plugins_types::ActionOutcome> {
-        if matches!(action, xai_hooks_plugins_types::HooksAction::Untrust)
+        action: atelier_hooks_plugins_types::HooksAction,
+    ) -> Option<atelier_hooks_plugins_types::ActionOutcome> {
+        if matches!(action, atelier_hooks_plugins_types::HooksAction::Untrust)
             && let Some(cwd) = self.get_session_cwd(session_id)
         {
             self.interactive_trust_prompted
@@ -1955,14 +1734,14 @@ impl MvpAgent {
     pub async fn execute_plugins_action(
         &self,
         session_id: &acp::SessionId,
-        action: xai_hooks_plugins_types::PluginsAction,
-    ) -> Option<xai_hooks_plugins_types::ActionOutcome> {
-        let is_reload = matches!(action, xai_hooks_plugins_types::PluginsAction::Reload);
+        action: atelier_hooks_plugins_types::PluginsAction,
+    ) -> Option<atelier_hooks_plugins_types::ActionOutcome> {
+        let is_reload = matches!(action, atelier_hooks_plugins_types::PluginsAction::Reload);
         let handle = self.get_session_handle(session_id)?;
         let outcome = handle.execute_plugins_action(action).await;
         let succeeded = matches!(
             outcome.as_ref().map(| o | & o.status),
-            Some(xai_hooks_plugins_types::OutcomeStatus::Success)
+            Some(atelier_hooks_plugins_types::OutcomeStatus::Success)
         );
         if is_reload && succeeded {
             self.broadcast_plugin_registry_to_sessions(Some(session_id));
@@ -1974,36 +1753,6 @@ impl MvpAgent {
         &self,
     ) -> Option<std::sync::Arc<atelier_agent::plugins::PluginRegistry>> {
         self.plugin_registry_handle.snapshot()
-    }
-    /// Run content search at agent level.
-    /// This allows content search to work with just a cwd, without requiring a session.
-    /// Returns an upload method, or `None` when trace uploads are disabled.
-    pub async fn trace_upload_config(
-        &self,
-    ) -> Option<crate::session::repo_changes::UploadMethod> {
-        let (method, _reason) = self.trace_upload_config_with_reason().await;
-        method
-    }
-    pub(super) fn trace_upload_config_snapshot(
-        &self,
-    ) -> Option<crate::session::repo_changes::UploadMethod> {
-        // Trace/session artifact upload is not part of Atelier. Keep this
-        // hard-disabled at the only snapshot boundary so config, env, or
-        // credentials cannot re-arm the removed vendor storage pipeline.
-        let _ = self;
-        None
-    }
-    /// Like `trace_upload_config`, but also returns the reason why uploads
-    /// are enabled/disabled. Used by `get_trace_context` to record
-    /// `upload_reason` on the `agent.prompt` span.
-    async fn trace_upload_config_with_reason(
-        &self,
-    ) -> (
-        Option<crate::session::repo_changes::UploadMethod>,
-        crate::upload::turn::TraceUploadReason,
-    ) {
-        use crate::upload::turn::TraceUploadReason;
-        (None, TraceUploadReason::FeatureOff)
     }
     /// Resolve client version: prefer the value from the initialize request _meta,
     /// fall back to the agent's own version (VERSION_WITH_COMMIT set by the TUI launcher).
@@ -2180,54 +1929,15 @@ impl MvpAgent {
             }
         }
     }
-    /// Build a `TraceExportConfig` for uploading JSON artifacts under a given prefix.
-    ///
-    /// Shared by comment uploads (`{session_id}/comments/...`),
-    /// comparison metadata (`{session_id}/turn_{N}/...`), etc.
-    pub(crate) async fn build_gcs_config(
-        &self,
-        gcs_prefix: String,
-    ) -> Option<crate::session::repo_changes::TraceExportConfig> {
-        let upload_method = self.trace_upload_config().await?;
-        let bucket_url = {
-            let cfg = self.cfg.borrow();
-            match &upload_method {
-                crate::session::repo_changes::UploadMethod::Direct { .. } => {
-                    match cfg.endpoints.resolve_trace_bucket_url() {
-                        Some(resolved) => Some(resolved.value),
-                        None => {
-                            tracing::debug!(
-                                "no trace bucket configured; skipping direct GCS upload"
-                            );
-                            return None;
-                        }
-                    }
-                }
-                crate::session::repo_changes::UploadMethod::S3 { bucket, .. } => {
-                    Some(format!("s3://{bucket}"))
-                }
-                crate::session::repo_changes::UploadMethod::Proxy { .. } => None,
-            }
-        };
-        Some(crate::session::repo_changes::TraceExportConfig {
-            bucket_url,
-            service_account_key: None,
-            prefix_dir: None,
-            gcs_prefix: Some(gcs_prefix),
-            absolute_paths: false,
-            archive_name_override: None,
-            upload_method,
-        })
-    }
-    /// Allocate the next monotonic telemetry turn number for a session.
+    /// Allocate the next monotonic local-artifact turn number for a session.
     ///
     /// Returns the current turn number and advances the counter. The counter is
     /// intentionally monotonic even across rewinds to avoid overwriting older
-    /// telemetry docs in cloud storage.
+    /// local diagnostic artifacts.
     ///
     /// For sessions sharing a parent's trace counter, call this once with the
     /// **root session ID** and reuse the result so the root's counter does not
-    /// advance more than once per logical turn. The cloud storage layout writes to
+    /// advance more than once per logical turn. The local artifact layout writes to
     /// `{session_id}/turn_{N}/`.
     pub(crate) fn allocate_turn_number(&self, session_id: &acp::SessionId) -> u64 {
         let turn = self.peek_turn_number(session_id);
@@ -2244,7 +1954,7 @@ impl MvpAgent {
     fn set_turn_number(&self, session_id: &acp::SessionId, next: u64) {
         self.session_turn_numbers.borrow_mut().insert(session_id.clone(), next);
     }
-    /// Upload each drained harness trace turn (the goal planner at setup, and
+    /// Persist each drained harness trace turn (the goal planner at setup, and
     /// each verifier skeptic panel) as its OWN sibling `turn_{N}` artifact.
     ///
     /// These phases run inside the single user-facing goal turn but are
@@ -2252,12 +1962,11 @@ impl MvpAgent {
     /// normal per-round `turn_messages.json` never references them. Giving each
     /// phase its own monotonic turn number — from the SAME `session_turn_numbers`
     /// counter the model turns use (see [`Self::allocate_turn_number`]), via
-    /// [`Self::get_trace_context`] + [`upload_turn_messages`] — makes the
-    /// subagents discoverable in remote/web clients
-    /// via the `<subagent_result>` footer each synthetic `task` result carries.
+    /// [`Self::get_trace_context`] plus the local artifact writers keeps these
+    /// synthetic turns available for local diagnostics.
     /// The advanced counter is persisted via `SetNextTraceTurn` so the siblings
     /// survive a restart. Best-effort and non-blocking.
-    pub(super) async fn upload_harness_trace_turns(
+    pub(super) async fn persist_harness_trace_turns(
         &self,
         session_id: &acp::SessionId,
         info: &crate::session::info::Info,
@@ -2265,60 +1974,51 @@ impl MvpAgent {
         model: &str,
         turns: Vec<Vec<atelier_sampling_types::conversation::ConversationItem>>,
     ) {
-        use crate::upload::manifest::{
-            build_manifest, resolve_upload_method, write_upload_manifest,
-        };
         let base = self.peek_turn_number(session_id);
-        let uploads = self
-            .build_harness_trace_uploads(session_id, info, model, base, turns)
+        let artifacts = self
+            .prepare_harness_trace_artifacts(session_id, info, model, base, turns)
             .await;
-        if uploads.is_empty() {
+        if artifacts.is_empty() {
             return;
         }
-        let next_trace_turn = base.saturating_add(uploads.len() as u64);
+        let next_trace_turn = base.saturating_add(artifacts.len() as u64);
         self.set_turn_number(session_id, next_trace_turn);
         let _ = cmd_tx
             .send(crate::session::SessionCommand::SetNextTraceTurn {
                 next_trace_turn,
                 request_id: None,
             });
-        for (ctx, metadata, capture) in uploads {
-            spawn_upload_task(
+        for (ctx, metadata, capture) in artifacts {
+            spawn_artifact_task(
                 "harness_trace_turn",
                 async move {
                     let session_state = build_chat_history_session_state(
                         &capture.messages,
                     );
                     futures::join!(
-                        upload_metadata(& ctx, metadata), upload_turn_messages(& ctx,
-                        capture, UploadWait::Confirm), upload_harness_session_archive(&
+                        write_metadata(&ctx, metadata), write_turn_messages(&ctx,
+                        capture), write_harness_session_archive(&
                         ctx, session_state),
                     );
-                    let upload_method = resolve_upload_method(&ctx);
-                    write_upload_manifest(
-                            &ctx,
-                            &build_manifest(&ctx.artifact_tracker, upload_method),
-                        )
-                        .await;
+                    crate::local_artifacts::artifacts::write_manifest(&ctx).await;
                 },
             );
         }
     }
     /// Number the drained harness turns `base, base+1, …` and build their
-    /// `(trace context, metadata, capture)` upload payloads. Stops at the first
-    /// turn whose trace context is `None` — uploads are disabled (or the session
-    /// is gone), a state uniform across the batch since all turns share one
-    /// `session_id`. A `None` *after* a `Some` would be a broken invariant, so
-    /// it is logged rather than dropped silently.
-    pub(super) async fn build_harness_trace_uploads(
+    /// `(trace context, metadata, capture)` local artifact records. Stops at the
+    /// first turn whose context is `None`, which means the session is gone. A
+    /// `None` after a `Some` would be a broken invariant, so it is logged rather
+    /// than dropped silently.
+    pub(super) async fn prepare_harness_trace_artifacts(
         &self,
         session_id: &acp::SessionId,
         info: &crate::session::info::Info,
         model: &str,
         base: u64,
         turns: Vec<Vec<atelier_sampling_types::conversation::ConversationItem>>,
-    ) -> Vec<(PromptTraceContext, PromptMetadata, xai_chat_state::TurnCapture)> {
-        let mut uploads = Vec::with_capacity(turns.len());
+    ) -> Vec<(PromptTraceContext, PromptMetadata, atelier_chat_state::TurnCapture)> {
+        let mut artifacts = Vec::with_capacity(turns.len());
         for (offset, items) in turns.into_iter().enumerate() {
             let turn_number = base.saturating_add(offset as u64);
             let Some(ctx) = self.get_trace_context(info, turn_number).await else {
@@ -2332,7 +2032,7 @@ impl MvpAgent {
                 break;
             };
             let metadata = PromptMetadata {
-                schema_version: GCS_SCHEMA_VERSION.to_string(),
+                schema_version: LOCAL_ARTIFACT_SCHEMA_VERSION.to_string(),
                 session_id: session_id.0.to_string(),
                 turn_number,
                 request_id: format!("harness-trace-{turn_number}"),
@@ -2361,136 +2061,36 @@ impl MvpAgent {
                 workspace_type: None,
                 sandbox: local_sandbox_telemetry(),
             };
-            let capture = xai_chat_state::TurnCapture {
+            let capture = atelier_chat_state::TurnCapture {
                 messages: items,
                 compaction_occurred: false,
             };
-            uploads.push((ctx, metadata, capture));
+            artifacts.push((ctx, metadata, capture));
         }
-        uploads
+        artifacts
     }
-    /// Gets the trace context for a prompt using cloud storage.
+    /// Gets the local artifact context for a prompt.
     pub(crate) async fn get_trace_context(
         &self,
         session_info: &crate::session::info::Info,
         turn_number: u64,
     ) -> Option<PromptTraceContext> {
-        let (upload_method, upload_reason) = self
-            .trace_upload_config_with_reason()
-            .await;
-        tracing::Span::current().record("upload_reason", upload_reason.as_str());
-        {
-            let mut decision = self.cfg.borrow().trace_upload_decision_debug();
-            if let Some(obj) = decision.as_object_mut() {
-                obj.insert(
-                    "uploads_enabled".into(),
-                    serde_json::json!(upload_method.is_some()),
-                );
-                obj.insert(
-                    "upload_reason".into(),
-                    serde_json::json!(upload_reason.as_str()),
-                );
-                obj.insert(
-                    "data_collection_disabled".into(),
-                    serde_json::json!(self.is_data_collection_disabled()),
-                );
-                obj.insert("turn_number".into(), serde_json::json!(turn_number));
-            }
-            atelier_telemetry::unified_log::info(
-                "trace.upload.decision",
-                Some(session_info.id.0.as_ref()),
-                Some(decision),
-            );
-        }
-        let upload_method = match upload_method {
-            Some(method) => {
-                tracing::Span::current().record("uploads_enabled", true);
-                method
-            }
-            None => {
-                tracing::Span::current().record("uploads_enabled", false);
-                atelier_telemetry::session_ctx::log_session_event(crate::agent::session_metrics::TraceUploadSkipped {
-                    session_id: session_info.id.0.to_string(),
-                    turn_number,
-                    reason: upload_reason.as_str().to_owned(),
-                });
-                return None;
-            }
-        };
-        let bucket_url = {
-            let cfg = self.cfg.borrow();
-            match &upload_method {
-                crate::session::repo_changes::UploadMethod::Direct { .. } => {
-                    match cfg.endpoints.resolve_trace_bucket_url() {
-                        Some(resolved) => Some(resolved.value),
-                        None => {
-                            tracing::Span::current().record("uploads_enabled", false);
-                            atelier_telemetry::session_ctx::log_session_event(crate::agent::session_metrics::TraceUploadSkipped {
-                                session_id: session_info.id.0.to_string(),
-                                turn_number,
-                                reason: "no_trace_bucket_configured".to_owned(),
-                            });
-                            return None;
-                        }
-                    }
-                }
-                crate::session::repo_changes::UploadMethod::S3 { bucket, .. } => {
-                    Some(format!("s3://{bucket}"))
-                }
-                crate::session::repo_changes::UploadMethod::Proxy { .. } => None,
-            }
-        };
-        let gcs_config = crate::session::repo_changes::TraceExportConfig {
-            bucket_url,
-            service_account_key: None,
-            prefix_dir: None,
-            gcs_prefix: Some(format!("{}/turn_{}", session_info.id.0, turn_number)),
-            absolute_paths: false,
-            archive_name_override: None,
-            upload_method,
-        };
         let session_handle = match self.sessions.borrow().get(&session_info.id) {
             Some(h) => h.clone(),
             None => {
-                tracing::Span::current().record("uploads_enabled", false);
+                tracing::Span::current().record("local_artifacts_enabled", false);
                 tracing::Span::current()
-                    .record(
-                        "upload_reason",
-                        crate::upload::turn::TraceUploadReason::SessionNotFound.as_str(),
-                    );
+                    .record("local_artifact_reason", "session_not_found");
                 return None;
             }
         };
-        let queue = session_handle
-            .upload_queue
-            .get_or_init(|| {
-                let atelier_home = crate::util::atelier_home::atelier_home();
-                let queue = crate::upload::trace::spawn_upload_queue(
-                    &atelier_home,
-                    &gcs_config,
-                    Some(atelier_version::VERSION),
-                    self.auth_manager.clone(),
-                );
-                crate::upload::trace::spawn_startup_spill_reconcile(
-                    atelier_home,
-                    Some(queue.clone()),
-                );
-                session_handle
-                    .feedback_manager
-                    .set_upload_queue_stats(queue.stats_arc());
-                queue
-            });
-        let upload_queue = Some(queue.clone());
-        let session_registry_enabled = self.build_registry_config().is_some();
+        let session_registry_enabled = false;
         Some(PromptTraceContext {
-            gcs_config,
             session_info: session_info.clone(),
             turn_number,
             session_handle,
             session_registry_enabled,
-            upload_queue,
-            artifact_tracker: crate::upload::manifest::new_artifact_tracker(),
-            auth_manager: self.auth_manager.clone(),
+            local_artifact_state: crate::local_artifacts::manifest::new_local_artifact_state(),
         })
     }
     /// Resolve the agent definition for a session.
@@ -2691,10 +2291,10 @@ impl MvpAgent {
         } = spec;
         let _timer = crate::instrumentation_timer!("session.spawn_and_register");
         reject_direct_hub_cloud_meta(session_meta)?;
-        let spawn_remote_settings = self.cfg.borrow().remote_settings.clone();
+        let spawn_local_runtime_settings = self.cfg.borrow().local_runtime_settings.clone();
         folder_trust::resolve_and_record(
             cwd.as_path(),
-            spawn_remote_settings.as_ref(),
+            spawn_local_runtime_settings.as_ref(),
             false,
         );
         let use_acp_fs = client_fs_read && client_fs_write;
@@ -2705,7 +2305,7 @@ impl MvpAgent {
             .and_then(|m| m.get("atelier/fs_notify"))
             .and_then(|v| {
                 use crate::session::{ClientFsConfig, ClientFsMode};
-                use xai_fsnotify::FsConfig;
+                use atelier_fsnotify::FsConfig;
                 if v.as_bool() == Some(true) {
                     return Some(ClientFsConfig::default());
                 }
@@ -2764,12 +2364,20 @@ impl MvpAgent {
                                     "workspace worker is required for local sessions: {error}"
                                 ))
                             })?;
+                    let worker_sandbox_mode =
+                        atelier_workspace::worker::WorkspaceWorkerSandboxMode::configured()
+                            .map_err(|error| {
+                                acp::Error::internal_error().data(format!(
+                                    "workspace worker sandbox mode is unavailable: {error}"
+                                ))
+                            })?;
                     let worker_cwd = cwd.to_path_buf();
                     workspace_ops
                         .get_or_init_local_session_filesystem(|| async move {
                             let worker = atelier_workspace::WorkspaceWorkerClient::spawn(
                                 worker_cwd.clone(),
                                 worker_path,
+                                worker_sandbox_mode,
                             )
                             .await?;
                             Ok(Arc::new(atelier_workspace::WorkspaceWorkerFs::new(
@@ -2850,14 +2458,14 @@ impl MvpAgent {
                 );
                 (handle, Some((hunk_event_rx, cancel)))
             }
-            None => (xai_hunk_tracker::HunkTrackerHandle::noop(), None),
+            None => (atelier_hunk_tracker::HunkTrackerHandle::noop(), None),
         };
         let has_xai_auth = self.auth_manager.current().is_some_and(|a| a.is_xai_auth());
         let loc_tracking_enabled = hunk_tracking_enabled && has_xai_auth
             && (self
                 .cfg
                 .borrow()
-                .remote_settings
+                .local_runtime_settings
                 .as_ref()
                 .and_then(|s| s.loc_tracking)
                 .unwrap_or(false)
@@ -2878,15 +2486,15 @@ impl MvpAgent {
                 let (loc_agg_tx, loc_agg_rx) = tokio::sync::mpsc::unbounded_channel();
                 let loc_path = crate::session::persistence::session_dir(&session_info)
                     .join("hunk_records.jsonl");
-                let loc_writer = xai_hunk_tracker::JsonlHunkRecordWriter::new(loc_path);
-                let loc_ctx = xai_hunk_tracker::LocSinkContext {
+                let loc_writer = atelier_hunk_tracker::JsonlHunkRecordWriter::new(loc_path);
+                let loc_ctx = atelier_hunk_tracker::LocSinkContext {
                     session_id: session_info.id.0.to_string(),
                     agent_id: agent_id(),
                     user_id: self.auth_manager.current().map(|a| a.user_id.clone()),
                     aggregate_tx: Some(loc_agg_tx),
                 };
                 tokio::spawn(
-                    xai_hunk_tracker::run_loc_sink(
+                    atelier_hunk_tracker::run_loc_sink(
                         hunk_event_rx,
                         loc_writer,
                         loc_ctx,
@@ -3018,20 +2626,9 @@ impl MvpAgent {
         let auto_update = self.cfg.borrow().cli.auto_update;
         let client_type = *self.client_type.borrow();
         let buffering_settings = self.buffering_settings.borrow().clone();
-        let (
-            feedback_proxy_url,
-            feedback_user_token,
-            feedback_alpha_test_key,
-            deployment_key,
-        ) = if let Some((url, token, alpha, deploy)) = self.feedback_credentials() {
-            (Some(url), token, alpha, deploy)
-        } else {
-            (None, None, None, None)
-        };
         tracing::info!(
-            session_id = % session_info.id.0, feedback_url = ? feedback_proxy_url,
-            authenticated = feedback_user_token.is_some(),
-            "Initializing feedback manager for session"
+            session_id = % session_info.id.0,
+            "Initializing local feedback manager for session"
         );
         let skills = self.cfg.borrow().skills.clone();
         let compat = self.cfg.borrow().compat_resolved;
@@ -3108,7 +2705,7 @@ impl MvpAgent {
             let cfg = self.cfg.borrow();
             let effective = cfg
                 .toolset
-                .resolve_file_toolset(cfg.remote_settings.as_ref());
+                .resolve_file_toolset(cfg.local_runtime_settings.as_ref());
             if effective != crate::tools::FileToolset::Standard {
                 let file_tools = effective
                     .tool_configs(&cfg.toolset.hashline)
@@ -3187,7 +2784,7 @@ impl MvpAgent {
             resolve_inference_idle_timeout_secs(
                 &models,
                 &sampling_config.model,
-                cfg.remote_settings.as_ref(),
+                cfg.local_runtime_settings.as_ref(),
             )
         };
         let model_max_retries = self
@@ -3205,14 +2802,13 @@ impl MvpAgent {
         let write_file_enabled = self.cfg.borrow().resolve_write_file().value;
         let goal_enabled = self.cfg.borrow().resolve_goal().value;
         let subagents_enabled = self.cfg.borrow().subagents_enabled;
-        let ask_user_question_enabled = crate::upload::turn::parse_ask_user_question_from_meta(
+        let ask_user_question_enabled = crate::local_artifacts::turn::parse_ask_user_question_from_meta(
                 session_meta,
             )
             .unwrap_or_else(|| self.cfg.borrow().resolve_ask_user_question().value);
         let client_hooks = crate::extensions::hooks::parse_client_hooks(session_meta);
         let disable_web_search = self.cfg.borrow().disable_web_search;
         let todo_gate = self.cfg.borrow().todo_gate;
-        let remote_settings_for_spawn = self.cfg.borrow().remote_settings.clone();
         let laziness_debug_log_for_spawn = self.cfg.borrow().laziness_debug_log.clone();
         let respect_gitignore = self.cfg.borrow().respect_gitignore;
         let path_not_found_hints = self.cfg.borrow().path_not_found_hints;
@@ -3222,11 +2818,11 @@ impl MvpAgent {
         let bash_params_json = {
             let cfg = self.cfg.borrow();
             let remote_auto_bg = cfg
-                .remote_settings
+                .local_runtime_settings
                 .as_ref()
                 .and_then(|r| r.auto_background_on_timeout);
             let remote_allow_background_operator = cfg
-                .remote_settings
+                .local_runtime_settings
                 .as_ref()
                 .and_then(|r| r.allow_background_operator);
             cfg.toolset
@@ -3236,7 +2832,7 @@ impl MvpAgent {
         let ask_user_question_params_json = {
             let cfg = self.cfg.borrow();
             let params = crate::util::config::resolve_ask_user_question_params_from_disk(
-                cfg.remote_settings.as_ref(),
+                cfg.local_runtime_settings.as_ref(),
             );
             match serde_json::to_value(params) {
                 Ok(serde_json::Value::Object(map)) => Some(map),
@@ -3279,7 +2875,7 @@ impl MvpAgent {
         let (mut handle, permission_events_rx, agent_system_prompt, session_thread) = {
             let _timer = crate::instrumentation_timer!("session.spawn_actor_call");
             let session_key = self.auth_manager.current_or_expired().map(|a| a.key);
-            let credentials = xai_chat_state::Credentials {
+            let credentials = atelier_chat_state::Credentials {
                 api_key: sampling_config.api_key.clone(),
                 auth_type: crate::agent::config::resolve_chat_state_auth_type(
                     sampling_config.model.as_str(),
@@ -3398,10 +2994,6 @@ impl MvpAgent {
                     self.codebase_indexes.clone(),
                     client_code_nav_enabled,
                     fs_watch_caps,
-                    feedback_proxy_url,
-                    feedback_user_token,
-                    feedback_alpha_test_key,
-                    deployment_key,
                     client_terminal,
                     client_fs_read && client_fs_write,
                     gateway_enabled,
@@ -3464,7 +3056,6 @@ impl MvpAgent {
                     Some(self.plugin_registry_handle.clone()),
                     self.models_manager.clone(),
                     None,
-                    None,
                     Some(
                         Arc::new(
                             crate::auth::manager::SharedAuthKeyProvider(
@@ -3480,7 +3071,6 @@ impl MvpAgent {
                         cfg.cli_agent_overrides.permission_rules.clone()
                     },
                     todo_gate,
-                    remote_settings_for_spawn,
                     laziness_debug_log_for_spawn,
                     None,
                     None,
@@ -3522,14 +3112,14 @@ impl MvpAgent {
             tokio::spawn(async move {
                 while let Some(agg) = loc_rx.recv().await {
                     match agg {
-                        xai_hunk_tracker::LocAggregate::LinesChanged {
+                        atelier_hunk_tracker::LocAggregate::LinesChanged {
                             author_type,
                             lines_added,
                             lines_removed,
                             file_path,
                         } => {
                             let is_agent = author_type
-                                == xai_hunk_tracker::AuthorType::Agent;
+                                == atelier_hunk_tracker::AuthorType::Agent;
                             signals
                                 .record_loc_change(
                                     is_agent,
@@ -3538,7 +3128,7 @@ impl MvpAgent {
                                     file_path,
                                 );
                         }
-                        xai_hunk_tracker::LocAggregate::LinesReverted {
+                        atelier_hunk_tracker::LocAggregate::LinesReverted {
                             lines_added_reverted,
                             lines_removed_reverted,
                         } => {
@@ -3694,43 +3284,4 @@ mod role_sampling_tests {
         );
     }
 
-    #[test]
-    fn configured_main_role_ignores_legacy_provider_default_model() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("providers.toml");
-        let mut registry = ProviderRegistry::load_or_create(&path).unwrap();
-        let main = RoleConfig::new("allm", "deepseek-v4-flash").unwrap();
-        registry.update_role(RoleId::Main, main.clone()).unwrap();
-
-        let legacy_key = ModelKey::new("legacy", "fallback").unwrap();
-        registry
-            .upsert_provider(ProviderConfig {
-                id: "legacy".into(),
-                display_name: "Legacy".into(),
-                protocol: ProviderProtocol::OpenAiResponses,
-                base_url: url::Url::parse("https://legacy.example.test/v1").unwrap(),
-                credential: CredentialRef::None,
-                discovery: ProviderDiscovery::Static,
-                extra_headers: BTreeMap::new(),
-                enabled: true,
-            })
-            .unwrap();
-        registry
-            .upsert_model(ModelDescriptor {
-                key: legacy_key.clone(),
-                display_name: "Legacy fallback".into(),
-                description: None,
-                wire_api: None,
-                context_window: None,
-                capabilities: ModelCapabilities::default(),
-                reasoning_efforts: Vec::new(),
-                source: ModelSource::Static,
-                enabled: true,
-            })
-            .unwrap();
-        registry.set_default_model(Some(legacy_key)).unwrap();
-        registry.save().unwrap();
-
-        assert_eq!(load_configured_role(&path, RoleId::Main).unwrap(), Some(main));
-    }
 }

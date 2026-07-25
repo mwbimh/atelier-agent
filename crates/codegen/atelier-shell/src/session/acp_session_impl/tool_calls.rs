@@ -21,7 +21,7 @@ fn is_interruptible_wait_tool(tool_name: &str, args: &serde_json::Value) -> bool
         "get_task_output"
         | "get_command_or_subagent_output"
         | "get_task_or_subagent_output"
-        | "get_terminal_command_output" => xai_tool_types::task_output_waits_from_json(args),
+        | "get_terminal_command_output" => atelier_tool_types::task_output_waits_from_json(args),
         "wait_tasks" | "wait_commands_or_subagents" | "wait_tasks_or_subagents" => true,
         "Await" | "AwaitShell" => true,
         _ => false,
@@ -42,7 +42,7 @@ fn interrupted_wait_tool_result(args: &serde_json::Value) -> ToolRunResult {
 }
 /// [`interrupted_wait_tool_result`] with a caller-chosen model-facing message.
 fn interrupted_wait_tool_result_with_msg(args: &serde_json::Value, msg: &str) -> ToolRunResult {
-    use xai_tool_types::{TaskOutputOutput, TaskOutputResult};
+    use atelier_tool_types::{TaskOutputOutput, TaskOutputResult};
     let task_id = args
         .get("task_ids")
         .and_then(|v| v.as_array())
@@ -206,7 +206,7 @@ impl PlanApprovalOutcome {
 /// `false` when it was delivered but the client went away before answering
 /// (quit / disconnect / leader restart).
 ///
-/// Uses `xai_acp_lib`'s TYPED [`AcpChannelFailure`](xai_acp_lib::AcpChannelFailure)
+/// Uses `atelier_acp_runtime`'s TYPED [`AcpChannelFailure`](atelier_acp_runtime::AcpChannelFailure)
 /// discriminant (carried in the error's `data`) rather than substring-matching
 /// another crate's message text: `SendFailed` (enqueue failed → no connection) →
 /// `true`; `RecvFailed` (delivered then dropped) → `false`. Any other error
@@ -214,8 +214,8 @@ impl PlanApprovalOutcome {
 /// kept pending and never auto-approved.
 fn ext_method_no_client(err: &acp::Error) -> bool {
     matches!(
-        xai_acp_lib::acp_channel_failure(err),
-        Some(xai_acp_lib::AcpChannelFailure::SendFailed)
+        atelier_acp_runtime::acp_channel_failure(err),
+        Some(atelier_acp_runtime::AcpChannelFailure::SendFailed)
     )
 }
 /// Model-facing turn injected after a resumed plan is approved.
@@ -325,7 +325,7 @@ impl SessionActor {
             });
             self.observability_bridge
                 .emit(
-                    xai_tool_protocol::session_event::SessionEvent::ToolCallStarted {
+                    atelier_tool_protocol::session_event::SessionEvent::ToolCallStarted {
                         tool_call_id: call.id.clone(),
                         tool_name: call.function.name.clone(),
                         turn_number: self.current_turn_number.get(),
@@ -352,22 +352,24 @@ impl SessionActor {
                             }
                             other => format!("{other:?}"),
                         };
-                        self.emit_event(xai_file_utils::events::Event::McpToolCallCompleted {
-                            server_name: server.to_string(),
-                            tool_name: tool.to_string(),
-                            call_id: format!(
-                                "{}{}{}",
-                                server,
-                                crate::session::mcp_servers::MCP_TOOL_NAME_DELIMITER,
-                                tool
-                            ),
-                            duration_ms: 0,
-                            success: false,
-                            is_timeout: false,
-                            error: Some(error_reason),
-                            reconnect_attempted: false,
-                            auth_retry_attempted: false,
-                        });
+                        self.emit_event(
+                            atelier_runtime_events::events::Event::McpToolCallCompleted {
+                                server_name: server.to_string(),
+                                tool_name: tool.to_string(),
+                                call_id: format!(
+                                    "{}{}{}",
+                                    server,
+                                    crate::session::mcp_servers::MCP_TOOL_NAME_DELIMITER,
+                                    tool
+                                ),
+                                duration_ms: 0,
+                                success: false,
+                                is_timeout: false,
+                                error: Some(error_reason),
+                                reconnect_attempted: false,
+                                auth_retry_attempted: false,
+                            },
+                        );
                     }
                     if matches!(
                         tool_loop,
@@ -644,7 +646,7 @@ impl SessionActor {
             });
             self.observability_bridge
                 .emit(
-                    xai_tool_protocol::session_event::SessionEvent::ToolCallCompleted {
+                    atelier_tool_protocol::session_event::SessionEvent::ToolCallCompleted {
                         tool_call_id: prepared.call_id.clone(),
                         tool_name: prepared.tool_name.clone(),
                         duration_ms,
@@ -652,26 +654,11 @@ impl SessionActor {
                     },
                 )
                 .await;
-            let (ext_file_path, ext_parameters) = if atelier_telemetry::external::is_active() {
-                let parsed: Option<serde_json::Value> =
-                    serde_json::from_str(&prepared.raw_arguments).ok();
-                let file_path = parsed.as_ref().and_then(|v| {
-                    ["file_path", "target_file", "filePath", "path"]
-                        .iter()
-                        .find_map(|k| v.get(*k).and_then(|p| p.as_str()))
-                        .map(str::to_owned)
-                });
-                (file_path, parsed)
-            } else {
-                (None, None)
-            };
             atelier_telemetry::session_ctx::log_event(
                 atelier_telemetry::events::ToolCallCompleted {
                     tool_name: prepared.tool_name.clone(),
-                    outcome: tool_outcome,
+                    outcome: format!("{tool_outcome:?}"),
                     duration_ms,
-                    file_path: ext_file_path,
-                    parameters: ext_parameters,
                 },
             );
             tracing::info_span!(
@@ -1310,16 +1297,16 @@ impl SessionActor {
                 &call.function.name,
                 match &decision {
                     Decision::Allow | Decision::Ask => {
-                        xai_file_utils::events::types::PermissionDecision::Allow
+                        atelier_runtime_events::events::types::PermissionDecision::Allow
                     }
                     Decision::Reject(_) | Decision::PolicyDeny(_) => {
-                        xai_file_utils::events::types::PermissionDecision::Deny
+                        atelier_runtime_events::events::types::PermissionDecision::Deny
                     }
                     Decision::Cancelled => {
-                        xai_file_utils::events::types::PermissionDecision::Cancelled
+                        atelier_runtime_events::events::types::PermissionDecision::Cancelled
                     }
                     Decision::FollowupMessage(_) => {
-                        xai_file_utils::events::types::PermissionDecision::Followup
+                        atelier_runtime_events::events::types::PermissionDecision::Followup
                     }
                 },
                 perm_start,
@@ -1738,8 +1725,6 @@ impl SessionActor {
             mode,
             None,
             None,
-            None,
-            None,
             false,
             None,
             false,
@@ -1855,8 +1840,8 @@ impl SessionActor {
                     "Wait tasks: {} ids, mode={}",
                     wait.task_ids.len(),
                     match wait.mode {
-                        xai_tool_types::WaitMode::WaitAny => "wait_any",
-                        xai_tool_types::WaitMode::WaitAll => "wait_all",
+                        atelier_tool_types::WaitMode::WaitAny => "wait_any",
+                        atelier_tool_types::WaitMode::WaitAll => "wait_all",
                     }
                 ),
                 acp::ToolKind::Other,
@@ -2044,7 +2029,7 @@ impl SessionActor {
         tool_call_id: &acp::ToolCallId,
         call_id: &str,
         function_name: &str,
-        err: xai_tool_runtime::ToolError,
+        err: atelier_tool_runtime::ToolError,
         raw_arguments: &str,
         model_id: &str,
     ) -> Result<(), acp::Error> {
@@ -2177,7 +2162,7 @@ impl SessionActor {
     /// `had_commit_in_session` is provisional here: the signals actor
     /// reconciles it at `TakeTurnEndSnapshot`, after every event of the turn
     /// has been processed, so out-of-order parallel tool results (a create
-    /// landing before a sibling commit) cannot mis-attribute. The Mixpanel
+    /// landing before a sibling commit) cannot mis-attribute. The local-metrics
     /// `pr_created` event is emitted from the reconciled turn-end delta in
     /// `finalize_turn_bookkeeping`.
     fn record_pr_created(
@@ -2411,7 +2396,7 @@ impl SessionActor {
                 is_cursor_for_tool_result,
             ) {
                 deferred_followups.push(ConversationItem::user(notice));
-                self.send_xai_notification(XaiSessionUpdate::ImageDropped { notes })
+                self.send_extension_notification(ExtensionSessionUpdate::ImageDropped { notes })
                     .await;
             }
             for norm in norm_result.images {
@@ -2607,7 +2592,7 @@ impl SessionActor {
                         cap.phase = CapturePhase::ToolCall;
                     }
                 }
-                self.send_buffered_xai_update(XaiSessionUpdate::ToolCallDeltaChunk {
+                self.send_buffered_extension_update(ExtensionSessionUpdate::ToolCallDeltaChunk {
                     tool_call_id: id,
                     tool_index,
                     name,
@@ -2700,7 +2685,7 @@ impl SessionActor {
                         "reason" : crate ::util::truncate(& reason, 300), }
                     )),
                 );
-                self.send_xai_notification(XaiSessionUpdate::RetryState(
+                self.send_extension_notification(ExtensionSessionUpdate::RetryState(
                     crate::extensions::notification::RetryState::Retrying {
                         attempt,
                         max_retries,
@@ -3104,9 +3089,9 @@ mod plan_approval_helper_tests {
     }
     #[test]
     fn ext_method_no_client_defaults_false_for_untagged_error() {
-        assert!(!ext_method_no_client(&xai_acp_lib::acp_internal_error(
-            "unrelated internal error"
-        )));
+        assert!(!ext_method_no_client(
+            &atelier_acp_runtime::acp_internal_error("unrelated internal error")
+        ));
     }
     #[test]
     fn revise_plan_message_includes_feedback_when_present() {
@@ -3138,15 +3123,15 @@ mod wait_interrupt_tests {
         BlockingWaitGuard, interrupted_wait_tool_result, is_interruptible_wait_tool,
         wait_for_pending_interjection,
     };
+    use atelier_tool_types::TaskOutputOutput;
     use atelier_tools::types::output::ToolOutput;
-    use xai_tool_types::TaskOutputOutput;
     /// The interruptible-wait select arms: a pending interjection aborts an
     /// in-flight wait, and `biased` prefers an already-completed wait result
     /// over the abort. (Unit-level: the full dispatch loop has no test seam.)
     #[tokio::test(start_paused = true)]
     async fn pending_interjection_aborts_in_flight_wait() {
         use super::InterjectionBuffer;
-        use xai_interjection_core::PendingInterjection;
+        use atelier_interjection_core::PendingInterjection;
         let buf: InterjectionBuffer<agent_client_protocol::ImageContent> =
             InterjectionBuffer::default();
         let out = tokio::select! {

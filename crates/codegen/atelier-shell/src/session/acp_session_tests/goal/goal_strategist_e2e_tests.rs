@@ -212,7 +212,7 @@ async fn make_actor(
 ) -> (StdArc<SessionActor>, tempfile::TempDir) {
     let tmp = tempfile::TempDir::new().expect("tempdir");
     let (gateway_tx, _gateway_rx) =
-        tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+        tokio::sync::mpsc::unbounded_channel::<atelier_acp_runtime::AcpClientMessage>();
     let (persistence_tx, _persistence_rx) =
         tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
     let mut actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
@@ -254,6 +254,16 @@ fn seed_channel(actor: &SessionActor, cmds: Vec<UpdateGoalInput>) {
             .unwrap();
     }
     drop(tx);
+}
+
+async fn wait_for_counter(counter: &AtomicUsize, expected: usize) {
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while counter.load(SeqOrd::SeqCst) < expected {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("timed out waiting for counter to reach {expected}"));
 }
 
 fn count_event(tmp: &tempfile::TempDir, ty: &str) -> usize {
@@ -552,12 +562,7 @@ async fn strategist_cancel_mid_run_revokes_cap_bonus() {
                     .drain_goal_updates(0, DrainPurpose::TurnEnd)
                     .await;
             });
-            for _ in 0..10_000 {
-                if counters.strategist_spawns.load(SeqOrd::SeqCst) == 1 {
-                    break;
-                }
-                tokio::task::yield_now().await;
-            }
+            wait_for_counter(&counters.strategist_spawns, 1).await;
             assert_eq!(counters.strategist_spawns.load(SeqOrd::SeqCst), 1);
             assert_eq!(
                 actor

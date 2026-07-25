@@ -322,7 +322,7 @@
     /// `runningPromptId` only when it was `None`, never overriding an already-set one.
     #[test]
     fn queue_changed_adopts_running_prompt_id_only_when_unset() {
-        // Shell and pager share the xai-prompt-queue type, so serializing the payload as the
+        // Shell and pager share the atelier-prompt-queue type, so serializing the payload as the
         // shell emits it pins the wire shape the handler consumes, not cross-crate compat.
         let shell_payload = atelier_shell::session::prompt_queue::QueueChanged {
             session_id: "sess-1".to_string(),
@@ -495,7 +495,7 @@
         // the next replay window).
         app.agents.get_mut(&id).unwrap().session.loading_replay = true;
         let _ = handle_ext_notification(
-            &xai_turn_completed_notif("sess-1", "p-run", "end_turn", true),
+            &extension_turn_completed_notif("sess-1", "p-run", "end_turn", true),
             &mut app,
         );
         app.agents.get_mut(&id).unwrap().session.loading_replay = false;
@@ -533,7 +533,7 @@
         // A DIFFERENT turn's terminal is recorded in replay.
         app.agents.get_mut(&id).unwrap().session.loading_replay = true;
         let _ = handle_ext_notification(
-            &xai_turn_completed_notif("sess-1", "p-old", "end_turn", true),
+            &extension_turn_completed_notif("sess-1", "p-old", "end_turn", true),
             &mut app,
         );
         app.agents.get_mut(&id).unwrap().session.loading_replay = false;
@@ -689,7 +689,7 @@
                     .cloned(),
             );
             handle(
-                AcpClientMessage::SessionNotification(xai_acp_lib::AcpArgs {
+                AcpClientMessage::SessionNotification(atelier_acp_runtime::AcpArgs {
                     request,
                     response_tx: tx,
                 }),
@@ -786,7 +786,7 @@
                     .cloned(),
             );
             handle(
-                AcpClientMessage::SessionNotification(xai_acp_lib::AcpArgs {
+                AcpClientMessage::SessionNotification(atelier_acp_runtime::AcpArgs {
                     request,
                     response_tx: tx,
                 }),
@@ -870,7 +870,7 @@
                     .cloned(),
             );
             handle(
-                AcpClientMessage::SessionNotification(xai_acp_lib::AcpArgs {
+                AcpClientMessage::SessionNotification(atelier_acp_runtime::AcpArgs {
                     request,
                     response_tx: tx,
                 }),
@@ -945,7 +945,7 @@
             ))),
         )
         .meta(serde_json::json!({ "promptId": "p2" }).as_object().cloned());
-        let msg = AcpClientMessage::SessionNotification(xai_acp_lib::AcpArgs {
+        let msg = AcpClientMessage::SessionNotification(atelier_acp_runtime::AcpArgs {
             request,
             response_tx: tx,
         });
@@ -1033,7 +1033,7 @@
                 .cloned(),
         );
         handle(
-            AcpClientMessage::SessionNotification(xai_acp_lib::AcpArgs {
+            AcpClientMessage::SessionNotification(atelier_acp_runtime::AcpArgs {
                 request,
                 response_tx: tx,
             }),
@@ -1281,7 +1281,7 @@
                 .cloned(),
         );
         let affected = handle(
-            AcpClientMessage::SessionNotification(xai_acp_lib::AcpArgs {
+            AcpClientMessage::SessionNotification(atelier_acp_runtime::AcpArgs {
                 request,
                 response_tx: tx,
             }),
@@ -1347,7 +1347,7 @@
                 .cloned(),
         );
         handle(
-            AcpClientMessage::SessionNotification(xai_acp_lib::AcpArgs {
+            AcpClientMessage::SessionNotification(atelier_acp_runtime::AcpArgs {
                 request,
                 response_tx: tx,
             }),
@@ -1419,7 +1419,7 @@
     /// turn-start shim (`bash_turn = true`, no user block).
     #[test]
     fn bash_kind_round_trips_and_adoption_sets_bash_turn() {
-        // Shell and pager share the xai-prompt-queue type; pin kind through a serde cycle.
+        // Shell and pager share the atelier-prompt-queue type; pin kind through a serde cycle.
         let shell = atelier_shell::session::prompt_queue::QueueChanged {
             session_id: "sess-1".to_string(),
             entries: vec![atelier_shell::session::prompt_queue::QueueEntryWire {
@@ -1851,7 +1851,7 @@
                 .cloned(),
         );
         let _ = handle(
-            AcpClientMessage::SessionNotification(xai_acp_lib::AcpArgs {
+            AcpClientMessage::SessionNotification(atelier_acp_runtime::AcpArgs {
                 request,
                 response_tx: tx,
             }),
@@ -1905,7 +1905,7 @@
                 .cloned(),
         );
         let _ = handle(
-            AcpClientMessage::SessionNotification(xai_acp_lib::AcpArgs {
+            AcpClientMessage::SessionNotification(atelier_acp_runtime::AcpArgs {
                 request,
                 response_tx: tx,
             }),
@@ -1928,12 +1928,12 @@
         let mut agent = make_agent(Some("sess-a"));
         agent.last_seen_event_id = Some("sess-a-7".into());
         agent.last_applied_event_seq = Some(7);
-        agent.last_applied_xai_event_seq = Some(8);
+        agent.last_applied_extension_event_seq = Some(8);
 
         agent.bind_session_id(acp::SessionId::new("sess-a"));
         assert_eq!(agent.last_seen_event_id.as_deref(), Some("sess-a-7"));
         assert_eq!(agent.last_applied_event_seq, Some(7));
-        assert_eq!(agent.last_applied_xai_event_seq, Some(8));
+        assert_eq!(agent.last_applied_extension_event_seq, Some(8));
 
         agent.bind_session_id(acp::SessionId::new("sess-b"));
         assert_eq!(
@@ -1945,7 +1945,7 @@
             "another session's cursor must not survive a rebind"
         );
         assert!(agent.last_applied_event_seq.is_none());
-        assert!(agent.last_applied_xai_event_seq.is_none());
+        assert!(agent.last_applied_extension_event_seq.is_none());
     }
 
     #[test]
@@ -2370,7 +2370,7 @@
             &mut app,
         );
         let _ = handle_ext_notification(
-            &xai_turn_completed_notif("sess-view-hooks", "pid-v", "end_turn", false),
+            &extension_turn_completed_notif("sess-view-hooks", "pid-v", "end_turn", false),
             &mut app,
         );
         assert_eq!(
@@ -2380,7 +2380,7 @@
         );
 
         let _ = handle_ext_notification(
-            &xai_hook_execution_notif("sess-view-hooks", "stop", false),
+            &extension_hook_execution_notif("sess-view-hooks", "stop", false),
             &mut app,
         );
 
@@ -2399,7 +2399,7 @@
         // A second, differently-named batch of the same turn (stop_failure +
         // stop on error turns) merges too…
         let _ = handle_ext_notification(
-            &xai_hook_execution_notif("sess-view-hooks", "stop_failure", false),
+            &extension_hook_execution_notif("sess-view-hooks", "stop_failure", false),
             &mut app,
         );
         let agent = app.agents.get(&AgentId(0)).unwrap();
@@ -2413,7 +2413,7 @@
         // …but a same-name repeat (e.g. the session-end `stop` batch) does
         // not belong to this marker and stays standalone.
         let _ = handle_ext_notification(
-            &xai_hook_execution_notif("sess-view-hooks", "stop", false),
+            &extension_hook_execution_notif("sess-view-hooks", "stop", false),
             &mut app,
         );
         let agent = app.agents.get(&AgentId(0)).unwrap();
@@ -2437,7 +2437,7 @@
         app.agents.get_mut(&id).unwrap().session.loading_replay = true;
         // A DIFFERENT turn's terminal arrives in replay.
         let _ = handle_ext_notification(
-            &xai_turn_completed_notif("sess-1", "p-old", "end_turn", true),
+            &extension_turn_completed_notif("sess-1", "p-old", "end_turn", true),
             &mut app,
         );
 

@@ -28,8 +28,7 @@ pub const RATE_LIMITED_USER_MESSAGE_API_KEY: &str = "You\u{2019}ve hit your team
 
 /// Pick rate-limit copy from the *active* auth method.
 ///
-/// Pass the real `is_api_key_auth` flag (pager `AppView`, `AuthMethodKind::is_api_key`
-/// for the selected method). Do **not** decide from `has_xai_api_key_env()` alone:
+/// Pass the real `is_api_key_auth` flag from the selected Provider auth method.
 /// when both an env key and a cached OAuth session exist, auth prefers the
 /// cached session over the API key.
 pub fn rate_limited_user_message(is_api_key_auth: bool) -> &'static str {
@@ -55,26 +54,11 @@ pub fn map_sampling_err_to_acp(err: SamplingError) -> acp::Error {
             status, message, ..
         } => match status {
             StatusCode::UNAUTHORIZED => acp::Error::auth_required().data(message),
-            // 403 Forbidden is NOT an auth error — the request was
-            // authenticated, but the action is not permitted (content-safety
-            // blocks, ZDR-gated operations, remote-settings-blocked users).
-            // Surfacing the proxy's message via internal_error keeps the
-            // explanation visible to the user without triggering the client's
-            // re-auth flow on -32000.
-            StatusCode::FORBIDDEN => {
-                let message = if message.contains("requires a Atelier subscription")
-                    && crate::agent::auth_method::has_xai_api_key_env()
-                {
-                    format!(
-                        "{message}\n\nYou have an API key set (XAI_API_KEY). \
-                         Your cached OAuth session is being used instead. \
-                         To use your API key, run `atelier logout` or type /logout in the TUI."
-                    )
-                } else {
-                    message
-                };
-                acp::Error::internal_error().data(message)
-            }
+            // 403 Forbidden is not an authentication failure: the selected
+            // Provider accepted the credentials but denied the operation.
+            // Preserve the Provider's explanation without inferring or
+            // suggesting credentials from another auth source.
+            StatusCode::FORBIDDEN => acp::Error::internal_error().data(message),
             StatusCode::BAD_REQUEST => acp::Error::invalid_params().data(message),
             StatusCode::NOT_FOUND => acp::Error::resource_not_found(None).data(message),
             StatusCode::PAYLOAD_TOO_LARGE => acp::Error::invalid_params().data(message),
@@ -251,7 +235,7 @@ mod tests {
 
     #[test]
     fn attach_prompt_usage_preserves_error_kind_and_round_trips() {
-        let mut ledger = xai_chat_state::UsageLedger::default();
+        let mut ledger = atelier_chat_state::UsageLedger::default();
         ledger.record_main_loop_call(
             "m",
             &atelier_sampling_types::TokenUsage {
@@ -404,13 +388,7 @@ mod tests {
         assert_eq!(acp_err.code, acp::Error::auth_required().code);
     }
 
-    /// Regression test: 403 Forbidden must NOT map to auth_required.
-    /// The cli-chat-proxy returns 403 for policy denials that are unrelated to
-    /// the caller's credentials (content-safety blocks like
-    /// SAFETY_CHECK_TYPE_DATA_LEAKAGE, ZDR-gated operations, remote settings
-    /// blocks). Mapping these to auth_required causes the desktop app to
-    /// tear down the session and kick off silent re-auth on -32000, and
-    /// can race with invalid_grant_threshold to wipe auth.json.
+    /// Regression test: a Provider 403 must not map to auth_required.
     #[test]
     fn forbidden_does_not_map_to_auth_required() {
         let err = SamplingError::Api {
@@ -437,101 +415,38 @@ mod tests {
         );
     }
 
-    /// Helper: run a closure with XAI_API_KEY temporarily set (or cleared).
-    /// Cleans up even if the closure panics.
-    fn with_api_key_env<F: FnOnce()>(key: Option<&str>, f: F) {
-        let prev = std::env::var("XAI_API_KEY").ok();
-        let prev_legacy = std::env::var("ATELIER_CODE_XAI_API_KEY").ok();
-        // SAFETY: serial_test ensures no concurrent env mutation.
-        unsafe {
-            std::env::remove_var("XAI_API_KEY");
-            std::env::remove_var("ATELIER_CODE_XAI_API_KEY");
-            if let Some(k) = key {
-                std::env::set_var("XAI_API_KEY", k);
-            }
-        }
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
-        // Restore original state.
-        unsafe {
-            std::env::remove_var("XAI_API_KEY");
-            std::env::remove_var("ATELIER_CODE_XAI_API_KEY");
-            if let Some(v) = prev {
-                std::env::set_var("XAI_API_KEY", v);
-            }
-            if let Some(v) = prev_legacy {
-                std::env::set_var("ATELIER_CODE_XAI_API_KEY", v);
-            }
-        }
-        if let Err(e) = result {
-            std::panic::resume_unwind(e);
-        }
+    #[test]
+    fn forbidden_provider_error_preserves_message_without_auth_hint() {
+        let message = "The selected Provider does not permit this model.";
+        let err = SamplingError::Api {
+            status: StatusCode::FORBIDDEN,
+            message: message.into(),
+            model_metadata: None,
+            retry_after_secs: None,
+            should_retry: None,
+        };
+        let acp_err = map_sampling_err_to_acp(err);
+        assert_eq!(
+            acp_err.data,
+            Some(serde_json::Value::String(message.into()))
+        );
     }
 
     #[test]
-    #[serial_test::serial]
-    fn forbidden_subscription_error_includes_api_key_hint_when_env_set() {
-        with_api_key_env(Some("xai-test"), || {
-            let err = SamplingError::Api {
-                status: StatusCode::FORBIDDEN,
-                message: "The model 'atelier-build' requires a Atelier subscription.".into(),
-                model_metadata: None,
-                retry_after_secs: None,
-                should_retry: None,
-            };
-            let acp_err = map_sampling_err_to_acp(err);
-            let data = acp_err.data.unwrap();
-            let msg = data.as_str().unwrap();
-            assert!(
-                msg.contains("atelier logout"),
-                "should suggest atelier logout when API key is available: {msg}"
-            );
-            assert!(
-                msg.contains("/logout"),
-                "should mention /logout TUI command: {msg}"
-            );
-        });
-    }
-
-    #[test]
-    #[serial_test::serial]
-    fn forbidden_subscription_error_no_hint_without_api_key() {
-        with_api_key_env(None, || {
-            let err = SamplingError::Api {
-                status: StatusCode::FORBIDDEN,
-                message: "The model 'atelier-build' requires a Atelier subscription.".into(),
-                model_metadata: None,
-                retry_after_secs: None,
-                should_retry: None,
-            };
-            let acp_err = map_sampling_err_to_acp(err);
-            let data = acp_err.data.unwrap();
-            let msg = data.as_str().unwrap();
-            assert!(
-                !msg.contains("atelier logout"),
-                "should NOT suggest logout when no API key is available: {msg}"
-            );
-        });
-    }
-
-    #[test]
-    #[serial_test::serial]
-    fn forbidden_non_subscription_error_no_hint() {
-        with_api_key_env(Some("xai-test"), || {
-            let err = SamplingError::Api {
-                status: StatusCode::FORBIDDEN,
-                message: "Content violates usage guidelines.".into(),
-                model_metadata: None,
-                retry_after_secs: None,
-                should_retry: None,
-            };
-            let acp_err = map_sampling_err_to_acp(err);
-            let data = acp_err.data.unwrap();
-            let msg = data.as_str().unwrap();
-            assert!(
-                !msg.contains("atelier logout"),
-                "should NOT suggest logout for non-subscription 403: {msg}"
-            );
-        });
+    fn forbidden_policy_error_preserves_provider_message() {
+        let message = "Content violates the selected Provider's usage policy.";
+        let err = SamplingError::Api {
+            status: StatusCode::FORBIDDEN,
+            message: message.into(),
+            model_metadata: None,
+            retry_after_secs: None,
+            should_retry: None,
+        };
+        let acp_err = map_sampling_err_to_acp(err);
+        assert_eq!(
+            acp_err.data,
+            Some(serde_json::Value::String(message.into()))
+        );
     }
 
     #[test]

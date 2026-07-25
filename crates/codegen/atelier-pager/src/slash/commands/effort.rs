@@ -34,7 +34,7 @@ impl SlashCommand for EffortCommand {
     }
 
     fn args_required(&self) -> bool {
-        true
+        false
     }
 
     fn arg_placeholder(&self) -> Option<&str> {
@@ -61,23 +61,19 @@ impl SlashCommand for EffortCommand {
         };
 
         if trimmed.is_empty() {
-            let offered: Vec<String> = ctx
+            if ctx
                 .models
                 .reasoning_effort_options_for(&model_id)
-                .into_iter()
-                .map(|opt| opt.id)
-                .collect();
-            let current = ctx
-                .models
-                .reasoning_effort
-                .map(|e| format!(" (current: {e})"))
-                .unwrap_or_default();
-            let levels = if offered.is_empty() {
-                "<level>".to_string()
-            } else {
-                offered.join("|")
-            };
-            return CommandResult::Error(format!("Usage: /effort <{levels}>{current}"));
+                .is_empty()
+            {
+                return CommandResult::Error(format!(
+                    "Model '{}' does not expose configurable reasoning effort levels",
+                    model_id.0
+                ));
+            }
+            return CommandResult::Action(Action::OpenSlashArgPicker {
+                command: self.name().to_owned(),
+            });
         }
 
         // Same gate-first policy as the CLI (`--effort`) and headless.
@@ -95,20 +91,24 @@ impl SlashCommand for EffortCommand {
 mod tests {
     use super::*;
     use crate::acp::model_state::ModelState;
-    use crate::slash::commands::effort_levels::EFFORT_LEVELS;
     use agent_client_protocol as acp;
     use atelier_shell::sampling::types::ReasoningEffort;
     use std::sync::Arc;
 
     fn model_with_reasoning(id: &str, name: &str) -> (acp::ModelId, acp::ModelInfo) {
         let id = acp::ModelId::new(Arc::from(id));
-        let mut meta = serde_json::Map::new();
-        meta.insert(
-            "supportsReasoningEffort".into(),
-            serde_json::Value::Bool(true),
+        let info = acp::ModelInfo::new(id.clone(), name.to_string()).meta(
+            serde_json::json!({
+                "supportsReasoningEffort": true,
+                "reasoningEfforts": [
+                    { "value": "low", "label": "Low" },
+                    { "value": "medium", "label": "Medium", "default": true },
+                    { "value": "high", "label": "High" },
+                ],
+            })
+            .as_object()
+            .cloned(),
         );
-        let info = acp::ModelInfo::new(id.clone(), name.to_string())
-            .meta(serde_json::Value::Object(meta).as_object().cloned());
         (id, info)
     }
 
@@ -144,7 +144,7 @@ mod tests {
     }
 
     #[test]
-    fn empty_args_errors_with_usage() {
+    fn empty_args_open_interactive_picker() {
         let mut state = ModelState::default();
         let (id, info) = model_with_reasoning("reasoning-x", "Reasoning X");
         state.available.insert(id.clone(), info);
@@ -152,17 +152,11 @@ mod tests {
         state.reasoning_effort = Some(ReasoningEffort::Medium);
         let mut ctx = dummy_exec_ctx(&state);
         let result = EffortCommand.run(&mut ctx, "");
-        match result {
-            CommandResult::Error(msg) => {
-                assert!(msg.contains("Usage: /effort"));
-                // Legacy menu option ids only — not none/minimal.
-                assert!(msg.contains("xhigh|high|medium|low"), "msg={msg}");
-                assert!(msg.contains("current: medium"));
-                assert!(!msg.contains("none"));
-                assert!(!msg.contains("minimal"));
-            }
-            other => panic!("expected Error, got {other:?}"),
-        }
+        assert!(matches!(
+            result,
+            CommandResult::Action(Action::OpenSlashArgPicker { command }) if command == "effort"
+        ));
+        assert!(!EffortCommand.args_required());
     }
 
     #[test]
@@ -177,7 +171,7 @@ mod tests {
             CommandResult::Error(msg) => {
                 assert!(msg.contains("unknown effort level 'turbo'"), "msg={msg}");
                 assert!(msg.contains("use one of:"), "msg={msg}");
-                assert!(msg.contains("xhigh"), "msg={msg}");
+                assert!(msg.contains("low, medium, high"), "msg={msg}");
                 assert!(!msg.contains("none"), "msg={msg}");
                 assert!(!msg.contains("minimal"), "msg={msg}");
             }
@@ -354,13 +348,12 @@ mod tests {
             screen_mode: crate::app::ScreenMode::Fullscreen,
         };
         let items = cmd.suggest_args(&ctx, "").unwrap();
-        assert_eq!(items.len(), EFFORT_LEVELS.len());
-        assert_eq!(items[0].insert_text, "xhigh");
-        assert_eq!(items[1].insert_text, "high");
-        assert_eq!(items[1].display, "high (active)");
-        assert_eq!(items[2].insert_text, "medium");
-        assert_eq!(items[3].insert_text, "low");
+        assert_eq!(items.len(), 3);
+        assert_eq!(items[0].insert_text, "low");
+        assert_eq!(items[1].insert_text, "medium");
+        assert_eq!(items[2].insert_text, "high");
+        assert_eq!(items[2].display, "High (active)");
         assert!(items[0].match_text.starts_with("a "));
-        assert!(items[3].match_text.starts_with("d "));
+        assert!(items[2].match_text.starts_with("c "));
     }
 }

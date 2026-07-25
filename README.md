@@ -11,16 +11,29 @@ prompt.
 ## Build and run
 
 ```sh
-cargo run -p atelier-pager-bin --bin atelier
-cargo build -p atelier-pager-bin --release --bin atelier -j 1
+cargo run -p atelier-pager-bin --bin ate
+cargo build -p atelier-pager-bin --profile release-dist --bin ate -j 1
 cargo check -p atelier-pager-bin
 ```
 
-The release binary is `target/release/atelier`. No browser login is required;
-add a Provider through `/provider` or the Atelier ACP extensions.
+The release binary is `target/release-dist/ate.exe` on Windows. Configure a
+Provider through `/provider` or the Atelier ACP extensions.
+
+Windows 上建议使用隔离目标目录构建最终发行版，避免继续膨胀仓库的
+`target/`。脚本会验证发布目录只包含 `ate.exe`：
+
+```powershell
+.\tools\build-release.ps1 -CleanOutput
+```
+
+确认复制完成后，可同时删除隔离的 Cargo 构建产物：
+
+```powershell
+.\tools\build-release.ps1 -CleanOutput -CleanTargetAfterCopy
+```
 
 Release packaging keeps the Worker and Windows command-runner process
-boundaries, but embeds both implementations in `atelier.exe`. The runtime
+boundaries, but embeds both implementations in `ate.exe`. The runtime
 starts them through hidden internal modes, so a normal release directory does
 not need `atelier-command-runner.exe` or `atelier-workspace-worker.exe`.
 
@@ -35,7 +48,7 @@ not need `atelier-command-runner.exe` or `atelier-workspace-worker.exe`.
 
 | Path | Contents |
 |------|----------|
-| `crates/codegen/atelier-pager-bin` | Composition root and `atelier` binary |
+| `crates/codegen/atelier-pager-bin` | Composition root and `ate` binary |
 | `crates/codegen/atelier-pager` | TUI and ACP client |
 | `crates/codegen/atelier-shell` | Agent runtime and session services |
 | `crates/codegen/atelier-provider` | Local Provider registry and model catalog |

@@ -66,7 +66,7 @@ fn target_dir() -> PathBuf {
 fn local_atelier_binary_path() -> PathBuf {
     target_dir()
         .join("debug")
-        .join(format!("atelier{}", std::env::consts::EXE_SUFFIX))
+        .join(format!("ate{}", std::env::consts::EXE_SUFFIX))
 }
 
 fn ensure_local_atelier_binary(binary: &Path) {
@@ -77,7 +77,7 @@ fn ensure_local_atelier_binary(binary: &Path) {
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
     let output = Command::new(&cargo)
         .current_dir(workspace_root())
-        .args(["build", "-p", "atelier-pager-bin", "--bin", "atelier"])
+        .args(["build", "-p", "atelier-pager-bin", "--bin", "ate"])
         .output()
         .unwrap_or_else(|e| panic!("failed to spawn {cargo} to build atelier: {e}"));
 
@@ -95,7 +95,7 @@ fn ensure_local_atelier_binary(binary: &Path) {
     );
 }
 
-/// Resolve atelier binary: `ATELIER_BINARY` env (CI) or the locally built `atelier` binary.
+/// Resolve the Atelier binary: `ATELIER_BINARY` env (CI) or the locally built `ate` binary.
 pub fn atelier_binary() -> PathBuf {
     if let Ok(path) = std::env::var("ATELIER_BINARY") {
         let p = PathBuf::from(path);
@@ -103,7 +103,7 @@ pub fn atelier_binary() -> PathBuf {
         return p;
     }
 
-    if let Ok(path) = std::env::var("CARGO_BIN_EXE_atelier") {
+    if let Ok(path) = std::env::var("CARGO_BIN_EXE_ate") {
         let p = PathBuf::from(path);
         if p.exists() {
             return p;
@@ -149,7 +149,7 @@ pub fn git_workdir() -> TempDir {
     dir
 }
 
-/// Point atelier at the mock server with a fake API key and telemetry disabled.
+/// Point Atelier at the mock server with telemetry disabled.
 pub fn test_env_cmd_tokio(
     cmd: &mut tokio::process::Command,
     mock_url: &str,
@@ -165,13 +165,7 @@ pub fn test_env_cmd_tokio(
         // Mirrors `leader.rs` and the pty-harness `env_for_pager`.
         .env("ATELIER_HOME", home.join(".atelier"))
         .env("ATELIER_CLI_CHAT_PROXY_BASE_URL", mock_url)
-        .env("ATELIER_XAI_API_BASE_URL", mock_url)
-        .env("XAI_API_KEY", "test-key-for-ci")
         .env("ATELIER_TELEMETRY_ENABLED", "false")
         .env("ATELIER_FEEDBACK_ENABLED", "false")
-        .env("ATELIER_TRACE_UPLOAD", "false")
-        .env("ATELIER_INSTRUMENTATION", "disabled")
-        // Release binaries (CI lifecycle tests) otherwise spawn a background
-        // update check that hits the network and can add latency under Rosetta.
-        .env("ATELIER_DISABLE_AUTOUPDATER", "1");
+        .env("ATELIER_INSTRUMENTATION", "disabled");
 }

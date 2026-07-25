@@ -163,8 +163,8 @@ Aliases: `/providers`
 ### `/roles`
 
 Configure the fixed `main`, `explore`, `implement`, `review`, `test`,
-`compact`, `summary`, and `title` Runtime Roles. Bare `/roles` opens the
-interactive picker.
+`compact`, `summary`, `title`, `planner`, `strategist`, and `skeptic` Runtime
+Roles. Bare `/roles` opens the interactive picker.
 
 ```text
 /roles list
@@ -176,29 +176,35 @@ interactive picker.
 
 Aliases: `/role`
 
-### `/model-config`
+### `/wire-api`
 
 Inspect and change model-level Wire API settings:
 
 ```text
-/model-config list
-/model-config get <provider/model>
-/model-config wire <provider/model> <chat_completions|responses|messages|default>
-/model-config override <provider/model> <wire-api|default> [json-payload]
-/model-config delete <provider/model>
-/model-config test <provider/model> [execute]
+/wire-api list
+/wire-api get <provider/model>
+/wire-api wire <provider/model> <chat_completions|responses|messages|default>
+/wire-api override <provider/model> <wire-api|default> [json-payload]
+/wire-api delete <provider/model>
+/wire-api test <provider/model> [execute]
 ```
 
-Bare `/model-config` opens the interactive picker. Alias: `/models`.
+Bare `/wire-api` opens the interactive picker.
 
 ### `/effort <level>`
 
-Set reasoning effort on the **current** model without re-selecting it. Levels: `low`, `medium`, `high`, `xhigh`. Only works when the active model supports reasoning effort.
+Set reasoning effort on the **current** model without re-selecting it. Bare
+`/effort` opens a picker containing only levels supported by the active model.
 
 ```
 /effort high
 /effort low
 ```
+
+### `/fast-mode [on|off]`
+
+Toggle the active model's fast-mode payload. Bare `/fast-mode` opens an
+`on`/`off` picker when the model supports fast mode.
 
 ### `/always-approve` and `/auto`
 

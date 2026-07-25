@@ -3,21 +3,21 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/build/xai-proto-build",
+    "crates/build/atelier-proto-build",
     "crates/codegen/ptyctl",
     "crates/codegen/ptyctl-cli",
     "crates/codegen/atelier-provider",
     "crates/codegen/atelier-protocol",
     "crates/codegen/atelier-windows-sandbox",
-    "crates/codegen/xai-acp-lib",
-    "crates/codegen/xai-agent-lifecycle",
-    "crates/codegen/xai-chat-state",
-    "crates/codegen/xai-codebase-graph",
-    "crates/codegen/xai-crash-handler",
-    "crates/codegen/xai-fast-worktree",
-    "crates/codegen/xai-file-utils",
-    "crates/codegen/xai-fsnotify",
-    "crates/codegen/xai-gix-status",
+    "crates/codegen/atelier-acp-runtime",
+    "crates/codegen/atelier-agent-lifecycle",
+    "crates/codegen/atelier-chat-state",
+    "crates/codegen/atelier-codebase-graph",
+    "crates/codegen/atelier-crash-handler",
+    "crates/codegen/atelier-fast-worktree",
+    "crates/codegen/atelier-runtime-events",
+    "crates/codegen/atelier-fsnotify",
+    "crates/codegen/atelier-gix-status",
     "crates/codegen/atelier-agent",
     "crates/codegen/atelier-announcements",
     "crates/codegen/atelier-auth",
@@ -57,28 +57,26 @@ members = [
     "crates/codegen/atelier-workspace",
     "crates/codegen/atelier-workspace-client",
     "crates/codegen/atelier-workspace-types",
-    "crates/codegen/xai-hooks-plugins-types",
-    "crates/codegen/xai-hunk-tracker",
-    "crates/codegen/xai-prompt-queue",
-    "crates/codegen/xai-ratatui-inline",
-    "crates/codegen/xai-ratatui-textarea",
-    "crates/codegen/xai-sqlite-journal",
-    "crates/codegen/xai-system-power",
-    "crates/codegen/xai-token-estimation",
-    "crates/codegen/xai-tracing-macros",
-    "crates/codegen/xai-tty-utils",
-    "crates/common/xai-circuit-breaker",
-    "crates/common/xai-computer-hub-core",
-    "crates/common/xai-computer-hub-mcp-adapter",
-    "crates/common/xai-computer-hub-sdk",
+    "crates/codegen/atelier-hooks-plugins-types",
+    "crates/codegen/atelier-hunk-tracker",
+    "crates/codegen/atelier-prompt-queue",
+    "crates/codegen/atelier-ratatui-inline",
+    "crates/codegen/atelier-ratatui-textarea",
+    "crates/codegen/atelier-sqlite-journal",
+    "crates/codegen/atelier-system-power",
+    "crates/codegen/atelier-token-estimation",
+    "crates/codegen/atelier-tracing-macros",
+    "crates/codegen/atelier-tty-utils",
+    "crates/common/atelier-tool-hub-core",
+    "crates/common/atelier-tool-hub-mcp-adapter",
+    "crates/common/atelier-tool-hub-sdk",
     "crates/common/atelier-compaction",
-    "crates/common/xai-interjection-core",
-    "crates/common/xai-test-utils",
-    "crates/common/xai-tool-protocol",
-    "crates/common/xai-tool-runtime",
-    "crates/common/xai-tool-types",
-    "crates/common/xai-tracing",
-    "prod/mc/cli-chat-proxy-types",
+    "crates/common/atelier-interjection-core",
+    "crates/common/atelier-test-utils",
+    "crates/common/atelier-tool-protocol",
+    "crates/common/atelier-tool-runtime",
+    "crates/common/atelier-tool-types",
+    "crates/common/atelier-tracing",
     "third_party/dagre_rust",
     "third_party/graphlib_rust",
     "third_party/mermaid-to-svg",
@@ -134,7 +132,6 @@ enum_delegate = "0.2"
 env_logger = "0.11"
 eventsource-stream = "0.2"
 fastrace = { version = "0.7" }
-fastrace-opentelemetry = { version = "0.18" }
 fastrace-reqwest = { version = "0.2" }
 fastrace-tonic = { version = "0.1" }
 fastrand = "2"
@@ -145,7 +142,6 @@ fs2 = "0.4"
 futures = "0.3"
 futures-util = "0.3"
 fuzzy-matcher = "0.3.7"
-gcloud-storage = { version = "1.3.0", default-features = false, features = ["auth", "jwt-aws-lc-rs", "external-account"] }
 gethostname = "1"
 gix = { version = "0.83", default-features = false, features = ["sha1"] }
 glob = "0.3"
@@ -180,11 +176,6 @@ num_cpus = "1"
 oauth2 = "5"
 obfstr = "0.4"
 once_cell = "1"
-opentelemetry = "0.32"
-opentelemetry-http = { version = "0.32", features = ["reqwest-blocking"] }
-opentelemetry-otlp = { version = "0.32", features = ["grpc-tonic", "reqwest-blocking-client", "tls-roots"] }
-opentelemetry-proto = { version = "0.32", features = ["gen-tonic"] }
-opentelemetry_sdk = { version = "0.32.1", features = ["spec_unstable_metrics_views"] }
 parking_lot = "0.12.4"
 pbjson-build = "0.9"
 pdf_oxide = { version = "0.3.43", features = ["rendering"] }
@@ -253,7 +244,6 @@ tonic-prost-build = "0.14"
 tower = "0.5"
 tower-http = "0.6"
 tracing = "0.1"
-tracing-opentelemetry = "0.33"
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["env-filter", "smallvec", "tracing-log", "std", "ansi"] }
 ts-rs = "12.0"
 tui-scrollbar = "0.2"
@@ -272,13 +262,12 @@ whoami = "1.4"
 windows = { version = "0.61", features = ["Win32_Security", "Win32_Security_Authorization", "Win32_Foundation", "Win32_System_Threading", "Win32_System_JobObjects", "Win32_System_Console", "Win32_System_Pipes"] }
 wiremock = "0.6"
 wl-clipboard-rs = "0.9"
-xai-acp-lib = { path = "crates/codegen/xai-acp-lib" }
+atelier-acp-runtime = { path = "crates/codegen/atelier-acp-runtime" }
 atelier-protocol = { path = "crates/codegen/atelier-protocol" }
-xai-agent-lifecycle = { path = "crates/codegen/xai-agent-lifecycle" }
-xai-circuit-breaker = { path = "crates/common/xai-circuit-breaker" }
-xai-computer-hub-core = { path = "crates/common/xai-computer-hub-core" }
-xai-computer-hub-sdk = { path = "crates/common/xai-computer-hub-sdk" }
-xai-gix-status = { path = "crates/codegen/xai-gix-status" }
+atelier-agent-lifecycle = { path = "crates/codegen/atelier-agent-lifecycle" }
+atelier-tool-hub-core = { path = "crates/common/atelier-tool-hub-core" }
+atelier-tool-hub-sdk = { path = "crates/common/atelier-tool-hub-sdk" }
+atelier-gix-status = { path = "crates/codegen/atelier-gix-status" }
 atelier-agent = { path = "crates/codegen/atelier-agent" }
 atelier-announcements = { path = "crates/codegen/atelier-announcements" }
 atelier-auth = { path = "crates/codegen/atelier-auth" }
@@ -305,26 +294,29 @@ atelier-tools-api = { path = "crates/codegen/atelier-tools-api" }
 atelier-version = { path = "crates/codegen/atelier-version" }
 atelier-workspace = { path = "crates/codegen/atelier-workspace" }
 atelier-workspace-types = { path = "crates/codegen/atelier-workspace-types" }
-xai-hooks-plugins-types = { path = "crates/codegen/xai-hooks-plugins-types" }
-xai-interjection-core = { path = "crates/common/xai-interjection-core" }
-xai-prompt-queue = { path = "crates/codegen/xai-prompt-queue" }
-xai-proto-build = { path = "crates/build/xai-proto-build" }
-xai-ratatui-inline = { path = "crates/codegen/xai-ratatui-inline" }
-xai-ratatui-textarea = { path = "crates/codegen/xai-ratatui-textarea" }
-xai-sqlite-journal = { path = "crates/codegen/xai-sqlite-journal" }
-xai-system-power = { path = "crates/codegen/xai-system-power" }
-xai-test-utils = { path = "crates/common/xai-test-utils" }
-xai-token-estimation = { path = "crates/codegen/xai-token-estimation" }
-xai-tool-protocol = { path = "crates/common/xai-tool-protocol" }
-xai-tool-runtime = { path = "crates/common/xai-tool-runtime" }
-xai-tool-types = { path = "crates/common/xai-tool-types" }
-xai-tracing = { path = "crates/common/xai-tracing" }
-xai-tty-utils = { path = "crates/codegen/xai-tty-utils" }
+atelier-hooks-plugins-types = { path = "crates/codegen/atelier-hooks-plugins-types" }
+atelier-interjection-core = { path = "crates/common/atelier-interjection-core" }
+atelier-prompt-queue = { path = "crates/codegen/atelier-prompt-queue" }
+atelier-proto-build = { path = "crates/build/atelier-proto-build" }
+atelier-ratatui-inline = { path = "crates/codegen/atelier-ratatui-inline" }
+atelier-ratatui-textarea = { path = "crates/codegen/atelier-ratatui-textarea" }
+atelier-sqlite-journal = { path = "crates/codegen/atelier-sqlite-journal" }
+atelier-system-power = { path = "crates/codegen/atelier-system-power" }
+atelier-test-utils = { path = "crates/common/atelier-test-utils" }
+atelier-token-estimation = { path = "crates/codegen/atelier-token-estimation" }
+atelier-tool-protocol = { path = "crates/common/atelier-tool-protocol" }
+atelier-tool-runtime = { path = "crates/common/atelier-tool-runtime" }
+atelier-tool-types = { path = "crates/common/atelier-tool-types" }
+atelier-tracing = { path = "crates/common/atelier-tracing" }
+atelier-tty-utils = { path = "crates/codegen/atelier-tty-utils" }
 zbus = { version = "5" }
 zstd = "0.13"
 
+[profile.test]
+incremental = false
+
 [profile.release]
-incremental = true
+incremental = false
 panic = "abort"
 
 # Hardened release profile for shipping to end users (alpha + stable).
@@ -337,23 +329,13 @@ panic = "abort"
 # .debug sidecars (Linux) or .dSYM bundles (macOS) before stripping post-build.
 # Linker flags (RELRO, NX stack) are set per-target in .cargo/config.toml.
 [profile.release-dist]
+incremental = false
 inherits = "release"
 lto = "thin"
 codegen-units = 1
 strip = false
 debug = 1
 split-debuginfo = "off"
-
-# Production profile for latency-sensitive x-product services (VF, home-mixer).
-# Thin LTO gives ~90% of full LTO benefit at significantly faster link time.
-# Keeps symbols + line tables for prod debuggability (perf, flamegraph, stack traces).
-[profile.x-prod]
-inherits = "release"
-lto = "thin"
-strip = false
-codegen-units = 1
-debug = "line-tables-only"
-panic = "unwind"
 
 # Desktop release profile. Functionally identical to release-dist — kept as a
 # named alias so the desktop workflow can reference it without coupling to the
@@ -366,13 +348,13 @@ inherits = "release-dist"
 
 
 [profile.dev]
+incremental = false
 panic = "abort"
 split-debuginfo = "unpacked"
 codegen-units = 128
 debug = "line-tables-only"
 opt-level = 0
 lto = false
-incremental = true
 
 [profile.bench]
 debug = true

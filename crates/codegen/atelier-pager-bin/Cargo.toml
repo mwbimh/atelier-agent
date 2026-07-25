@@ -3,7 +3,7 @@ name = "atelier-pager-bin"
 version = "0.1.220-alpha.4"
 edition.workspace = true
 license = "Apache-2.0"
-authors = ["xAI"]
+authors = ["Atelier contributors"]
 default-run = "ate"
 
 # Composition-root binary for the Atelier TUI. This package exists so the binary
@@ -26,8 +26,8 @@ atelier-shell = { workspace = true }
 atelier-version = { workspace = true }
 atelier-telemetry = { workspace = true }
 atelier-workspace = { workspace = true }
-xai-crash-handler = { path = "../xai-crash-handler" }
-xai-acp-lib = { workspace = true }
+atelier-crash-handler = { path = "../atelier-crash-handler" }
+atelier-acp-runtime = { workspace = true }
 
 # Async runtime + misc.
 tokio = { workspace = true, features = [
@@ -46,7 +46,7 @@ tracing-subscriber = { workspace = true }
 serde_json = { workspace = true }
 dunce = { workspace = true }
 semver = { workspace = true }
-xai-tty-utils = { workspace = true }
+atelier-tty-utils = { workspace = true }
 atelier-config = { workspace = true }
 atelier-sandbox = { path = "../atelier-sandbox", default-features = false }
 rustls = { version = "0.23", default-features = false, features = [

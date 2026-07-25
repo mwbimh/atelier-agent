@@ -163,7 +163,7 @@ impl SessionActor {
         const ALLOW_ID: &str = "policy-allow-once";
         const REJECT_ID: &str = "policy-reject-once";
 
-        let safe_prompt = xai_acp_lib::redact_text(prompt);
+        let safe_prompt = atelier_acp_runtime::redact_text(prompt);
         let update = acp::ToolCallUpdate::new(
             tool_call_id.clone(),
             acp::ToolCallUpdateFields::new()

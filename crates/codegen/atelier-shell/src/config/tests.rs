@@ -76,7 +76,7 @@ command = "$ATELIER_TEST_CONFIG_MISSING/bin/server"
 #[test]
 #[serial_test::serial]
 fn storage_mode_is_always_local_in_the_private_build() {
-    let remote = crate::util::config::RemoteSettings {
+    let remote = crate::util::config::LocalRuntimeSettings {
         writeback_enabled: Some(true),
         ..Default::default()
     };
@@ -311,7 +311,7 @@ fn memory_config_no_memory_overrides_toml_enabled() {
 fn memory_config_no_memory_overrides_remote_enabled() {
     without_atelier_memory(|| {
         let config = toml::Value::Table(toml::map::Map::new());
-        let remote = crate::util::config::RemoteSettings {
+        let remote = crate::util::config::LocalRuntimeSettings {
             memory_enabled: Some(true),
             ..Default::default()
         };
@@ -482,10 +482,10 @@ max_chunk_chars = 3200
     });
 }
 #[test]
-fn memory_config_remote_settings_enable() {
+fn memory_config_local_runtime_settings_enable() {
     without_atelier_memory(|| {
         let config = toml::Value::Table(toml::map::Map::new());
-        let remote = crate::util::config::RemoteSettings {
+        let remote = crate::util::config::LocalRuntimeSettings {
             memory_enabled: Some(true),
             ..Default::default()
         };
@@ -494,10 +494,10 @@ fn memory_config_remote_settings_enable() {
     });
 }
 #[test]
-fn memory_config_remote_settings_pruning() {
+fn memory_config_local_runtime_settings_pruning() {
     without_atelier_memory(|| {
         let config = toml::Value::Table(toml::map::Map::new());
-        let remote = crate::util::config::RemoteSettings {
+        let remote = crate::util::config::LocalRuntimeSettings {
             pruning_enabled: Some(true),
             pruning_keep_last_n_turns: Some(5),
             ..Default::default()
@@ -508,10 +508,10 @@ fn memory_config_remote_settings_pruning() {
     });
 }
 #[test]
-fn memory_config_remote_settings_initial_injection() {
+fn memory_config_local_runtime_settings_initial_injection() {
     without_atelier_memory(|| {
         let config = toml::Value::Table(toml::map::Map::new());
-        let remote = crate::util::config::RemoteSettings {
+        let remote = crate::util::config::LocalRuntimeSettings {
             memory_initial_injection_enabled: Some(false),
             memory_initial_injection_min_score: Some(0.77),
             ..Default::default()
@@ -530,7 +530,7 @@ enabled = true
 min_score = 0.25
 "#;
         let config: toml::Value = toml::from_str(toml_str).unwrap();
-        let remote = crate::util::config::RemoteSettings {
+        let remote = crate::util::config::LocalRuntimeSettings {
             memory_initial_injection_enabled: Some(false),
             memory_initial_injection_min_score: Some(0.77),
             ..Default::default()
@@ -544,7 +544,7 @@ min_score = 0.25
 fn memory_config_local_disabled_blocks_remote_enable() {
     without_atelier_memory(|| {
         let config: toml::Value = toml::from_str("[memory]\nenabled = false").unwrap();
-        let remote = crate::util::config::RemoteSettings {
+        let remote = crate::util::config::LocalRuntimeSettings {
             memory_enabled: Some(true),
             ..Default::default()
         };
@@ -562,7 +562,7 @@ fn memory_config_local_overrides_remote() {
 max_results = 20
 "#;
         let config: toml::Value = toml::from_str(toml_str).unwrap();
-        let remote = crate::util::config::RemoteSettings {
+        let remote = crate::util::config::LocalRuntimeSettings {
             memory_search_max_results: Some(5),
             ..Default::default()
         };
@@ -579,7 +579,7 @@ fn memory_config_remote_none_is_noop() {
             false,
             false,
             &config,
-            Some(&crate::util::config::RemoteSettings::default()),
+            Some(&crate::util::config::LocalRuntimeSettings::default()),
         );
         assert_eq!(mem_without.search.max_results, mem_with_empty.search.max_results);
         assert_eq!(mem_without.enabled, mem_with_empty.enabled);
@@ -589,7 +589,7 @@ fn memory_config_remote_none_is_noop() {
 fn flush_semantic_dedup_threshold_from_remote_when_no_local_flush() {
     without_atelier_memory(|| {
         let config = toml::Value::Table(toml::map::Map::new());
-        let remote = crate::util::config::RemoteSettings {
+        let remote = crate::util::config::LocalRuntimeSettings {
             flush_semantic_dedup_threshold: Some(0.85),
             ..Default::default()
         };
@@ -604,7 +604,7 @@ fn flush_semantic_dedup_threshold_from_remote_when_no_local_flush() {
 fn flush_semantic_dedup_threshold_clamped_from_remote() {
     without_atelier_memory(|| {
         let config = toml::Value::Table(toml::map::Map::new());
-        let remote = crate::util::config::RemoteSettings {
+        let remote = crate::util::config::LocalRuntimeSettings {
             flush_semantic_dedup_threshold: Some(1.5),
             ..Default::default()
         };
@@ -613,7 +613,7 @@ fn flush_semantic_dedup_threshold_clamped_from_remote() {
             mem.flush.semantic_dedup_threshold, Some(1.0),
             "remote threshold above 1.0 should be clamped"
         );
-        let remote_neg = crate::util::config::RemoteSettings {
+        let remote_neg = crate::util::config::LocalRuntimeSettings {
             flush_semantic_dedup_threshold: Some(-0.5),
             ..Default::default()
         };
@@ -633,7 +633,7 @@ enabled = true
 semantic_dedup_threshold = 0.88
 "#;
         let config: toml::Value = toml::from_str(toml_str).unwrap();
-        let remote = crate::util::config::RemoteSettings {
+        let remote = crate::util::config::LocalRuntimeSettings {
             flush_semantic_dedup_threshold: Some(0.70),
             ..Default::default()
         };
@@ -691,7 +691,7 @@ check_interval_secs = 600
 fn memory_dream_config_remote_override_when_toml_absent() {
     without_atelier_memory(|| {
         let config = toml::Value::Table(toml::map::Map::new());
-        let remote = crate::util::config::RemoteSettings {
+        let remote = crate::util::config::LocalRuntimeSettings {
             dream_enabled: Some(true),
             dream_min_hours: Some(48),
             dream_min_sessions: Some(10),
@@ -715,7 +715,7 @@ enabled = false
 min_hours = 6
 "#;
         let config: toml::Value = toml::from_str(toml_str).unwrap();
-        let remote = crate::util::config::RemoteSettings {
+        let remote = crate::util::config::LocalRuntimeSettings {
             dream_enabled: Some(true),
             dream_min_hours: Some(48),
             dream_min_sessions: Some(10),
@@ -913,7 +913,7 @@ lambda = -0.5
 fn memory_config_remote_temporal_decay() {
     without_atelier_memory(|| {
         let config = toml::Value::Table(toml::map::Map::new());
-        let remote = crate::util::config::RemoteSettings {
+        let remote = crate::util::config::LocalRuntimeSettings {
             memory_temporal_decay_enabled: Some(false),
             memory_temporal_decay_half_life_days: Some(14.0),
             ..Default::default()
@@ -927,7 +927,7 @@ fn memory_config_remote_temporal_decay() {
 fn memory_config_remote_mmr() {
     without_atelier_memory(|| {
         let config = toml::Value::Table(toml::map::Map::new());
-        let remote = crate::util::config::RemoteSettings {
+        let remote = crate::util::config::LocalRuntimeSettings {
             memory_mmr_enabled: Some(true),
             memory_mmr_lambda: Some(0.5),
             ..Default::default()
@@ -941,7 +941,7 @@ fn memory_config_remote_mmr() {
 fn memory_config_remote_mmr_lambda_clamped() {
     without_atelier_memory(|| {
         let config = toml::Value::Table(toml::map::Map::new());
-        let remote = crate::util::config::RemoteSettings {
+        let remote = crate::util::config::LocalRuntimeSettings {
             memory_mmr_lambda: Some(5.0),
             ..Default::default()
         };
@@ -960,7 +960,7 @@ fn memory_config_local_search_blocks_remote_temporal_decay_and_mmr() {
 max_results = 8
 "#;
         let config: toml::Value = toml::from_str(toml_str).unwrap();
-        let remote = crate::util::config::RemoteSettings {
+        let remote = crate::util::config::LocalRuntimeSettings {
             memory_temporal_decay_enabled: Some(false),
             memory_mmr_enabled: Some(true),
             memory_mmr_lambda: Some(0.3),
@@ -1061,9 +1061,9 @@ fn subagents_config_env_var_disables_default() {
 /// A `subagents_enabled` key served by an old cli-chat-proxy must parse
 /// as an unknown key and have no effect on resolution.
 #[test]
-fn subagents_config_remote_settings_key_is_ignored() {
+fn subagents_config_local_runtime_settings_key_is_ignored() {
     without_atelier_subagents(|| {
-        let _settings: crate::util::config::RemoteSettings = serde_json::from_str(
+        let _settings: crate::util::config::LocalRuntimeSettings = serde_json::from_str(
                 r#"{"subagents_enabled": false}"#,
             )
             .expect("unknown subagents_enabled key must not break parsing");
@@ -1285,7 +1285,7 @@ fn managed_mcp_gateway_tools_require_managed_master() {
                 "#,
                 )
                 .unwrap();
-            let remote = crate::util::config::RemoteSettings {
+            let remote = crate::util::config::LocalRuntimeSettings {
                 managed_mcps_enabled: Some(false),
                 ..Default::default()
             };
@@ -1303,7 +1303,7 @@ fn managed_mcp_gateway_tools_remote_enabled() {
         None,
         || {
             let empty = toml::Value::Table(toml::map::Map::new());
-            let remote = crate::util::config::RemoteSettings {
+            let remote = crate::util::config::LocalRuntimeSettings {
                 managed_mcp_gateway_tools_enabled: Some(true),
                 ..Default::default()
             };
@@ -1320,7 +1320,7 @@ fn managed_mcp_gateway_tools_env_overrides_remote() {
         Some("0"),
         || {
             let empty = toml::Value::Table(toml::map::Map::new());
-            let remote = crate::util::config::RemoteSettings {
+            let remote = crate::util::config::LocalRuntimeSettings {
                 managed_mcp_gateway_tools_enabled: Some(true),
                 ..Default::default()
             };
@@ -1337,7 +1337,7 @@ fn managed_mcp_gateway_tools_env_on_overrides_remote_off() {
         Some("1"),
         || {
             let empty = toml::Value::Table(toml::map::Map::new());
-            let remote = crate::util::config::RemoteSettings {
+            let remote = crate::util::config::LocalRuntimeSettings {
                 managed_mcp_gateway_tools_enabled: Some(false),
                 ..Default::default()
             };
@@ -1399,7 +1399,7 @@ fn with_model_overrides_env<T>(
     with_model_overrides_env_full(ws, ss, id, None, f)
 }
 #[test]
-fn model_overrides_remote_settings_blocked_by_local_config() {
+fn model_overrides_local_runtime_settings_blocked_by_local_config() {
     with_model_overrides_env(
         None,
         None,
@@ -1412,7 +1412,7 @@ fn model_overrides_remote_settings_blocked_by_local_config() {
                 "#,
                 )
                 .unwrap();
-            let remote = crate::util::config::RemoteSettings {
+            let remote = crate::util::config::LocalRuntimeSettings {
                 web_search_model: Some("remote-ws".to_owned()),
                 session_summary_model: Some("remote-ss".to_owned()),
                 image_description_model: Some("remote-id".to_owned()),
@@ -1451,14 +1451,14 @@ fn model_overrides_cli_overrides_everything() {
     );
 }
 #[test]
-fn model_overrides_remote_settings_applies_without_local_config() {
+fn model_overrides_local_runtime_settings_applies_without_local_config() {
     with_model_overrides_env(
         None,
         None,
         None,
         || {
             let empty = toml::Value::Table(toml::map::Map::new());
-            let remote = crate::util::config::RemoteSettings {
+            let remote = crate::util::config::LocalRuntimeSettings {
                 web_search_model: Some("remote-ws".to_owned()),
                 session_summary_model: Some("remote-ss".to_owned()),
                 image_description_model: Some("remote-id".to_owned()),
@@ -1485,7 +1485,7 @@ fn model_overrides_local_image_description_wins_over_remote() {
                 "#,
                 )
                 .unwrap();
-            let remote = crate::util::config::RemoteSettings {
+            let remote = crate::util::config::LocalRuntimeSettings {
                 image_description_model: Some("remote-id".to_owned()),
                 ..Default::default()
             };
@@ -1540,7 +1540,7 @@ fn model_overrides_local_session_summary_wins_over_remote() {
                 "#,
                 )
                 .unwrap();
-            let remote = crate::util::config::RemoteSettings {
+            let remote = crate::util::config::LocalRuntimeSettings {
                 session_summary_model: Some("remote-ss".to_owned()),
                 ..Default::default()
             };
@@ -1557,7 +1557,7 @@ fn model_overrides_env_session_summary_overrides_remote() {
         None,
         || {
             let empty = toml::Value::Table(toml::map::Map::new());
-            let remote = crate::util::config::RemoteSettings {
+            let remote = crate::util::config::LocalRuntimeSettings {
                 session_summary_model: Some("remote-ss".to_owned()),
                 ..Default::default()
             };
@@ -1615,7 +1615,7 @@ fn model_overrides_empty_session_summary_remote_uses_default() {
         None,
         || {
             let empty = toml::Value::Table(toml::map::Map::new());
-            let remote = crate::util::config::RemoteSettings {
+            let remote = crate::util::config::LocalRuntimeSettings {
                 session_summary_model: Some("   ".to_owned()),
                 ..Default::default()
             };
@@ -1641,7 +1641,7 @@ fn model_overrides_cli_session_summary_overrides_everything() {
                 "#,
                 )
                 .unwrap();
-            let remote = crate::util::config::RemoteSettings {
+            let remote = crate::util::config::LocalRuntimeSettings {
                 session_summary_model: Some("remote-ss".to_owned()),
                 ..Default::default()
             };
@@ -1679,7 +1679,7 @@ fn model_overrides_env_image_description_overrides_remote() {
         Some("env-id"),
         || {
             let empty = toml::Value::Table(toml::map::Map::new());
-            let remote = crate::util::config::RemoteSettings {
+            let remote = crate::util::config::LocalRuntimeSettings {
                 image_description_model: Some("remote-id".to_owned()),
                 ..Default::default()
             };
@@ -1737,7 +1737,7 @@ fn model_overrides_empty_image_description_remote_uses_default() {
         None,
         || {
             let empty = toml::Value::Table(toml::map::Map::new());
-            let remote = crate::util::config::RemoteSettings {
+            let remote = crate::util::config::LocalRuntimeSettings {
                 image_description_model: Some("   ".to_owned()),
                 ..Default::default()
             };
@@ -1776,7 +1776,7 @@ fn model_overrides_prompt_suggestion_local_wins_over_remote() {
                 "#,
                 )
                 .unwrap();
-            let remote = crate::util::config::RemoteSettings {
+            let remote = crate::util::config::LocalRuntimeSettings {
                 prompt_suggestion_model: Some("remote-ps".to_owned()),
                 ..Default::default()
             };
@@ -1796,7 +1796,7 @@ fn model_overrides_prompt_suggestion_remote_applies_without_local() {
         None,
         || {
             let empty = toml::Value::Table(toml::map::Map::new());
-            let remote = crate::util::config::RemoteSettings {
+            let remote = crate::util::config::LocalRuntimeSettings {
                 prompt_suggestion_model: Some("remote-ps".to_owned()),
                 ..Default::default()
             };
@@ -1823,7 +1823,7 @@ fn model_overrides_prompt_suggestion_env_wins_over_local_and_remote() {
                 "#,
                 )
                 .unwrap();
-            let remote = crate::util::config::RemoteSettings {
+            let remote = crate::util::config::LocalRuntimeSettings {
                 prompt_suggestion_model: Some("remote-ps".to_owned()),
                 ..Default::default()
             };
@@ -1868,7 +1868,7 @@ fn model_overrides_prompt_suggestion_blank_values_are_unset() {
                 "#,
                 )
                 .unwrap();
-            let remote = crate::util::config::RemoteSettings {
+            let remote = crate::util::config::LocalRuntimeSettings {
                 prompt_suggestion_model: Some("  ".to_owned()),
                 ..Default::default()
             };
@@ -2579,72 +2579,6 @@ fn config_layers_user_overrides_managed() {
         Some(crate ::agent::config::TelemetryMode::Enabled), cfg.features.telemetry
     );
 }
-/// REGRESSION: the real enterprise two-file merge —
-/// `managed_config.toml` (proxy + BYO model host) layered with
-/// `requirements.toml` (deployment key + S3 trace upload) via the actual
-/// `ConfigLayers::effective_config()` path — must resolve the deployment-config
-/// fetch to cli-chat-proxy, never the model host, and must preserve the
-/// customer's S3 trace-upload endpoint.
-#[test]
-#[serial_test::serial]
-#[cfg(any())] // Vendor managed-config proxy and trace-upload routing were removed from Atelier.
-fn enterprise_two_file_merge_routes_deployment_key_to_proxy() {
-    for k in [
-        "ATELIER_MANAGED_CONFIG_URL",
-        "ATELIER_CLI_CHAT_PROXY_BASE_URL",
-        "ATELIER_TRACE_UPLOAD_ENDPOINT_URL",
-    ] {
-        unsafe { std::env::remove_var(k) };
-    }
-    let managed = toml::from_str(
-            r#"
-[endpoints]
-xai_api_base_url = "https://inference.acme-corp.example/xai/v1"
-cli_chat_proxy_base_url = "https://cli-chat-proxy.atelier.com/v1"
-
-[model.atelier-build]
-base_url = "https://inference.acme-corp.example/xai/v1"
-env_key = "ANTHROPIC_AUTH_TOKEN"
-model = "atelier-4.5"
-
-[models]
-default = "atelier-4.5"
-"#,
-        )
-        .unwrap();
-    let requirements = toml::from_str(
-            r#"
-[features]
-feedback = true
-telemetry = false
-
-[endpoints]
-deployment_key = "xai-token-ENTERPRISE"
-xai_api_base_url = "https://inference.acme-corp.example/xai/v1"
-trace_upload_bucket = "s3://acme-trace"
-trace_upload_endpoint_url = "https://s3.acme-corp.example"
-"#,
-        )
-        .unwrap();
-    let layers = ConfigLayers {
-        system_managed: toml::Value::Table(Default::default()),
-        managed,
-        user: toml::Value::Table(Default::default()),
-        user_requirements: Some(requirements),
-        system_requirements: None,
-        mdm_requirements: None,
-        ..Default::default()
-    };
-    let cfg = crate::agent::config::Config::new_from_toml_cfg(
-            &layers.effective_config_disk_only(),
-        )
-        .unwrap();
-    assert_eq!(
-        cfg.endpoints.trace_upload_endpoint_url.as_deref(),
-        Some("https://s3.acme-corp.example")
-    );
-    assert!(cfg.endpoints.deployment_key.is_some());
-}
 #[test]
 fn config_layers_origins_tracks_source() {
     use crate::agent::config::ConfigSource;
@@ -2698,13 +2632,13 @@ fn config_layers_system_managed_lowest_priority() {
 #[test]
 fn apply_requirements_value_overrides_user_settings() {
     let raw_config: toml::Value = toml::from_str(
-            "[cli]\nauto_update = true\nchannel = \"beta\"\n\n[features]\ntelemetry = true\nfeedback = true\nlsp_tools = true\nweb_fetch = true\nwrite_file = true\n\n[telemetry]\ntrace_upload = true\n\n[ui]\nyolo = true\n\n[models]\ndefault = \"user-model\"\nweb_search = \"user-ws-model\"\n\n[endpoints]\ncli_chat_proxy_base_url = \"https://user-proxy.example/v1\"\nxai_api_base_url = \"https://user-api.example/v1\"\nmodels_base_url = \"https://user-models.example/v1\"\nmodels_list_url = \"https://user-models.example/v1/models\"\n",
+            "[cli]\nauto_update = true\nchannel = \"beta\"\n\n[features]\ntelemetry = true\nfeedback = true\nlsp_tools = true\nweb_fetch = true\nwrite_file = true\n\n[ui]\nyolo = true\n\n[models]\ndefault = \"user-model\"\nweb_search = \"user-ws-model\"\n\n[endpoints]\ncli_chat_proxy_base_url = \"https://user-proxy.example/v1\"\nmodels_base_url = \"https://user-models.example/v1\"\nmodels_list_url = \"https://user-models.example/v1/models\"\n",
         )
         .unwrap();
     let mut cfg = crate::agent::config::Config::new_from_toml_cfg(&raw_config).unwrap();
     cfg.default_yolo_mode = true;
     let requirements: toml::Value = toml::from_str(
-            "[cli]\nauto_update = false\nchannel = \"stable\"\n\n[features]\ntelemetry = false\nfeedback = false\nlsp_tools = false\nweb_fetch = false\nwrite_file = false\nremote_fetch = false\n\n[telemetry]\ntrace_upload = false\nmixpanel_enabled = false\nmixpanel_token = \"enterprise-mp-token\"\n\n[ui]\nyolo = false\n\n[models]\ndefault = \"managed-model\"\nweb_search = \"managed-ws-model\"\n\n[endpoints]\ncli_chat_proxy_base_url = \"https://managed-proxy.example/v1\"\nxai_api_base_url = \"https://managed-api.example/v1\"\nmodels_base_url = \"https://managed-models.example/v1\"\nmodels_list_url = \"https://managed-models.example/v1/models\"\ndeployment_key = \"enterprise-deploy-key-should-not-log\"\ntrace_upload_endpoint_url = \"https://s3.custom.example.com\"\ntrace_upload_credentials = '{\"aws_access_key_id\":\"AKTEST\",\"aws_secret_access_key\":\"secret\"}'\n",
+            "[cli]\nauto_update = false\nchannel = \"stable\"\n\n[features]\ntelemetry = false\nfeedback = false\nlsp_tools = false\nweb_fetch = false\nwrite_file = false\nremote_fetch = false\n\n[ui]\nyolo = false\n\n[models]\ndefault = \"managed-model\"\nweb_search = \"managed-ws-model\"\n\n[endpoints]\ncli_chat_proxy_base_url = \"https://managed-proxy.example/v1\"\nmodels_base_url = \"https://managed-models.example/v1\"\nmodels_list_url = \"https://managed-models.example/v1/models\"\ndeployment_key = \"enterprise-deploy-key-should-not-log\"\n",
         )
         .unwrap();
     let source = RequirementSource::Requirements {
@@ -2723,7 +2657,8 @@ fn apply_requirements_value_overrides_user_settings() {
         enforced.iter().any(| e | e.path == "features.remote_fetch" && e.value ==
         "false")
     );
-    assert_eq!(Some(false), cfg.telemetry.trace_upload);
+    assert!(!cfg.is_telemetry_enabled());
+    assert_eq!(None, cfg.telemetry.enabled);
     assert_eq!(Some(false), cfg.cli.auto_update);
     assert!(! cfg.ui.yolo);
     assert!(! cfg.default_yolo_mode);
@@ -2734,7 +2669,6 @@ fn apply_requirements_value_overrides_user_settings() {
         Some("https://managed-proxy.example/v1"), cfg.endpoints.cli_chat_proxy_base_url
         .as_deref()
     );
-    assert_eq!("https://managed-api.example/v1", cfg.endpoints.xai_api_base_url);
     assert_eq!(
         Some("https://managed-models.example/v1"), cfg.endpoints.models_base_url
         .as_deref()
@@ -2745,18 +2679,6 @@ fn apply_requirements_value_overrides_user_settings() {
     );
     assert!(
         enforced.iter().any(| e | e.path == "ui.yolo" && e.value == "--yolo blocked")
-    );
-    assert_eq!(
-        Some("https://s3.custom.example.com"), cfg.endpoints.trace_upload_endpoint_url
-        .as_deref()
-    );
-    assert!(
-        cfg.endpoints.trace_upload_credentials.is_some(),
-        "trace_upload_credentials should be set"
-    );
-    assert!(
-        enforced.iter().any(| e | e.path == "endpoints.trace_upload_credentials" && e
-        .value == "[redacted]")
     );
     assert_eq!(
         Some("enterprise-deploy-key-should-not-log"), cfg.endpoints.deployment_key
@@ -2770,12 +2692,6 @@ fn apply_requirements_value_overrides_user_settings() {
         enforced.iter().all(| e | e.path != "endpoints.deployment_key" || e.value !=
         "enterprise-deploy-key-should-not-log"),
         "raw deployment_key must not appear in enforced audit entries"
-    );
-    assert!(! cfg.telemetry.mixpanel_enabled);
-    assert_eq!(Some("enterprise-mp-token"), cfg.telemetry.mixpanel_token.as_deref());
-    assert!(
-        enforced.iter().any(| e | e.path == "telemetry.mixpanel_token" && e.value ==
-        "[redacted]")
     );
 }
 /// Strict precedence: requirement always wins (covers from-None and
@@ -3108,7 +3024,7 @@ fn discover_plugins_excludes_untrusted_configpath_plugin_end_to_end() {
 }
 /// Kill-switch ordering regression: `resolve_effective_plugins_config` reads
 /// the folder-trust gate internally, so its call sites (commands/list, plugin
-/// fan-out, reload) resolve with the REAL RemoteSettings first. A cold key
+/// fan-out, reload) resolve with the REAL LocalRuntimeSettings first. A cold key
 /// under an org kill-switch must end up allowed — if the plugins-config read
 /// ran first, the gate's remote-less backstop would record a durable
 /// kill-switch-blind deny that `resolve_and_record_inner`'s `Some(false)`
@@ -3129,7 +3045,7 @@ fn kill_switched_cold_cwd_stays_allowed_through_plugins_config_read() {
     std::fs::write(atelier.join("config.toml"), "[plugins]\npaths = [\"./proj-plugin\"]\n")
         .unwrap();
     let cwd = repo.path();
-    let remote = crate::util::config::RemoteSettings {
+    let remote = crate::util::config::LocalRuntimeSettings {
         folder_trust_enabled: Some(false),
         ..Default::default()
     };

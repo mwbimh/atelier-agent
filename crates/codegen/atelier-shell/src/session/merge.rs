@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use serde::Serialize;
 
-use crate::agent::session_registry_client::{SessionRecord, SessionRegistryClient};
+use crate::agent::local_session_catalog::{LocalSessionCatalog, SessionRecord};
 use crate::session::persistence::{Summary, list_summaries};
 use atelier_workspace::session::git::normalize_repo_url;
 
@@ -56,7 +56,7 @@ pub struct MergedSession {
 /// Fetch sessions from both local storage and the remote registry,
 /// merge, dedup, and return a sorted list.
 pub async fn fetch_merged(
-    client: Option<&SessionRegistryClient>,
+    client: Option<&LocalSessionCatalog>,
     cwd: Option<&str>,
     query: Option<&str>,
     limit: usize,
@@ -306,8 +306,6 @@ impl From<MergedSession> for SessionRecord {
             repo_remote_url: None,
             hostname: m.hostname,
             status: m.source,
-            gcs_trace_prefix: String::new(),
-            gcs_bucket: String::new(),
             last_active_at: m.last_active_at,
         }
     }
@@ -374,8 +372,6 @@ mod tests {
             repo_remote_url: None,
             hostname: Some("devbox-1".into()),
             status: "active".into(),
-            gcs_trace_prefix: "traces/".into(),
-            gcs_bucket: "bucket".into(),
             last_active_at: None,
         }
     }

@@ -329,7 +329,7 @@ impl SessionActor {
                 };
 
                 let ctx = &info.context;
-                let context_pct = xai_token_estimation::usage_percentage(ctx.used, ctx.total);
+                let context_pct = atelier_token_estimation::usage_percentage(ctx.used, ctx.total);
 
                 let summary_path = crate::session::persistence::session_dir(&self.session_info)
                     .join("summary.json");
@@ -838,8 +838,10 @@ impl SessionActor {
                     file_count = file_infos.len(),
                     "memory browse: listing files",
                 );
-                self.send_xai_notification(XaiSessionUpdate::MemoryFiles { files: file_infos })
-                    .await;
+                self.send_extension_notification(ExtensionSessionUpdate::MemoryFiles {
+                    files: file_infos,
+                })
+                .await;
                 ok_end_turn(0, None)
             }
             BuiltinAction::MemoryToggle { enabled } => {
@@ -1006,7 +1008,7 @@ impl SessionActor {
                 self.clear_pending_classifier_completions();
                 // Emit a cleared notification so the pager drops goal state.
                 let update = crate::session::goal_orchestrator::build_goal_cleared();
-                self.send_xai_notification(update).await;
+                self.send_extension_notification(update).await;
                 self.send_slash_command_output("Goal cleared.").await;
                 ok_end_turn(0, None)
             }
@@ -1045,25 +1047,9 @@ impl SessionActor {
             )
             .await;
 
-        match outcome {
-            SubmitOutcome::Submitted => {
-                self.send_slash_command_output("Feedback submitted. Thank you!")
-                    .await;
-            }
-            SubmitOutcome::LocalOnly => {
-                self.send_slash_command_output(
-                    "Feedback saved locally; no feedback server is configured for this session.",
-                )
-                .await;
-            }
-            SubmitOutcome::Failed(err) => {
-                tracing::warn!(error = %err, "feedback submission failed");
-                self.send_slash_command_output(
-                    "Feedback saved locally; submitting to the server failed (see logs).",
-                )
-                .await;
-            }
-        }
+        let SubmitOutcome::LocalOnly = outcome;
+        self.send_slash_command_output("Feedback saved locally.")
+            .await;
 
         ok_end_turn(0, None)
     }

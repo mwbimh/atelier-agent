@@ -13,7 +13,7 @@
             scrollback_entry: EntryId::new(1),
             chip_elements: Vec::new(),
         });
-        let update = XaiSessionUpdate::AutoCompactStarted {
+        let update = ExtensionSessionUpdate::AutoCompactStarted {
             tokens_used: 90000,
             context_window: 131072,
             percentage: 85,
@@ -38,7 +38,7 @@
             "Image 1 was dropped: corrupt.".to_string(),
             "Image 2 was dropped: too small (4×3).".to_string(),
         ];
-        let update = XaiSessionUpdate::ImageDropped {
+        let update = ExtensionSessionUpdate::ImageDropped {
             notes: notes.clone(),
         };
         let changed = apply_session_event(&update, &mut session, &mut scrollback,
@@ -318,8 +318,8 @@
         ));
     }
 
-    /// Legacy WebLogin auth keeps its verbose message (with `atelier logout` /
-    /// `atelier login` guidance), not the generic re-auth prompt.
+    /// Legacy WebLogin auth keeps its verbose message (with `ate logout` /
+    /// `ate login` guidance), not the generic re-auth prompt.
     #[test]
     fn apply_retry_state_legacy_auth_keeps_detailed_message() {
         let mut session = make_session(Some("s1"));
@@ -328,7 +328,7 @@
             &RetryState::Failed {
                 error_type: "legacy_auth".into(),
                 message: "Unauthorized (401) ... deprecated authentication method (WebLogin) ... \
-                          run `atelier logout` then `atelier login`"
+                          run `ate logout` then `ate login`"
                     .into(),
             },
             &mut session,
@@ -419,7 +419,7 @@
         let mut session = make_session(Some("s1"));
         let mut scrollback = ScrollbackState::new();
         session.set_compaction_activity(Some(TurnActivity::AutoCompacting));
-        let update = XaiSessionUpdate::AutoCompactCompleted {
+        let update = ExtensionSessionUpdate::AutoCompactCompleted {
             tokens_before: Some(858_000),
             tokens_after: 66_000,
             elapsed_ms: Some(500),
@@ -455,7 +455,7 @@
     fn apply_compaction_completed_falls_back_to_estimate_without_confirmation() {
         let mut session = make_session(Some("s1"));
         let mut scrollback = ScrollbackState::new();
-        let update = XaiSessionUpdate::AutoCompactCompleted {
+        let update = ExtensionSessionUpdate::AutoCompactCompleted {
             tokens_before: Some(90_000),
             tokens_after: 20_000,
             elapsed_ms: Some(500),
@@ -479,7 +479,7 @@
         let mut session = make_session(Some("s1"));
         session.loading_replay = true;
         let mut scrollback = ScrollbackState::new();
-        let update = XaiSessionUpdate::AutoCompactCompleted {
+        let update = ExtensionSessionUpdate::AutoCompactCompleted {
             tokens_before: Some(90_000),
             tokens_after: 20_000,
             elapsed_ms: Some(500),
@@ -504,7 +504,7 @@
             .session
             .set_compaction_activity(Some(TurnActivity::AutoCompacting));
 
-        let update = XaiSessionUpdate::AutoCompactCompleted {
+        let update = ExtensionSessionUpdate::AutoCompactCompleted {
             tokens_before: Some(858_000),
             tokens_after: 66_000,
             elapsed_ms: Some(500),
@@ -542,7 +542,7 @@
     fn apply_unhandled_event_returns_false() {
         let mut session = make_session(Some("s1"));
         let mut scrollback = ScrollbackState::new();
-        let update = XaiSessionUpdate::MemoryFlushStarted;
+        let update = ExtensionSessionUpdate::MemoryFlushStarted;
         assert!(!apply_session_event(&update, &mut session, &mut scrollback, false));
     }
 
@@ -560,7 +560,7 @@
             .subagent_views
             .insert(child_sid.into(), Box::new(child_view));
 
-        let update = XaiSessionUpdate::AutoCompactCompleted {
+        let update = ExtensionSessionUpdate::AutoCompactCompleted {
             tokens_before: Some(90000),
             tokens_after: 25000,
             elapsed_ms: Some(300),
@@ -600,7 +600,7 @@
             .subagent_views
             .insert(child_sid.into(), Box::new(child_view));
 
-        let update = XaiSessionUpdate::AutoCompactStarted {
+        let update = ExtensionSessionUpdate::AutoCompactStarted {
             tokens_used: 95_000,
             context_window: 131_072,
             percentage: 72,
@@ -619,7 +619,7 @@
     fn child_notification_without_view_returns_false() {
         let mut agent = make_agent(Some("root-sess"));
         // No child view registered.
-        let update = XaiSessionUpdate::AutoCompactStarted {
+        let update = ExtensionSessionUpdate::AutoCompactStarted {
             tokens_used: 90000,
             context_window: 131072,
             percentage: 85,
@@ -638,7 +638,7 @@
             .subagent_sessions
             .insert(child_sid.into(), make_subagent_info(child_sid));
 
-        let update = XaiSessionUpdate::AutoCompactCompleted {
+        let update = ExtensionSessionUpdate::AutoCompactCompleted {
             tokens_before: Some(90000),
             tokens_after: 25000,
             elapsed_ms: Some(300),
@@ -656,7 +656,7 @@
     #[test]
     fn child_unknown_event_returns_false() {
         let mut agent = make_agent(Some("root-sess"));
-        let update = XaiSessionUpdate::MemoryFlushStarted;
+        let update = ExtensionSessionUpdate::MemoryFlushStarted;
         let changed = handle_child_session_notification(update, "child-1", &mut agent, false);
         assert!(!changed);
     }

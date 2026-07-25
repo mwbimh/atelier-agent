@@ -1,8 +1,30 @@
 use anyhow::{Context, Result, bail};
-use prod_mc_cli_chat_proxy_types::SubagentBundle;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::collections::HashMap;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubagentBundle {
+    pub version: String,
+    pub personas: HashMap<String, String>,
+    pub roles: HashMap<String, String>,
+    pub agents: HashMap<String, String>,
+    #[serde(default)]
+    pub skills: HashMap<String, String>,
+}
+
+impl SubagentBundle {
+    pub fn empty(version: impl Into<String>) -> Self {
+        Self {
+            version: version.into(),
+            personas: HashMap::new(),
+            roles: HashMap::new(),
+            agents: HashMap::new(),
+            skills: HashMap::new(),
+        }
+    }
+}
+use sha2::{Digest, Sha256};
 use std::io::{ErrorKind, Read};
 use std::path::{Path, PathBuf};
 

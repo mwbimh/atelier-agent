@@ -25,7 +25,7 @@ pub struct CancellationContext {
 pub enum PromptCompletionKind {
     Completed,
     Cancelled {
-        category: Option<xai_file_utils::events::types::CancellationCategory>,
+        category: Option<atelier_runtime_events::events::types::CancellationCategory>,
         context: Option<CancellationContext>,
     },
     MaxTurnsReached {
@@ -43,7 +43,7 @@ pub enum PromptCompletionKind {
     /// `MvpAgent::prompt`'s short-circuit and `respond_removed_queued_prompt`.
     RemovedFromQueue,
 }
-/// Successful prompt/turn payload returned to the ACP layer and trace uploaders.
+/// Successful prompt/turn payload returned to the ACP layer and local artifact writers.
 #[derive(Debug, Clone)]
 pub struct PromptTurnOk {
     pub stop_reason: acp::StopReason,
@@ -124,8 +124,6 @@ pub enum SessionCommand {
         prompt_blocks: Vec<acp::ContentBlock>,
         /// Prompt mode parsed from request `_meta.mode`.
         prompt_mode: PromptMode,
-        #[allow(private_interfaces)]
-        artifact_upload_ctx: Option<crate::upload::manifest::ArtifactUploadContext>,
         /// Optional client identifier from the prompt request meta (overrides session-level one)
         client_identifier: Option<String>,
         /// Optional screen mode from the prompt request meta (`_meta.screenMode`,
@@ -134,9 +132,6 @@ pub enum SessionCommand {
         screen_mode: Option<String>,
         /// Skip `<user_query>` wrapping and large-prompt truncation.
         verbatim: bool,
-        /// W3C traceparent from the caller's OTEL span context, used to link
-        /// `session.handle_prompt` back to `agent.prompt` across the channel hop.
-        traceparent: Option<String>,
         json_schema: Option<serde_json::Value>,
         /// Cancel-and-send: cancel the running turn and run this prompt next.
         /// Also derived server-side during an interruptible wait (see
@@ -191,6 +186,12 @@ pub enum SessionCommand {
     GetRequestPayload {
         responds_to: oneshot::Sender<serde_json::Map<String, serde_json::Value>>,
     },
+    /// Update the live Role payload used by subsequent turns without changing
+    /// the model or rebuilding the Agent.
+    SetRoleFastMode {
+        enabled: bool,
+        responds_to: oneshot::Sender<()>,
+    },
     /// Zero-turn harness rebuild: build a brand-new `Agent` from the
     /// session's `AgentRebuildSpec` and the new `AgentDefinition`,
     /// re-register MCP tools, swap the live `Agent`, rewrite the
@@ -235,7 +236,7 @@ pub enum SessionCommand {
         responds_to: oneshot::Sender<PromptMode>,
     },
     GetModelMetadata {
-        responds_to: oneshot::Sender<xai_chat_state::ModelMetadata>,
+        responds_to: oneshot::Sender<atelier_chat_state::ModelMetadata>,
     },
     /// Snapshot for `/session-info`.
     GetSessionInfo {
@@ -287,8 +288,9 @@ pub enum SessionCommand {
     /// reports. Refused while a turn is in flight.
     RepairHistory {
         dry_run: bool,
-        respond_to:
-            oneshot::Sender<anyhow::Result<xai_chat_state::compaction_utils::HistoryRepairReport>>,
+        respond_to: oneshot::Sender<
+            anyhow::Result<atelier_chat_state::compaction_utils::HistoryRepairReport>,
+        >,
     },
     GetRewindPoints {
         respond_to: oneshot::Sender<RewindPointsResponse>,
@@ -314,15 +316,15 @@ pub enum SessionCommand {
     ReconcileRewindTracker {
         target_prompt_index: usize,
     },
-    /// xAI extension session notification - client-side events to store in persistence
-    XaiSessionNotification {
+    /// Atelier extension session notification - client-side events to store in persistence
+    ExtensionSessionNotification {
         notification: SessionNotification,
     },
     /// Apply subagent usage into parent ledgers. Acks `()` once chat-state
     /// applied (prompt-attributed or session-only). Drop the oneshot on failure
     /// so the child treats the fold as not landed.
     RecordSubagentUsage {
-        by_model: Vec<(String, xai_chat_state::UsageTotals)>,
+        by_model: Vec<(String, atelier_chat_state::UsageTotals)>,
         parent_prompt_id: Option<String>,
         /// Nested subagent bill may under-count.
         incomplete: bool,
@@ -467,12 +469,12 @@ pub enum SessionCommand {
         respond_to: oneshot::Sender<bool>,
     },
     GetHooksList {
-        respond_to: oneshot::Sender<xai_hooks_plugins_types::HooksListResponse>,
+        respond_to: oneshot::Sender<atelier_hooks_plugins_types::HooksListResponse>,
     },
     /// Execute a hooks management action from the pager modal.
     HooksAction {
-        action: xai_hooks_plugins_types::HooksAction,
-        respond_to: oneshot::Sender<xai_hooks_plugins_types::ActionOutcome>,
+        action: atelier_hooks_plugins_types::HooksAction,
+        respond_to: oneshot::Sender<atelier_hooks_plugins_types::ActionOutcome>,
     },
     /// Broadcast a plugin updates notification to the session.
     NotifyPluginUpdates {
@@ -480,8 +482,8 @@ pub enum SessionCommand {
     },
     /// Execute a plugins management action from the pager modal.
     PluginsAction {
-        action: xai_hooks_plugins_types::PluginsAction,
-        respond_to: oneshot::Sender<xai_hooks_plugins_types::ActionOutcome>,
+        action: atelier_hooks_plugins_types::PluginsAction,
+        respond_to: oneshot::Sender<atelier_hooks_plugins_types::ActionOutcome>,
     },
     /// This session's plugin registry, as served by `atelier/plugins/list`.
     PluginsList {
@@ -504,7 +506,7 @@ pub enum SessionCommand {
         task_id: String,
     },
     /// Dispatch a compat `Notification` hook (e.g. `task_complete`
-    /// from the notification bridge, which does not go through `send_xai_notification`).
+    /// from the notification bridge, which does not go through `send_extension_notification`).
     DispatchNotificationHook {
         notification_type: String,
         message: Option<String>,
@@ -719,7 +721,7 @@ pub enum SessionCommand {
     },
     /// Take turn messages from the chat state actor (proxied from mvp_agent).
     TakeTurnMessages {
-        respond_to: oneshot::Sender<Option<xai_chat_state::TurnCapture>>,
+        respond_to: oneshot::Sender<Option<atelier_chat_state::TurnCapture>>,
     },
     /// Drain the sealed harness trace turns (goal planner + verifier panels)
     /// from the chat state actor (proxied from mvp_agent). Routed through the

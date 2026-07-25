@@ -32,30 +32,30 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use agent_client_protocol::{self as acp, Agent as _};
+use atelier_acp_runtime::{
+    AcpAgentGatewayReceiver as GatewayReceiver, AcpAgentGatewaySender as GatewaySender,
+    LineBufferedRead,
+};
 use atelier_shell::agent::config::Config as AgentConfig;
 use atelier_shell::agent::mvp_agent::MvpAgent;
 use atelier_test_support::{MockInferenceServer, ScriptedResponse, SseEvent};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
-use xai_acp_lib::{
-    AcpAgentGatewayReceiver as GatewayReceiver, AcpAgentGatewaySender as GatewaySender,
-    LineBufferedRead,
-};
 
 const DUPLEX_BUFFER_BYTES: usize = 8 * 1024 * 1024;
 
-use xai_test_utils::env::env_usize;
+use atelier_test_utils::env::env_usize;
 
 /// Run a git command with deterministic author/committer; assert success.
 fn git(dir: &Path, args: &[&str]) -> String {
-    xai_test_utils::git::run_git(dir, args)
+    atelier_test_utils::git::run_git(dir, args)
 }
 
 // ── scan counting ─────────────────────────────────────────────────────────
 
-use xai_hunk_tracker::{REFRESH_SCAN_LOG_PREFIX, REFRESH_SKIP_LOG_PREFIX};
-use xai_test_utils::tracing_capture::MessagePrefixCounter;
+use atelier_hunk_tracker::{REFRESH_SCAN_LOG_PREFIX, REFRESH_SKIP_LOG_PREFIX};
+use atelier_test_utils::tracing_capture::MessagePrefixCounter;
 
 /// Counts hunk-tracker scan completions/skips across all threads (the session
 /// actor and its consumers run off the test thread). Only real scans log the
@@ -77,7 +77,7 @@ fn install_global_scan_counter() -> ScanCounter {
     // ATELIER_E2E_LOG=<filter> tees shell logs to stderr for local debugging.
     let filter = std::env::var("ATELIER_E2E_LOG").ok();
     ScanCounter(
-        xai_test_utils::tracing_capture::install_prefix_counter_global(
+        atelier_test_utils::tracing_capture::install_prefix_counter_global(
             &[REFRESH_SCAN_LOG_PREFIX, REFRESH_SKIP_LOG_PREFIX],
             filter.as_deref(),
         ),
@@ -97,11 +97,11 @@ fn build_repo(files: usize, picks: usize) -> (TempDir, String) {
     git(wd, &["config", "user.name", "Test User"]);
     git(wd, &["config", "user.email", "test@test.com"]);
 
-    xai_test_utils::git::write_fanout_tree(wd, files, 100);
+    atelier_test_utils::git::write_fanout_tree(wd, files, 100);
     git(wd, &["add", "."]);
     git(wd, &["commit", "-m", "populate tree"]);
 
-    let base = xai_test_utils::git::make_feature_branch(wd, picks);
+    let base = atelier_test_utils::git::make_feature_branch(wd, picks);
     (dir, base)
 }
 
@@ -297,11 +297,7 @@ async fn run_storm(
                 acp::AgentSideConnection::new(agent, a2c_a.compat_write(), agent_incoming, |fut| {
                     tokio::task::spawn_local(fut);
                 });
-            tokio::task::spawn_local(
-                GatewayReceiver::new(gw_rx, agent_conn)
-                    .with_on_meta(xai_file_utils::trace_context::span_from_meta_traceparent)
-                    .run(),
-            );
+            tokio::task::spawn_local(GatewayReceiver::new(gw_rx, agent_conn).run());
             tokio::task::spawn_local(agent_io);
 
             let client_incoming = LineBufferedRead::spawn_local(a2c_b.compat());
@@ -436,7 +432,6 @@ fn git_rebase_refresh_storm_e2e() {
         std::env::set_var("XAI_API_KEY", "test-key-for-ci");
         std::env::set_var("ATELIER_TELEMETRY_ENABLED", "false");
         std::env::set_var("ATELIER_FEEDBACK_ENABLED", "false");
-        std::env::set_var("ATELIER_TRACE_UPLOAD", "false");
     }
 
     let agent_rt = tokio::runtime::Builder::new_current_thread()

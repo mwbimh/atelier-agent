@@ -1,109 +1,6 @@
 #![cfg_attr(rustfmt, rustfmt::skip)]
 use super::*;
 
-#[test]
-fn preferred_model_persistence_updates_only_main_role_and_preserves_role_options() {
-    use atelier_provider::{
-        CredentialRef, ModelCapabilities, ModelDescriptor, ModelKey, ModelSource, ProviderConfig,
-        ProviderDiscovery, ProviderProtocol, ProviderRegistry, RoleConfig, RoleId,
-    };
-    use atelier_shell::sampling::types::ReasoningEffort;
-    use std::collections::BTreeMap;
-
-    let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("providers.toml");
-    let mut registry = ProviderRegistry::load_or_create(&path).unwrap();
-    let mut main = RoleConfig::new("old-provider", "old-model").unwrap();
-    main.fast_mode = true;
-    main.payload.insert("temperature".into(), serde_json::json!(0.2));
-    registry.update_role(RoleId::Main, main).unwrap();
-    let legacy_key = ModelKey::new("legacy-provider", "legacy-model").unwrap();
-    registry
-        .upsert_provider(ProviderConfig {
-            id: "legacy-provider".into(),
-            display_name: "Legacy".into(),
-            protocol: ProviderProtocol::OpenAiResponses,
-            base_url: url::Url::parse("https://legacy.example.test/v1").unwrap(),
-            credential: CredentialRef::None,
-            discovery: ProviderDiscovery::Static,
-            extra_headers: BTreeMap::new(),
-            enabled: true,
-        })
-        .unwrap();
-    registry
-        .upsert_model(ModelDescriptor {
-            key: legacy_key.clone(),
-            display_name: "Legacy model".into(),
-            description: None,
-            wire_api: None,
-            context_window: None,
-            capabilities: ModelCapabilities::default(),
-            reasoning_efforts: Vec::new(),
-            source: ModelSource::Static,
-            enabled: true,
-        })
-        .unwrap();
-    registry.set_default_model(Some(legacy_key)).unwrap();
-    registry.save().unwrap();
-
-    persist_preferred_model_as_main_role(
-        &path,
-        "allm/deepseek-v4-flash",
-        Some(ReasoningEffort::High),
-    )
-    .unwrap();
-
-    let registry = ProviderRegistry::load_or_create(&path).unwrap();
-    let main = registry.role(RoleId::Main).unwrap();
-    assert_eq!(main.provider, "allm");
-    assert_eq!(main.model, "deepseek-v4-flash");
-    assert_eq!(main.effort.as_deref(), Some("high"));
-    assert!(main.fast_mode);
-    assert_eq!(main.payload["temperature"], serde_json::json!(0.2));
-    assert_eq!(
-        registry.default_model(),
-        None,
-        "updating roles.main must delete the legacy Provider default"
-    );
-}
-
-#[tokio::test]
-async fn legacy_default_model_setting_writer_is_disabled() {
-    let error = persist_setting(
-        "default_model",
-        crate::settings::SettingValue::String("legacy/model".into()),
-    )
-    .await
-    .expect_err("legacy models.default writes must not remain a second source of truth");
-
-    assert!(error.contains("roles.main"), "{error}");
-}
-
-#[test]
-fn model_set_then_legacy_clear_keeps_new_session_main_role_value() {
-    use atelier_provider::{ProviderRegistry, RoleId};
-
-    let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("providers.toml");
-
-    persist_preferred_model_as_main_role(
-        &path,
-        "allm/deepseek-v4-flash",
-        None,
-    )
-    .unwrap();
-    clear_legacy_provider_default(&path).unwrap();
-
-    let registry = ProviderRegistry::load_or_create(&path).unwrap();
-    let new_session_main = registry
-        .role(RoleId::Main)
-        .filter(|role| role.is_configured())
-        .expect("new Session must resolve its model from roles.main");
-    assert_eq!(new_session_main.provider, "allm");
-    assert_eq!(new_session_main.model, "deepseek-v4-flash");
-    assert_eq!(registry.default_model(), None);
-}
-
 #[tokio::test]
 async fn session_startup_deadline_returns_instead_of_hanging_forever() {
     let result = session_startup_deadline(
@@ -229,7 +126,7 @@ fn picker_keeps_old_conversation_past_cutoff() {
 #[test]
 fn picker_drops_local_with_missing_updated_at() {
     let payload = serde_json::json!(
-        { "sessions" : [{ "sessionId" : "local_no_ts", "cwd" : "/Users/me/xai", "summary"
+        { "sessions" : [{ "sessionId" : "local_no_ts", "cwd" : "/Users/me/repo", "summary"
         : "no timestamp", "source" : "local" }] }
     );
     let entries = parse_session_picker_entries(&payload);
@@ -580,13 +477,13 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 /// Spawn a fake ACP agent that counts `atelier/yolo_mode_changed`
 /// notifications. Exits when the channel closes.
 fn spawn_fake_acp_agent(
-    mut rx: tokio::sync::mpsc::UnboundedReceiver<xai_acp_lib::AcpAgentMessage>,
+    mut rx: tokio::sync::mpsc::UnboundedReceiver<atelier_acp_runtime::AcpAgentMessage>,
 ) -> Arc<AtomicUsize> {
     let counter = Arc::new(AtomicUsize::new(0));
     let counter_clone = counter.clone();
     tokio::spawn(async move {
         while let Some(msg) = rx.recv().await {
-            if let xai_acp_lib::AcpAgentMessage::ExtNotification(args) = msg {
+            if let atelier_acp_runtime::AcpAgentMessage::ExtNotification(args) = msg {
                 if args.request.method.as_ref() == "atelier/yolo_mode_changed" {
                     counter_clone.fetch_add(1, Ordering::SeqCst);
                 }
@@ -977,7 +874,7 @@ fn route_permission_mode_result_err_best_effort_routes_to_dedicated_variant() {
 }
 #[test]
 fn marketplace_outcome_succeeded_only_accepts_success_status() {
-    use xai_hooks_plugins_types::{ActionOutcome, OutcomeStatus};
+    use atelier_hooks_plugins_types::{ActionOutcome, OutcomeStatus};
     let success = ActionOutcome {
         status: OutcomeStatus::Success,
         message: "updated".into(),
@@ -997,8 +894,8 @@ fn marketplace_outcome_succeeded_only_accepts_success_status() {
 async fn check_marketplace_updates_dispatches_update_and_skips_failed_notifications() {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-    use xai_acp_lib::AcpAgentMessage;
-    use xai_hooks_plugins_types::{ActionOutcome, MarketplaceAction, OutcomeStatus};
+    use atelier_acp_runtime::AcpAgentMessage;
+    use atelier_hooks_plugins_types::{ActionOutcome, MarketplaceAction, OutcomeStatus};
     let action_calls = Arc::new(AtomicUsize::new(0));
     let saw_update = Arc::new(AtomicBool::new(false));
     let saw_wrong_action = Arc::new(AtomicBool::new(false));
@@ -1034,7 +931,7 @@ async fn check_marketplace_updates_dispatches_update_and_skips_failed_notificati
                     }
                     "atelier/marketplace/action" => {
                         action_calls_for_task.fetch_add(1, Ordering::SeqCst);
-                        let req: xai_hooks_plugins_types::MarketplaceActionRequest = serde_json::from_str(
+                        let req: atelier_hooks_plugins_types::MarketplaceActionRequest = serde_json::from_str(
                                 args.request.params.get(),
                             )
                             .expect("parse marketplace action request");
@@ -1208,7 +1105,7 @@ async fn foreign_resume_detection_runs_as_task_result() {
 #[tokio::test]
 async fn fetch_session_list_pushes_query_and_echoes_seq() {
     use std::sync::{Arc, Mutex};
-    use xai_acp_lib::AcpAgentMessage;
+    use atelier_acp_runtime::AcpAgentMessage;
     let captured: Arc<Mutex<Vec<serde_json::Value>>> = Arc::default();
     let captured_for_task = captured.clone();
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();

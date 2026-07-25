@@ -1,7 +1,7 @@
 //! Standalone voice debug harness: mic → streaming STT → transcript.
 //!
 //! ```bash
-//! export XAI_API_KEY=...
+//! export ATELIER_VOICE_API_KEY=...
 //! cargo run -p atelier-voice --bin voice-probe -- --seconds 5
 //! ```
 
@@ -27,12 +27,10 @@ async fn main() -> anyhow::Result<()> {
 
     let args = parse_args(std::env::args().skip(1).collect());
 
-    let auth = std::env::var("XAI_API_KEY")
+    let auth = std::env::var("ATELIER_VOICE_API_KEY")
         .ok()
         .and_then(StaticVoiceAuth::shared)
-        .ok_or_else(|| {
-            anyhow::anyhow!("set XAI_API_KEY (standalone probe has no login session)")
-        })?;
+        .ok_or_else(|| anyhow::anyhow!("set ATELIER_VOICE_API_KEY for the standalone probe"))?;
 
     let config = load_config(args.config_path.as_deref());
 
@@ -148,8 +146,8 @@ Usage:
   voice-probe [--seconds 5] [--mic-only]
 
 Environment:
-  XAI_API_KEY     required
-  RUST_LOG        optional (default info,atelier_voice=debug)
+  ATELIER_VOICE_API_KEY  required
+  RUST_LOG               optional (default info,atelier_voice=debug)
 
 Reads [voice] from ~/.atelier/config.toml unless --config PATH is set.
 "#

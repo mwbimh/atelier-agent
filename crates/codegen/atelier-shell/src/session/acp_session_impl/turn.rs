@@ -48,7 +48,7 @@ fn runtime_context_blocks(
         blocks.push(crate::runtime_control::ContextBlock {
             name: name.to_owned(),
             source: source.to_owned(),
-            tokens: xai_chat_state::estimate_conversation_tokens(&items),
+            tokens: atelier_chat_state::estimate_conversation_tokens(&items),
             redacted: true,
         });
     };
@@ -74,8 +74,8 @@ fn runtime_context_blocks(
             redacted: true,
         });
     }
-    let input_tokens =
-        xai_chat_state::estimate_conversation_tokens(&request.items).saturating_add(tool_tokens);
+    let input_tokens = atelier_chat_state::estimate_conversation_tokens(&request.items)
+        .saturating_add(tool_tokens);
     (blocks, input_tokens)
 }
 /// What a `StructuredOutput` tool call means for the turn (see
@@ -240,8 +240,11 @@ impl SessionActor {
                 .iter()
                 .map(ImageCompressedEntry::from)
                 .collect();
-            self.send_xai_notification(XaiSessionUpdate::ImageCompressed { images, message })
-                .await;
+            self.send_extension_notification(ExtensionSessionUpdate::ImageCompressed {
+                images,
+                message,
+            })
+            .await;
         }
         if !norm_result.re_encode_fallbacks.is_empty() {
             text_out.push_str(
@@ -250,7 +253,7 @@ impl SessionActor {
                     is_cursor,
                 ),
             );
-            self.send_xai_notification(XaiSessionUpdate::ImageCompressed {
+            self.send_extension_notification(ExtensionSessionUpdate::ImageCompressed {
                 images: vec![],
                 message: norm_result.re_encode_fallbacks.join(" "),
             })
@@ -261,7 +264,7 @@ impl SessionActor {
             is_cursor,
         ) {
             text_out.push_str(&notice);
-            self.send_xai_notification(XaiSessionUpdate::ImageDropped { notes })
+            self.send_extension_notification(ExtensionSessionUpdate::ImageDropped { notes })
                 .await;
         }
         user_images
@@ -282,8 +285,6 @@ impl SessionActor {
         prompt_id: &str,
         prompt_blocks: Vec<acp::ContentBlock>,
         prompt_mode: PromptMode,
-        trace_gcs_config: Option<crate::session::repo_changes::TraceExportConfig>,
-        artifact_tracker: Option<crate::upload::manifest::ArtifactTracker>,
         prompt_client_identifier: Option<String>,
         prompt_screen_mode: Option<String>,
         verbatim: bool,
@@ -318,7 +319,7 @@ impl SessionActor {
         let _turn_active_guard =
             TurnActiveGuard::activate(self.tool_context.is_turn_active.as_ref());
         let _session_turn_active_guard = TurnActiveGuard::activate(Some(&self.session_turn_active));
-        let turn_start_input = xai_agent_lifecycle::TurnStartInput::new(
+        let turn_start_input = atelier_agent_lifecycle::TurnStartInput::new(
             super::super::PromptOrigin::from_prompt_id(prompt_id).is_synthetic(),
         );
         for contributor in self.extension_registry.turn_lifecycle_contributors() {
@@ -498,19 +499,19 @@ impl SessionActor {
         });
         self.observability_bridge
             .emit(
-                xai_tool_protocol::session_event::SessionEvent::TurnStarted {
+                atelier_tool_protocol::session_event::SessionEvent::TurnStarted {
                     turn_number,
                     model_id: model_id.clone(),
                     yolo_mode,
                 },
             )
             .await;
-        self.send_before_turn_event(xai_tool_protocol::turn_hook::BeforeTurnPayload {
+        self.send_before_turn_event(atelier_tool_protocol::turn_hook::BeforeTurnPayload {
             turn_number: self.chat_state_handle.get_prompt_index().await as u64,
             model_id: model_id.clone(),
             yolo_mode: self.permissions.is_yolo_mode(),
             conversation_message_count: msg_count,
-            session_relationship: xai_tool_protocol::turn_hook::DEFAULT_SESSION_RELATIONSHIP
+            session_relationship: atelier_tool_protocol::turn_hook::DEFAULT_SESSION_RELATIONSHIP
                 .to_string(),
             schema_version: crate::session::events::EVENT_SCHEMA_VERSION.to_string(),
         })
@@ -521,7 +522,6 @@ impl SessionActor {
             turn_number: turn_idx,
         });
         let current_prompt_index = self.chat_state_handle.get_prompt_index().await;
-        atelier_telemetry::session_ctx::begin_prompt_id();
         let origin = super::super::PromptOrigin::from_prompt_id(prompt_id);
         let mut chunk_meta = serde_json::Map::new();
         chunk_meta.insert("modelId".into(), serde_json::json!(model_id));
@@ -681,7 +681,7 @@ impl SessionActor {
             .await
             .map(|c| c.model)
             .unwrap_or_default();
-        if self.telemetry_enabled || atelier_telemetry::external::is_active() {
+        if self.telemetry_enabled {
             let effective_client_identifier =
                 prompt_client_identifier.or_else(|| self.client_identifier.clone());
             let ev = atelier_telemetry::events::PromptSubmitted {
@@ -689,7 +689,6 @@ impl SessionActor {
                 model_id,
                 client_identifier: effective_client_identifier,
                 screen_mode: prompt_screen_mode,
-                prompt_text: None,
             };
             atelier_telemetry::session_ctx::log_event_dual(self.telemetry_enabled, ev);
         }
@@ -732,9 +731,7 @@ impl SessionActor {
             .await;
         let prompt_text_for_hook = user_message.clone();
         {
-            if trace_gcs_config.is_some() {
-                self.chat_state_handle.begin_turn_capture();
-            }
+            self.chat_state_handle.begin_turn_capture();
             if matches!(origin, super::super::PromptOrigin::User) {
                 self.maybe_inject_interrupt_reminder().await;
             }
@@ -838,8 +835,6 @@ impl SessionActor {
         let doom_event_model = turn_model_id.clone();
         let turn_timer = std::time::Instant::now();
         let result = {
-            let mut round_trace = trace_gcs_config;
-            let mut round_artifact = artifact_tracker;
             loop {
                 if self.goal_harness_enabled() {
                     let goal_loop_active = self.goal_tracker.lock().status()
@@ -847,12 +842,7 @@ impl SessionActor {
                     self.set_goal_loop_active_resource(goal_loop_active).await;
                 }
                 let round = self
-                    .process_conversation_turn_with_recovery(
-                        prompt_id,
-                        round_trace.take(),
-                        round_artifact.take(),
-                        json_schema.clone(),
-                    )
+                    .process_conversation_turn_with_recovery(prompt_id, json_schema.clone())
                     .await;
                 if !matches!(round, Ok(TurnOutcome::Completed { .. })) {
                     break round;
@@ -890,13 +880,15 @@ impl SessionActor {
         let turn_tool_count = self.events.tool_count_this_turn();
         let bridge_outcome = turn_result_to_hook_outcome(&result);
         self.observability_bridge
-            .emit(xai_tool_protocol::session_event::SessionEvent::TurnEnded {
-                turn_number: current_prompt_index as u64,
-                outcome: bridge_outcome,
-                duration_ms: turn_duration_ms,
-                tool_call_count: turn_tool_count,
-                model_id: turn_model_id.clone(),
-            })
+            .emit(
+                atelier_tool_protocol::session_event::SessionEvent::TurnEnded {
+                    turn_number: current_prompt_index as u64,
+                    outcome: bridge_outcome,
+                    duration_ms: turn_duration_ms,
+                    tool_call_count: turn_tool_count,
+                    model_id: turn_model_id.clone(),
+                },
+            )
             .await;
         match &result {
             Ok(TurnOutcome::Completed { .. }) => {
@@ -905,13 +897,12 @@ impl SessionActor {
                     None,
                     None,
                 );
-                self.send_after_turn_event(xai_tool_protocol::turn_hook::AfterTurnPayload {
+                self.send_after_turn_event(atelier_tool_protocol::turn_hook::AfterTurnPayload {
                     turn_number: current_prompt_index as u64,
-                    outcome: xai_tool_protocol::turn_hook::TurnHookOutcome::Completed,
+                    outcome: atelier_tool_protocol::turn_hook::TurnHookOutcome::Completed,
                     duration_ms: turn_duration_ms,
                     tool_call_count: turn_tool_count,
                     model_id: turn_model_id.clone(),
-                    written_repo_paths: Vec::new(),
                     cancellation_category: None,
                     cancellation_context: None,
                 })
@@ -936,13 +927,12 @@ impl SessionActor {
                 if let Some(cause) = category {
                     self.events.set_prior_interrupt_category(*cause);
                 }
-                self.send_after_turn_event(xai_tool_protocol::turn_hook::AfterTurnPayload {
+                self.send_after_turn_event(atelier_tool_protocol::turn_hook::AfterTurnPayload {
                     turn_number: current_prompt_index as u64,
-                    outcome: xai_tool_protocol::turn_hook::TurnHookOutcome::Cancelled,
+                    outcome: atelier_tool_protocol::turn_hook::TurnHookOutcome::Cancelled,
                     duration_ms: turn_duration_ms,
                     tool_call_count: turn_tool_count,
                     model_id: turn_model_id.clone(),
-                    written_repo_paths: Vec::new(),
                     cancellation_category: cancellation_category_wire_string(*category),
                     cancellation_context: context.clone(),
                 })
@@ -967,13 +957,12 @@ impl SessionActor {
                         { "reason" : "max_turns_reached", "limit" : limit, }
                     )),
                 );
-                self.send_after_turn_event(xai_tool_protocol::turn_hook::AfterTurnPayload {
+                self.send_after_turn_event(atelier_tool_protocol::turn_hook::AfterTurnPayload {
                     turn_number: current_prompt_index as u64,
-                    outcome: xai_tool_protocol::turn_hook::TurnHookOutcome::Cancelled,
+                    outcome: atelier_tool_protocol::turn_hook::TurnHookOutcome::Cancelled,
                     duration_ms: turn_duration_ms,
                     tool_call_count: turn_tool_count,
                     model_id: turn_model_id.clone(),
-                    written_repo_paths: Vec::new(),
                     cancellation_category: None,
                     cancellation_context: Some(serde_json::json!(
                         { "reason" : "max_turns_reached", "limit" : limit, }
@@ -993,13 +982,12 @@ impl SessionActor {
             }
             Err(err) => {
                 self.emit_turn_ended(crate::session::events::TurnOutcomeLabel::Error, None, None);
-                self.send_after_turn_event(xai_tool_protocol::turn_hook::AfterTurnPayload {
+                self.send_after_turn_event(atelier_tool_protocol::turn_hook::AfterTurnPayload {
                     turn_number: current_prompt_index as u64,
-                    outcome: xai_tool_protocol::turn_hook::TurnHookOutcome::Error,
+                    outcome: atelier_tool_protocol::turn_hook::TurnHookOutcome::Error,
                     duration_ms: turn_duration_ms,
                     tool_call_count: turn_tool_count,
                     model_id: turn_model_id.clone(),
-                    written_repo_paths: Vec::new(),
                     cancellation_category: None,
                     cancellation_context: None,
                 })
@@ -1073,13 +1061,13 @@ impl SessionActor {
             Ok(TurnOutcome::Completed { .. }) => {
                 for contributor in self.extension_registry.turn_lifecycle_contributors() {
                     contributor
-                        .on_turn_done(&xai_agent_lifecycle::TurnDoneInput)
+                        .on_turn_done(&atelier_agent_lifecycle::TurnDoneInput)
                         .await;
                 }
             }
             Ok(TurnOutcome::Cancelled { .. }) | Ok(TurnOutcome::MaxTurnsReached { .. }) => {
-                let input = xai_agent_lifecycle::TurnAbortInput::new(
-                    xai_agent_lifecycle::TurnAbortReason::Interrupted,
+                let input = atelier_agent_lifecycle::TurnAbortInput::new(
+                    atelier_agent_lifecycle::TurnAbortReason::Interrupted,
                 );
                 for contributor in self.extension_registry.turn_lifecycle_contributors() {
                     contributor.on_turn_abort(&input).await;
@@ -1087,7 +1075,7 @@ impl SessionActor {
             }
             Err(err) => {
                 let message = err.to_string();
-                let input = xai_agent_lifecycle::TurnErrorInput { message: &message };
+                let input = atelier_agent_lifecycle::TurnErrorInput { message: &message };
                 for contributor in self.extension_registry.turn_lifecycle_contributors() {
                     contributor.on_turn_error(&input).await;
                 }
@@ -1430,8 +1418,6 @@ impl SessionActor {
     pub(super) async fn process_conversation_turn_with_recovery(
         self: &Arc<Self>,
         req_id: &str,
-        trace_gcs_config: Option<crate::session::repo_changes::TraceExportConfig>,
-        artifact_tracker: Option<crate::upload::manifest::ArtifactTracker>,
         json_schema: Option<serde_json::Value>,
     ) -> Result<TurnOutcome, acp::Error> {
         let _ = self.compaction.auto_compact_suppressed.compare_exchange(
@@ -1444,38 +1430,19 @@ impl SessionActor {
         let completion_req = match agent_ref.completion_requirement() {
             Some(req) => req,
             None => {
-                return self
-                    .process_conversation_turn(
-                        req_id,
-                        trace_gcs_config,
-                        artifact_tracker.as_ref(),
-                        json_schema,
-                    )
-                    .await;
+                return self.process_conversation_turn(req_id, json_schema).await;
             }
         };
         let recovery = match &completion_req.recovery {
             Some(r) => r.clone(),
             None => {
-                return self
-                    .process_conversation_turn(
-                        req_id,
-                        trace_gcs_config,
-                        artifact_tracker.as_ref(),
-                        json_schema,
-                    )
-                    .await;
+                return self.process_conversation_turn(req_id, json_schema).await;
             }
         };
         let required_tool = completion_req.tool.clone();
         let recovery_prompt = completion_req.reminder.clone();
         let mut result = self
-            .process_conversation_turn(
-                req_id,
-                trace_gcs_config.clone(),
-                artifact_tracker.as_ref(),
-                json_schema.clone(),
-            )
+            .process_conversation_turn(req_id, json_schema.clone())
             .await;
         if matches!(result, Ok(TurnOutcome::MaxTurnsReached { .. })) {
             return result;
@@ -1504,7 +1471,7 @@ impl SessionActor {
                     "Auto-recovery exhausted after {attempt} attempts for session {}: {error_desc}",
                     self.session_info.id.0,
                 );
-                self.send_xai_notification(XaiSessionUpdate::AutoRecoveryExhausted {
+                self.send_extension_notification(ExtensionSessionUpdate::AutoRecoveryExhausted {
                     attempts: attempt,
                     error: error_desc,
                 })
@@ -1523,7 +1490,7 @@ impl SessionActor {
                 self.session_info.id.0,
                 delay.as_millis(),
             );
-            self.send_xai_notification(XaiSessionUpdate::AutoRecoveryStarted {
+            self.send_extension_notification(ExtensionSessionUpdate::AutoRecoveryStarted {
                 attempt,
                 max_retries: recovery.max_retries,
                 error: error_desc,
@@ -1533,14 +1500,7 @@ impl SessionActor {
             sleep(delay).await;
             let recovery_message = ConversationItem::auto_recovery(recovery_prompt.clone());
             self.chat_state_handle.push_user_message(recovery_message);
-            result = self
-                .process_conversation_turn(
-                    req_id,
-                    trace_gcs_config.clone(),
-                    artifact_tracker.as_ref(),
-                    None,
-                )
-                .await;
+            result = self.process_conversation_turn(req_id, None).await;
             if matches!(result, Ok(TurnOutcome::MaxTurnsReached { .. })) {
                 return result;
             }
@@ -1777,8 +1737,6 @@ impl SessionActor {
     async fn process_conversation_turn(
         self: &Arc<Self>,
         req_id: &str,
-        trace_gcs_config: Option<crate::session::repo_changes::TraceExportConfig>,
-        artifact_tracker: Option<&crate::upload::manifest::ArtifactTracker>,
         json_schema: Option<serde_json::Value>,
     ) -> Result<TurnOutcome, acp::Error> {
         let conv_turn_start = std::time::Instant::now();
@@ -1829,21 +1787,6 @@ impl SessionActor {
                 conv_turn_start.elapsed().as_millis() as u64, }
             )),
         );
-        if let Some(ref gcs_config) = trace_gcs_config {
-            let gcs_cfg = gcs_config.clone();
-            let tool_defs = tool_definitions.clone();
-            let manifest_clone = artifact_tracker.cloned();
-            let auth_manager = self.auth_manager.clone();
-            tokio::spawn(async move {
-                crate::upload::trace::upload_tool_definitions(
-                    gcs_cfg,
-                    auth_manager,
-                    &tool_defs,
-                    manifest_clone.as_ref(),
-                )
-                .await;
-            });
-        }
         self.record_turn_model().await;
         let mut metrics_drop_guard = TurnMetrics::new();
         let mut turn_tools_called: Vec<String> = Vec::new();
@@ -1946,14 +1889,7 @@ impl SessionActor {
                     effective_tools,
                     memory_reminder,
                     self.memory.is_enabled(),
-                    trace_gcs_config
-                        .clone()
-                        .map(|cfg| -> Box<dyn crate::sampling::TraceContext> {
-                            Box::new(crate::sampling::ConversationRequestTrace {
-                                gcs_config: cfg,
-                                artifact_tracker: artifact_tracker.cloned(),
-                            })
-                        }),
+                    None,
                     self.session_info.id.to_string(),
                     req_id.to_owned(),
                 )
@@ -2151,8 +2087,8 @@ impl SessionActor {
             }
             self.observability_bridge
                 .emit(
-                    xai_tool_protocol::session_event::SessionEvent::PhaseChanged {
-                        phase: xai_tool_protocol::session_event::SessionPhase::Sampling,
+                    atelier_tool_protocol::session_event::SessionEvent::PhaseChanged {
+                        phase: atelier_tool_protocol::session_event::SessionPhase::Sampling,
                     },
                 )
                 .await;
@@ -2188,7 +2124,7 @@ impl SessionActor {
                                 delay_ms, }
                             )),
                         );
-                        self.send_xai_notification(XaiSessionUpdate::RetryState(
+                        self.send_extension_notification(ExtensionSessionUpdate::RetryState(
                             crate::extensions::notification::RetryState::Retrying {
                                 attempt,
                                 max_retries: AuthRetrySchedule::MAX_RETRIES,
@@ -2519,8 +2455,8 @@ impl SessionActor {
             }
             self.observability_bridge
                 .emit(
-                    xai_tool_protocol::session_event::SessionEvent::PhaseChanged {
-                        phase: xai_tool_protocol::session_event::SessionPhase::ToolExecution,
+                    atelier_tool_protocol::session_event::SessionEvent::PhaseChanged {
+                        phase: atelier_tool_protocol::session_event::SessionPhase::ToolExecution,
                     },
                 )
                 .await;

@@ -1004,25 +1004,17 @@ impl SessionActor {
             .lock()
             .expect("current_prompt_id mutex poisoned")
             .clone();
-        // The planner is a verbatim mirror-child fork: its request prefix matches
-        // the parent and the radix cache is per-model, so it must run on the
-        // parent session model. Any configured planner role model is intentionally
-        // ignored on this path (breadcrumb below for observability parity with the
-        // strategist, which still resolves a role model).
-        let role_override = crate::session::goal_planner::RoleSpawnOverride::default();
-        if !matches!(
-            self.goal_role_models.planner,
-            crate::agent::config::GoalRoleModelChoice::InheritCurrent
-        ) {
-            tracing::info!(
-                "goal planner: configured role model ignored — forced to parent model for verbatim-fork cache reuse"
-            );
-        }
-        // Render planner-prompt tool-name placeholders from the PARENT's resolved
-        // toolset (the exact tools the verbatim mirror sends) — honoring renames
-        // and the Write->Edit fallback — instead of static defaults.
-        let tool_names = self.resolve_inherit_role_tool_names().await;
-        let inherit_tool_names = tool_names.clone();
+        // Resolve the planner through the same explicit Role contract used by
+        // strategist and skeptic stages. Unknown, unauthorized or incapable
+        // configurations fail open to the current model + session harness.
+        let (role_override, tool_names, inherit_tool_names) = self
+            .resolve_goal_single_role_override(
+                "planner",
+                &self.goal_role_models.planner,
+                goal::RoleCapability::Planner,
+                &event_tx,
+            )
+            .await;
         let spawner: std::sync::Arc<dyn crate::session::goal_planner::GoalPlannerSpawner> =
             std::sync::Arc::new(crate::session::goal_planner::ChannelSpawner {
                 event_tx,
@@ -1030,7 +1022,7 @@ impl SessionActor {
                 parent_prompt_id,
                 cwd: Some(self.tool_context.cwd.as_str().to_owned()),
                 trace_sink: Some((self.chat_state_handle.clone(), task_tool_name)),
-                role_override,
+                role_override: role_override.clone(),
                 events: Some(self.events.writer()),
             });
 
@@ -1046,9 +1038,10 @@ impl SessionActor {
                 context: &context,
                 plan_file: &plan_file,
                 attempt,
-                // Planner is forced to the parent model (no role override), so the
-                // effective role model is always the parent.
-                model_id: crate::session::goal_planner::effective_role_model_id(None, &model_id),
+                model_id: crate::session::goal_planner::effective_role_model_id(
+                    role_override.model.as_deref(),
+                    &model_id,
+                ),
                 tool_names: &tool_names,
                 inherit_tool_names: &inherit_tool_names,
             },

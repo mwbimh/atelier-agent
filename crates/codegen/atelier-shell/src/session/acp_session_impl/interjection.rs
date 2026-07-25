@@ -5,17 +5,20 @@
 use super::*;
 
 // Buffer, entry type, and formatting live in the shared
-// xai-interjection-core crate so the server-side agent loop can adopt the
+// atelier-interjection-core crate so the server-side agent loop can adopt the
 // same semantics. The shell keeps arrival (ACP ext methods), persistence,
 // and pager echo.
 //
 // Re-exported for `acp_session.rs` which does `pub(crate) use interjection::*;`
 // so retained code and co-located tests keep resolving by `acp_session::` path.
 #[allow(unused_imports)]
-pub(crate) use xai_interjection_core::{InterjectionBuffer, drain_formatted, format_interjection};
+pub(crate) use atelier_interjection_core::{
+    InterjectionBuffer, drain_formatted, format_interjection,
+};
 
 /// Shell instantiation of the shared entry type: images are ACP content.
-pub(crate) type PendingInterjection = xai_interjection_core::PendingInterjection<acp::ImageContent>;
+pub(crate) type PendingInterjection =
+    atelier_interjection_core::PendingInterjection<acp::ImageContent>;
 
 /// Prompt-id prefix for interjections that missed their turn and were
 /// converted into standalone prompt turns (arrived while idle, or after the
@@ -66,8 +69,6 @@ impl SessionActor {
             prompt_id,
             prompt_blocks,
             prompt_mode,
-            trace_gcs_config: None,
-            artifact_tracker: None,
             client_identifier: None,
             screen_mode: None,
             verbatim: false,

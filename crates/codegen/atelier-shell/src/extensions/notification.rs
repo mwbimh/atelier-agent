@@ -14,8 +14,8 @@ pub struct GoalDeliverableInfo {
     pub status: String,
 }
 
-/// xAI-specific session notification (parallel to acp::SessionNotification)
-/// This wraps an XaiSessionUpdate with session context for persistence and replay.
+/// Atelier extension session notification (parallel to acp::SessionNotification).
+/// This wraps an extension [`SessionUpdate`] with session context for persistence and replay.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionNotification {
@@ -72,7 +72,7 @@ impl PromptUsage {
     /// `incomplete` is set — even if `ledger` is `None` — so the flag is never
     /// dropped by omission. Always scrubs untrustworthy costs.
     pub fn project_from_ledger(
-        ledger: Option<&xai_chat_state::UsageLedger>,
+        ledger: Option<&atelier_chat_state::UsageLedger>,
         incomplete: bool,
     ) -> Option<Self> {
         let mut usage = match ledger {
@@ -96,7 +96,7 @@ impl PromptUsage {
     /// Error-path attach: any open ledger is always incomplete (may under-count
     /// without a freeze drain). `may_undercount` only matters when the ledger is empty.
     pub fn for_error_path(
-        ledger: Option<&xai_chat_state::UsageLedger>,
+        ledger: Option<&atelier_chat_state::UsageLedger>,
         may_undercount: bool,
     ) -> Option<Self> {
         match (ledger, may_undercount) {
@@ -181,11 +181,11 @@ pub struct PromptUsageModel {
     pub cost_missing_calls: u64,
 }
 
-impl From<&xai_chat_state::UsageTotals> for PromptUsageModel {
-    fn from(t: &xai_chat_state::UsageTotals) -> Self {
+impl From<&atelier_chat_state::UsageTotals> for PromptUsageModel {
+    fn from(t: &atelier_chat_state::UsageTotals) -> Self {
         // Exhaustive destructure: a new ledger field cannot silently miss the
         // wire. When one is added here, also extend `project_result_usage`.
-        let xai_chat_state::UsageTotals {
+        let atelier_chat_state::UsageTotals {
             input_tokens,
             output_tokens,
             cached_read_tokens,
@@ -210,8 +210,8 @@ impl From<&xai_chat_state::UsageTotals> for PromptUsageModel {
     }
 }
 
-impl From<&xai_chat_state::UsageLedger> for PromptUsage {
-    fn from(ledger: &xai_chat_state::UsageLedger) -> Self {
+impl From<&atelier_chat_state::UsageLedger> for PromptUsage {
+    fn from(ledger: &atelier_chat_state::UsageLedger) -> Self {
         let mut usage = Self {
             totals: PromptUsageModel::from(&ledger.totals),
             model_usage: ledger
@@ -473,7 +473,7 @@ pub enum SessionUpdate {
     /// Hooks registry changed (after reload or trust/untrust).
     /// Sent so the pager modal can auto-refresh if open.
     HooksChanged {
-        hooks: Vec<xai_hooks_plugins_types::HookInfo>,
+        hooks: Vec<atelier_hooks_plugins_types::HookInfo>,
         project_trusted: bool,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         load_errors: Vec<String>,
@@ -481,7 +481,7 @@ pub enum SessionUpdate {
     /// Plugins registry changed (after reload).
     /// Sent so the pager modal can auto-refresh if open.
     PluginsChanged {
-        plugins: Vec<xai_hooks_plugins_types::PluginInfo>,
+        plugins: Vec<atelier_hooks_plugins_types::PluginInfo>,
     },
     /// Marketplace plugin updates were auto-installed on session start.
     /// Sent so desktop/pager can show a notification to the user.
@@ -1112,7 +1112,7 @@ pub struct CompactionSegmentFile {
     pub items: Vec<atelier_sampling_types::ConversationItem>,
     /// Curated summary, analysis tags already stripped.
     pub summary: String,
-    pub detail: xai_chat_state::CompactionDetail,
+    pub detail: atelier_chat_state::CompactionDetail,
     /// ISO-8601, for the segment metadata.
     pub timestamp: String,
 }
@@ -1172,7 +1172,7 @@ pub struct CompactionRequestFile {
     /// records each rejected/degraded attempt so retries aren't bumped
     /// invisibly. Empty on artifacts written before schema v2.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub attempt_details: Vec<xai_chat_state::compaction_utils::CompactionAttempt>,
+    pub attempt_details: Vec<atelier_chat_state::compaction_utils::CompactionAttempt>,
 }
 
 /// On-disk artifact capturing the exact recap request sent to the model plus
@@ -1198,7 +1198,7 @@ pub struct RecapRequestFile {
     pub trigger: String,
     /// The model id used for the recap side-call.
     pub model: String,
-    /// Sampling request id sent to the proxy (`xai-recap-{uuid}`).
+    /// Sampling request id sent to the Provider (`atelier-recap-{uuid}`).
     pub x_atelier_req_id: String,
     /// Sampling conversation id (`recap-{uuid}`).
     pub x_atelier_conv_id: String,
@@ -1231,6 +1231,32 @@ mod tests {
     use super::*;
 
     #[test]
+    fn compaction_checkpoint_preserves_opaque_responses_item() {
+        let checkpoint = CompactionCheckpointFile {
+            checkpoint_id: "checkpoint-remote".to_owned(),
+            prompt_index_at_compaction: 7,
+            compacted_history: vec![crate::sampling::ConversationItem::Compaction(
+                atelier_sampling_types::rs::CompactionSummaryItemParam {
+                    id: Some("cmp_opaque".to_owned()),
+                    encrypted_content: "encrypted-round-trip".to_owned(),
+                },
+            )],
+            schema_version: 1,
+            created_at: "2026-07-24T00:00:00Z".to_owned(),
+            original_user_info: None,
+            reread_file_paths: Vec::new(),
+        };
+        let json = serde_json::to_vec(&checkpoint).unwrap();
+        let restored: CompactionCheckpointFile = serde_json::from_slice(&json).unwrap();
+        assert!(matches!(
+            &restored.compacted_history[0],
+            crate::sampling::ConversationItem::Compaction(item)
+                if item.id.as_deref() == Some("cmp_opaque")
+                    && item.encrypted_content == "encrypted-round-trip"
+        ));
+    }
+
+    #[test]
     fn recap_request_file_roundtrips() {
         let artifact = RecapRequestFile {
             schema_version: 1,
@@ -1238,7 +1264,7 @@ mod tests {
             created_at: "2026-06-30T00:00:00Z".into(),
             trigger: "auto".into(),
             model: "v9-zingster".into(),
-            x_atelier_req_id: "xai-recap-abc".into(),
+            x_atelier_req_id: "atelier-recap-abc".into(),
             x_atelier_conv_id: "recap-abc".into(),
             strip_reasoning: false,
             reminder_tag: "system-reminder".into(),
@@ -1251,7 +1277,7 @@ mod tests {
         let parsed: RecapRequestFile = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.schema_version, 1);
         assert_eq!(parsed.trigger, "auto");
-        assert_eq!(parsed.x_atelier_req_id, "xai-recap-abc");
+        assert_eq!(parsed.x_atelier_req_id, "atelier-recap-abc");
         assert_eq!(
             parsed.summary.as_deref(),
             Some("We fixed the flaky test in queue_worker.")
@@ -1261,7 +1287,7 @@ mod tests {
 
     #[test]
     fn compaction_request_file_v2_roundtrips_attempt_details() {
-        use xai_chat_state::compaction_utils::CompactionAttempt;
+        use atelier_chat_state::compaction_utils::CompactionAttempt;
         let artifact = CompactionRequestFile {
             schema_version: 2,
             request_id: "req-1".into(),

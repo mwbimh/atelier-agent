@@ -13,19 +13,33 @@ path = "src/lib.rs"
 
 [dependencies]
 anyhow = { workspace = true }
+base64 = { workspace = true }
 dunce = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
 thiserror = { workspace = true }
 windows-sys = { version = "0.61.2", features = [
     "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_NetworkManagement_NetManagement",
+    "Win32_NetworkManagement_WindowsFilteringPlatform",
+    "Win32_Networking_WinSock",
     "Win32_Security",
     "Win32_Security_Authorization",
+    "Win32_Security_Authentication_Identity",
+    "Win32_Security_Cryptography",
     "Win32_Storage_FileSystem",
+    "Win32_UI_Shell",
     "Win32_System_Console",
     "Win32_System_Diagnostics_Debug",
     "Win32_System_Environment",
+    "Win32_System_IO",
     "Win32_System_JobObjects",
     "Win32_System_Memory",
     "Win32_System_Pipes",
+    "Win32_System_Registry",
+    "Win32_System_Rpc",
+    "Win32_System_StationsAndDesktops",
     "Win32_System_Threading",
 ] }
 

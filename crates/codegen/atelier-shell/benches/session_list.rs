@@ -24,6 +24,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use agent_client_protocol as acp;
+use atelier_fast_worktree::{ListFilter, WorktreeDb, WorktreeKind, WorktreeRecord, WorktreeStatus};
 use atelier_shell::session::info::Info;
 use atelier_shell::session::persistence::Summary;
 use atelier_shell::session::storage::{JsonlStorageAdapter, StorageAdapter};
@@ -34,7 +35,6 @@ use criterion::{
 };
 use filetime::{FileTime, set_file_mtime};
 use tempfile::TempDir;
-use xai_fast_worktree::{ListFilter, WorktreeDb, WorktreeKind, WorktreeRecord, WorktreeStatus};
 
 const WORKSPACE_COUNT: usize = 3_000;
 // Bump whenever workload semantics change, even if aggregate counts do not.

@@ -9,7 +9,6 @@ use crate::runtime_identity::{PAGER_CLIENT_TYPE, PAGER_CLIENT_VERSION};
 
 pub async fn list_available_models(agent_config: &AgentConfig) -> Result<()> {
     match AuthStatus::resolve(agent_config) {
-        AuthStatus::ApiKey => println!("You are using XAI_API_KEY."),
         AuthStatus::LoggedIn(host) => println!("You are logged in with {}.", host),
         AuthStatus::ModelCredentials(model) => {
             println!("Model '{model}' is using its own API key.");

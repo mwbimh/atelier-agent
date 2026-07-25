@@ -7,12 +7,18 @@ use anyhow::Result;
 
 /// Builds the developer prompt to send to the compaction model.
 pub fn format_compaction_developer_prompt() -> Result<String> {
-    Ok(include_str!("../templates/compaction_developer_prompt.txt").to_string())
+    Ok(atelier_config::runtime_defaults::runtime_context_prompt(
+        atelier_config::runtime_defaults::ContextPrompt::CompactionDeveloper,
+        include_str!("../templates/compaction_developer_prompt.txt"),
+    ))
 }
 
 /// Builds the user prompt to send to the compaction model.
 pub fn format_compaction_user_prompt() -> Result<String> {
-    Ok(include_str!("../templates/compaction_user_prompt.txt").to_string())
+    Ok(atelier_config::runtime_defaults::runtime_context_prompt(
+        atelier_config::runtime_defaults::ContextPrompt::CompactionUser,
+        include_str!("../templates/compaction_user_prompt.txt"),
+    ))
 }
 
 #[cfg(test)]

@@ -412,21 +412,6 @@ fn resumed_from_field_in_meta_roundtrips() {
     assert!(json.contains("prev-subagent-id"));
     let parsed: SubagentMeta = serde_json::from_str(&json).unwrap();
     assert_eq!(parsed.resumed_from.as_deref(), Some("prev-subagent-id"));
-    let gcs = SubagentSessionMetadata::from_meta(
-        &meta,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        0,
-    );
-    assert_eq!(gcs.resumed_from.as_deref(), Some("prev-subagent-id"));
-    let gcs_json = serde_json::to_string(&gcs).unwrap();
-    assert!(gcs_json.contains("resumedFrom"));
 }
 #[test]
 fn resumed_from_none_not_serialized_in_meta() {
@@ -642,7 +627,7 @@ fn subagent_worktree_snapshot_gate_defaults_off() {
 #[test]
 fn subagent_worktree_snapshot_gate_remote_enables() {
     let mut ctx = ctx_with_toggle(std::collections::HashMap::new());
-    ctx.remote_settings = Some(crate::util::config::RemoteSettings {
+    ctx.local_runtime_settings = Some(crate::util::config::LocalRuntimeSettings {
         subagent_worktree_snapshot_enabled: Some(true),
         ..Default::default()
     });
@@ -655,7 +640,7 @@ fn subagent_worktree_snapshot_gate_local_overrides_remote() {
     config.features.subagent_worktree_snapshot = Some(false);
     let mut ctx = ctx_with_toggle(std::collections::HashMap::new());
     ctx.agent_config = Some(config);
-    ctx.remote_settings = Some(crate::util::config::RemoteSettings {
+    ctx.local_runtime_settings = Some(crate::util::config::LocalRuntimeSettings {
         subagent_worktree_snapshot_enabled: Some(true),
         ..Default::default()
     });
@@ -712,8 +697,8 @@ fn coordinator_with_completed(id: &str) -> SubagentCoordinator {
 /// and asserts all three post-conditions hold together.
 #[tokio::test]
 async fn completion_snapshot_sequence_persists_ref_then_removes_worktree() {
-    xai_test_utils::require_git!();
-    use xai_test_utils::git::{git_commit_all, init_git_repo};
+    atelier_test_utils::require_git!();
+    use atelier_test_utils::git::{git_commit_all, init_git_repo};
     let temp = tempfile::TempDir::new().unwrap();
     let repo = temp.path().join("repo");
     std::fs::create_dir(&repo).unwrap();
@@ -721,7 +706,7 @@ async fn completion_snapshot_sequence_persists_ref_then_removes_worktree() {
     std::fs::write(repo.join("tracked.txt"), "original").unwrap();
     git_commit_all(&repo, "initial");
     let wt = temp.path().join("subagent-glue-1");
-    xai_fast_worktree::WorktreeBuilder::new(&repo, &wt)
+    atelier_fast_worktree::WorktreeBuilder::new(&repo, &wt)
         .standalone(true)
         .create()
         .unwrap();
@@ -814,8 +799,8 @@ async fn gate_on_completion_retains_worktree_path_when_not_removed() {
 /// already reflects a removed worktree plus a recorded snapshot_ref.
 #[tokio::test]
 async fn disposal_completes_before_subagent_is_observable() {
-    xai_test_utils::require_git!();
-    use xai_test_utils::git::{git_commit_all, init_git_repo};
+    atelier_test_utils::require_git!();
+    use atelier_test_utils::git::{git_commit_all, init_git_repo};
     let temp = tempfile::TempDir::new().unwrap();
     let repo = temp.path().join("repo");
     std::fs::create_dir(&repo).unwrap();
@@ -823,7 +808,7 @@ async fn disposal_completes_before_subagent_is_observable() {
     std::fs::write(repo.join("tracked.txt"), "original").unwrap();
     git_commit_all(&repo, "initial");
     let wt = temp.path().join("subagent-order-1");
-    xai_fast_worktree::WorktreeBuilder::new(&repo, &wt)
+    atelier_fast_worktree::WorktreeBuilder::new(&repo, &wt)
         .standalone(true)
         .create()
         .unwrap();
@@ -879,297 +864,10 @@ async fn completion_gate_off_preserves_and_records_no_ref() {
     assert!(src.snapshot_ref.is_none(), "gate off must not record a snapshot ref");
 }
 #[test]
-fn subagent_session_metadata_roundtrip() {
-    let meta = SubagentMeta {
-        subagent_id: "sa-1".into(),
-        parent_session_id: "parent-1".into(),
-        child_session_id: "child-1".into(),
-        subagent_type: "general-purpose".into(),
-        description: "test task".into(),
-        prompt: "do something".into(),
-        status: "completed".into(),
-        started_at: chrono::Utc::now(),
-        completed_at: Some(chrono::Utc::now()),
-        duration_ms: Some(1234),
-        tool_calls: Some(5),
-        turns: Some(2),
-        error: None,
-        effective_context_source: Some("new".into()),
-        context_normalized: false,
-        fork_copy_error: None,
-        persona: Some("reviewer".into()),
-        resumed_from: None,
-        child_cwd: None,
-        worktree_path: None,
-        snapshot_ref: None,
-        effective_model_id: None,
-    };
-    let session_meta = SubagentSessionMetadata::from_meta(
-        &meta,
-        Some("atelier-4.5"),
-        Some("/workspace"),
-        Some("/tmp/worktree"),
-        Some("worktree"),
-        Some("read-only"),
-        Some("medium"),
-        Some("rust-dev"),
-        Some("prompt-123"),
-        1,
-    );
-    assert_eq!(session_meta.schema_version, 1);
-    assert_eq!(session_meta.session_kind, "subagent");
-    assert_eq!(session_meta.subagent_id, "sa-1");
-    assert_eq!(session_meta.parent_session_id, "parent-1");
-    assert_eq!(session_meta.description, "test task");
-    assert_eq!(session_meta.model_id.as_deref(), Some("atelier-4.5"));
-    assert_eq!(session_meta.role.as_deref(), Some("rust-dev"));
-    assert_eq!(session_meta.persona.as_deref(), Some("reviewer"));
-    assert!(! session_meta.context_normalized);
-    assert_eq!(session_meta.depth, 1);
-    let json = serde_json::to_string_pretty(&session_meta).unwrap();
-    let deserialized: SubagentSessionMetadata = serde_json::from_str(&json).unwrap();
-    assert_eq!(deserialized.session_kind, "subagent");
-    assert_eq!(deserialized.subagent_id, "sa-1");
-    assert_eq!(deserialized.description, "test task");
-    let mut value: serde_json::Value = serde_json::from_str(&json).unwrap();
-    value.as_object_mut().unwrap().remove("description");
-    let legacy: SubagentSessionMetadata = serde_json::from_value(value).unwrap();
-    assert!(legacy.description.is_empty());
-    assert!(json.contains("schemaVersion"));
-    assert!(json.contains("sessionKind"));
-}
-#[test]
-fn subagent_session_metadata_non_forked() {
-    let meta = SubagentMeta {
-        subagent_id: "sa-2".into(),
-        parent_session_id: "parent-2".into(),
-        child_session_id: "child-2".into(),
-        subagent_type: "explore".into(),
-        description: "search code".into(),
-        prompt: "find auth".into(),
-        status: "running".into(),
-        started_at: chrono::Utc::now(),
-        completed_at: None,
-        duration_ms: None,
-        tool_calls: None,
-        turns: None,
-        error: None,
-        effective_context_source: Some("new".into()),
-        context_normalized: false,
-        fork_copy_error: None,
-        persona: Some("implementer".into()),
-        resumed_from: None,
-        child_cwd: None,
-        worktree_path: None,
-        snapshot_ref: None,
-        effective_model_id: None,
-    };
-    let session_meta = SubagentSessionMetadata::from_meta(
-        &meta,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        0,
-    );
-    assert_eq!(session_meta.session_kind, "subagent");
-    assert!(! session_meta.context_normalized);
-    assert_eq!(session_meta.depth, 0);
-    assert!(session_meta.model_id.is_none());
-    assert!(session_meta.worktree_path.is_none());
-}
-#[test]
-fn subagent_session_metadata_backward_compat_deserialization() {
-    let json = r#"{
-            "schemaVersion": 1,
-            "sessionId": "s1",
-            "sessionKind": "subagent",
-            "subagentId": "sa1",
-            "childSessionId": "c1",
-            "parentSessionId": "p1",
-            "subagentType": "explore",
-            "startedAt": "2026-01-01T00:00:00Z",
-            "status": "completed",
-            "depth": 0
-        }"#;
-    let meta: SubagentSessionMetadata = serde_json::from_str(json).unwrap();
-    assert_eq!(meta.session_kind, "subagent");
-    assert!(meta.persona.is_none());
-    assert!(meta.role.is_none());
-    assert!(! meta.context_normalized);
-}
-#[test]
-fn upload_lifecycle_spawn_then_completion_preserves_fields() {
-    let spawn_meta = SubagentMeta {
-        subagent_id: "sa-lifecycle".into(),
-        parent_session_id: "parent-1".into(),
-        child_session_id: "child-1".into(),
-        subagent_type: "general-purpose".into(),
-        description: "test task".into(),
-        prompt: "do something".into(),
-        status: "running".to_string(),
-        started_at: chrono::Utc::now(),
-        completed_at: None,
-        duration_ms: None,
-        tool_calls: None,
-        turns: None,
-        error: None,
-        effective_context_source: Some("forked".into()),
-        context_normalized: true,
-        fork_copy_error: None,
-        persona: Some("implementer".into()),
-        resumed_from: None,
-        child_cwd: None,
-        worktree_path: None,
-        snapshot_ref: None,
-        effective_model_id: None,
-    };
-    let spawn_gcs = SubagentSessionMetadata::from_meta(
-        &spawn_meta,
-        Some("atelier-4.5"),
-        Some("/workspace"),
-        None,
-        Some("worktree"),
-        Some("all"),
-        Some("medium"),
-        Some("rust-dev"),
-        Some("prompt-42"),
-        1,
-    );
-    assert_eq!(spawn_gcs.status, "running");
-    assert!(spawn_gcs.completed_at.is_none());
-    assert!(spawn_gcs.duration_ms.is_none());
-    assert_eq!(spawn_gcs.model_id.as_deref(), Some("atelier-4.5"));
-    assert_eq!(spawn_gcs.cwd.as_deref(), Some("/workspace"));
-    assert_eq!(spawn_gcs.role.as_deref(), Some("rust-dev"));
-    assert_eq!(spawn_gcs.parent_prompt_id.as_deref(), Some("prompt-42"));
-    assert_eq!(spawn_gcs.depth, 1);
-    let mut completed_meta = spawn_meta.clone();
-    completed_meta.status = "completed".to_string();
-    completed_meta.completed_at = Some(chrono::Utc::now());
-    completed_meta.duration_ms = Some(5000);
-    completed_meta.tool_calls = Some(12);
-    completed_meta.turns = Some(3);
-    let completion_gcs = SubagentSessionMetadata::from_meta(
-        &completed_meta,
-        Some("atelier-4.5"),
-        Some("/workspace"),
-        Some("/tmp/worktree-1"),
-        Some("worktree"),
-        Some("all"),
-        Some("medium"),
-        Some("rust-dev"),
-        Some("prompt-42"),
-        1,
-    );
-    assert_eq!(completion_gcs.status, "completed");
-    assert!(completion_gcs.completed_at.is_some());
-    assert_eq!(completion_gcs.duration_ms, Some(5000));
-    assert_eq!(completion_gcs.tool_calls, Some(12));
-    assert_eq!(completion_gcs.turns, Some(3));
-    assert_eq!(completion_gcs.model_id.as_deref(), Some("atelier-4.5"));
-    assert_eq!(completion_gcs.cwd.as_deref(), Some("/workspace"));
-    assert_eq!(completion_gcs.role.as_deref(), Some("rust-dev"));
-    assert_eq!(completion_gcs.parent_prompt_id.as_deref(), Some("prompt-42"));
-    assert_eq!(completion_gcs.worktree_path.as_deref(), Some("/tmp/worktree-1"));
-    assert_eq!(completion_gcs.depth, 1);
-    assert_eq!(spawn_gcs.child_session_id, completion_gcs.child_session_id);
-}
-#[test]
-fn upload_lifecycle_failure_preserves_error() {
-    let meta = SubagentMeta {
-        subagent_id: "sa-fail".into(),
-        parent_session_id: "p".into(),
-        child_session_id: "c".into(),
-        subagent_type: "explore".into(),
-        description: "d".into(),
-        prompt: "p".into(),
-        status: "failed".to_string(),
-        started_at: chrono::Utc::now(),
-        completed_at: Some(chrono::Utc::now()),
-        duration_ms: Some(100),
-        tool_calls: Some(0),
-        turns: Some(0),
-        error: Some("session spawn error".into()),
-        effective_context_source: Some("new".into()),
-        context_normalized: false,
-        fork_copy_error: None,
-        persona: None,
-        resumed_from: None,
-        child_cwd: None,
-        worktree_path: None,
-        snapshot_ref: None,
-        effective_model_id: None,
-    };
-    let gcs = SubagentSessionMetadata::from_meta(
-        &meta,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        0,
-    );
-    assert_eq!(gcs.status, "failed");
-    assert_eq!(gcs.error.as_deref(), Some("session spawn error"));
-    assert_eq!(gcs.session_kind, "subagent");
-}
-#[test]
 fn initial_context_source_resumed_variant() {
     let source = InitialContextSource::Resumed;
     assert!(matches!(source, InitialContextSource::Resumed));
     assert_ne!(source, InitialContextSource::New);
-}
-#[test]
-fn session_metadata_session_kind_for_resumed() {
-    let meta = SubagentMeta {
-        subagent_id: "sa-resume".into(),
-        parent_session_id: "p".into(),
-        child_session_id: "c".into(),
-        subagent_type: "general-purpose".into(),
-        description: "d".into(),
-        prompt: "p".into(),
-        status: "running".into(),
-        started_at: chrono::Utc::now(),
-        completed_at: None,
-        duration_ms: None,
-        tool_calls: None,
-        turns: None,
-        error: None,
-        effective_context_source: Some("resumed".into()),
-        context_normalized: false,
-        fork_copy_error: None,
-        persona: None,
-        resumed_from: Some("prev-id".into()),
-        child_cwd: None,
-        worktree_path: None,
-        snapshot_ref: None,
-        effective_model_id: None,
-    };
-    let gcs = SubagentSessionMetadata::from_meta(
-        &meta,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        0,
-    );
-    assert_eq!(
-        gcs.session_kind, "subagent_resume",
-        "resumed subagents should have session_kind=subagent_resume"
-    );
-    assert_eq!(gcs.resumed_from.as_deref(), Some("prev-id"));
 }
 /// Resume must preserve only the System head (`Some(1)`) while passing the full
 /// transcript through intact — a whole-transcript prefix is what pinned compaction.
@@ -1391,10 +1089,10 @@ fn token_estimation_for_window_safety() {
         ConversationItem::user("Hello, how are you?"),
         ConversationItem::assistant("I'm doing well, thank you!"),
     ];
-    let estimated = xai_chat_state::estimate_conversation_tokens(&conversation);
+    let estimated = atelier_chat_state::estimate_conversation_tokens(&conversation);
     assert!(estimated > 0, "should produce non-zero estimate");
     assert!(estimated < 100, "short conversation should have small token estimate");
-    assert_eq!(xai_chat_state::estimate_conversation_tokens(& []), 0);
+    assert_eq!(atelier_chat_state::estimate_conversation_tokens(& []), 0);
 }
 #[test]
 fn token_estimation_accounts_for_images() {
@@ -1403,20 +1101,20 @@ fn token_estimation_accounts_for_images() {
         ConversationItem::User(UserItem { content : vec![ContentPart::Text { text :
         "describe this".into(), }], synthetic_reason : None, ..Default::default() })
     ];
-    let text_tokens = xai_chat_state::estimate_conversation_tokens(&text_only);
+    let text_tokens = atelier_chat_state::estimate_conversation_tokens(&text_only);
     let with_image = vec![
         ConversationItem::User(UserItem { content : vec![ContentPart::Text { text :
         "describe this".into(), }, ContentPart::Image { url : "data:image/png;base64,abc"
         .into(), },], synthetic_reason : None, ..Default::default() })
     ];
-    let image_tokens = xai_chat_state::estimate_conversation_tokens(&with_image);
+    let image_tokens = atelier_chat_state::estimate_conversation_tokens(&with_image);
     assert_eq!(image_tokens, text_tokens + 765, "one image should add 765 tokens");
     let multi_image = vec![
         ConversationItem::User(UserItem { content : vec![ContentPart::Image { url :
         "img1".into() }, ContentPart::Image { url : "img2".into() }, ContentPart::Image {
         url : "img3".into() },], synthetic_reason : None, ..Default::default() })
     ];
-    let multi_tokens = xai_chat_state::estimate_conversation_tokens(&multi_image);
+    let multi_tokens = atelier_chat_state::estimate_conversation_tokens(&multi_image);
     assert_eq!(multi_tokens, 765 * 3, "three images = 3 * 765 tokens");
 }
 #[test]
@@ -1505,7 +1203,7 @@ fn drain_cancelled_finish_cmds(
 ) -> usize {
     let mut count = 0;
     while let Ok(cmd) = cmd_rx.try_recv() {
-        if let SessionCommand::XaiSessionNotification { notification } = cmd
+        if let SessionCommand::ExtensionSessionNotification { notification } = cmd
             && let SessionUpdate::SubagentFinished { subagent_id, status, error, .. } = &notification
                 .update && subagent_id == id
         {
@@ -1526,7 +1224,7 @@ fn drain_cancelled_finish_broadcasts(
 ) -> usize {
     let mut count = 0;
     while let Ok(msg) = gateway_rx.try_recv() {
-        let xai_acp_lib::AcpClientMessage::ExtNotification(args) = msg else {
+        let atelier_acp_runtime::AcpClientMessage::ExtNotification(args) = msg else {
             continue;
         };
         assert_eq!(args.request.method.as_ref(), "atelier/session_notification");
@@ -1770,7 +1468,7 @@ fn reconcile_replayed_orphan_uses_real_terminal_status_from_meta() {
     );
     let mut found = None;
     while let Ok(cmd) = cmd_rx.try_recv() {
-        if let SessionCommand::XaiSessionNotification { notification } = cmd
+        if let SessionCommand::ExtensionSessionNotification { notification } = cmd
             && let SessionUpdate::SubagentFinished {
                 subagent_id,
                 status,
@@ -1816,7 +1514,7 @@ async fn reconcile_reemits_rewound_finish_even_when_id_still_in_completed_regist
     );
     let mut found = None;
     while let Ok(cmd) = cmd_rx.try_recv() {
-        if let SessionCommand::XaiSessionNotification { notification } = cmd
+        if let SessionCommand::ExtensionSessionNotification { notification } = cmd
             && let SessionUpdate::SubagentFinished { subagent_id, status, .. } = &notification
                 .update && subagent_id == id
         {
@@ -1858,7 +1556,7 @@ async fn reconcile_reemits_real_outcome_for_completed_with_running_meta() {
     );
     let mut found = None;
     while let Ok(cmd) = cmd_rx.try_recv() {
-        if let SessionCommand::XaiSessionNotification { notification } = cmd
+        if let SessionCommand::ExtensionSessionNotification { notification } = cmd
             && let SessionUpdate::SubagentFinished { subagent_id, status, .. } = &notification
                 .update && subagent_id == id
         {
@@ -2110,33 +1808,6 @@ fn notification_subagent_spawned_includes_resumed_from() {
     assert!(json.get("resumed_from").is_none());
     assert!(json.get("role").is_none());
     assert!(json.get("model").is_none());
-}
-#[test]
-fn upload_ref_includes_resumed_from() {
-    let ref_resumed = SubagentSpawnedRef {
-        subagent_id: "sa-r".into(),
-        child_session_id: "child-r".into(),
-        subagent_type: "general-purpose".into(),
-        description: "goal achievement skeptic".into(),
-        persona: Some("implementer".into()),
-        resumed_from: Some("prev-agent".into()),
-    };
-    let json = serde_json::to_value(&ref_resumed).unwrap();
-    assert_eq!(json["resumed_from"], "prev-agent");
-    assert_eq!(json["description"], "goal achievement skeptic");
-    let ref_fresh = SubagentSpawnedRef {
-        subagent_id: "sa-f".into(),
-        child_session_id: "child-f".into(),
-        subagent_type: "explore".into(),
-        description: String::new(),
-        persona: None,
-        resumed_from: None,
-    };
-    let json = serde_json::to_value(&ref_fresh).unwrap();
-    assert!(json.get("resumed_from").is_none());
-    assert!(json.get("description").is_none());
-    let parsed: SubagentSpawnedRef = serde_json::from_value(json).unwrap();
-    assert!(parsed.description.is_empty());
 }
 #[test]
 fn completed_subagent_propagates_resumed_from() {
@@ -2936,7 +2607,7 @@ fn persona_injection_into_empty_conversation() {
 mod cancellation_error_message_tests {
     use super::super::cancellation_error_message;
     use crate::session::commands::CancellationContext;
-    use xai_file_utils::events::types::CancellationCategory;
+    use atelier_runtime_events::events::types::CancellationCategory;
     #[test]
     fn permission_rejected_with_context() {
         let ctx = CancellationContext {
@@ -3257,8 +2928,8 @@ async fn progress_publisher_delivers_ticks_to_parent_cmd_channel() {
                 .expect("a tick must arrive within the publish interval")
                 .expect("channel open");
             cancel.cancel();
-            let SessionCommand::XaiSessionNotification { notification } = cmd else {
-                panic!("expected XaiSessionNotification");
+            let SessionCommand::ExtensionSessionNotification { notification } = cmd else {
+                panic!("expected ExtensionSessionNotification");
             };
             let SessionUpdate::SubagentProgress {
                 subagent_id,

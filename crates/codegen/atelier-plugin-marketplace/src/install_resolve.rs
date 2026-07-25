@@ -1,7 +1,7 @@
 //! Pure resolution logic for `atelier plugin install <name>` marketplace refs.
 
 use crate::types::{MarketplaceEntry, MarketplaceSource, SourceKind};
-use crate::{canonical_github_owner_repo, is_official_source_url};
+use crate::{canonical_github_owner_repo, is_atelier_source_url};
 
 /// A parsed marketplace install ref: a plugin `name` with an optional source
 /// `qualifier` (`owner/repo` for git, `local/<slug>` for local sources).
@@ -181,7 +181,7 @@ pub fn select_bare_name(
                 .iter()
                 .copied()
                 .filter(|&index| match &scanned[index].source.kind {
-                    SourceKind::Git { url, .. } => is_official_source_url(url),
+                    SourceKind::Git { url, .. } => is_atelier_source_url(url),
                     SourceKind::Local { .. } => false,
                 })
                 .collect();
@@ -267,10 +267,10 @@ mod tests {
     #[test]
     fn parse_name_with_owner_repo_qualifier() {
         assert_eq!(
-            parse_marketplace_ref("sentry@xai-org/plugin-marketplace"),
+            parse_marketplace_ref("sentry@atelier-org/plugin-marketplace"),
             Some(MarketplaceRef {
                 name: "sentry".into(),
-                qualifier: Some("xai-org/plugin-marketplace".into()),
+                qualifier: Some("atelier-org/plugin-marketplace".into()),
             })
         );
     }
@@ -323,7 +323,7 @@ mod tests {
     fn parse_rejects_fragment() {
         assert_eq!(parse_marketplace_ref("sentry#sub"), None);
         assert_eq!(
-            parse_marketplace_ref("sentry@xai-org/marketplace#sub"),
+            parse_marketplace_ref("sentry@atelier-org/marketplace#sub"),
             None
         );
     }
@@ -342,7 +342,7 @@ mod tests {
     #[test]
     fn slugify_lowercases_and_hyphenates_spaces() {
         assert_eq!(slugify("Local Dev"), "local-dev");
-        assert_eq!(slugify("xAI Official"), "xai-official");
+        assert_eq!(slugify("Atelier Official"), "atelier-official");
     }
 
     #[test]
@@ -350,9 +350,9 @@ mod tests {
         assert_eq!(
             addressable_qualifier(&git_source(
                 "x",
-                "https://github.com/xai-org/plugin-marketplace.git"
+                "https://github.com/atelier-org/plugin-marketplace.git"
             )),
-            "xai-org/plugin-marketplace"
+            "atelier-org/plugin-marketplace"
         );
         assert_eq!(
             addressable_qualifier(&local_source("Local Dev", "/tmp/p")),
@@ -374,14 +374,14 @@ mod tests {
     #[test]
     fn resolve_qualifier_matches_git_owner_repo_across_url_forms() {
         for url in [
-            "https://github.com/xai-org/plugin-marketplace.git",
-            "git@github.com:xai-org/plugin-marketplace.git",
-            "ssh://git@github.com/xai-org/plugin-marketplace",
-            "https://GitHub.com/XAI-org/Plugin-Marketplace",
+            "https://github.com/atelier-org/plugin-marketplace.git",
+            "git@github.com:atelier-org/plugin-marketplace.git",
+            "ssh://git@github.com/atelier-org/plugin-marketplace",
+            "https://GitHub.com/Atelier-org/Plugin-Marketplace",
         ] {
             let sources = [git_source("src", url)];
             assert_eq!(
-                resolve_qualified_source("xai-org/plugin-marketplace", &sources),
+                resolve_qualified_source("atelier-org/plugin-marketplace", &sources),
                 Ok(0),
                 "url: {url}"
             );
@@ -392,10 +392,10 @@ mod tests {
     fn resolve_qualifier_normalizes_dot_git_in_qualifier() {
         let sources = [git_source(
             "src",
-            "https://github.com/xai-org/plugin-marketplace",
+            "https://github.com/atelier-org/plugin-marketplace",
         )];
         assert_eq!(
-            resolve_qualified_source("xai-org/plugin-marketplace.git", &sources),
+            resolve_qualified_source("atelier-org/plugin-marketplace.git", &sources),
             Ok(0)
         );
     }
@@ -404,8 +404,8 @@ mod tests {
     fn resolve_qualifier_matches_local_by_slug() {
         let sources = [
             git_source(
-                "xAI Official",
-                "https://github.com/xai-org/plugin-marketplace.git",
+                "Atelier Official",
+                "https://github.com/atelier-org/plugin-marketplace.git",
             ),
             local_source("Local Dev", "/tmp/plugins"),
         ];
@@ -416,8 +416,8 @@ mod tests {
     fn resolve_qualifier_matches_non_github_git_by_slug() {
         let sources = [
             git_source(
-                "xAI Official",
-                "https://github.com/xai-org/plugin-marketplace.git",
+                "Atelier Official",
+                "https://github.com/atelier-org/plugin-marketplace.git",
             ),
             git_source("Self Hosted", "https://git.example.com/org/repo.git"),
         ];
@@ -447,8 +447,8 @@ mod tests {
     fn resolve_qualifier_unknown_for_git_and_local() {
         let sources = [
             git_source(
-                "xAI Official",
-                "https://github.com/xai-org/plugin-marketplace.git",
+                "Atelier Official",
+                "https://github.com/atelier-org/plugin-marketplace.git",
             ),
             local_source("Local Dev", "/tmp/plugins"),
         ];
@@ -467,12 +467,15 @@ mod tests {
         let sources = [
             git_source(
                 "Mirror A",
-                "https://github.com/xai-org/plugin-marketplace.git",
+                "https://github.com/atelier-org/plugin-marketplace.git",
             ),
-            git_source("Mirror B", "git@github.com:xai-org/plugin-marketplace.git"),
+            git_source(
+                "Mirror B",
+                "git@github.com:atelier-org/plugin-marketplace.git",
+            ),
         ];
         assert_eq!(
-            resolve_qualified_source("xai-org/plugin-marketplace", &sources),
+            resolve_qualified_source("atelier-org/plugin-marketplace", &sources),
             Err(QualifierResolveError::Ambiguous(vec![0, 1]))
         );
     }
@@ -519,16 +522,16 @@ mod tests {
     fn resolve_qualifier_name_vs_other_source_owner_repo_is_ambiguous() {
         let sources = [
             git_source(
-                "xAI Official",
-                "https://github.com/xai-org/plugin-marketplace.git",
+                "Atelier Official",
+                "https://github.com/atelier-org/plugin-marketplace.git",
             ),
             git_source(
-                "xai-org/plugin-marketplace",
-                "git@github.example.com:mirror/xai.git",
+                "atelier-org/plugin-marketplace",
+                "git@github.example.com:mirror/atelier.git",
             ),
         ];
         assert_eq!(
-            resolve_qualified_source("xai-org/plugin-marketplace", &sources),
+            resolve_qualified_source("atelier-org/plugin-marketplace", &sources),
             Err(QualifierResolveError::Ambiguous(vec![0, 1]))
         );
     }
@@ -536,11 +539,11 @@ mod tests {
     #[test]
     fn resolve_qualifier_name_and_owner_repo_same_source_resolves() {
         let sources = [git_source(
-            "xai-org/plugin-marketplace",
-            "https://github.com/xai-org/plugin-marketplace.git",
+            "atelier-org/plugin-marketplace",
+            "https://github.com/atelier-org/plugin-marketplace.git",
         )];
         assert_eq!(
-            resolve_qualified_source("xai-org/plugin-marketplace", &sources),
+            resolve_qualified_source("atelier-org/plugin-marketplace", &sources),
             Ok(0)
         );
     }
@@ -590,7 +593,7 @@ mod tests {
     }
 
     #[test]
-    fn bare_name_official_priority_when_duplicate_in_official_and_third_party() {
+    fn bare_name_atelier_priority_when_duplicate_in_atelier_and_third_party() {
         let pairs = [
             (
                 git_source("Third Party", "https://github.com/acme/marketplace.git"),
@@ -598,8 +601,8 @@ mod tests {
             ),
             (
                 git_source(
-                    "xAI Official",
-                    "https://github.com/xai-org/plugin-marketplace.git",
+                    "Atelier Official",
+                    "https://github.com/atelier-org/plugin-marketplace.git",
                 ),
                 entry("sentry"),
             ),
@@ -641,14 +644,14 @@ mod tests {
             (
                 git_source(
                     "Official Mirror A",
-                    "https://github.com/xai-org/plugin-marketplace.git",
+                    "https://github.com/atelier-org/plugin-marketplace.git",
                 ),
                 entry("sentry"),
             ),
             (
                 git_source(
                     "Official Mirror B",
-                    "git@github.com:xai-org/plugin-marketplace.git",
+                    "git@github.com:atelier-org/plugin-marketplace.git",
                 ),
                 entry("sentry"),
             ),

@@ -87,9 +87,9 @@ pub struct AgentBuilder {
     state_path: Option<PathBuf>,
     memory_backend: Option<Arc<dyn atelier_tools::types::memory_backend::MemoryBackend>>,
     web_search_config: atelier_tools::implementations::web_search::WebSearchConfig,
-    /// When true, web search and X search are sent as native server-side
-    /// tools for execution by the agentic sampler, instead of being
-    /// registered as local Function tools.
+    /// When true, capability-approved search is sent as a native server-side
+    /// tool for execution by the agentic sampler instead of being registered
+    /// as a local Function tool.
     backend_search: bool,
     web_fetch_config: atelier_tools::implementations::atelier_build::web_fetch::WebFetchConfig,
     lsp: Option<std::sync::Arc<dyn atelier_tools::implementations::lsp::LspBackend>>,
@@ -423,10 +423,9 @@ impl AgentBuilder {
         self.web_search_config = config;
         self
     }
-    /// When true, web search and X search are sent as native server-side
-    /// tools for execution by the agentic sampler, instead of being
-    /// registered as local Function tools. Per-model gating is applied
-    /// at request time, not here.
+    /// When true, capability-approved search is sent as a native server-side
+    /// tool for execution by the agentic sampler instead of being registered
+    /// as a local Function tool. Per-model gating is applied at request time.
     pub fn with_backend_search(mut self, enabled: bool) -> Self {
         self.backend_search = enabled;
         self
@@ -1164,9 +1163,6 @@ impl AgentBuilder {
                     allowed_domains: None,
                 });
             }
-            if definition.hosted_tool_allowed("x_search") {
-                hosted_tools.push(atelier_sampling_types::HostedTool::XSearch);
-            }
         }
         #[allow(clippy::arc_with_non_send_sync)]
         let tool_bridge = Arc::new(tool_bridge);
@@ -1182,15 +1178,16 @@ impl AgentBuilder {
         ))
     }
 }
-/// CLI naming for the shared [`xai_tool_types::build_task_description`] builder.
-const TASK_TOOL_NAMING: xai_tool_types::TaskToolNaming<'static> = xai_tool_types::TaskToolNaming {
-    task_tool: "${{ tools.by_kind.task }}",
-    subagent_type_param: "${{ params.task.subagent_type }}",
-    run_in_background_param: "${{ params.task.run_in_background }}",
-    resume_from_param: "${{ params.task.resume_from }}",
-    background_retrieval_tool: "${{ tools.by_kind.background_task_action }}",
-    isolation_param: "${{ params.task.isolation }}",
-};
+/// CLI naming for the shared [`atelier_tool_types::build_task_description`] builder.
+const TASK_TOOL_NAMING: atelier_tool_types::TaskToolNaming<'static> =
+    atelier_tool_types::TaskToolNaming {
+        task_tool: "${{ tools.by_kind.task }}",
+        subagent_type_param: "${{ params.task.subagent_type }}",
+        run_in_background_param: "${{ params.task.run_in_background }}",
+        resume_from_param: "${{ params.task.resume_from }}",
+        background_retrieval_tool: "${{ tools.by_kind.background_task_action }}",
+        isolation_param: "${{ params.task.isolation }}",
+    };
 /// Concise task-tool description for child sessions. Delegation from a child
 /// is possible but discouraged — prefer doing the work directly.
 ///
@@ -1207,12 +1204,12 @@ Prefer doing the work yourself unless delegation is clearly necessary.\n\
 Usage: specify ${{ params.task.subagent_type }} (\"general-purpose\", \"explore\", or \"plan\"), \n\
 a short ${{ params.task.description }}, and a detailed ${{ params.task.prompt }}.\n\
 ${{ params.task.run_in_background }}: Returns immediately with a subagent_id. Use the task output tool to retrieve results. This is set to true by default.";
-/// CLI [`xai_tool_types::SubagentToolNaming`]: each kind maps to its
+/// CLI [`atelier_tool_types::SubagentToolNaming`]: each kind maps to its
 /// `${{ tools.by_kind.* }}` template placeholder, so rendering a built-in's
 /// `tools_template` reproduces the placeholders for the CLI's `TemplateRenderer`
 /// to resolve at finalize time.
-const SUBAGENT_TOOL_NAMING: xai_tool_types::SubagentToolNaming<'static> =
-    xai_tool_types::SubagentToolNaming {
+const SUBAGENT_TOOL_NAMING: atelier_tool_types::SubagentToolNaming<'static> =
+    atelier_tool_types::SubagentToolNaming {
         execute: "${{ tools.by_kind.execute }}",
         read: "${{ tools.by_kind.read }}",
         edit: "${{ tools.by_kind.edit }}",
@@ -1222,14 +1219,14 @@ const SUBAGENT_TOOL_NAMING: xai_tool_types::SubagentToolNaming<'static> =
         plan: "${{ tools.by_kind.plan }}",
     };
 /// Return the tool-access fragment for a built-in subagent type, sourced from the
-/// shared [`xai_tool_types`] catalog and rendered with [`SUBAGENT_TOOL_NAMING`]
+/// shared [`atelier_tool_types`] catalog and rendered with [`SUBAGENT_TOOL_NAMING`]
 /// (which re-emits the `${{ tools.by_kind.* }}` placeholders for the CLI's
 /// `TemplateRenderer` to resolve at finalize time).
 fn builtin_tools_fragment(name: BuiltinAgentName) -> String {
     let subagent = match name {
-        BuiltinAgentName::GeneralPurpose => xai_tool_types::GENERAL_PURPOSE_SUBAGENT,
-        BuiltinAgentName::Explore => xai_tool_types::EXPLORE_SUBAGENT,
-        BuiltinAgentName::Plan => xai_tool_types::PLAN_SUBAGENT,
+        BuiltinAgentName::GeneralPurpose => atelier_tool_types::GENERAL_PURPOSE_SUBAGENT,
+        BuiltinAgentName::Explore => atelier_tool_types::EXPLORE_SUBAGENT,
+        BuiltinAgentName::Plan => atelier_tool_types::PLAN_SUBAGENT,
         _ => return String::new(),
     };
     subagent.render_tools(&SUBAGENT_TOOL_NAMING)
@@ -1259,8 +1256,8 @@ fn task_model_guidance(model_slugs: &[String]) -> String {
 /// Build the Task tool description with the effective subagent list.
 ///
 /// Maps each [`SubagentEntry`] to the shared
-/// [`xai_tool_types::SubagentDescriptor`] and defers to
-/// [`xai_tool_types::build_task_description`] so the CLI and the prod chat
+/// [`atelier_tool_types::SubagentDescriptor`] and defers to
+/// [`atelier_tool_types::build_task_description`] so the CLI and the prod chat
 /// stack share one builder. Built-in (unshadowed) entries carry the hardcoded
 /// tool-name fragment; user-defined entries carry `None` so their raw
 /// `description` is used verbatim (markdown is fine — it's model-facing text).
@@ -1268,21 +1265,22 @@ pub(crate) fn build_task_description(
     subagents: &[SubagentEntry],
     model_slugs: &[String],
 ) -> String {
-    let descriptors: Vec<xai_tool_types::SubagentDescriptor> = subagents
+    let descriptors: Vec<atelier_tool_types::SubagentDescriptor> = subagents
         .iter()
         .map(|entry| {
             let tools = match &entry.source {
                 SubagentSource::Builtin(b) => Some(builtin_tools_fragment(*b)),
                 SubagentSource::UserDefined { .. } => None,
             };
-            xai_tool_types::SubagentDescriptor {
+            atelier_tool_types::SubagentDescriptor {
                 name: entry.name.clone(),
                 description: entry.description.clone(),
                 tools,
             }
         })
         .collect();
-    let mut description = xai_tool_types::build_task_description(&descriptors, &TASK_TOOL_NAMING);
+    let mut description =
+        atelier_tool_types::build_task_description(&descriptors, &TASK_TOOL_NAMING);
     description.push_str(&task_model_guidance(model_slugs));
     description
 }
@@ -1331,11 +1329,11 @@ mod tests {
         ];
         let desc = build_task_description(&subagents, &[]);
         assert!(
-            desc.contains(xai_tool_types::GENERAL_PURPOSE_SUBAGENT.tools_template),
+            desc.contains(atelier_tool_types::GENERAL_PURPOSE_SUBAGENT.tools_template),
             "should include general-purpose tool names"
         );
         assert!(
-            desc.contains(xai_tool_types::EXPLORE_SUBAGENT.tools_template),
+            desc.contains(atelier_tool_types::EXPLORE_SUBAGENT.tools_template),
             "should include explore tool names"
         );
         assert!(
@@ -1393,7 +1391,7 @@ mod tests {
             "shadowed built-in should use user description"
         );
         assert!(
-            !desc.contains(xai_tool_types::EXPLORE_SUBAGENT.tools_template),
+            !desc.contains(atelier_tool_types::EXPLORE_SUBAGENT.tools_template),
             "shadowed built-in should NOT include built-in tool fragment"
         );
     }
@@ -1842,11 +1840,15 @@ mod tests {
     fn hosted_tool_gating() {
         let base = crate::config::AgentDefinition::general_purpose;
         assert!(base().hosted_tool_allowed("web_search"));
-        assert!(base().hosted_tool_allowed("x_search"));
+        assert!(
+            !base().hosted_tool_allowed("x_search"),
+            "generic AgentDefinition must not enable vendor-specific x_search"
+        );
         let mut d = base();
+        d.tools = vec!["x_search".into()];
+        assert!(d.hosted_tool_allowed("x_search"));
         d.disallowed_tools = vec!["x_search".into()];
         assert!(!d.hosted_tool_allowed("x_search"));
-        assert!(d.hosted_tool_allowed("web_search"));
         let mut d = base();
         d.tools = vec!["read_file".into()];
         assert!(!d.hosted_tool_allowed("web_search"));
@@ -2318,10 +2320,8 @@ mod tests {
             "hosted WebSearch must be removed when web_search is disallowed, got: {hosted:?}"
         );
         assert!(
-            hosted
-                .iter()
-                .any(|t| matches!(t, atelier_sampling_types::HostedTool::XSearch)),
-            "XSearch must remain when only web_search is disallowed, got: {hosted:?}"
+            hosted.is_empty(),
+            "no hosted search should remain: {hosted:?}"
         );
         let has_web_search_fn = agent
             .tool_definitions()
@@ -2333,8 +2333,8 @@ mod tests {
             "function web_search tool must be removed when disallowed"
         );
     }
-    /// Regression: with backend search + web search both enabled, both
-    /// hosted tools appear and `backend_search_enabled()` is true.
+    /// With backend search + web search enabled, only the capability-approved
+    /// generic WebSearch hosted tool appears.
     #[tokio::test]
     async fn hosted_tools_populated_when_backend_search_and_web_search_enabled() {
         let agent = build_with_web_search(true, true, &[]).await;
@@ -2346,30 +2346,22 @@ mod tests {
                 .any(|t| matches!(t, atelier_sampling_types::HostedTool::WebSearch { .. })),
             "expected WebSearch hosted tool, got: {hosted:?}"
         );
-        assert!(
-            hosted
-                .iter()
-                .any(|t| matches!(t, atelier_sampling_types::HostedTool::XSearch)),
-            "expected XSearch hosted tool, got: {hosted:?}"
+        assert_eq!(
+            hosted.len(),
+            1,
+            "unexpected hosted tool injection: {hosted:?}"
         );
     }
-    /// XSearch is added unconditionally when backend search is on;
-    /// WebSearch requires the web-search config.
+
+    /// Without explicit web-search configuration, the generic backend-search
+    /// toggle must not inject any vendor-specific hosted tool.
     #[tokio::test]
-    async fn hosted_tools_only_xsearch_when_web_search_disabled() {
+    async fn hosted_tools_empty_when_web_search_disabled() {
         let agent = build_with_web_search(false, true, &[]).await;
         let hosted = agent.hosted_tools();
         assert!(
-            !hosted
-                .iter()
-                .any(|t| matches!(t, atelier_sampling_types::HostedTool::WebSearch { .. })),
-            "WebSearch must NOT appear when web_search is disabled, got: {hosted:?}"
-        );
-        assert!(
-            hosted
-                .iter()
-                .any(|t| matches!(t, atelier_sampling_types::HostedTool::XSearch)),
-            "expected XSearch hosted tool, got: {hosted:?}"
+            hosted.is_empty(),
+            "hosted tools must fail closed: {hosted:?}"
         );
     }
     /// Backend search off: gate bool false and no hosted tools, regardless

@@ -198,6 +198,7 @@ impl SandboxManager {
     fn mark_unsafe_backend(&mut self) {
         self.applied = false;
         self.net_restricted = false;
+        RESTRICT_CHILD_NETWORK.store(false, Ordering::Relaxed);
         self.diagnostics = SandboxDiagnostics::unsafe_backend(
             self.profile.to_string(),
             "explicit unsafe backend selected; no sandbox enforcement is active",

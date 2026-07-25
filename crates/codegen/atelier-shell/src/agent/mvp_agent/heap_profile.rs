@@ -1,51 +1,24 @@
 //! Heap-profile monitor wiring for [`MvpAgent`].
 //!
 //! Full-reapply sites call [`MvpAgent::reconfigure_heap_profile_monitor`].
-//! K12 scoped kill-switch reconfigures only jemalloc fields (no wholesale
-//! `remote_settings` rewrite, no `re_resolve_runtime_fields` / telemetry re-init).
+//! The scoped kill-switch reconfigures only jemalloc fields without rebuilding
+//! unrelated runtime state.
 
 use super::*;
-use crate::heap_profile::build_upload_handles;
-
 impl MvpAgent {
     pub(super) fn reconfigure_heap_profile_monitor(&self) {
         let zdr = self.is_data_collection_disabled();
         let config = self.cfg.borrow().resolve_jemalloc_heap_profile(zdr);
-        let handles = self.heap_profile_upload_handles();
+        let artifact_root = Some(crate::util::atelier_home::atelier_home().join("local_artifacts"));
         self.heap_profile_monitor
             .borrow_mut()
-            .reconfigure(config, handles);
+            .reconfigure(config, artifact_root);
     }
 
     pub(super) fn heap_profile_set_session_id(&self, session_id: &str) {
         self.heap_profile_monitor
             .borrow_mut()
             .set_session_id(session_id.to_owned());
-    }
-
-    fn heap_profile_upload_handles(&self) -> Option<crate::heap_profile::HeapProfileUploadHandles> {
-        let method = self.trace_upload_config_snapshot()?;
-        let bucket_url = self
-            .cfg
-            .borrow()
-            .endpoints
-            .resolve_trace_bucket_url()
-            .map(|r| r.value);
-        // Only direct GCS uploads need a bucket.
-        if bucket_url.is_none()
-            && matches!(
-                method,
-                crate::session::repo_changes::UploadMethod::Direct { .. }
-            )
-        {
-            tracing::debug!("no trace bucket configured; heap-profile uploads disabled");
-            return None;
-        }
-        Some(build_upload_handles(
-            Arc::clone(&self.auth_manager),
-            bucket_url,
-            method,
-        ))
     }
 
     /// Background poll + scoped kill-switch (agent entrypoints only).
@@ -87,7 +60,7 @@ impl MvpAgent {
                         .get()
                         .heap_profile_monitor
                         .borrow_mut()
-                        .clear_upload_in_flight();
+                        .clear_dump_in_flight();
                     tracing::error!("heap_profile: poll tick panicked; continuing");
                 }
             }
@@ -115,21 +88,19 @@ impl MvpAgent {
 mod tests {
     use super::*;
 
-    fn cfg_with_remote(rs: crate::util::config::RemoteSettings) -> AgentConfig {
+    fn cfg_with_remote(rs: crate::util::config::LocalRuntimeSettings) -> AgentConfig {
         AgentConfig {
-            remote_settings: Some(rs),
+            local_runtime_settings: Some(rs),
             ..Default::default()
         }
     }
 
     #[test]
-    fn scoped_resolve_does_not_mutate_stored_remote_settings() {
-        let cfg = cfg_with_remote(crate::util::config::RemoteSettings {
+    fn scoped_resolve_does_not_mutate_stored_local_runtime_settings() {
+        let cfg = cfg_with_remote(crate::util::config::LocalRuntimeSettings {
             jemalloc_heap_profile_enabled: Some(true),
             jemalloc_heap_profile_thresholds_bytes: Some(vec![1_000_000]),
             jemalloc_heap_profile_poll_interval_secs: Some(30),
-            trace_upload_enabled: Some(true),
-            telemetry_mode: Some("all".into()),
             ..Default::default()
         });
 
@@ -141,7 +112,7 @@ mod tests {
         );
         assert!(!resolved.enabled);
 
-        let stored = cfg.remote_settings.as_ref().unwrap();
+        let stored = cfg.local_runtime_settings.as_ref().unwrap();
         assert_eq!(stored.jemalloc_heap_profile_enabled, Some(true));
         assert_eq!(
             stored.jemalloc_heap_profile_thresholds_bytes.as_deref(),
@@ -153,17 +124,15 @@ mod tests {
     /// cannot re-enable from a stale flag when wholesale refresh is skipped.
     #[test]
     fn kill_switch_patch_keeps_full_reapply_disabled() {
-        let mut cfg = cfg_with_remote(crate::util::config::RemoteSettings {
+        let mut cfg = cfg_with_remote(crate::util::config::LocalRuntimeSettings {
             jemalloc_heap_profile_enabled: Some(true),
             jemalloc_heap_profile_thresholds_bytes: Some(vec![1_000_000]),
             jemalloc_heap_profile_poll_interval_secs: Some(30),
-            trace_upload_enabled: Some(true),
-            telemetry_mode: Some("all".into()),
             ..Default::default()
         });
 
         // Simulate live kill-switch fetch: remote disabled jemalloc profiling.
-        if let Some(rs) = cfg.remote_settings.as_mut() {
+        if let Some(rs) = cfg.local_runtime_settings.as_mut() {
             rs.jemalloc_heap_profile_enabled = Some(false);
             rs.jemalloc_heap_profile_thresholds_bytes = Some(vec![1_000_000]);
             rs.jemalloc_heap_profile_poll_interval_secs = Some(30);
@@ -171,22 +140,21 @@ mod tests {
 
         // Full reapply path reads stored fields (hooks available for gate check).
         let free = crate::heap_profile::resolve_jemalloc_heap_profile(
-            cfg.remote_settings
+            cfg.local_runtime_settings
                 .as_ref()
                 .and_then(|s| s.jemalloc_heap_profile_enabled),
-            cfg.remote_settings
+            cfg.local_runtime_settings
                 .as_ref()
                 .and_then(|s| s.jemalloc_heap_profile_thresholds_bytes.as_deref()),
-            cfg.remote_settings
+            cfg.local_runtime_settings
                 .as_ref()
                 .and_then(|s| s.jemalloc_heap_profile_poll_interval_secs),
             false,
             true,
-            true,
         );
         assert!(!free.enabled);
         assert_eq!(
-            cfg.remote_settings
+            cfg.local_runtime_settings
                 .as_ref()
                 .and_then(|s| s.jemalloc_heap_profile_enabled),
             Some(false)
@@ -202,15 +170,12 @@ mod tests {
             Some(15),
             false,
             true,
-            true,
         );
         assert!(free.enabled);
         assert_eq!(free.poll_interval, std::time::Duration::from_secs(15));
         assert_eq!(free.thresholds, thresholds);
 
-        let cfg = cfg_with_remote(crate::util::config::RemoteSettings {
-            trace_upload_enabled: Some(true),
-            telemetry_mode: Some("all".into()),
+        let cfg = cfg_with_remote(crate::util::config::LocalRuntimeSettings {
             jemalloc_heap_profile_enabled: Some(false),
             jemalloc_heap_profile_thresholds_bytes: Some(vec![100]),
             ..Default::default()
@@ -242,12 +207,10 @@ mod tests {
     #[test]
     fn full_reapply_reads_stored_remote_jemalloc_fields() {
         let thresholds = vec![100u64, 200];
-        let cfg = cfg_with_remote(crate::util::config::RemoteSettings {
+        let cfg = cfg_with_remote(crate::util::config::LocalRuntimeSettings {
             jemalloc_heap_profile_enabled: Some(true),
             jemalloc_heap_profile_thresholds_bytes: Some(thresholds.clone()),
             jemalloc_heap_profile_poll_interval_secs: Some(45),
-            trace_upload_enabled: Some(true),
-            telemetry_mode: Some("all".into()),
             ..Default::default()
         });
 
@@ -281,7 +244,6 @@ mod tests {
             Some(&thresholds),
             Some(45),
             false,
-            true,
             true,
         );
         assert!(free.enabled);

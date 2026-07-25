@@ -1,7 +1,7 @@
 //! Handler for atelier/git/worktree/* extension methods.
 
 use agent_client_protocol as acp;
-use xai_acp_lib::AcpAgentGatewaySender as GatewaySender;
+use atelier_acp_runtime::AcpAgentGatewaySender as GatewaySender;
 
 use crate::agent::mvp_agent::MvpAgent;
 use crate::session::ExtMethodResult;
@@ -318,7 +318,7 @@ pub async fn handle(
                 worktree_type_default,
                 req.worktree_type.unwrap_or(worktree_type_default.into()),
             );
-            let registry_client = agent.session_registry_client();
+            let registry_client = agent.local_session_catalog();
             let agent_id = atelier_telemetry::id::agent_id();
 
             to_response(
@@ -361,7 +361,7 @@ pub async fn handle(
         // ── Session rehydration (devbox recovery) ─────────────────────────
         "atelier/session/rehydrate" => {
             let req = serde_json::from_str::<RehydrateSessionRequest>(args.params.get())?;
-            let registry_client = agent.session_registry_client();
+            let registry_client = agent.local_session_catalog();
 
             to_response(rehydrate_session_in_worktree(&req, ops, registry_client.as_ref()).await)
         }

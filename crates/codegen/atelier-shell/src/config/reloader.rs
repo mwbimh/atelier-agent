@@ -90,7 +90,7 @@ pub struct ConfigReloader {
     last_project_mcp_hashes: HashMap<PathBuf, u64>,
     atelier_home: PathBuf,
     auth_scope: String,
-    remote_settings: Option<crate::util::config::RemoteSettings>,
+    local_runtime_settings: Option<crate::util::config::LocalRuntimeSettings>,
     config_update_tx: mpsc::UnboundedSender<ConfigUpdate>,
     /// Whether --experimental-memory was passed at startup. Persists across config reloads.
     experimental_memory: bool,
@@ -104,7 +104,7 @@ impl ConfigReloader {
         initial_auth_key_hash: u64,
         initial_config: toml::Value,
         auth_scope: String,
-        remote_settings: Option<crate::util::config::RemoteSettings>,
+        local_runtime_settings: Option<crate::util::config::LocalRuntimeSettings>,
         config_update_tx: mpsc::UnboundedSender<ConfigUpdate>,
         experimental_memory: bool,
         no_memory: bool,
@@ -115,7 +115,7 @@ impl ConfigReloader {
             last_project_mcp_hashes: HashMap::new(),
             atelier_home,
             auth_scope,
-            remote_settings,
+            local_runtime_settings,
             config_update_tx,
             experimental_memory,
             no_memory,
@@ -348,13 +348,13 @@ impl ConfigReloader {
             self.experimental_memory,
             self.no_memory,
             &self.last_global_config,
-            self.remote_settings.as_ref(),
+            self.local_runtime_settings.as_ref(),
         );
         let new_mem = crate::config::MemoryConfig::resolve(
             self.experimental_memory,
             self.no_memory,
             &new_global,
-            self.remote_settings.as_ref(),
+            self.local_runtime_settings.as_ref(),
         );
         if old_mem != new_mem {
             info!("memory config change detected");

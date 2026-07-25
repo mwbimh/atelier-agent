@@ -2,7 +2,7 @@
 //!
 //! These drive the SHIPPED handlers (`handle_completion` for normal + error
 //! completions, `cancel_running_task` for cancellation) and assert on the
-//! notification the real `send_xai_notification` persists — not a
+//! notification the real `send_extension_notification` persists — not a
 //! re-implementation. The terminal is the persisted + replayed twin of the
 //! fire-and-forget `prompt_complete`, so a re-attaching viewer can finalize
 //! from replay.
@@ -24,8 +24,8 @@ fn drain_persistence(rx: &mut mpsc::UnboundedReceiver<PersistenceMsg>) -> Vec<Pe
 fn is_turn_completed(m: &PersistenceMsg) -> bool {
     matches!(
         m,
-        PersistenceMsg::Update(crate::session::storage::SessionUpdate::Xai(n))
-            if matches!(n.update, XaiSessionUpdate::TurnCompleted { .. })
+        PersistenceMsg::Update(crate::session::storage::SessionUpdate::Extension(n))
+            if matches!(n.update, ExtensionSessionUpdate::TurnCompleted { .. })
     )
 }
 
@@ -41,15 +41,17 @@ fn is_agent_message_delta(m: &PersistenceMsg) -> bool {
 /// `TurnCompleted`, if any.
 fn turn_completed_fields(msgs: &[PersistenceMsg]) -> Option<(String, String, Option<String>)> {
     msgs.iter().find_map(|m| match m {
-        PersistenceMsg::Update(crate::session::storage::SessionUpdate::Xai(n)) => match &n.update {
-            XaiSessionUpdate::TurnCompleted {
-                prompt_id,
-                stop_reason,
-                agent_result,
-                ..
-            } => Some((prompt_id.clone(), stop_reason.clone(), agent_result.clone())),
-            _ => None,
-        },
+        PersistenceMsg::Update(crate::session::storage::SessionUpdate::Extension(n)) => {
+            match &n.update {
+                ExtensionSessionUpdate::TurnCompleted {
+                    prompt_id,
+                    stop_reason,
+                    agent_result,
+                    ..
+                } => Some((prompt_id.clone(), stop_reason.clone(), agent_result.clone())),
+                _ => None,
+            }
+        }
         _ => None,
     })
 }
@@ -63,8 +65,6 @@ fn pending_input(prompt_id: &str) -> (InputItem, oneshot::Receiver<PromptTurnRes
         prompt_id: prompt_id.to_string(),
         prompt_blocks: vec![],
         prompt_mode: PromptMode::Agent,
-        trace_gcs_config: None,
-        artifact_tracker: None,
         client_identifier: None,
         screen_mode: None,
         verbatim: false,
@@ -91,7 +91,7 @@ async fn normal_completion_persists_turn_completed_after_buffered_delta_flush() 
     local
         .run_until(async {
             let (gateway_tx, _gateway_rx) =
-                mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                mpsc::unbounded_channel::<atelier_acp_runtime::AcpClientMessage>();
             let (persistence_tx, mut persistence_rx) = mpsc::unbounded_channel::<PersistenceMsg>();
             // Buffering enabled with a long window so a streamed delta is HELD
             // in the replay buffer until an explicit flush — the exact state the
@@ -198,7 +198,7 @@ async fn error_completion_persists_turn_completed_with_error_detail() {
     local
         .run_until(async {
             let (gateway_tx, _gateway_rx) =
-                mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                mpsc::unbounded_channel::<atelier_acp_runtime::AcpClientMessage>();
             let (persistence_tx, mut persistence_rx) = mpsc::unbounded_channel::<PersistenceMsg>();
             let actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
 
@@ -235,7 +235,7 @@ async fn cancellation_persists_turn_completed_cancelled() {
     local
         .run_until(async {
             let (gateway_tx, _gateway_rx) =
-                mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                mpsc::unbounded_channel::<atelier_acp_runtime::AcpClientMessage>();
             let (persistence_tx, mut persistence_rx) = mpsc::unbounded_channel::<PersistenceMsg>();
             let actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
 
@@ -283,8 +283,8 @@ async fn cancellation_persists_turn_completed_cancelled() {
 /// Pull the first persisted `TurnCompleted`'s notification `_meta`, if any.
 fn turn_completed_meta(msgs: &[PersistenceMsg]) -> Option<serde_json::Value> {
     msgs.iter().find_map(|m| match m {
-        PersistenceMsg::Update(crate::session::storage::SessionUpdate::Xai(n))
-            if matches!(n.update, XaiSessionUpdate::TurnCompleted { .. }) =>
+        PersistenceMsg::Update(crate::session::storage::SessionUpdate::Extension(n))
+            if matches!(n.update, ExtensionSessionUpdate::TurnCompleted { .. }) =>
         {
             n.meta.clone()
         }
@@ -304,7 +304,7 @@ async fn send_now_cancel_in_completion_race_window_still_persists_turn_completed
     local
         .run_until(async {
             let (gateway_tx, _gateway_rx) =
-                mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                mpsc::unbounded_channel::<atelier_acp_runtime::AcpClientMessage>();
             let (persistence_tx, mut persistence_rx) = mpsc::unbounded_channel::<PersistenceMsg>();
             let actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
 
@@ -351,7 +351,7 @@ async fn send_now_cancel_stamps_cancel_trigger_on_turn_end() {
     local
         .run_until(async {
             let (gateway_tx, mut gateway_rx) =
-                mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                mpsc::unbounded_channel::<atelier_acp_runtime::AcpClientMessage>();
             let (persistence_tx, mut persistence_rx) = mpsc::unbounded_channel::<PersistenceMsg>();
             let actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
 
@@ -390,7 +390,7 @@ async fn send_now_cancel_stamps_cancel_trigger_on_turn_end() {
 
             let mut wire_meta = None;
             while let Ok(msg) = gateway_rx.try_recv() {
-                if let xai_acp_lib::AcpClientMessage::ExtNotification(args) = msg
+                if let atelier_acp_runtime::AcpClientMessage::ExtNotification(args) = msg
                     && args.request.method.as_ref() == "atelier/session_notification"
                     && let Ok(v) =
                         serde_json::from_str::<serde_json::Value>(args.request.params.get())
@@ -430,7 +430,7 @@ async fn pristine_rewind_cancel_emits_no_turn_completed() {
     local
         .run_until(async {
             let (gateway_tx, _gateway_rx) =
-                mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                mpsc::unbounded_channel::<atelier_acp_runtime::AcpClientMessage>();
             let (persistence_tx, mut persistence_rx) = mpsc::unbounded_channel::<PersistenceMsg>();
             let actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
 
@@ -474,7 +474,7 @@ async fn removed_from_queue_completion_emits_no_turn_completed() {
     local
         .run_until(async {
             let (gateway_tx, _gateway_rx) =
-                mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                mpsc::unbounded_channel::<atelier_acp_runtime::AcpClientMessage>();
             let (persistence_tx, mut persistence_rx) = mpsc::unbounded_channel::<PersistenceMsg>();
             let actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
 
@@ -519,7 +519,7 @@ async fn unknown_prompt_completion_emits_no_turn_completed() {
     local
         .run_until(async {
             let (gateway_tx, _gateway_rx) =
-                mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                mpsc::unbounded_channel::<atelier_acp_runtime::AcpClientMessage>();
             let (persistence_tx, mut persistence_rx) = mpsc::unbounded_channel::<PersistenceMsg>();
             let actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
 

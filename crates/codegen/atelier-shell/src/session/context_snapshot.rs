@@ -48,7 +48,7 @@ fn build_side_query_request(
     parent_session_id: &str,
 ) -> crate::sampling::ConversationRequest {
     let mut items = snapshot.append_context(append_context);
-    items = xai_chat_state::compaction_utils::strip_reasoning_blocks(items);
+    items = atelier_chat_state::compaction_utils::strip_reasoning_blocks(items);
     items.retain(|item| !matches!(item, ConversationItem::System(_)));
     items.push(ConversationItem::user(format!(
         "Answer this side question directly in one response. You have no tools and must not propose actions:\n\n{question}"
@@ -92,7 +92,7 @@ impl ContextSnapshot {
             estimated_tokens: items
                 .iter()
                 .filter_map(|item| serde_json::to_string(item).ok())
-                .map(|item| xai_token_estimation::estimate_tokens(&item))
+                .map(|item| atelier_token_estimation::estimate_tokens(&item))
                 .sum(),
             source_revision: source_revision.unwrap_or(items.len() as u64),
             items,
@@ -256,7 +256,7 @@ fn is_snapshot_inheritable(item: &ConversationItem) -> bool {
 /// sandbox; carrying a parent runtime prefix or an in-flight reasoning block
 /// would duplicate runtime state and can produce malformed tool exchanges.
 fn snapshot_conversation(items: Vec<ConversationItem>) -> Vec<ConversationItem> {
-    let items = xai_chat_state::compaction_utils::strip_reasoning_blocks(items);
+    let items = atelier_chat_state::compaction_utils::strip_reasoning_blocks(items);
     let items = items.into_iter().filter(is_snapshot_inheritable).collect();
     completed_conversation(items)
 }

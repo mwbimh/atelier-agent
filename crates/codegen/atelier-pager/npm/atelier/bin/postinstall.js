@@ -238,6 +238,6 @@ if (process.env.ATELIER_INSTALL_COMPLETIONS === '1' && !IS_WINDOWS) {
         console.log('Completions generated to ~/.atelier/completions (bash/zsh)');
     } catch {}
 } else if (!IS_WINDOWS) {
-    console.log('Tip: atelier completions bash > ~/.local/share/bash-completion/completions/atelier');
-    console.log('     atelier completions zsh  > ~/.zsh/completions/_atelier');
+    console.log('Tip: ate completions bash > ~/.local/share/bash-completion/completions/atelier');
+    console.log('     ate completions zsh  > ~/.zsh/completions/_atelier');
 }

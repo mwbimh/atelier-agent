@@ -8,6 +8,7 @@ description = "Shared, transport-agnostic compaction engine for Atelier chat and
 [dependencies]
 anyhow = { workspace = true }
 async-trait = { workspace = true }
+atelier-config = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["time", "macros"] }

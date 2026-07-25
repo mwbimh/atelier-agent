@@ -1,13 +1,13 @@
 use crate::agent::subagent::SubagentSpawnContext;
 use crate::session::SessionCommand;
 use agent_client_protocol as acp;
+use atelier_acp_runtime::AcpAgentGatewaySender as GatewaySender;
 use atelier_tools::implementations::atelier_build::task::types::{SubagentRequest, SubagentResult};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
-use xai_acp_lib::AcpAgentGatewaySender as GatewaySender;
-pub(crate) type GatewayOut = <acp::AgentSide as xai_acp_lib::AcpSide>::OutMessage;
+pub(crate) type GatewayOut = <acp::AgentSide as atelier_acp_runtime::AcpSide>::OutMessage;
 pub(crate) fn test_gateway() -> GatewaySender {
     let (tx, _rx) = mpsc::unbounded_channel();
     GatewaySender::new(tx)
@@ -45,6 +45,8 @@ pub(crate) fn ctx_with_toggle(toggle: HashMap<String, bool>) -> SubagentSpawnCon
             temperature: None,
             top_p: None,
             request_payload: Default::default(),
+            remote_compaction_endpoint: None,
+            image_generation_endpoint: None,
             api_backend: Default::default(),
             auth_scheme: Default::default(),
             extra_headers: Default::default(),
@@ -77,7 +79,7 @@ pub(crate) fn ctx_with_toggle(toggle: HashMap<String, bool>) -> SubagentSpawnCon
         parent_session_id: "test-parent".into(),
         yolo_mode: false,
         subagent_event_tx: tx,
-        hunk_tracker_handle: xai_hunk_tracker::HunkTrackerHandle::noop(),
+        hunk_tracker_handle: atelier_hunk_tracker::HunkTrackerHandle::noop(),
         hunk_tracking_enabled: false,
         fs: Arc::new(atelier_workspace::file_system::LocalFs::new(
             test_root.clone(),
@@ -111,7 +113,7 @@ pub(crate) fn ctx_with_toggle(toggle: HashMap<String, bool>) -> SubagentSpawnCon
         subagent_toggle: toggle,
         disable_web_search: false,
         todo_gate: false,
-        remote_settings: None,
+        local_runtime_settings: None,
         laziness_debug_log: None,
         backend_tools_enabled: true,
         respect_gitignore: false,
@@ -120,8 +122,6 @@ pub(crate) fn ctx_with_toggle(toggle: HashMap<String, bool>) -> SubagentSpawnCon
         models_manager: Default::default(),
         file_tool_overrides: None,
         agent_config: None,
-        gcs_bucket_url: None,
-        gcs_upload_method: None,
         hook_registry: None,
         hook_workspace_root: String::new(),
         parent_depth: 0,

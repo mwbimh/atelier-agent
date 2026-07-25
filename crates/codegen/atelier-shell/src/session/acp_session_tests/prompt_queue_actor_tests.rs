@@ -122,7 +122,7 @@ async fn two_enqueues_drain_fifo_and_stale_edit_is_noop() {
             // The final broadcast must reflect the empty queue.
             let mut last: Option<crate::session::prompt_queue::QueueChanged> = None;
             while let Ok(msg) = gateway_rx.try_recv() {
-                if let xai_acp_lib::AcpClientMessage::ExtNotification(args) = msg
+                if let atelier_acp_runtime::AcpClientMessage::ExtNotification(args) = msg
                     && args.request.method.as_ref()
                         == crate::session::prompt_queue::QUEUE_CHANGED_METHOD
                 {
@@ -539,7 +539,7 @@ async fn interject_after_cancel_does_nothing_and_keeps_prompt_queued() {
             // The interject no-op still rebroadcasts so clients reconcile.
             let mut saw_broadcast = false;
             while let Ok(msg) = gateway_rx.try_recv() {
-                if let xai_acp_lib::AcpClientMessage::ExtNotification(args) = msg
+                if let atelier_acp_runtime::AcpClientMessage::ExtNotification(args) = msg
                     && args.request.method.as_ref()
                         == crate::session::prompt_queue::QUEUE_CHANGED_METHOD
                 {
@@ -733,7 +733,7 @@ async fn interject_queued_bash_row_noop_keeps_row_queued() {
 
             let mut saw_broadcast = false;
             while let Ok(msg) = gateway_rx.try_recv() {
-                if let xai_acp_lib::AcpClientMessage::ExtNotification(args) = msg
+                if let atelier_acp_runtime::AcpClientMessage::ExtNotification(args) = msg
                     && args.request.method.as_ref()
                         == crate::session::prompt_queue::QUEUE_CHANGED_METHOD
                 {
@@ -837,8 +837,6 @@ async fn queue_input_send_now_inserts_behind_running_front_and_requests_cancel()
                     PromptMode::Agent,
                     None,
                     None,
-                    None,
-                    None,
                     false,
                     None,
                     /* send_now */ true,
@@ -897,8 +895,6 @@ async fn queue_input_stacked_send_now_prompts_insert_fifo_during_goal_turn() {
                         PromptMode::Agent,
                         None,
                         None,
-                        None,
-                        None,
                         false,
                         None,
                         /* send_now */ true,
@@ -949,8 +945,6 @@ async fn queue_input_auto_send_now_only_inside_wait_window() {
                     PromptMode::Agent,
                     None,
                     None,
-                    None,
-                    None,
                     false,
                     None,
                     false,
@@ -971,8 +965,6 @@ async fn queue_input_auto_send_now_only_inside_wait_window() {
                     vec![acp::ContentBlock::Text(acp::TextContent::new("mid-wait"))],
                     "d-mid".to_string(),
                     PromptMode::Agent,
-                    None,
-                    None,
                     None,
                     None,
                     false,
@@ -1031,8 +1023,6 @@ async fn queue_input_auto_send_now_when_wait_and_held_queue_empty() {
                     PromptMode::Agent,
                     None,
                     None,
-                    None,
-                    None,
                     false,
                     None,
                     false,
@@ -1066,8 +1056,6 @@ async fn queue_input_auto_send_now_when_wait_and_held_queue_empty() {
                     vec![acp::ContentBlock::Text(acp::TextContent::new("second"))],
                     "second".to_string(),
                     PromptMode::Agent,
-                    None,
-                    None,
                     None,
                     None,
                     false,
@@ -1135,8 +1123,6 @@ async fn queue_input_auto_send_now_during_foreground_subagent_await_window() {
                     PromptMode::Agent,
                     None,
                     None,
-                    None,
-                    None,
                     false,
                     None,
                     false,
@@ -1163,8 +1149,6 @@ async fn queue_input_auto_send_now_during_foreground_subagent_await_window() {
                     vec![acp::ContentBlock::Text(acp::TextContent::new("later"))],
                     "after-await".to_string(),
                     PromptMode::Agent,
-                    None,
-                    None,
                     None,
                     None,
                     false,
@@ -1224,8 +1208,6 @@ async fn queue_input_send_now_exempts_synthetic_and_goal_turns() {
                     PromptMode::Agent,
                     None,
                     None,
-                    None,
-                    None,
                     true,
                     None,
                     false,
@@ -1246,8 +1228,6 @@ async fn queue_input_send_now_exempts_synthetic_and_goal_turns() {
                     vec![acp::ContentBlock::Text(acp::TextContent::new("nudge"))],
                     "d-goal".to_string(),
                     PromptMode::Agent,
-                    None,
-                    None,
                     None,
                     None,
                     false,
@@ -1373,8 +1353,6 @@ async fn queue_input_send_now_pins_front_on_running_task_identity() {
                     vec![acp::ContentBlock::Text(acp::TextContent::new("now"))],
                     "d-now".to_string(),
                     PromptMode::Agent,
-                    None,
-                    None,
                     None,
                     None,
                     false,

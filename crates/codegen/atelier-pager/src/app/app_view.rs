@@ -17,12 +17,12 @@ use crate::scrollback::render::ScratchBuffer;
 use crate::views::prompt_widget::PromptWidget;
 use crate::views::welcome::WelcomePromptFocus;
 use agent_client_protocol as acp;
+use atelier_acp_runtime::AcpAgentTx;
 use crossterm::event::{Event, KeyCode, KeyEventKind, MouseButton, MouseEventKind};
 use indexmap::IndexMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use xai_acp_lib::AcpAgentTx;
 /// State for the "New Worktree" popup dialog on the welcome screen.
 #[derive(Debug, Default)]
 pub struct NewWorktreeDialogState {
@@ -605,11 +605,11 @@ pub struct AppView {
     /// Whether to show the resolved model ID in /session-info output.
     pub show_resolved_model: bool,
     /// Whether the `/share` slash command is available. Gated by
-    /// `RemoteSettings.sharing_enabled`; defaults to `false` when remote
+    /// `LocalRuntimeSettings.sharing_enabled`; defaults to `false` when remote
     /// settings are unavailable or the field is absent.
     pub sharing_enabled: bool,
     /// Whether the plugin marketplace CTA is enabled. Env `ATELIER_PLUGIN_CTA`
-    /// overrides `RemoteSettings.plugin_cta` (remote settings); defaults to `false`.
+    /// overrides `LocalRuntimeSettings.plugin_cta` (remote settings); defaults to `false`.
     pub plugin_cta_enabled: bool,
     /// Whether the pager is connected via a leader (leader mode). The Agent
     /// Dashboard entry points (`/dashboard`, `Ctrl+\`, `atelier dashboard`, the
@@ -925,7 +925,7 @@ pub struct AppView {
     /// (default `true`); toggles write the user layer.
     pub ask_user_question_timeout_enabled: Option<bool>,
     /// Whether ZDR users are allowed to use the product.
-    /// Server-controlled via RemoteSettings (remote settings). Default `false` (blocked) during beta.
+    /// Server-controlled via LocalRuntimeSettings (remote settings). Default `false` (blocked) during beta.
     pub zdr_access_enabled: bool,
     /// (hide-key, surface) pairs whose `AnnouncementCtaShown` impression was
     /// already logged — once per pager process, cleared on logout. Keyed by
@@ -989,7 +989,7 @@ pub struct AppView {
     pub voice_ui_active: bool,
     /// Optional `[voice]` overrides from config (`api_base`, `language`, …).
     pub voice_config: atelier_voice::VoiceConfig,
-    /// Auth for STT (OAuth session via shell `AuthManager`, or `XAI_API_KEY`).
+    /// Auth for STT (OAuth session or Provider credentials via shell `AuthManager`).
     /// `None` until the pipeline is first started (lazy on `/voice`).
     pub voice_auth: Option<atelier_voice::SharedVoiceAuth>,
     /// Commands into the voice pipeline (start/stop capture — toggle, not hold).
@@ -4794,7 +4794,7 @@ pub(crate) mod tests {
         let backend = ratatui::backend::CrosstermBackend::new(
             crate::render::draw::TermWriter::new(frame_tx, crate::render::draw::WriterSync::new()),
         );
-        let mut terminal = xai_ratatui_inline::Terminal::with_options(
+        let mut terminal = atelier_ratatui_inline::Terminal::with_options(
             backend,
             TerminalOptions {
                 viewport: Viewport::Fixed(ratatui::layout::Rect::new(0, 0, 80, 24)),

@@ -8,6 +8,8 @@
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::str::FromStr;
+#[cfg(target_os = "windows")]
+use std::sync::OnceLock;
 
 /// The sandbox backend selected for a process.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -313,17 +315,20 @@ pub fn native_sandbox_availability() -> NativeSandboxAvailability {
 
     #[cfg(target_os = "windows")]
     {
-        if let Err(error) = atelier_windows_sandbox::command_runner_path() {
-            return NativeSandboxAvailability::Unavailable {
-                reason: format!("Windows child sandbox helper unavailable: {error}"),
-            };
-        }
-        match atelier_windows_sandbox::probe_restricted_token() {
-            Ok(()) => NativeSandboxAvailability::Available,
-            Err(error) => NativeSandboxAvailability::Unavailable {
-                reason: format!("Windows restricted-token probe failed: {error}"),
-            },
-        }
+        static AVAILABILITY: OnceLock<NativeSandboxAvailability> = OnceLock::new();
+        AVAILABILITY
+            .get_or_init(|| {
+                let helper = atelier_windows_sandbox::command_runner_path()
+                    .map(|_| ())
+                    .map_err(|error| error.to_string());
+                if helper.is_err() {
+                    return windows_native_availability_from_probes(helper, Ok(()));
+                }
+                let launch = atelier_windows_sandbox::probe_ready_launch_chain()
+                    .map_err(|error| error.to_string());
+                windows_native_availability_from_probes(helper, launch)
+            })
+            .clone()
     }
 
     #[cfg(all(not(target_os = "windows"), not(all(feature = "enforce", unix))))]
@@ -332,6 +337,28 @@ pub fn native_sandbox_availability() -> NativeSandboxAvailability {
             reason: "native sandbox enforcement is not compiled in this build".to_string(),
         }
     }
+}
+
+#[cfg(target_os = "windows")]
+fn windows_native_availability_from_probes(
+    helper_probe: Result<(), String>,
+    launch_probe: Result<(), String>,
+) -> NativeSandboxAvailability {
+    if let Err(error) = helper_probe {
+        return NativeSandboxAvailability::Unavailable {
+            reason: format!(
+                "Windows child sandbox helper unavailable: {error}. Reinstall or rebuild `ate`, then run `ate sandbox status --json`."
+            ),
+        };
+    }
+    if let Err(error) = launch_probe {
+        return NativeSandboxAvailability::Unavailable {
+            reason: format!(
+                "Windows persistent sandbox setup or launch-chain probe failed: {error} Run `ate sandbox status --json`. If setup is incomplete or a ready setup cannot launch, run `ate sandbox reset --yes`, then `ate sandbox setup` and retry."
+            ),
+        };
+    }
+    NativeSandboxAvailability::Available
 }
 
 /// Refuse a native launch when the platform probe failed, while preserving an
@@ -476,6 +503,62 @@ mod tests {
         assert!(validate_windows_preview_profile(&crate::ProfileName::ReadOnly).is_ok());
         assert!(validate_windows_preview_profile(&crate::ProfileName::Strict).is_err());
         assert!(validate_windows_preview_profile(&crate::ProfileName::Custom("x".into())).is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_availability_requires_ready_persistent_setup() {
+        let availability = windows_native_availability_from_probes(
+            Ok(()),
+            Err(
+                "Windows sandbox is not set up (state: not_setup). Run `ate sandbox setup`."
+                    .to_owned(),
+            ),
+        );
+
+        let NativeSandboxAvailability::Unavailable { reason } = availability else {
+            panic!("an unconfigured persistent sandbox must fail closed");
+        };
+        assert!(reason.contains("not set up"), "{reason}");
+        assert!(reason.contains("ate sandbox setup"), "{reason}");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_availability_fails_closed_when_persistent_launch_chain_is_broken() {
+        let availability = windows_native_availability_from_probes(
+            Ok(()),
+            Err("CreateProcessAsUserW failed: 5 (Access is denied)".to_owned()),
+        );
+
+        let NativeSandboxAvailability::Unavailable { reason } = availability else {
+            panic!("a broken persistent launch chain must fail closed");
+        };
+        assert!(
+            reason.contains("CreateProcessAsUserW failed: 5"),
+            "{reason}"
+        );
+        assert!(reason.contains("ate sandbox status --json"), "{reason}");
+        assert!(reason.contains("ate sandbox reset --yes"), "{reason}");
+        assert!(reason.contains("ate sandbox setup"), "{reason}");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_availability_requires_helper_and_full_launch_probe_to_succeed() {
+        assert_eq!(
+            windows_native_availability_from_probes(Ok(()), Ok(())),
+            NativeSandboxAvailability::Available
+        );
+
+        let availability = windows_native_availability_from_probes(
+            Err("embedded helper is missing".to_owned()),
+            Ok(()),
+        );
+        let NativeSandboxAvailability::Unavailable { reason } = availability else {
+            panic!("a missing helper must fail closed");
+        };
+        assert!(reason.contains("embedded helper is missing"), "{reason}");
     }
 
     #[test]

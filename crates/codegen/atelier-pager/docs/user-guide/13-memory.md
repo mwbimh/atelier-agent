@@ -324,23 +324,23 @@ lambda = 0.7             # 0.0 = max diversity, 1.0 = pure relevance
 
 ## CLI Commands
 
-The `atelier memory` command manages memory from the shell. It has one subcommand, `clear`:
+The `ate memory` command manages memory from the shell. It has one subcommand, `clear`:
 
 ```bash
 # Clear workspace memory (MEMORY.md, sessions/, and index.sqlite). This is the default scope.
-atelier memory clear
+ate memory clear
 
 # The same scope, stated explicitly
-atelier memory clear --workspace
+ate memory clear --workspace
 
 # Clear the global MEMORY.md
-atelier memory clear --global
+ate memory clear --global
 
 # Clear both workspace and global memory
-atelier memory clear --all
+ate memory clear --all
 
 # Skip the confirmation prompt (-y is the short form)
-atelier memory clear --yes
+ate memory clear --yes
 ```
 
 To edit memory from the shell, open the files in your editor directly -- for example, `$EDITOR ~/.atelier/memory/MEMORY.md`.
@@ -450,7 +450,7 @@ enabled = true    # default
 
 ### Memory Not Working
 
-1. Verify memory is enabled: check `atelier inspect` output.
+1. Verify memory is enabled: check `ate inspect` output.
 2. Check the flag: `atelier --experimental-memory` or `ATELIER_MEMORY=1`.
 3. Check for `--no-memory` or `ATELIER_MEMORY=0` overriding your config.
 

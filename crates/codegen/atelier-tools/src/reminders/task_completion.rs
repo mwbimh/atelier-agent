@@ -21,11 +21,11 @@ use crate::types::output::ToolOutput;
 use crate::types::resources::{SharedResources, State, Terminal};
 use crate::types::tool::{Reminder, ToolKind};
 use crate::util::truncate::{PREVIEW_SIZE, truncate_with_preview};
+use atelier_tool_types::KillTaskOutput;
+use atelier_tool_types::SubagentCompletedOutput;
+use atelier_tool_types::TaskOutputOutput;
 use std::collections::HashSet;
 use std::sync::Arc;
-use xai_tool_types::KillTaskOutput;
-use xai_tool_types::SubagentCompletedOutput;
-use xai_tool_types::TaskOutputOutput;
 /// Default tool name used in auto-wake completion messages.
 pub const DEFAULT_TASK_OUTPUT_TOOL: &str = "get_task_output";
 /// Inline preview cap applied ONLY to bash completion reminders that ship
@@ -1108,10 +1108,10 @@ mod tests {
         BackgroundHandle, KillOutcome, TerminalBackend, TerminalRunRequest, TerminalRunResult,
     };
     use crate::types::resources::Resources;
+    use atelier_tool_types::KillTaskResult;
+    use atelier_tool_types::{MultiTaskOutputResult, TaskOutputResult};
     use std::sync::Arc;
     use std::time::Duration;
-    use xai_tool_types::KillTaskResult;
-    use xai_tool_types::{MultiTaskOutputResult, TaskOutputResult};
     struct MockTerminal {
         tasks: Vec<TaskSnapshot>,
     }

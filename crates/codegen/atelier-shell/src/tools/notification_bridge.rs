@@ -6,11 +6,11 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use agent_client_protocol::{self as acp, Client as _};
+use atelier_acp_runtime::AcpAgentGatewaySender as GatewaySender;
+use atelier_hunk_tracker::HunkTrackerHandle;
 use atelier_tools::notification::types::{ToolNotification, ToolNotificationHandle};
 use atelier_tools::types::output::{BashOutput, ToolOutput};
 use tokio::sync::{Mutex as TokioMutex, mpsc};
-use xai_acp_lib::AcpAgentGatewaySender as GatewaySender;
-use xai_hunk_tracker::HunkTrackerHandle;
 
 use crate::session::commands::SessionCommand;
 use crate::session::commands::{NotificationPriority, NotificationSource};
@@ -58,14 +58,16 @@ pub struct NotificationBridgeConfig {
     /// Shared set of IDs delivered via auto-wake, used to suppress duplicate
     /// `TaskCompletionReminder` entries for the same task/subagent.
     pub auto_wake_delivered: atelier_tools::reminders::task_completion::AutoWakeDeliveredIds,
-    /// Channel for requesting trace uploads for synthetic auto-wake turns.
+    /// Channel for recording local artifacts for synthetic auto-wake turns.
     /// Wrapped in `Arc<Mutex<..>>` because the coordinator creates the channel
     /// after the notification bridge is spawned — the bridge reads the latest
     /// value on each notification.
     pub(crate) synthetic_trace_tx: Arc<
         std::sync::Mutex<
             Option<
-                tokio::sync::mpsc::UnboundedSender<crate::upload::turn::SyntheticTurnTraceRequest>,
+                tokio::sync::mpsc::UnboundedSender<
+                    crate::local_artifacts::turn::SyntheticTurnTraceRequest,
+                >,
             >,
         >,
     >,
@@ -282,7 +284,7 @@ async fn handle_notification(
 
             // Persist so task correlation survives reconnect/replay.
             let _ = config.persistence_tx.send(PersistenceMsg::Update(
-                crate::session::storage::SessionUpdate::Xai(Box::new(notification.clone())),
+                crate::session::storage::SessionUpdate::Extension(Box::new(notification.clone())),
             ));
 
             let params = serde_json::to_value(&notification)
@@ -389,7 +391,7 @@ async fn handle_notification(
                 let prompt_id = format!("task-completed-{task_id}");
                 let prompt_blocks = vec![acp::ContentBlock::Text(acp::TextContent::new(message))];
 
-                // Capture a pre-prompt session snapshot for the trace upload path.
+                // Capture a pre-prompt session snapshot for the local artifact path.
                 let (before_copy_tx, before_copy_rx) = tokio::sync::oneshot::channel();
                 let _ = config.session_cmd_tx.send(SessionCommand::CopyFile {
                     respond_to: before_copy_tx,
@@ -413,11 +415,9 @@ async fn handle_notification(
                         prompt_id: prompt_id.clone(),
                         prompt_blocks,
                         prompt_mode: crate::session::plan_mode::PromptMode::Agent,
-                        artifact_upload_ctx: None,
                         client_identifier: None,
                         screen_mode: None,
                         verbatim: true,
-                        traceparent: xai_file_utils::trace_context::current_traceparent(),
                         json_schema: None,
                         send_now: false,
                         respond_to,
@@ -435,12 +435,13 @@ async fn handle_notification(
                         task_id = %task_id,
                         "auto-wake: sending synthetic turn trace request"
                     );
-                    let _ = trace_tx.send(crate::upload::turn::SyntheticTurnTraceRequest {
-                        session_id: config.session_id.clone(),
-                        prompt_id,
-                        completion_rx,
-                        before_session_copy_rx: before_copy_rx,
-                    });
+                    let _ =
+                        trace_tx.send(crate::local_artifacts::turn::SyntheticTurnTraceRequest {
+                            session_id: config.session_id.clone(),
+                            prompt_id,
+                            completion_rx,
+                            before_session_copy_rx: before_copy_rx,
+                        });
                 } else {
                     tracing::debug!(
                         task_id = %task_id,
@@ -494,7 +495,7 @@ async fn handle_notification(
 
             // Persist so task completion history survives reconnect/replay.
             let _ = config.persistence_tx.send(PersistenceMsg::Update(
-                crate::session::storage::SessionUpdate::Xai(Box::new(notification.clone())),
+                crate::session::storage::SessionUpdate::Extension(Box::new(notification.clone())),
             ));
 
             let params = serde_json::to_value(&notification)
@@ -745,7 +746,7 @@ async fn handle_notification(
             // Persist the deletion too, so replay on resume nets out a removed
             // loop instead of resurrecting it from a persisted `created` line.
             let _ = config.persistence_tx.send(PersistenceMsg::Update(
-                crate::session::storage::SessionUpdate::Xai(Box::new(notification.clone())),
+                crate::session::storage::SessionUpdate::Extension(Box::new(notification.clone())),
             ));
             if let Ok(params) = serde_json::to_value(&notification)
                 .and_then(|v| serde_json::value::to_raw_value(&v))
@@ -786,7 +787,7 @@ async fn handle_notification(
             // recurring `_fired` notification is deliberately NOT persisted to
             // avoid unbounded log growth.
             let _ = config.persistence_tx.send(PersistenceMsg::Update(
-                crate::session::storage::SessionUpdate::Xai(Box::new(notification.clone())),
+                crate::session::storage::SessionUpdate::Extension(Box::new(notification.clone())),
             ));
             if let Ok(params) = serde_json::to_value(&notification)
                 .and_then(|v| serde_json::value::to_raw_value(&v))
@@ -822,12 +823,12 @@ mod tests {
     #[allow(clippy::type_complexity)]
     fn make_test_config_full() -> (
         NotificationBridgeConfig,
-        mpsc::UnboundedReceiver<xai_acp_lib::AcpClientMessage>,
+        mpsc::UnboundedReceiver<atelier_acp_runtime::AcpClientMessage>,
         mpsc::UnboundedReceiver<PersistenceMsg>,
         mpsc::UnboundedReceiver<SessionCommand>,
     ) {
         let (gateway_tx, gateway_rx) = mpsc::unbounded_channel();
-        let gateway = xai_acp_lib::AcpAgentGatewaySender::new(gateway_tx);
+        let gateway = atelier_acp_runtime::AcpAgentGatewaySender::new(gateway_tx);
         let (session_cmd_tx, session_cmd_rx) = mpsc::unbounded_channel();
         let (persistence_tx, persistence_rx) = mpsc::unbounded_channel();
         let config = NotificationBridgeConfig {
@@ -991,7 +992,7 @@ mod tests {
         // The pager UI notification must still be emitted.
         let mut found_ext = false;
         while let Ok(msg) = gateway_rx.try_recv() {
-            if let xai_acp_lib::AcpClientMessage::ExtNotification(args) = msg
+            if let atelier_acp_runtime::AcpClientMessage::ExtNotification(args) = msg
                 && args.request.method.as_ref() == "atelier/task_completed"
             {
                 found_ext = true;
@@ -1047,10 +1048,10 @@ mod tests {
 
     /// `will_wake` off the emitted `atelier/task_completed` params.
     fn task_completed_will_wake(
-        gateway_rx: &mut mpsc::UnboundedReceiver<xai_acp_lib::AcpClientMessage>,
+        gateway_rx: &mut mpsc::UnboundedReceiver<atelier_acp_runtime::AcpClientMessage>,
     ) -> Option<bool> {
         while let Ok(msg) = gateway_rx.try_recv() {
-            if let xai_acp_lib::AcpClientMessage::ExtNotification(args) = msg
+            if let atelier_acp_runtime::AcpClientMessage::ExtNotification(args) = msg
                 && args.request.method.as_ref() == "atelier/task_completed"
             {
                 let v: serde_json::Value = serde_json::from_str(args.request.params.get()).ok()?;
@@ -1361,7 +1362,7 @@ mod tests {
             .try_recv()
             .expect("scheduled_task_created must be persisted");
         match msg {
-            PersistenceMsg::Update(crate::session::storage::SessionUpdate::Xai(notif)) => {
+            PersistenceMsg::Update(crate::session::storage::SessionUpdate::Extension(notif)) => {
                 assert!(matches!(
                     &notif.update,
                     crate::extensions::notification::SessionUpdate::ScheduledTaskCreated { .. }
@@ -1376,7 +1377,7 @@ mod tests {
                     "persisted xAI bridge lines must carry an eventId"
                 );
             }
-            _ => panic!("expected PersistenceMsg::Update(Xai(ScheduledTaskCreated))"),
+            _ => panic!("expected PersistenceMsg::Update(Extension(ScheduledTaskCreated))"),
         }
     }
 
@@ -1416,7 +1417,7 @@ mod tests {
         };
 
         let broadcast_id = match gateway_rx.try_recv().expect("chunk must be broadcast") {
-            xai_acp_lib::AcpClientMessage::SessionNotification(args) => args
+            atelier_acp_runtime::AcpClientMessage::SessionNotification(args) => args
                 .request
                 .meta
                 .as_ref()
@@ -1447,7 +1448,7 @@ mod tests {
             .try_recv()
             .expect("scheduled_task_removed must be persisted");
         match msg {
-            PersistenceMsg::Update(crate::session::storage::SessionUpdate::Xai(notif)) => {
+            PersistenceMsg::Update(crate::session::storage::SessionUpdate::Extension(notif)) => {
                 assert!(matches!(
                     &notif.update,
                     crate::extensions::notification::SessionUpdate::ScheduledTaskDeleted { .. }
@@ -1457,7 +1458,7 @@ mod tests {
                     "the persisted deletion line must be stamped"
                 );
             }
-            _ => panic!("expected PersistenceMsg::Update(Xai(ScheduledTaskDeleted))"),
+            _ => panic!("expected PersistenceMsg::Update(Extension(ScheduledTaskDeleted))"),
         }
     }
 
@@ -1500,10 +1501,10 @@ mod tests {
         handle_notification(&config, notification, &mut offsets).await;
 
         match persistence_rx.try_recv().expect("must persist") {
-            PersistenceMsg::Update(crate::session::storage::SessionUpdate::Xai(notif)) => {
+            PersistenceMsg::Update(crate::session::storage::SessionUpdate::Extension(notif)) => {
                 assert!(xai_persisted_event_id(&notif).is_some());
             }
-            _ => panic!("expected Xai update"),
+            _ => panic!("expected extension update"),
         }
     }
 
@@ -1522,10 +1523,10 @@ mod tests {
         .await;
 
         match persistence_rx.try_recv().expect("must persist") {
-            PersistenceMsg::Update(crate::session::storage::SessionUpdate::Xai(notif)) => {
+            PersistenceMsg::Update(crate::session::storage::SessionUpdate::Extension(notif)) => {
                 assert!(xai_persisted_event_id(&notif).is_some());
             }
-            _ => panic!("expected Xai update"),
+            _ => panic!("expected extension update"),
         }
     }
 
@@ -1609,7 +1610,7 @@ mod tests {
             "cross-session monitor event must not be injected into this session"
         );
         while let Ok(msg) = gateway_rx.try_recv() {
-            if let xai_acp_lib::AcpClientMessage::ExtNotification(args) = msg {
+            if let atelier_acp_runtime::AcpClientMessage::ExtNotification(args) = msg {
                 assert_ne!(
                     args.request.method.as_ref(),
                     "atelier/monitor_event",
@@ -1693,7 +1694,7 @@ mod tests {
         // The atelier/task_completed ExtNotification for UI updates must still be sent.
         let mut found_ext = false;
         while let Ok(msg) = gateway_rx.try_recv() {
-            if let xai_acp_lib::AcpClientMessage::ExtNotification(args) = msg
+            if let atelier_acp_runtime::AcpClientMessage::ExtNotification(args) = msg
                 && args.request.method.as_ref() == "atelier/task_completed"
             {
                 found_ext = true;
@@ -1734,7 +1735,7 @@ mod tests {
         // The atelier/task_completed ExtNotification for UI updates must still be sent.
         let mut found_ext = false;
         while let Ok(msg) = gateway_rx.try_recv() {
-            if let xai_acp_lib::AcpClientMessage::ExtNotification(args) = msg
+            if let atelier_acp_runtime::AcpClientMessage::ExtNotification(args) = msg
                 && args.request.method.as_ref() == "atelier/task_completed"
             {
                 found_ext = true;
@@ -1862,7 +1863,7 @@ mod tests {
         // Gateway: one CurrentModeUpdate("default").
         let mut gateway_modes = Vec::new();
         while let Ok(msg) = gateway_rx.try_recv() {
-            if let xai_acp_lib::AcpClientMessage::SessionNotification(args) = msg
+            if let atelier_acp_runtime::AcpClientMessage::SessionNotification(args) = msg
                 && let Some(id) = extract_current_mode_id(&args.request)
             {
                 gateway_modes.push(id.to_string());
@@ -1999,7 +2000,7 @@ mod tests {
 
         let mut gateway_modes = Vec::new();
         while let Ok(msg) = gateway_rx.try_recv() {
-            if let xai_acp_lib::AcpClientMessage::SessionNotification(args) = msg
+            if let atelier_acp_runtime::AcpClientMessage::SessionNotification(args) = msg
                 && let Some(id) = extract_current_mode_id(&args.request)
             {
                 gateway_modes.push(id.to_string());

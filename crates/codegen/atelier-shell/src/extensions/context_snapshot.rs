@@ -588,13 +588,13 @@ async fn create_derived_worktree(
     let id = format!("derived-{}", uuid::Uuid::now_v7());
     let destination = base.join(&id);
     let source = source_cwd.to_path_buf();
-    let creation_mode: xai_fast_worktree::CreationMode = agent.worktree_type.into();
+    let creation_mode: atelier_fast_worktree::CreationMode = agent.worktree_type.into();
     let btrfs_delegate = crate::session::worktree::btrfs_delegate_from_env();
     tokio::task::spawn_blocking(move || {
-        let mut builder = xai_fast_worktree::WorktreeBuilder::new(&source, &destination)
-            .working_tree_mode(xai_fast_worktree::WorkingTreeMode::PreserveWorkingTree)
+        let mut builder = atelier_fast_worktree::WorktreeBuilder::new(&source, &destination)
+            .working_tree_mode(atelier_fast_worktree::WorkingTreeMode::PreserveWorkingTree)
             .creation_mode(creation_mode)
-            .worktree_kind(xai_fast_worktree::WorktreeKind::Subagent)
+            .worktree_kind(atelier_fast_worktree::WorktreeKind::Subagent)
             .session_id(id);
         if let Some(delegate) = btrfs_delegate {
             builder = builder.btrfs_delegate(delegate);
@@ -612,7 +612,7 @@ async fn create_derived_worktree(
 
 async fn remove_derived_worktree(path: &std::path::Path) {
     let path = path.to_path_buf();
-    match tokio::task::spawn_blocking(move || xai_fast_worktree::remove_worktree(&path)).await {
+    match tokio::task::spawn_blocking(move || atelier_fast_worktree::remove_worktree(&path)).await {
         Ok(Ok(_)) => {}
         Ok(Err(error)) => tracing::warn!(%error, "failed to remove rolled-back derived worktree"),
         Err(error) => tracing::warn!(%error, "derived worktree cleanup task failed"),

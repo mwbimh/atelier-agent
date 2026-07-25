@@ -1,7 +1,6 @@
 //! Session status, sharing, privacy, usage, and info dispatchers.
 
 use super::ctx::get_active_agent;
-use super::settings::ui::refresh_open_settings_modals;
 use crate::app::actions::Effect;
 use crate::app::agent::AgentId;
 use crate::app::agent_view::AgentView;
@@ -42,168 +41,6 @@ pub(super) fn dispatch_show_session_info(app: &mut AppView) -> Vec<Effect> {
         session_id,
         show_resolved_model: app.show_resolved_model,
     }]
-}
-
-/// Show privacy and data retention status as a system message in scrollback.
-///
-/// Three-state display: Enterprise ZDR, coding data sharing opted out,
-/// or opted in. Labels align with `CODING_DATA_SHARING_CHOICES` in
-/// `settings/defs.rs` and the `coding_data_sharing_toast` format.
-#[cfg(any())]
-pub(super) fn dispatch_show_privacy_info(app: &mut AppView) -> Vec<Effect> {
-    let mut lines = Vec::new();
-
-    if app.is_zdr {
-        // Enterprise ZDR -- the team has disabled retention entirely.
-        lines.push("  Zero Data Retention: enabled");
-        lines.push("  Your data is not retained or used for training (ZDR enabled).");
-    } else if app.coding_data_retention_opt_out {
-        // Coding data sharing opted out -- matches desktop's "Privacy mode" state.
-        lines.push("  Privacy: privacy mode");
-        lines.push("  Your code data will not be trained on or used to improve the product.");
-        lines.push("");
-        lines.push("  Use /privacy opt-in to share data and help improve the product.");
-    } else {
-        // Coding data sharing opted in -- matches desktop's "Share data" state.
-        lines.push("  Privacy: share data");
-        lines.push("  Usage and code data may be used by SpaceXAI to improve the product.");
-        lines.push("");
-        lines.push("  Use /privacy opt-out to enable privacy mode.");
-    }
-
-    lines.push("");
-    lines.push("  Learn more: https://atelier/legal");
-    let text = lines.join("\n");
-    push_system_to_any_agent(app, &text);
-    vec![]
-}
-
-/// State-only mutation for `coding_data_sharing`. SHELL-owned.
-#[cfg(any())]
-pub(super) fn set_coding_data_sharing_inner(app: &mut AppView, opted_in: bool) {
-    app.coding_data_retention_opt_out = !opted_in;
-}
-
-/// Set coding-data-sharing preference. SHELL-owned, auth-metadata-backed
-/// (persists via ACP ext-request, NOT `~/.atelier/config.toml`).
-#[cfg(any())]
-pub(super) fn set_coding_data_sharing(app: &mut AppView, opted_in: bool) -> Vec<Effect> {
-    // ── Guard 1: Enterprise ZDR ──────────────────────────────────────
-    if app.is_zdr {
-        app.show_toast("\u{2717} Cannot change: Zero Data Retention enabled");
-        return vec![];
-    }
-    // ── Guard 2: Non-admin team member ───────────────────────────────
-    if app.team_name.is_some() {
-        let is_admin = app
-            .team_role
-            .as_deref()
-            .is_some_and(|r| r.eq_ignore_ascii_case("admin"));
-        if !is_admin {
-            app.show_toast("\u{2717} Data sharing is controlled by your team admin");
-            return vec![];
-        }
-    }
-    // ── Guard 3: an agent must exist to thread the ACP call through ──
-    let agent_id = match app.active_view {
-        crate::app::app_view::ActiveView::Agent(id) => id,
-        _ => match app.agents.keys().next().copied() {
-            Some(id) => id,
-            None => {
-                tracing::warn!(
-                    target: "settings",
-                    key = "coding_data_sharing",
-                    opted_in,
-                    "set_coding_data_sharing called with no agents — unreachable in \
-                     practice; returning empty (no toast: app.show_toast would no-op)",
-                );
-                return vec![];
-            }
-        },
-    };
-
-    let prev = !app.coding_data_retention_opt_out;
-
-    // ── Idempotent path: toast but skip the ACP round-trip. ──────────
-    if prev == opted_in {
-        app.show_toast(&coding_data_sharing_toast(opted_in));
-        return vec![];
-    }
-
-    // ── Optimistic mutation: state, then UI feedback, then effect. ───
-    set_coding_data_sharing_inner(app, opted_in);
-    refresh_open_settings_modals(app);
-    app.show_toast(&coding_data_sharing_toast(opted_in));
-
-    tracing::info!(
-        target: "settings",
-        key = "coding_data_sharing",
-        opted_in,
-        "setting changed",
-    );
-
-    vec![Effect::SetCodingDataSharing {
-        agent_id,
-        opted_in,
-        rollback_to_opted_in: prev,
-    }]
-}
-
-/// Format the `Coding data sharing` toast. Asymmetric: opt-in
-/// (privacy-degrading) uses ⚠ + consequence text; opt-out (safe
-/// default) uses ✓. Uses display names from the registry catalog.
-#[cfg(any())]
-pub(super) fn coding_data_sharing_toast(opted_in: bool) -> String {
-    let display = display_for_coding_data_sharing_canonical(opted_in);
-    if opted_in {
-        // Privacy-degrading: warn glyph + spelled-out consequence.
-        format!(
-            "\u{26A0} Coding data sharing: {display} \u{2014} code samples may be retained \
-             for training"
-        )
-    } else {
-        // Safe default — uniform ✓ glyph.
-        format!("\u{2713} Coding data sharing: {display}")
-    }
-}
-
-/// Display string for the canonical bool. Keep aligned with
-/// `CODING_DATA_SHARING_CHOICES` in `settings/defs.rs`.
-#[cfg(any())]
-fn display_for_coding_data_sharing_canonical(opted_in: bool) -> &'static str {
-    if opted_in { "Opt in" } else { "Opt out" }
-}
-
-/// Scrub an untrusted error string for toast display. Substitutes a
-/// generic placeholder when the input exceeds 120 chars or contains
-/// control / bidi-override characters (prevents escape-sequence
-/// injection and visual spoofing). Full error stays in tracing logs.
-pub(super) fn scrub_error_for_toast(error: &str) -> String {
-    const MAX_TOAST_ERROR_LEN: usize = 120;
-    if error.len() > MAX_TOAST_ERROR_LEN
-        || error
-            .chars()
-            .any(crate::render::line_utils::is_unsafe_display_char)
-    {
-        "server error (see logs for details)".to_string()
-    } else {
-        error.to_string()
-    }
-}
-
-/// Push a system message to the active agent's scrollback, or to any available
-/// agent if on the welcome screen.
-fn push_system_to_any_agent(app: &mut AppView, msg: &str) {
-    let block = crate::scrollback::block::RenderBlock::system(msg.to_string());
-    if let ActiveView::Agent(id) = app.active_view
-        && let Some(agent) = app.agents.get_mut(&id)
-    {
-        agent.scrollback.push_block(block);
-        return;
-    }
-    if let Some(agent) = app.agents.values_mut().next() {
-        agent.scrollback.push_block(block);
-    }
 }
 
 /// Show context info: fetch via atelier/session/info and display rich breakdown.
@@ -312,58 +149,19 @@ pub(super) fn notify_session_ready(
 
 // TaskResult handlers.
 
-#[cfg(any())]
-pub(super) fn handle_coding_data_sharing_updated(
-    app: &mut AppView,
-    agent_id: AgentId,
-    opted_in: bool,
-) -> Vec<Effect> {
-    // Re-anchor mirror to server-confirmed value (defense-in-
-    // depth against server reshaping the boolean). `agent_id`
-    // discarded — privacy is app-level, not per-agent.
-    set_coding_data_sharing_inner(app, opted_in);
-    refresh_open_settings_modals(app);
-    // Re-toast on confirmation. Without this, a slow ACP
-    // round-trip would leave the user with only the
-    // optimistic toast (already faded) and no
-    // server-confirmed feedback.
-    app.show_toast(&coding_data_sharing_toast(opted_in));
-    tracing::info!(
-        target: "settings",
-        key = "coding_data_sharing",
-        ?agent_id,
-        opted_in,
-        "ACP update confirmed; mirror re-anchored",
-    );
-    vec![]
-}
-
-#[cfg(any())]
-pub(super) fn handle_coding_data_sharing_failed(
-    app: &mut AppView,
-    agent_id: AgentId,
-    error: String,
-    rollback_to_opted_in: bool,
-) -> Vec<Effect> {
-    // Revert optimistic mutation: inner → refresh → toast.
-    //
-    // `agent_id` discarded — privacy is global.
-    set_coding_data_sharing_inner(app, rollback_to_opted_in);
-    refresh_open_settings_modals(app);
-    // Scrub long/unsafe error strings before toasting.
-    let scrubbed = scrub_error_for_toast(&error);
-    app.show_toast(&format!(
-        "\u{2717} Couldn't update coding data sharing: {scrubbed}"
-    ));
-    tracing::warn!(
-        target: "settings",
-        key = "coding_data_sharing",
-        ?agent_id,
-        rollback_to_opted_in,
-        %error,
-        "ACP update failed; reverted optimistic mutation",
-    );
-    vec![]
+/// Scrub an untrusted error string before rendering it in a toast.
+/// Full errors remain available in local logs.
+pub(super) fn scrub_error_for_toast(error: &str) -> String {
+    const MAX_TOAST_ERROR_LEN: usize = 120;
+    if error.len() > MAX_TOAST_ERROR_LEN
+        || error
+            .chars()
+            .any(crate::render::line_utils::is_unsafe_display_char)
+    {
+        "server error (see logs for details)".to_string()
+    } else {
+        error.to_string()
+    }
 }
 
 pub(super) fn handle_context_info_complete(

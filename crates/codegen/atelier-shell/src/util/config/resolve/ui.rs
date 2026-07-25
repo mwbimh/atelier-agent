@@ -1,4 +1,4 @@
-use crate::util::config::RemoteSettings;
+use crate::util::config::LocalRuntimeSettings;
 use toml::Value as TomlValue;
 
 /// Env override for showing agent thinking blocks in the TUI.
@@ -38,7 +38,7 @@ pub fn resolve_show_thinking_blocks(
     requirements: Option<&TomlValue>,
     user: Option<&TomlValue>,
     managed: Option<&TomlValue>,
-    remote: Option<&RemoteSettings>,
+    remote: Option<&LocalRuntimeSettings>,
 ) -> crate::agent::config::Resolved<bool> {
     resolve_ui_bool(
         ENV_SHOW_THINKING_BLOCKS,
@@ -67,7 +67,7 @@ pub fn resolve_group_tool_verbs(
     requirements: Option<&TomlValue>,
     user: Option<&TomlValue>,
     managed: Option<&TomlValue>,
-    remote: Option<&RemoteSettings>,
+    remote: Option<&LocalRuntimeSettings>,
 ) -> crate::agent::config::Resolved<bool> {
     resolve_ui_bool(
         ENV_GROUP_TOOL_VERBS,
@@ -96,7 +96,7 @@ pub fn resolve_collapsed_edit_blocks(
     requirements: Option<&TomlValue>,
     user: Option<&TomlValue>,
     managed: Option<&TomlValue>,
-    remote: Option<&RemoteSettings>,
+    remote: Option<&LocalRuntimeSettings>,
 ) -> crate::agent::config::Resolved<bool> {
     resolve_ui_bool(
         ENV_COLLAPSED_EDIT_BLOCKS,
@@ -188,10 +188,10 @@ mod show_thinking_blocks_tests {
         toml::from_str(&format!("[ui]\nshow_thinking_blocks = {v}\n")).unwrap()
     }
 
-    fn remote(v: Option<bool>) -> RemoteSettings {
-        RemoteSettings {
+    fn remote(v: Option<bool>) -> LocalRuntimeSettings {
+        LocalRuntimeSettings {
             show_thinking_blocks: v,
-            ..RemoteSettings::default()
+            ..LocalRuntimeSettings::default()
         }
     }
 
@@ -275,10 +275,10 @@ mod group_tool_verbs_tests {
         toml::from_str(&format!("[ui]\ngroup_tool_verbs = {v}\n")).unwrap()
     }
 
-    fn remote(v: Option<bool>) -> RemoteSettings {
-        RemoteSettings {
+    fn remote(v: Option<bool>) -> LocalRuntimeSettings {
+        LocalRuntimeSettings {
             group_tool_verbs: v,
-            ..RemoteSettings::default()
+            ..LocalRuntimeSettings::default()
         }
     }
 
@@ -366,10 +366,10 @@ mod collapsed_edit_blocks_tests {
         toml::from_str(&format!("[ui]\ncollapsed_edit_blocks = {v}\n")).unwrap()
     }
 
-    fn remote(v: Option<bool>) -> RemoteSettings {
-        RemoteSettings {
+    fn remote(v: Option<bool>) -> LocalRuntimeSettings {
+        LocalRuntimeSettings {
             collapsed_edit_blocks: v,
-            ..RemoteSettings::default()
+            ..LocalRuntimeSettings::default()
         }
     }
 

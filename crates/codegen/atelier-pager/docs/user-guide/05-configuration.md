@@ -56,9 +56,11 @@ load_envrc = true                      # load .envrc environment variables
 respect_gitignore = false              # default: false; set true to make every tool skip gitignored files
 ```
 
-Provider, discovered model, Wire API, and fixed Role configuration is stored in
-`$ATELIER_HOME/providers.toml` and should normally be changed with `/provider`,
-`/model-config`, and `/roles`. Atelier does not provide a hosted model default.
+Provider connections are stored in `$ATELIER_HOME/providers.toml`. Fixed Role
+assignments live in `roles.toml`; common model metadata lives under
+`models/default/`; Provider-specific model and experimental endpoint settings
+live under `models/providers/<provider>/`. Use `/provider`, `/model`,
+`/wire-api`, and `/roles` for normal runtime changes.
 
 #### Input Mode
 
@@ -347,7 +349,7 @@ Each cell can be toggled via environment variable or `config.toml`. See the
 environment-variables reference for the env var names. Resolution order:
 env var > config.toml > default (on).
 
-`atelier inspect` reports cells that still need session-start resolution as
+`ate inspect` reports cells that still need session-start resolution as
 `?` until a value is available; cells with an explicit env or TOML value
 use that value. Affected discovery entries report
 `compatibilityStatus: "unresolved"` in JSON and `[compat unresolved]` in
@@ -500,24 +502,15 @@ See [Keyboard Shortcuts](03-keyboard-shortcuts.md) for the complete reference.
 
 ### Telemetry
 
-Atelier has no built-in product analytics or trace uploader. The
-`[telemetry]` table configures only the optional OpenTelemetry stream to a
-collector you choose. It is off by default. Collector authentication is
-supplied through `OTEL_EXPORTER_OTLP_HEADERS` and is not stored on disk.
+Atelier has no remote telemetry, product analytics, crash-reporting, or trace
+uploader. Runtime diagnostics are local only.
 
-```toml
-[telemetry]
-otel_enabled = true                                       # master switch (= ATELIER_EXTERNAL_OTEL)
-otel_metrics_exporter = "otlp"                            # otlp | console | none
-otel_logs_exporter = "otlp"                               # otlp | console | none
-otel_endpoint = "https://collector.corp.example:4318"     # OTLP base endpoint
-otel_protocol = "http/protobuf"                           # http/protobuf | grpc
-otel_log_user_prompts = false                             # explicit content gate
-otel_log_tool_details = false                             # explicit content gate
+```bash
+ate --debug
+ate --debug-file C:\tmp\atelier-debug.log
 ```
 
-See [Optional OpenTelemetry Export](24-monitoring-usage.md) for the schema,
-environment variables, and privacy behavior.
+See [Local Diagnostics](24-monitoring-usage.md).
 
 ### Local Deployment Example
 
@@ -701,15 +694,13 @@ In that example, only `ALLM_API_KEY` is read for Provider `allm`.
 | `ATELIER_HOME` | Override config directory (default: `~/.atelier`) |
 | `ATELIER_RESPECT_GITIGNORE` | Force gitignore filtering on (`1`) or off (`0`); overrides `[tools] respect_gitignore` |
 
-### Optional OpenTelemetry
+### Local Diagnostics
 
 | Variable | Description |
 |----------|-------------|
-| `ATELIER_EXTERNAL_OTEL` | Opt in to export to a user-configured collector |
-| `OTEL_METRICS_EXPORTER` | Metrics exporter selection |
-| `OTEL_LOGS_EXPORTER` | Event exporter selection |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | Collector endpoint |
-| `OTEL_EXPORTER_OTLP_HEADERS` | Collector authentication headers |
+| `ATELIER_DEBUG_LOG` | `1` writes per-session logs; a path writes one local file |
+| `ATELIER_LOG_FILE` | Write local logs to this exact file path |
+| `RUST_LOG` | Local log filter, for example `debug` |
 
 ---
 
@@ -718,9 +709,16 @@ In that example, only `ALLM_API_KEY` is read for Provider `allm`.
 | Path | Description |
 |------|-------------|
 | `$ATELIER_HOME/config.toml` | Main configuration file |
-| `$ATELIER_HOME/providers.toml` | Provider registry, discovered models, Wire API settings, and fixed Roles |
+| `$ATELIER_HOME/providers.toml` | Provider API/OAuth connection registry |
+| `$ATELIER_HOME/roles.toml` | Fixed Role to Provider/model assignments |
+| `$ATELIER_HOME/request-agents.toml` | Selectable outbound request identities |
+| `$ATELIER_HOME/models/default/` | Editable common model defaults: effort, fast mode, context window, and Wire API |
+| `$ATELIER_HOME/models/providers/<provider>/` | Provider-specific model overrides and experimental endpoints |
+| `$ATELIER_HOME/contexts/<preset>/` | Editable prompt preset files |
+| `$ATELIER_HOME/branding/logo.txt` | TUI ASCII logo |
+| `$ATELIER_HOME/credentials/oauth/providers/` | Provider OAuth credentials |
+| `$ATELIER_HOME/credentials/oauth/mcp/` | MCP OAuth credentials |
 | `$ATELIER_HOME/pager.toml` | TUI appearance configuration |
-| `$ATELIER_HOME/mcp_credentials.json` | Credentials for explicitly configured OAuth MCP servers |
 | `$ATELIER_HOME/sessions/` | Persisted sessions (organized by working directory) |
 | `$ATELIER_HOME/memory/` | Cross-session memory files and index |
 | `$ATELIER_HOME/skills/` | User-scoped skill definitions |
@@ -728,7 +726,7 @@ In that example, only `ALLM_API_KEY` is read for Provider `allm`.
 | `$ATELIER_HOME/agents/` | User-scoped agent definitions |
 | `$ATELIER_HOME/lsp.json` | LSP server configuration (user-scoped) |
 | `$ATELIER_HOME/logs/` | Local log files (for example `unified.jsonl`, MCP server logs) |
-| `~/.atelier/bin/atelier` | npm-installed executable (`atelier.exe` on Windows); independent of a custom Runtime `ATELIER_HOME` |
+| `~/.atelier/bin/ate` | Installed executable (`ate.exe` on Windows); independent of a custom Runtime `ATELIER_HOME` |
 | `.atelier/config.toml` | Project-scoped MCP servers, plugins, and permission rules |
 | `.atelier/skills/` | Project-scoped skill definitions |
 | `.atelier/plugins/` | Project-scoped plugins |

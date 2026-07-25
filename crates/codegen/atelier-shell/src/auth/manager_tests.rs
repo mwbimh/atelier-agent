@@ -2986,7 +2986,7 @@ fn oidc_session_for_team(principal_id: &str) -> AtelierAuth {
         auth_mode: AuthMode::Oidc,
         refresh_token: Some("rt".into()),
         expires_at: Some(Utc::now() + Duration::hours(1)),
-        oidc_issuer: Some(crate::auth::XAI_OAUTH2_ISSUER.to_string()),
+        oidc_issuer: Some(crate::auth::TEST_OIDC_ISSUER.to_string()),
         oidc_client_id: Some("client".into()),
         ..AtelierAuth::test_default()
     }

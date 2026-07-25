@@ -958,7 +958,7 @@ fn list_lsp_servers(
     // Folder-trust gate (display-only): inspect never spawns servers, but mark the
     // repo-local (project-scoped) entries a session would skip in an untrusted
     // clone so the listing matches the live gate. `remote = None` mirrors
-    // `atelier mcp doctor` (no loaded RemoteSettings in a standalone command).
+    // `atelier mcp doctor` (no loaded LocalRuntimeSettings in a standalone command).
     crate::agent::folder_trust::resolve_and_record(cwd, None, false);
     let project_allowed = crate::agent::folder_trust::project_scope_allowed(cwd);
 
@@ -1589,7 +1589,7 @@ mod tests {
             source: CompatSource::Config,
         };
         let report = ExternalCompatReport {
-            remote_settings_loaded: false,
+            local_runtime_settings_loaded: false,
             cells: vec![
                 cell("cursor", "rules", false),
                 cell("cursor", "agents", true),

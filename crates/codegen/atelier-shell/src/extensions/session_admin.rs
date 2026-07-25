@@ -81,7 +81,8 @@ async fn handle_session_rename(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtR
     }
 
     if req.kind == SessionKind::Chat {
-        return rename_chat_conversation(agent, &req.session_id, &req.title).await;
+        return Err(acp::Error::invalid_request()
+            .data("vendor chat conversations are not supported by the local runtime"));
     }
 
     let session_id = acp::SessionId::new(Arc::from(req.session_id.as_str()));
@@ -139,49 +140,6 @@ async fn notify_session_title(agent: &MvpAgent, session_id: acp::SessionId, titl
     }
 }
 
-async fn rename_chat_conversation(
-    agent: &MvpAgent,
-    conversation_id: &str,
-    title: &str,
-) -> ExtResult {
-    use crate::remote::{ConvError, UpdateConversationBody};
-
-    let Some(client) = agent.conversations_client() else {
-        return Err(acp::Error::invalid_request()
-            .data("chat session rename requires the conversations lane (OIDC + chat feature)"));
-    };
-
-    let body = UpdateConversationBody {
-        title: Some(title.to_owned()),
-        starred: None,
-    };
-    client
-        .update_conversation(conversation_id, &body)
-        .await
-        .map_err(|e| match e {
-            ConvError::NoOauth => acp::Error::invalid_request()
-                .data("chat session rename requires xAI OAuth credentials"),
-            ConvError::Http { status: 404 } => acp::Error::invalid_request()
-                .data(format!("conversation not found: {conversation_id}")),
-            other => acp::Error::internal_error()
-                .data(format!("chat conversation rename failed: {other}")),
-        })?;
-
-    // If this conversation is open live, notify clients of the new title.
-    let session_id = acp::SessionId::new(Arc::from(conversation_id));
-    if agent.sessions.borrow().contains_key(&session_id) {
-        notify_session_title(agent, session_id, title).await;
-    }
-
-    tracing::info!(
-        session_id = %conversation_id,
-        title = %title,
-        "Chat conversation renamed"
-    );
-
-    to_raw_response(&serde_json::json!({ "success": true }))
-}
-
 // session/delete
 
 /// Delete a session from history.
@@ -199,25 +157,16 @@ async fn handle_session_delete(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtR
     let req: DeleteRequest = parse_params(args)?;
 
     if req.kind == SessionKind::Chat {
-        return soft_delete_chat_conversation(agent, &req.session_id).await;
+        return Err(acp::Error::invalid_request()
+            .data("vendor chat conversations are not supported by the local runtime"));
     }
 
     let session_id = acp::SessionId::new(Arc::from(req.session_id.as_str()));
 
     // Session history is local-only in the private build.
-    crate::session::persistence::delete_session_history(
-        &req.session_id,
-        req.cwd.as_deref(),
-        false,
-        agent.auth_manager.clone(),
-    )
-    .await
-    .map_err(|e| {
-        if let crate::session::persistence::DeleteSessionError::Remote(_) = &e {
-            tracing::warn!(?e, session_id = %req.session_id, "failed to delete remote session data");
-        }
-        acp::Error::internal_error().data(e.to_string())
-    })?;
+    crate::session::persistence::delete_session_history(&req.session_id, req.cwd.as_deref())
+        .await
+        .map_err(|e| acp::Error::internal_error().data(e.to_string()))?;
 
     // If an in-memory live session exists for this id (e.g. the user
     // deleted history for a session that is still open in another agent
@@ -229,35 +178,6 @@ async fn handle_session_delete(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtR
     }
 
     tracing::info!(session_id = %req.session_id, "Session deleted");
-
-    to_raw_response(&serde_json::json!({ "success": true }))
-}
-
-async fn soft_delete_chat_conversation(agent: &MvpAgent, conversation_id: &str) -> ExtResult {
-    use crate::remote::ConvError;
-
-    let Some(client) = agent.conversations_client() else {
-        return Err(acp::Error::invalid_request()
-            .data("chat session delete requires the conversations lane (OIDC + chat feature)"));
-    };
-
-    client
-        .soft_delete_conversation(conversation_id)
-        .await
-        .map_err(|e| match e {
-            ConvError::NoOauth => acp::Error::invalid_request()
-                .data("chat session delete requires xAI OAuth credentials"),
-            other => acp::Error::internal_error()
-                .data(format!("chat conversation soft-delete failed: {other}")),
-        })?;
-
-    let session_id = acp::SessionId::new(Arc::from(conversation_id));
-    if agent.sessions.borrow().contains_key(&session_id) {
-        agent.request_session_shutdown(&session_id);
-        agent.remove_session(&session_id);
-    }
-
-    tracing::info!(session_id = %conversation_id, "Chat conversation soft-deleted");
 
     to_raw_response(&serde_json::json!({ "success": true }))
 }
@@ -506,7 +426,7 @@ fn handle_reload_models(agent: &MvpAgent) -> ExtResult {
         .map_err(|e| acp::Error::internal_error().data(e))?;
 
     // Merge TOML-derived model fields into the agent's in-memory config so
-    // runtime-only fields (#[serde(skip)]: remote_settings, endpoints, CLI
+    // runtime-only fields (#[serde(skip)]: local_runtime_settings, endpoints, CLI
     // flags) are preserved. Only model-related TOML fields are refreshed.
     {
         let agent_config = agent.cfg.borrow();
@@ -514,7 +434,7 @@ fn handle_reload_models(agent: &MvpAgent) -> ExtResult {
             agent_config.web_search_model_override.as_deref(),
             agent_config.session_summary_model_override.as_deref(),
             &disk_config,
-            agent_config.remote_settings.as_ref(),
+            agent_config.local_runtime_settings.as_ref(),
         );
         drop(agent_config);
         let mut agent_config = agent.cfg.borrow_mut();
@@ -584,8 +504,8 @@ async fn handle_plugins_reload(agent: &MvpAgent) -> ExtResult {
     // record the verdict for this cwd (honoring the real remote), then gate
     // plugins on it.
     let project_trusted = session_cwd.as_deref().is_some_and(|c| {
-        let remote_settings = agent.cfg.borrow().remote_settings.clone();
-        crate::agent::folder_trust::resolve_and_record(c, remote_settings.as_ref(), false)
+        let local_runtime_settings = agent.cfg.borrow().local_runtime_settings.clone();
+        crate::agent::folder_trust::resolve_and_record(c, local_runtime_settings.as_ref(), false)
     });
     // Explicit desktop `atelier/plugins/reload`: force a full local-install re-copy.
     agent
@@ -629,9 +549,12 @@ async fn handle_commands_list(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtRe
         // the recorded verdict, and a cold cwd (client-supplied, no session
         // resolve yet) must not first take the gate's remote-less backstop —
         // that would record a kill-switch-blind deny no later resolve can lift.
-        let remote_settings = agent.cfg.borrow().remote_settings.clone();
-        let project_trusted =
-            crate::agent::folder_trust::resolve_and_record(cwd, remote_settings.as_ref(), false);
+        let local_runtime_settings = agent.cfg.borrow().local_runtime_settings.clone();
+        let project_trusted = crate::agent::folder_trust::resolve_and_record(
+            cwd,
+            local_runtime_settings.as_ref(),
+            false,
+        );
 
         // Effective [plugins] config (global + ancestor project configs +
         // vendor compat merge), shared with reload_plugins_impl and the eager
@@ -674,4 +597,17 @@ async fn handle_session_fork(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtRes
         .map_err(|e| acp::Error::internal_error().data(e.to_string()))?;
 
     to_raw_response(&response)
+}
+
+#[cfg(test)]
+mod branding_tests {
+    #[test]
+    fn public_oauth_errors_are_vendor_neutral() {
+        let source = include_str!("session_admin.rs");
+        let legacy_wording = ["x", "AI OAuth credentials"].concat();
+
+        assert!(!source.contains(&legacy_wording));
+        assert!(source.contains("chat session rename requires OAuth credentials"));
+        assert!(source.contains("chat session delete requires OAuth credentials"));
+    }
 }

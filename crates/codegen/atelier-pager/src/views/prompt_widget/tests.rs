@@ -1965,7 +1965,7 @@
     /// Helper: create a minimal `PastedImage` for testing.
     fn test_image() -> PastedImage {
         PastedImage {
-            element_id: xai_ratatui_textarea::ElementId::from_raw(0), // overwritten by insert_image
+            element_id: atelier_ratatui_textarea::ElementId::from_raw(0), // overwritten by insert_image
             display_number: 0,
             mime_type: "image/png".into(),
             dimensions: Some((100, 80)),

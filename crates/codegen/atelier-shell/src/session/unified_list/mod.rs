@@ -2,8 +2,7 @@ mod cursor;
 mod envelope;
 mod facets;
 mod row;
-use crate::agent::session_registry_client::SessionRegistryClient;
-use crate::remote::{ConvError, ConvQuery, ConversationsClient};
+use crate::agent::local_session_catalog::LocalSessionCatalog;
 use cursor::{CompositeCursor, ConvLane, Paginated, merge_and_paginate};
 pub use envelope::{FacetMap, FacetValue, SessionKind, SessionMetaEnvelope};
 pub use facets::{
@@ -13,14 +12,13 @@ pub use facets::{
     SOURCE_WORKSPACE_FACET_KEY, STARRED_FACET_KEY, SourceQuery, SourceWorkspaceFacet, StarredFacet,
     WORKSPACE_FACET_KEY, WORKTREE_FACET_KEY, WorkspaceFacet, WorktreeFacet, build_facet_registry,
 };
-pub use row::{
-    ExtSupersetRow, RowMeta, SessionInfo, UnifiedRow, conversation_to_row, merged_session_to_row,
-};
+#[cfg(test)]
+pub use row::conversation_to_row;
+pub use row::{ExtSupersetRow, RowMeta, SessionInfo, UnifiedRow, merged_session_to_row};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::sync::LazyLock;
 pub const DEFAULT_LIMIT: usize = 30;
-const CONV_PAGE_HEADROOM: usize = 5;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PartialReason {
     Timeout,
@@ -58,17 +56,8 @@ pub fn conversations_lane_enabled() -> bool {
 /// Env lane (desktop `ATELIER_SESSION_LIST_CONVERSATIONS`) OR process-wide
 /// `--chat` (`ATELIER_CHAT_MODE`); hard-off in release builds.
 /// The single predicate `MvpAgent::conversations_client()` keys on.
-pub fn conversations_lane_active() -> bool {
-    conversations_lane_enabled() || crate::agent::chat_modes::process_chat_mode_enabled()
-}
-/// Parse `atelier/session/list` params and, under process-wide chat mode, force
-/// the conversations-only `kind` facet (see [`force_kind_chat`]).
 pub fn parse_list_req(raw: &str) -> Result<ListReq, serde_json::Error> {
-    let mut req: ListReq = serde_json::from_str(raw)?;
-    if crate::agent::chat_modes::process_chat_mode_enabled() {
-        force_kind_chat(&mut req);
-    }
-    Ok(req)
+    serde_json::from_str(raw)
 }
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -156,8 +145,7 @@ pub fn force_kind_chat(req: &mut ListReq) {
     req.meta = Some(serde_json::Value::Object(meta));
 }
 pub async fn build_unified_list(
-    registry_client: Option<&SessionRegistryClient>,
-    conversations_client: Option<&ConversationsClient>,
+    registry_client: Option<&LocalSessionCatalog>,
     req: ListReq,
 ) -> UnifiedListResult {
     let reg = facet_registry();
@@ -169,9 +157,6 @@ pub async fn build_unified_list(
     let limit = req.limit.or(meta_limit).unwrap_or(DEFAULT_LIMIT);
     let query = req.query.or(meta_query);
     let cursor = CompositeCursor::decode(req.cursor.as_deref());
-    let mut source_query = SourceQuery::default();
-    reg.apply_pushdown(&facet_filters, &mut source_query);
-    let exclude_conversations = excludes_conversations(&facet_filters);
     let exclude_build = excludes_build(&facet_filters);
     let over = (limit * 3).max(100);
     let local_fut = async {
@@ -189,51 +174,8 @@ pub async fn build_unified_list(
         .map(|m| merged_session_to_row(m, reg))
         .collect::<Vec<UnifiedRow>>()
     };
-    let conv_fut = async {
-        if exclude_conversations {
-            return ConvLane::Skipped;
-        }
-        let Some(client) = conversations_client else {
-            return ConvLane::Skipped;
-        };
-        let q = ConvQuery {
-            page_size: (limit + CONV_PAGE_HEADROOM) as i64,
-            page_token: cursor.conv_page_token.clone(),
-            search_query: query.clone(),
-            workspace_id: source_query.workspace_id.clone(),
-        };
-        match tokio::time::timeout(
-            crate::session::merge::REMOTE_TIMEOUT,
-            client.list_conversations(&q),
-        )
-        .await
-        {
-            Ok(Ok(page)) => {
-                let next_token = page.next_page_token;
-                let rows: Vec<UnifiedRow> = page
-                    .conversations
-                    .into_iter()
-                    .map(|c| conversation_to_row(c, reg))
-                    .collect();
-                let frontier = cursor::conv_frontier(&rows, next_token.is_some());
-                ConvLane::Page {
-                    rows,
-                    next_token,
-                    frontier,
-                }
-            }
-            Ok(Err(ConvError::NoOauth)) => ConvLane::Degraded(PartialReason::NoOauth),
-            Ok(Err(e)) => {
-                tracing::warn!("conversation list failed: {e}");
-                ConvLane::Degraded(PartialReason::Error)
-            }
-            Err(_) => {
-                tracing::warn!("conversation list timed out");
-                ConvLane::Degraded(PartialReason::Timeout)
-            }
-        }
-    };
-    let (local_rows, conv_lane) = tokio::join!(local_fut, conv_fut);
+    let local_rows = local_fut.await;
+    let conv_lane = ConvLane::Skipped;
     {
         let (conv_lane_status, conv_rows) = match &conv_lane {
             ConvLane::Skipped => ("skipped", 0),
@@ -562,14 +504,14 @@ mod tests {
             Some(&vec![serde_json::json!("chat")])
         );
     }
-    fn xai_auth_manager(dir: &std::path::Path) -> std::sync::Arc<crate::auth::AuthManager> {
+    fn oidc_auth_manager(dir: &std::path::Path) -> std::sync::Arc<crate::auth::AuthManager> {
         let am = std::sync::Arc::new(crate::auth::AuthManager::new(
             dir,
             crate::auth::AtelierComConfig::default(),
         ));
         am.hot_swap(crate::auth::AtelierAuth {
             auth_mode: crate::auth::AuthMode::Oidc,
-            oidc_issuer: Some(crate::auth::xai_oauth2_issuer().to_owned()),
+            oidc_issuer: Some(crate::auth::TEST_OIDC_ISSUER.to_owned()),
             expires_at: Some(chrono::Utc::now() + chrono::Duration::hours(1)),
             ..crate::auth::AtelierAuth::test_default()
         });
@@ -601,6 +543,7 @@ mod tests {
     }
     /// A client-sent `kind: ["build"]` rewritten by [`force_kind_chat`]
     /// yields conversations only.
+    #[cfg(any())]
     #[tokio::test]
     #[serial_test::serial]
     async fn forced_kind_serves_conversations_only() {
@@ -618,7 +561,7 @@ mod tests {
             format!("http://{addr}"),
         );
         let home = tempfile::tempdir().expect("tempdir");
-        let client = ConversationsClient::new(xai_auth_manager(home.path()));
+        let client = ConversationsClient::new(oidc_auth_manager(home.path()));
         let mut req = ListReq {
             meta: Some(serde_json::json!({ "atelier/facetFilters" : { "kind" : ["build"] }, })),
             ..ListReq::default()
@@ -642,6 +585,7 @@ mod tests {
     }
     /// A degraded conversations lane (no OAuth) surfaces through
     /// `conversations_partial` instead of failing the list.
+    #[cfg(any())]
     #[tokio::test]
     #[serial_test::serial]
     async fn degraded_conversations_lane_reports_no_oauth() {
@@ -666,7 +610,7 @@ mod tests {
             cwd: Some("/nonexistent/unified-list-canary".into()),
             ..ListReq::default()
         };
-        let result = build_unified_list(None, None, req).await;
+        let result = build_unified_list(None, req).await;
         assert_eq!(
             result.conversations_partial, None,
             "no client ⇒ lane skipped, never reported as degraded"
@@ -694,6 +638,7 @@ mod tests {
     }
     /// Truth table for `conversations_lane_active`: desktop env lane OR
     /// process chat mode, hard-off in release builds.
+    #[cfg(any())]
     #[test]
     #[serial_test::serial]
     fn conversations_lane_active_truth_table() {
@@ -721,6 +666,7 @@ mod tests {
     }
     /// `parse_list_req` forces the conversations-only `kind` exactly when
     /// process chat mode is on; otherwise the client request is untouched.
+    #[cfg(any())]
     #[test]
     #[serial_test::serial]
     fn parse_list_req_forces_kind_under_process_chat_mode_only() {

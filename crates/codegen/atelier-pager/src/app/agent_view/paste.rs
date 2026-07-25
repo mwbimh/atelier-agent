@@ -1146,7 +1146,7 @@ pub(super) mod paste_key_tests {
             ),
             vec![],
         );
-        let perm = xai_acp_lib::AcpArgs {
+        let perm = atelier_acp_runtime::AcpArgs {
             request,
             response_tx,
         };

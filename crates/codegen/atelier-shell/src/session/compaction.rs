@@ -7,7 +7,7 @@
 //! lives alongside the primary one in `acp_session.rs`.
 use super::SessionActor;
 use super::is_project_instructions;
-use crate::remote::DEFAULT_CONTEXT_WINDOW;
+use crate::runtime_defaults::DEFAULT_CONTEXT_WINDOW;
 use crate::session::compaction_config::{
     AsyncCompactionCache, SUPPRESS_NONE, SUPPRESS_STICKY, SUPPRESS_TURN, SUPPRESS_UNTIL_SUCCESS,
 };
@@ -15,7 +15,7 @@ use crate::session::helpers::CompactionStateContext;
 use crate::session::helpers::compaction_context::CompactionInputs;
 use crate::session::helpers::compaction_context::to_system_reminder;
 use crate::session::helpers::session_compact::{
-    CompactOutput, CompactionOutcome, build_compaction_chat_history,
+    CompactOutput, CompactionOutcome, build_compaction_chat_history, build_compaction_prompt,
     build_two_pass_compaction_prompt, generate_session_compact, is_context_length_error,
 };
 use crate::session::persistence::PersistenceMsg;
@@ -24,13 +24,14 @@ use crate::session::two_pass::{
     note_for_two_pass_pass2, split_conversation_for_two_pass,
 };
 use agent_client_protocol as acp;
-use atelier_sampling_types::{ApiBackend, ConversationItem};
-use std::sync::Arc;
-use xai_chat_state::compaction_utils::{
+use atelier_chat_state::compaction_utils::{
     CompactedHistoryInput, CompactionAttempt, build_compacted_history, is_degenerate_summary,
     prepare_conversation_for_verbatim_summarization, sanitize_compacted_history,
     validate_compacted_history,
 };
+use atelier_sampling_types::{ApiBackend, ConversationItem, SamplingError};
+use std::sync::Arc;
+use std::time::Duration;
 /// Default percentage points below the auto-compact threshold at which prefire
 /// (background pass-1) starts, giving pass-1 runway to finish before the limit.
 /// Override with `ATELIER_PREFIRE_LEAD_PERCENT`.
@@ -56,11 +57,77 @@ fn fingerprint_prefix(items: &[ConversationItem]) -> u64 {
             ConversationItem::ToolResult(_) => 3,
             ConversationItem::BackendToolCall(_) => 4,
             ConversationItem::Reasoning(_) => 5,
+            ConversationItem::Compaction(compaction) => {
+                6u8.hash(&mut h);
+                compaction.id.hash(&mut h);
+                compaction.encrypted_content.hash(&mut h);
+                continue;
+            }
         };
         tag.hash(&mut h);
         it.text_content().hash(&mut h);
     }
     h.finish()
+}
+
+fn decode_remote_compaction_output(
+    output: Vec<atelier_sampling_types::rs::InputItem>,
+) -> Result<Vec<ConversationItem>, SamplingError> {
+    let items =
+        atelier_sampling_types::conversation::responses_input_items_to_conversation_items(output)
+            .map_err(SamplingError::serialization_message)?;
+    if !items
+        .iter()
+        .any(|item| matches!(item, ConversationItem::Compaction(_)))
+    {
+        return Err(SamplingError::serialization_message(
+            "remote compaction output did not contain an opaque compaction item",
+        ));
+    }
+    let sanitized = sanitize_compacted_history(items);
+    let violations = validate_compacted_history(&sanitized.items);
+    if !violations.is_empty() {
+        return Err(SamplingError::serialization_message(format!(
+            "remote compaction output contained invalid tool-result references: {}",
+            violations.join(", ")
+        )));
+    }
+    Ok(sanitized.items)
+}
+
+#[cfg(test)]
+mod remote_compaction_contract_tests {
+    use super::*;
+    use atelier_sampling_types::rs;
+
+    #[test]
+    fn remote_output_requires_and_preserves_opaque_compaction_item() {
+        let output = vec![
+            rs::InputItem::EasyMessage(rs::EasyInputMessage {
+                r#type: rs::MessageType::Message,
+                role: rs::Role::User,
+                content: rs::EasyInputContent::Text("retained".to_owned()),
+            }),
+            rs::InputItem::Item(rs::Item::Compaction(rs::CompactionSummaryItemParam {
+                id: Some("cmp_123".to_owned()),
+                encrypted_content: "opaque-payload".to_owned(),
+            })),
+        ];
+        let decoded = decode_remote_compaction_output(output).unwrap();
+        assert!(matches!(
+            &decoded[1],
+            ConversationItem::Compaction(item)
+                if item.id.as_deref() == Some("cmp_123")
+                    && item.encrypted_content == "opaque-payload"
+        ));
+
+        let missing = vec![rs::InputItem::EasyMessage(rs::EasyInputMessage {
+            r#type: rs::MessageType::Message,
+            role: rs::Role::User,
+            content: rs::EasyInputContent::Text("not compacted".to_owned()),
+        })];
+        assert!(decode_remote_compaction_output(missing).is_err());
+    }
 }
 /// Outcome of a background prefire pass-1 run, recorded on the
 /// `session.prefire_pass1` span as `compaction_prefire_outcome`.
@@ -229,7 +296,7 @@ impl SessionActor {
         let estimated_total = self.chat_state_handle.get_estimated_total_tokens().await;
         let threshold = self.compaction.threshold_percent.get() as u64;
         let start_pct = threshold.saturating_sub(prefire_lead_percent());
-        xai_token_estimation::exceeds_threshold(estimated_total, cw, start_pct as u8)
+        atelier_token_estimation::exceeds_threshold(estimated_total, cw, start_pct as u8)
     }
     /// Background pass-1: summarize the ~95% prefix → NOTE₁ and cache it for a
     /// later pass-2 apply. Always releases the in-flight guard. Spawned via
@@ -306,7 +373,7 @@ impl SessionActor {
             prepare_conversation_for_verbatim_summarization(split.prefix.to_vec(), strips);
         let prefix_est_tokens = prefix_prepared
             .iter()
-            .map(xai_chat_state::estimate_item_tokens)
+            .map(atelier_chat_state::estimate_item_tokens)
             .sum::<u64>();
         let prompt = build_two_pass_compaction_prompt(None);
         let pass1_history = build_two_pass_pass1_history(&prefix_prepared, &prompt);
@@ -499,7 +566,7 @@ fn preserve_inherited_prefix(
 /// Project the token count a re-pinned (preserved) history would reseed to, so the
 /// release decision compares against the same threshold the auto-compact trigger
 /// applies next turn. This only APPROXIMATES the compaction reseed
-/// (`xai-chat-state` `replace_conversation`, the authority): it matches the reseed's
+/// (`atelier-chat-state` `replace_conversation`, the authority): it matches the reseed's
 /// round-and-cap but divides by the current conversation estimate, not the reseed's
 /// frozen `estimate_at_last_response`. The conversation only grows, so the current
 /// estimate is >= that frozen value; this therefore under-estimates the reseed (a
@@ -628,12 +695,12 @@ impl SessionActor {
             span.record("error", e.to_string().as_str());
             return Err(e);
         }
-        use crate::extensions::notification::SessionUpdate as XaiSessionUpdate;
+        use crate::extensions::notification::SessionUpdate as ExtensionSessionUpdate;
         let tokens_after = self.chat_state_handle.get_total_tokens().await;
         let span = tracing::Span::current();
         span.record("post_tokens", tokens_after as i64);
         span.record("success", true);
-        self.send_xai_notification(XaiSessionUpdate::AutoCompactCompleted {
+        self.send_extension_notification(ExtensionSessionUpdate::AutoCompactCompleted {
             tokens_before: Some(total_tokens),
             tokens_after,
             elapsed_ms: None,
@@ -691,7 +758,7 @@ impl SessionActor {
                     "it'll retry on the next turn, or start a new session using /new."
                 }
             };
-            self.send_xai_notification(
+            self.send_extension_notification(
                 crate::extensions::notification::SessionUpdate::AutoCompactFailed {
                     error: message.to_string(),
                 },
@@ -742,11 +809,11 @@ impl SessionActor {
         match preserve_inherited_prefix(&full_conv, compacted_history, prefix_len) {
             Ok(preserved) => {
                 let projected_preserved = project_preserved_reseed_tokens(
-                    xai_chat_state::estimate_conversation_tokens(&preserved),
+                    atelier_chat_state::estimate_conversation_tokens(&preserved),
                     tokens_before,
-                    xai_chat_state::estimate_conversation_tokens(&full_conv),
+                    atelier_chat_state::estimate_conversation_tokens(&full_conv),
                 );
-                if xai_token_estimation::exceeds_threshold(
+                if atelier_token_estimation::exceeds_threshold(
                     projected_preserved,
                     context_window,
                     self.compaction.threshold_percent.get(),
@@ -779,6 +846,68 @@ impl SessionActor {
             }
         }
     }
+
+    async fn try_remote_compaction(
+        &self,
+        sampling_config: &atelier_sampler::SamplerConfig,
+        conversation: &[ConversationItem],
+        user_context: Option<&str>,
+        request_timeout: Duration,
+    ) -> Result<Option<Vec<ConversationItem>>, acp::Error> {
+        let client = atelier_sampler::CompactClient::from_config(sampling_config.clone())
+            .map_err(crate::sampling::error::map_sampling_err_to_acp)?;
+        let Some(client) = client else {
+            return Ok(None);
+        };
+        let input =
+            atelier_sampling_types::conversation::conversation_items_to_responses_input_items(
+                conversation,
+            );
+        let instructions = build_compaction_prompt(user_context, false);
+        let response = match client.compact(input, instructions, request_timeout).await {
+            Ok(response) => response,
+            Err(error)
+                if atelier_sampler::classify_compact_failure(&error)
+                    == atelier_sampler::CompactFailureAction::FallbackLocal =>
+            {
+                tracing::warn!(
+                    session_id = %self.session_info.id.0,
+                    model = %sampling_config.model,
+                    error = %error,
+                    "remote compaction failed; falling back to local compaction once"
+                );
+                return Ok(None);
+            }
+            Err(error) => {
+                return Err(crate::sampling::error::map_sampling_err_to_acp(error));
+            }
+        };
+        match decode_remote_compaction_output(response.output) {
+            Ok(items) => {
+                tracing::info!(
+                    session_id = %self.session_info.id.0,
+                    model = %sampling_config.model,
+                    item_count = items.len(),
+                    "remote compaction completed"
+                );
+                Ok(Some(items))
+            }
+            Err(error) => {
+                debug_assert_eq!(
+                    atelier_sampler::classify_compact_failure(&error),
+                    atelier_sampler::CompactFailureAction::FallbackLocal
+                );
+                tracing::warn!(
+                    session_id = %self.session_info.id.0,
+                    model = %sampling_config.model,
+                    error = %error,
+                    "remote compaction response was unusable; falling back to local compaction once"
+                );
+                Ok(None)
+            }
+        }
+    }
+
     /// Inner implementation of compaction that supports an optional `auto_continue`
     /// payload for the checkpoint.
     #[tracing::instrument(
@@ -873,7 +1002,7 @@ impl SessionActor {
             self.chat_state_handle.get_conversation(),
         );
         let segment_messages = if self.compaction.compaction_mode.writes_segments() {
-            xai_chat_state::compaction_utils::prepare_conversation_for_segment(
+            atelier_chat_state::compaction_utils::prepare_conversation_for_segment(
                 full_conversation.clone(),
             )
         } else {
@@ -882,13 +1011,13 @@ impl SessionActor {
         const SUMMARY_BUDGET_RESERVE_TOKENS: u64 = 32_768;
         let verbatim_input_enabled = self.compaction.verbatim_input;
         let simplified_messages = if verbatim_input_enabled {
-            xai_chat_state::compaction_utils::prepare_conversation_for_verbatim_summarization(
-                full_conversation,
+            atelier_chat_state::compaction_utils::prepare_conversation_for_verbatim_summarization(
+                full_conversation.clone(),
                 summary_strips_reasoning,
             )
         } else {
-            xai_chat_state::compaction_utils::prepare_conversation_for_summarization(
-                full_conversation,
+            atelier_chat_state::compaction_utils::prepare_conversation_for_summarization(
+                full_conversation.clone(),
             )
         };
         if conv_len == 0 {
@@ -934,6 +1063,21 @@ impl SessionActor {
         let (sampling_config, sampling_client) = self
             .prepare_role_chat_completion(atelier_provider::RoleId::Compact, false)
             .await?;
+        let remote_timeout = Duration::from_secs(
+            self.agent
+                .borrow()
+                .compaction_policy()
+                .wall_clock_budget_secs
+                .max(1),
+        );
+        let remote_compacted_history = self
+            .try_remote_compaction(
+                &sampling_config,
+                &full_conversation,
+                user_context.as_deref(),
+                remote_timeout,
+            )
+            .await?;
         let use_backend_search =
             self.agent.borrow().backend_search_enabled() && self.supports_backend_search.get();
         let effective_tool_defs: Vec<atelier_sampling_types::ToolDefinition> = self
@@ -943,7 +1087,7 @@ impl SessionActor {
             .filter(|td| !use_backend_search || td.function.name != "web_search")
             .collect();
         let compaction_tool_tokens =
-            xai_chat_state::estimate_tool_definitions_tokens(&effective_tool_defs);
+            atelier_chat_state::estimate_tool_definitions_tokens(&effective_tool_defs);
         let compaction_tools: Vec<atelier_sampling_types::ToolSpec> = effective_tool_defs
             .into_iter()
             .map(atelier_sampling_types::ToolSpec::from)
@@ -986,7 +1130,7 @@ impl SessionActor {
         let use_short_prompt = false;
         let started_at = chrono::Utc::now().to_rfc3339();
         let estimated_input_tokens =
-            xai_chat_state::estimate_conversation_tokens(&simplified_messages);
+            atelier_chat_state::estimate_conversation_tokens(&simplified_messages);
         let auto_trigger = matches!(trigger, atelier_telemetry::events::CompactionTrigger::Auto);
         let wall_clock_budget_secs = self
             .agent
@@ -1020,11 +1164,16 @@ impl SessionActor {
         };
         let mut request_turns = simplified_messages.clone();
         let mut input_overflow_rejections: u32 = 0;
-        let two_pass_output = self
-            .try_two_pass_pass2_apply(user_context.as_deref(), summary_strips_reasoning)
-            .await;
-        let mut compact_summary: Option<String> =
-            two_pass_output.as_ref().map(|o| o.content.clone());
+        let two_pass_output = if remote_compacted_history.is_none() {
+            self.try_two_pass_pass2_apply(user_context.as_deref(), summary_strips_reasoning)
+                .await
+        } else {
+            None
+        };
+        let mut compact_summary: Option<String> = remote_compacted_history
+            .as_ref()
+            .map(|_| String::new())
+            .or_else(|| two_pass_output.as_ref().map(|o| o.content.clone()));
         while compact_summary.is_none() {
             match atelier_compaction::sample_full_replace_summary(
                 &sampler,
@@ -1094,19 +1243,19 @@ impl SessionActor {
                                     let budget = context_window
                                         .saturating_sub(SUMMARY_BUDGET_RESERVE_TOKENS)
                                         .saturating_sub(compaction_tool_tokens);
-                                    let verbatim = xai_chat_state::compaction_utils::prepare_conversation_for_verbatim_summarization(
+                                    let verbatim = atelier_chat_state::compaction_utils::prepare_conversation_for_verbatim_summarization(
                                         conv,
                                         summary_strips_reasoning,
                                     );
-                                    xai_chat_state::compaction_utils::fit_conversation_to_budget(
+                                    atelier_chat_state::compaction_utils::fit_conversation_to_budget(
                                         verbatim, budget,
                                     )
                                 }
                                 InputStage::Lossy => {
                                     let lossy_budget = (context_window.saturating_mul(7) / 10)
                                         .saturating_sub(compaction_tool_tokens);
-                                    xai_chat_state::compaction_utils::fit_conversation_to_budget(
-                                        xai_chat_state::compaction_utils::prepare_conversation_for_summarization(
+                                    atelier_chat_state::compaction_utils::fit_conversation_to_budget(
+                                        atelier_chat_state::compaction_utils::prepare_conversation_for_summarization(
                                             conv,
                                         ),
                                         lossy_budget,
@@ -1152,7 +1301,7 @@ impl SessionActor {
             }
         }
         let telemetry = observer.into_telemetry();
-        if two_pass_output.is_none() {
+        if remote_compacted_history.is_none() && two_pass_output.is_none() {
             let request_chat_history = build_compaction_chat_history(
                 request_turns,
                 user_context.as_deref(),
@@ -1174,36 +1323,48 @@ impl SessionActor {
                 started_at,
             );
         }
-        let compact_output = match compact_summary {
-            Some(_) => match two_pass_output {
-                Some(tp) => tp,
-                None => sampler
-                    .take_last_success()
-                    .expect("a successful full-replace sample stashes its CompactOutput"),
-            },
-            None => {
-                let span = tracing::Span::current();
-                span.record("compaction_attempts", telemetry.attempts as i64);
-                span.record(
-                    "compaction_degenerate_rejections",
-                    telemetry.degenerate_rejections as i64,
-                );
-                span.record(
-                    "compaction_input_overflow_rejections",
-                    input_overflow_rejections as i64,
-                );
-                span.record(
-                    "compaction_deterministic_rejections",
-                    telemetry.deterministic_rejections as i64,
-                );
-                span.record(
-                    "compaction_transient_rejections",
-                    telemetry.transient_rejections as i64,
-                );
-                span.record("compaction_outcome", last_failure_outcome.as_str());
-                return Err(last_error.unwrap_or_else(|| {
-                    acp::Error::internal_error().data("compaction failed: unknown error")
-                }));
+        let compact_output = if remote_compacted_history.is_some() {
+            CompactOutput {
+                content: String::new(),
+                stop_reason: Some("remote_compaction".to_owned()),
+                truncated: false,
+                ttft_ms: None,
+                stream_ms: None,
+                delta_count: 0,
+                itl_max_ms: None,
+            }
+        } else {
+            match compact_summary {
+                Some(_) => match two_pass_output {
+                    Some(tp) => tp,
+                    None => sampler
+                        .take_last_success()
+                        .expect("a successful full-replace sample stashes its CompactOutput"),
+                },
+                None => {
+                    let span = tracing::Span::current();
+                    span.record("compaction_attempts", telemetry.attempts as i64);
+                    span.record(
+                        "compaction_degenerate_rejections",
+                        telemetry.degenerate_rejections as i64,
+                    );
+                    span.record(
+                        "compaction_input_overflow_rejections",
+                        input_overflow_rejections as i64,
+                    );
+                    span.record(
+                        "compaction_deterministic_rejections",
+                        telemetry.deterministic_rejections as i64,
+                    );
+                    span.record(
+                        "compaction_transient_rejections",
+                        telemetry.transient_rejections as i64,
+                    );
+                    span.record("compaction_outcome", last_failure_outcome.as_str());
+                    return Err(last_error.unwrap_or_else(|| {
+                        acp::Error::internal_error().data("compaction failed: unknown error")
+                    }));
+                }
             }
         };
         let generate_session_compact = compact_output.content.clone();
@@ -1499,23 +1660,37 @@ impl SessionActor {
         let agents_md_reminder = self.agent.borrow().agents_md_user_reminder();
         let compaction_context = state_context.for_compaction();
         let compaction_state_context: &CompactionStateContext = &compaction_context;
-        self.persist_compaction_segment(&segment_messages, &generate_session_compact);
+        if remote_compacted_history.is_none() {
+            self.persist_compaction_segment(&segment_messages, &generate_session_compact);
+        }
         let transcript_hint = self.transcript_hint();
         let summary_count = self
             .compaction
             .count
             .load(std::sync::atomic::Ordering::Relaxed);
-        let raw_compacted = build_compacted_history(CompactedHistoryInput {
-            system_message: system_message.clone(),
-            user_message_prefix: user_message_prefix.clone(),
-            agents_md_reminder: agents_md_reminder.clone(),
-            state_context: compaction_state_context,
-            compaction_summary: generate_session_compact.clone(),
-            system_reminder: system_reminder.clone(),
-            summary_before_recent: use_short_prompt,
-            transcript_hint: transcript_hint.clone(),
-            summary_count,
-        });
+        let raw_compacted = if let Some(remote_items) = remote_compacted_history {
+            atelier_chat_state::compaction_utils::build_remote_compacted_history(
+                atelier_chat_state::compaction_utils::RemoteCompactedHistoryInput {
+                    system_message: system_message.clone(),
+                    user_message_prefix: user_message_prefix.clone(),
+                    agents_md_reminder: agents_md_reminder.clone(),
+                    remote_items,
+                    system_reminder: system_reminder.clone(),
+                },
+            )
+        } else {
+            build_compacted_history(CompactedHistoryInput {
+                system_message: system_message.clone(),
+                user_message_prefix: user_message_prefix.clone(),
+                agents_md_reminder: agents_md_reminder.clone(),
+                state_context: compaction_state_context,
+                compaction_summary: generate_session_compact.clone(),
+                system_reminder: system_reminder.clone(),
+                summary_before_recent: use_short_prompt,
+                transcript_hint: transcript_hint.clone(),
+                summary_count,
+            })
+        };
         let sanitize_result = sanitize_compacted_history(raw_compacted);
         let compacted_history = if sanitize_result.stripped_tool_call_ids.is_empty() {
             sanitize_result.items
@@ -1599,7 +1774,7 @@ impl SessionActor {
             .replace_conversation_for_compaction(compacted_history);
         if self.startup_hints.inherited_prefix_len.is_some() {
             let post_replace_tokens = self.chat_state_handle.get_total_tokens().await;
-            if xai_token_estimation::exceeds_threshold(
+            if atelier_token_estimation::exceeds_threshold(
                 post_replace_tokens,
                 context_window,
                 self.compaction.threshold_percent.get(),
@@ -1716,12 +1891,12 @@ impl SessionActor {
         context_window: std::num::NonZeroU64,
     ) -> Option<AutoCompactTriggerInfo> {
         let cw = context_window.get();
-        if xai_token_estimation::exceeds_threshold(
+        if atelier_token_estimation::exceeds_threshold(
             total_tokens,
             cw,
             self.compaction.threshold_percent.get(),
         ) {
-            let percentage = xai_token_estimation::usage_percentage_u8(total_tokens, cw);
+            let percentage = atelier_token_estimation::usage_percentage_u8(total_tokens, cw);
             Some(AutoCompactTriggerInfo {
                 tokens_used: total_tokens,
                 context_window: cw,
@@ -1802,7 +1977,7 @@ impl SessionActor {
             )
             .is_ok()
         {
-            let percentage = xai_token_estimation::usage_percentage_u8(estimated_total, cw);
+            let percentage = atelier_token_estimation::usage_percentage_u8(estimated_total, cw);
             tracing::info!(
                 "Forced auto-compact trigger (debug): model={model}, \
                  {percentage}% full ({estimated_total}/{cw} tokens)",
@@ -1843,7 +2018,7 @@ impl SessionActor {
             return None;
         }
         let overflow = estimated_total.saturating_sub(cw);
-        let percentage = xai_token_estimation::usage_percentage_u8(estimated_total, cw);
+        let percentage = atelier_token_estimation::usage_percentage_u8(estimated_total, cw);
         tracing::warn!(
             estimated_total, context_window = cw, overflow, model = % cfg.model,
             "CONTEXT_OVERFLOW_PREFLIGHT: estimated tokens exceed context window \
@@ -1931,7 +2106,7 @@ impl SessionActor {
         self: &Arc<Self>,
         trigger_info: AutoCompactTriggerInfo,
     ) -> Result<(), acp::Error> {
-        use crate::extensions::notification::SessionUpdate as XaiSessionUpdate;
+        use crate::extensions::notification::SessionUpdate as ExtensionSessionUpdate;
         self.record_compaction_variant();
         let tokens_before = self.chat_state_handle.get_total_tokens().await;
         tracing::Span::current().record("pre_tokens", tokens_before as i64);
@@ -1941,7 +2116,7 @@ impl SessionActor {
         });
         self.signals_handle()
             .record_compaction(trigger_info.tokens_used);
-        self.send_xai_notification(XaiSessionUpdate::AutoCompactStarted {
+        self.send_extension_notification(ExtensionSessionUpdate::AutoCompactStarted {
             tokens_used: trigger_info.tokens_used,
             context_window: trigger_info.context_window,
             percentage: trigger_info.percentage,
@@ -1969,7 +2144,7 @@ impl SessionActor {
                 let span = tracing::Span::current();
                 span.record("post_tokens", tokens_after as i64);
                 span.record("success", true);
-                self.send_xai_notification(XaiSessionUpdate::AutoCompactCompleted {
+                self.send_extension_notification(ExtensionSessionUpdate::AutoCompactCompleted {
                     tokens_before: Some(trigger_info.tokens_used),
                     tokens_after,
                     elapsed_ms: Some(elapsed_ms),
@@ -2007,7 +2182,7 @@ impl SessionActor {
                     .load(std::sync::atomic::Ordering::Relaxed)
                     == SUPPRESS_NONE
                 {
-                    self.send_xai_notification(XaiSessionUpdate::AutoCompactFailed {
+                    self.send_extension_notification(ExtensionSessionUpdate::AutoCompactFailed {
                         error: String::new(),
                     })
                     .await;
@@ -2104,7 +2279,8 @@ impl SessionActor {
         original_user_info: Option<String>,
     ) {
         use crate::extensions::notification::{
-            CompactionCheckpointFile, CompactionCheckpointInfo, SessionUpdate as XaiSessionUpdate,
+            CompactionCheckpointFile, CompactionCheckpointInfo,
+            SessionUpdate as ExtensionSessionUpdate,
         };
         let checkpoint_id = uuid::Uuid::new_v4().to_string();
         let checkpoint_file = format!("compaction_checkpoints/{checkpoint_id}.json");
@@ -2134,7 +2310,9 @@ impl SessionActor {
             schema_version: 1,
             created_at,
         };
-        self.persist_xai_update_only(XaiSessionUpdate::CompactionCheckpoint(Box::new(info)));
+        self.persist_extension_update_only(ExtensionSessionUpdate::CompactionCheckpoint(Box::new(
+            info,
+        )));
         tracing::info!(
             prompt_index_at_compaction,
             "Persisted compaction checkpoint"
@@ -2189,6 +2367,26 @@ mod inline_auto_compact_flow_tests {
                 env_key: None,
                 api_base_url: None,
                 request_payload: serde_json::Map::new(),
+                remote_compaction_endpoint: None,
+                image_generation_endpoint: None,
+            },
+        );
+    }
+
+    fn set_remote_compact_test_endpoint(actor: &SessionActor, base_url: &str) {
+        let mut info = crate::agent::config::ModelInfo::fallback("test-model");
+        info.base_url = base_url.to_owned();
+        info.api_backend = atelier_sampling_types::ApiBackend::Responses;
+        actor.models_manager.insert_test_entry(
+            COMPACT_TEST_MODEL_ID,
+            crate::agent::config::ModelEntry {
+                info,
+                api_key: Some("test-key".to_owned()),
+                env_key: None,
+                api_base_url: None,
+                request_payload: serde_json::Map::new(),
+                remote_compaction_endpoint: Some("responses/compact".to_owned()),
+                image_generation_endpoint: None,
             },
         );
     }
@@ -2197,18 +2395,18 @@ mod inline_auto_compact_flow_tests {
         total_tokens: u64,
         context_window: u64,
         threshold_percent: u8,
-        gateway_tx: mpsc::UnboundedSender<xai_acp_lib::AcpClientMessage>,
+        gateway_tx: mpsc::UnboundedSender<atelier_acp_runtime::AcpClientMessage>,
         persistence_tx: mpsc::UnboundedSender<PersistenceMsg>,
     ) -> SessionActor {
         let cwd = AbsPathBuf::new(std::env::temp_dir()).unwrap();
         let fs = Arc::new(MockFs::new(cwd.to_path_buf()));
         let terminal = Arc::new(DummyTerminal {});
         let (hunk_tx, _hunk_rx) = tokio::sync::mpsc::unbounded_channel();
-        let hunk_tracker_handle = xai_hunk_tracker::HunkTrackerActor::spawn(
+        let hunk_tracker_handle = atelier_hunk_tracker::HunkTrackerActor::spawn(
             "test-auto-compact".to_string(),
             cwd.to_path_buf(),
             hunk_tx,
-            xai_hunk_tracker::TrackingMode::AgentOnly,
+            atelier_hunk_tracker::TrackingMode::AgentOnly,
             tokio_util::sync::CancellationToken::new(),
         );
         let tool_context =
@@ -2224,7 +2422,7 @@ mod inline_auto_compact_flow_tests {
         let (chat_event_tx, _chat_event_rx) = tokio::sync::mpsc::unbounded_channel();
         let (event_tx, _event_rx) =
             tokio::sync::mpsc::unbounded_channel::<crate::session::replay_events::SessionEvent>();
-        let chat_state_handle = xai_chat_state::ChatStateActor::spawn(
+        let chat_state_handle = atelier_chat_state::ChatStateActor::spawn(
             vec![],
             atelier_sampling_types::SamplingConfig {
                 base_url: "http://localhost".to_string(),
@@ -2239,7 +2437,7 @@ mod inline_auto_compact_flow_tests {
                 reasoning_effort: None,
                 stream_tool_calls: None,
             },
-            Box::new(xai_chat_state::NullChatPersistence),
+            Box::new(atelier_chat_state::NullChatPersistence),
             chat_event_tx,
             tokio_util::sync::CancellationToken::new(),
         );
@@ -2272,6 +2470,8 @@ mod inline_auto_compact_flow_tests {
             telemetry_enabled: false,
             role_request_payload: std::cell::RefCell::new(serde_json::Map::new()),
             supports_backend_search: std::cell::Cell::new(false),
+            remote_compaction_endpoint: std::cell::RefCell::new(None),
+            image_generation_endpoint: std::cell::RefCell::new(None),
             compactions_remaining: std::cell::Cell::new(None),
             compaction_at_tokens: std::cell::Cell::new(None),
             doom_loop_recovery: None,
@@ -2287,7 +2487,7 @@ mod inline_auto_compact_flow_tests {
                 count: std::sync::atomic::AtomicU64::new(0),
                 auto_compact_suppressed: std::sync::atomic::AtomicU8::new(0),
                 previous_model: std::cell::Cell::new(None),
-                compaction_mode: xai_chat_state::CompactionMode::Transcript,
+                compaction_mode: atelier_chat_state::CompactionMode::Transcript,
                 verbatim_input: true,
                 prefire: crate::session::compaction_config::PrefireState::default(),
                 prefix_released: std::sync::atomic::AtomicBool::new(false),
@@ -2328,7 +2528,6 @@ mod inline_auto_compact_flow_tests {
             client_identifier: None,
             origin_client: None,
             feedback_manager: Arc::new(FeedbackManager::local_only("test-session")),
-            upload_queue: Arc::new(OnceLock::new()),
             sync_loop_cancel: None,
             agent: std::cell::RefCell::new(test_agent_default().await),
             last_reported_branch: std::sync::Arc::new(parking_lot::Mutex::new(None)),
@@ -2389,7 +2588,7 @@ mod inline_auto_compact_flow_tests {
             user_input_generation: std::sync::atomic::AtomicU64::new(0),
             laziness_debug_log: None,
             deferred_prefix: TaskSlot::new(),
-            extension_registry: xai_agent_lifecycle::LocalExtensionRegistry::default(),
+            extension_registry: atelier_agent_lifecycle::LocalExtensionRegistry::default(),
             last_announced_local_date: std::cell::Cell::new(chrono::Local::now().date_naive()),
             last_search_prompt_index: std::sync::atomic::AtomicI64::new(-1),
             last_api_request_at: std::sync::atomic::AtomicI64::new(0),
@@ -2420,7 +2619,6 @@ mod inline_auto_compact_flow_tests {
             subagent_spawn_info: parking_lot::Mutex::new(std::collections::HashMap::new()),
             subagent_token_records: parking_lot::Mutex::new(std::collections::HashMap::new()),
             workspace_ops: atelier_workspace::WorkspaceOps::for_test(),
-            trace_config_template: std::cell::RefCell::new(None),
         };
         set_compact_test_endpoint(&actor, "http://localhost");
         actor
@@ -2432,7 +2630,7 @@ mod inline_auto_compact_flow_tests {
         local
             .run_until(async {
                 let (gateway_tx, _gateway_rx) =
-                    mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                    mpsc::unbounded_channel::<atelier_acp_runtime::AcpClientMessage>();
                 let (persistence_tx, _persistence_rx) = mpsc::unbounded_channel::<PersistenceMsg>();
                 let actor =
                     create_test_actor(90_000, 100_000, 85, gateway_tx, persistence_tx).await;
@@ -2453,7 +2651,7 @@ mod inline_auto_compact_flow_tests {
         local
             .run_until(async {
                 let (gateway_tx, _gateway_rx) =
-                    mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                    mpsc::unbounded_channel::<atelier_acp_runtime::AcpClientMessage>();
                 let (persistence_tx, _persistence_rx) = mpsc::unbounded_channel::<PersistenceMsg>();
                 let actor =
                     create_test_actor(86_000, 100_000, 85, gateway_tx, persistence_tx).await;
@@ -2480,7 +2678,7 @@ mod inline_auto_compact_flow_tests {
         local
             .run_until(async {
                 let (gateway_tx, _gateway_rx) =
-                    mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                    mpsc::unbounded_channel::<atelier_acp_runtime::AcpClientMessage>();
                 let (persistence_tx, _persistence_rx) = mpsc::unbounded_channel::<PersistenceMsg>();
                 let actor =
                     create_test_actor(86_000, 200_000, 85, gateway_tx, persistence_tx).await;
@@ -2673,7 +2871,7 @@ mod inline_auto_compact_flow_tests {
                     let mut text = None;
                     while let Ok(msg) = persistence_rx.try_recv() {
                         if let PersistenceMsg::Update(
-                            crate::session::storage::SessionUpdate::Xai(notif),
+                            crate::session::storage::SessionUpdate::Extension(notif),
                         ) = msg
                             && let crate::extensions::notification::SessionUpdate::AutoCompactFailed {
                                 error,
@@ -2722,6 +2920,337 @@ mod inline_auto_compact_flow_tests {
             }
         });
         format!("http://{addr}")
+    }
+
+    struct RemoteCompactionMock {
+        base_url: String,
+        remote_calls: Arc<std::sync::atomic::AtomicUsize>,
+        local_calls: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    async fn spawn_remote_compaction_mock(
+        remote_status: reqwest::StatusCode,
+        remote_delay: Option<Duration>,
+    ) -> RemoteCompactionMock {
+        use axum::Json;
+        use axum::response::IntoResponse;
+        use axum::response::sse::Sse;
+        use axum::routing::post;
+        use std::convert::Infallible;
+
+        let remote_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let local_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let remote_counter = remote_calls.clone();
+        let local_counter = local_calls.clone();
+        let app = axum::Router::new()
+            .route(
+                "/v1/responses/compact",
+                post(move || {
+                    let remote_counter = remote_counter.clone();
+                    async move {
+                        remote_counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        if let Some(delay) = remote_delay {
+                            tokio::time::sleep(delay).await;
+                        }
+                        if remote_status.is_success() {
+                            Json(serde_json::json!({
+                                "output": [
+                                    {
+                                        "type": "message",
+                                        "role": "user",
+                                        "content": "retained remote context"
+                                    },
+                                    {
+                                        "type": "compaction",
+                                        "id": "cmp_session",
+                                        "encrypted_content": "opaque-session-state"
+                                    }
+                                ]
+                            }))
+                            .into_response()
+                        } else {
+                            (
+                                remote_status,
+                                Json(serde_json::json!({
+                                    "error": { "message": "remote compact failed" }
+                                })),
+                            )
+                                .into_response()
+                        }
+                    }
+                }),
+            )
+            .route(
+                "/v1/responses",
+                post(move || {
+                    let local_counter = local_counter.clone();
+                    async move {
+                        local_counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        let text = "Summary of prior work. ".repeat(30);
+                        let events = atelier_test_support::sse::responses_api_events_exact(
+                            &text,
+                            "test-model",
+                        );
+                        let stream =
+                            futures::stream::iter(events.into_iter().map(Ok::<_, Infallible>));
+                        Sse::new(stream).into_response()
+                    }
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        RemoteCompactionMock {
+            base_url: format!("http://{addr}/v1"),
+            remote_calls,
+            local_calls,
+        }
+    }
+
+    fn checkpoint_from_messages(
+        receiver: &mut mpsc::UnboundedReceiver<PersistenceMsg>,
+    ) -> Option<crate::extensions::notification::CompactionCheckpointFile> {
+        while let Ok(message) = receiver.try_recv() {
+            if let PersistenceMsg::CompactionCheckpoint(checkpoint) = message {
+                return Some(checkpoint);
+            }
+        }
+        None
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn manual_remote_compaction_dispatches_persists_and_reemits_opaque_item() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let server = spawn_remote_compaction_mock(reqwest::StatusCode::OK, None).await;
+                let (gateway_tx, _gateway_rx) = mpsc::unbounded_channel();
+                let (persistence_tx, mut persistence_rx) = mpsc::unbounded_channel();
+                let actor = Arc::new(
+                    create_test_actor(50_000, 200_000, 85, gateway_tx, persistence_tx).await,
+                );
+                set_remote_compact_test_endpoint(&actor, &server.base_url);
+                actor.chat_state_handle.replace_conversation(vec![
+                    ConversationItem::system("canonical system"),
+                    ConversationItem::user("implement the feature"),
+                    ConversationItem::assistant("working"),
+                ]);
+
+                actor.run_compact(None).await.unwrap();
+
+                assert_eq!(
+                    server
+                        .remote_calls
+                        .load(std::sync::atomic::Ordering::SeqCst),
+                    1
+                );
+                assert_eq!(
+                    server
+                        .local_calls
+                        .load(std::sync::atomic::Ordering::SeqCst),
+                    0,
+                    "remote success must not invoke local compaction"
+                );
+                let conversation = actor.chat_state_handle.get_conversation().await;
+                let opaque = conversation.iter().find_map(|item| match item {
+                    ConversationItem::Compaction(item) => Some(item),
+                    _ => None,
+                });
+                assert!(matches!(
+                    opaque,
+                    Some(item)
+                        if item.id.as_deref() == Some("cmp_session")
+                            && item.encrypted_content == "opaque-session-state"
+                ));
+                let wire = atelier_sampling_types::conversation::conversation_items_to_responses_input_items(
+                    &conversation,
+                );
+                assert!(wire.iter().any(|item| matches!(
+                    item,
+                    atelier_sampling_types::rs::InputItem::Item(
+                        atelier_sampling_types::rs::Item::Compaction(compaction)
+                    ) if compaction.id.as_deref() == Some("cmp_session")
+                        && compaction.encrypted_content == "opaque-session-state"
+                )));
+                let checkpoint = checkpoint_from_messages(&mut persistence_rx)
+                    .expect("remote compaction must persist a checkpoint");
+                assert!(checkpoint.compacted_history.iter().any(|item| matches!(
+                    item,
+                    ConversationItem::Compaction(compaction)
+                        if compaction.id.as_deref() == Some("cmp_session")
+                            && compaction.encrypted_content == "opaque-session-state"
+                )));
+            })
+            .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn auto_remote_compaction_uses_remote_dispatch() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let server = spawn_remote_compaction_mock(reqwest::StatusCode::OK, None).await;
+                let (gateway_tx, _gateway_rx) = mpsc::unbounded_channel();
+                let (persistence_tx, _persistence_rx) = mpsc::unbounded_channel();
+                let actor = Arc::new(
+                    create_test_actor(180_000, 200_000, 85, gateway_tx, persistence_tx).await,
+                );
+                set_remote_compact_test_endpoint(&actor, &server.base_url);
+                actor.chat_state_handle.replace_conversation(vec![
+                    ConversationItem::system("canonical system"),
+                    ConversationItem::user("continue"),
+                    ConversationItem::assistant("working"),
+                ]);
+
+                actor
+                    .run_compact_only(AutoCompactTriggerInfo {
+                        tokens_used: 180_000,
+                        context_window: 200_000,
+                        percentage: 90,
+                    })
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    server
+                        .remote_calls
+                        .load(std::sync::atomic::Ordering::SeqCst),
+                    1
+                );
+                assert_eq!(
+                    server.local_calls.load(std::sync::atomic::Ordering::SeqCst),
+                    0
+                );
+            })
+            .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn remote_500_falls_back_to_local_exactly_once() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let server =
+                    spawn_remote_compaction_mock(reqwest::StatusCode::INTERNAL_SERVER_ERROR, None)
+                        .await;
+                let (gateway_tx, _gateway_rx) = mpsc::unbounded_channel();
+                let (persistence_tx, _persistence_rx) = mpsc::unbounded_channel();
+                let actor = Arc::new(
+                    create_test_actor(50_000, 200_000, 85, gateway_tx, persistence_tx).await,
+                );
+                set_remote_compact_test_endpoint(&actor, &server.base_url);
+                actor.chat_state_handle.replace_conversation(vec![
+                    ConversationItem::system("canonical system"),
+                    ConversationItem::user("continue"),
+                    ConversationItem::assistant("working"),
+                ]);
+
+                actor.run_compact(None).await.unwrap();
+                assert_eq!(
+                    server
+                        .remote_calls
+                        .load(std::sync::atomic::Ordering::SeqCst),
+                    1
+                );
+                assert_eq!(
+                    server.local_calls.load(std::sync::atomic::Ordering::SeqCst),
+                    1,
+                    "remote failure may enter the local compaction pipeline only once"
+                );
+                assert!(
+                    !actor
+                        .chat_state_handle
+                        .get_conversation()
+                        .await
+                        .iter()
+                        .any(|item| matches!(item, ConversationItem::Compaction(_)))
+                );
+            })
+            .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn remote_429_returns_original_error_without_local_fallback() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let server =
+                    spawn_remote_compaction_mock(reqwest::StatusCode::TOO_MANY_REQUESTS, None)
+                        .await;
+                let (gateway_tx, _gateway_rx) = mpsc::unbounded_channel();
+                let (persistence_tx, _persistence_rx) = mpsc::unbounded_channel();
+                let actor = Arc::new(
+                    create_test_actor(50_000, 200_000, 85, gateway_tx, persistence_tx).await,
+                );
+                set_remote_compact_test_endpoint(&actor, &server.base_url);
+                actor.chat_state_handle.replace_conversation(vec![
+                    ConversationItem::system("canonical system"),
+                    ConversationItem::user("continue"),
+                ]);
+
+                let error = actor.run_compact(None).await.unwrap_err();
+                assert_eq!(
+                    i32::from(error.code),
+                    crate::sampling::error::RATE_LIMITED_ERROR_CODE
+                );
+                assert_eq!(
+                    server
+                        .remote_calls
+                        .load(std::sync::atomic::Ordering::SeqCst),
+                    1
+                );
+                assert_eq!(
+                    server.local_calls.load(std::sync::atomic::Ordering::SeqCst),
+                    0
+                );
+            })
+            .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn cancelling_remote_compaction_never_starts_local_fallback() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let server = spawn_remote_compaction_mock(
+                    reqwest::StatusCode::OK,
+                    Some(Duration::from_secs(30)),
+                )
+                .await;
+                let (gateway_tx, _gateway_rx) = mpsc::unbounded_channel();
+                let (persistence_tx, _persistence_rx) = mpsc::unbounded_channel();
+                let actor = Arc::new(
+                    create_test_actor(50_000, 200_000, 85, gateway_tx, persistence_tx).await,
+                );
+                set_remote_compact_test_endpoint(&actor, &server.base_url);
+                actor.chat_state_handle.replace_conversation(vec![
+                    ConversationItem::system("canonical system"),
+                    ConversationItem::user("continue"),
+                ]);
+
+                let task_actor = actor.clone();
+                let task =
+                    tokio::task::spawn_local(async move { task_actor.run_compact(None).await });
+                tokio::time::timeout(Duration::from_secs(5), async {
+                    while server
+                        .remote_calls
+                        .load(std::sync::atomic::Ordering::SeqCst)
+                        == 0
+                    {
+                        tokio::task::yield_now().await;
+                    }
+                })
+                .await
+                .unwrap();
+                task.abort();
+                assert!(task.await.unwrap_err().is_cancelled());
+                assert_eq!(
+                    server.local_calls.load(std::sync::atomic::Ordering::SeqCst),
+                    0
+                );
+            })
+            .await;
     }
     /// A deterministic failure suppresses auto-compaction only on the AUTO
     /// path — never for a bare manual `/compact`.
@@ -2896,9 +3425,9 @@ mod inline_auto_compact_flow_tests {
                 );
                 let mut saw_failure = false;
                 while let Ok(msg) = persistence_rx.try_recv() {
-                    if let PersistenceMsg::Update(crate::session::storage::SessionUpdate::Xai(
-                        notif,
-                    )) = msg
+                    if let PersistenceMsg::Update(
+                        crate::session::storage::SessionUpdate::Extension(notif),
+                    ) = msg
                         && matches!(
                             &notif.update,
                             crate::extensions::notification::SessionUpdate::AutoCompactFailed { .. }
@@ -3079,7 +3608,7 @@ mod inline_auto_compact_flow_tests {
         total_tokens: u64,
         context_window: u64,
         threshold_percent: u8,
-        gateway_tx: mpsc::UnboundedSender<xai_acp_lib::AcpClientMessage>,
+        gateway_tx: mpsc::UnboundedSender<atelier_acp_runtime::AcpClientMessage>,
         persistence_tx: mpsc::UnboundedSender<PersistenceMsg>,
         memory_config: Option<crate::config::MemoryConfig>,
     ) -> SessionActor {
@@ -3237,7 +3766,8 @@ mod inline_auto_compact_flow_tests {
         let local = tokio::task::LocalSet::new();
         local
             .run_until(async {
-                let (gateway_tx, _) = mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                let (gateway_tx, _) =
+                    mpsc::unbounded_channel::<atelier_acp_runtime::AcpClientMessage>();
                 let (persistence_tx, _) = mpsc::unbounded_channel::<PersistenceMsg>();
                 let actor =
                     create_test_actor(214_000, 1_000_000, 85, gateway_tx, persistence_tx).await;
@@ -3253,7 +3783,8 @@ mod inline_auto_compact_flow_tests {
         let local = tokio::task::LocalSet::new();
         local
             .run_until(async {
-                let (gateway_tx, _) = mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                let (gateway_tx, _) =
+                    mpsc::unbounded_channel::<atelier_acp_runtime::AcpClientMessage>();
                 let (persistence_tx, _) = mpsc::unbounded_channel::<PersistenceMsg>();
                 let actor =
                     create_test_actor(150_000, 1_000_000, 85, gateway_tx, persistence_tx).await;
@@ -3269,7 +3800,8 @@ mod inline_auto_compact_flow_tests {
         let local = tokio::task::LocalSet::new();
         local
             .run_until(async {
-                let (gateway_tx, _) = mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                let (gateway_tx, _) =
+                    mpsc::unbounded_channel::<atelier_acp_runtime::AcpClientMessage>();
                 let (persistence_tx, _) = mpsc::unbounded_channel::<PersistenceMsg>();
                 let actor =
                     create_test_actor(500_000, 200_000, 85, gateway_tx, persistence_tx).await;
@@ -3294,7 +3826,8 @@ mod inline_auto_compact_flow_tests {
         let local = tokio::task::LocalSet::new();
         local
             .run_until(async {
-                let (gateway_tx, _) = mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                let (gateway_tx, _) =
+                    mpsc::unbounded_channel::<atelier_acp_runtime::AcpClientMessage>();
                 let (persistence_tx, _) = mpsc::unbounded_channel::<PersistenceMsg>();
                 let actor =
                     create_test_actor(80_000, 100_000, 85, gateway_tx, persistence_tx).await;
@@ -3313,7 +3846,8 @@ mod inline_auto_compact_flow_tests {
         let local = tokio::task::LocalSet::new();
         local
             .run_until(async {
-                let (gateway_tx, _) = mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                let (gateway_tx, _) =
+                    mpsc::unbounded_channel::<atelier_acp_runtime::AcpClientMessage>();
                 let (persistence_tx, _) = mpsc::unbounded_channel::<PersistenceMsg>();
                 let actor =
                     create_test_actor(86_000, 100_000, 85, gateway_tx, persistence_tx).await;
@@ -3349,11 +3883,11 @@ mod inline_auto_compact_flow_tests {
         local
             .run_until(async {
                 let (gateway_tx, _gateway_rx) =
-                    mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                    mpsc::unbounded_channel::<atelier_acp_runtime::AcpClientMessage>();
                 let (persistence_tx, _persistence_rx) = mpsc::unbounded_channel::<PersistenceMsg>();
                 let mut actor =
                     create_test_actor(50_000, 200_000, 85, gateway_tx, persistence_tx).await;
-                actor.compaction.compaction_mode = xai_chat_state::CompactionMode::Transcript;
+                actor.compaction.compaction_mode = atelier_chat_state::CompactionMode::Transcript;
                 let session_dir = crate::session::persistence::session_dir(&actor.session_info);
                 std::fs::create_dir_all(&session_dir).unwrap();
                 let updates_path = session_dir.join("updates.jsonl");
@@ -3368,7 +3902,7 @@ mod inline_auto_compact_flow_tests {
                 let hint = actor.transcript_hint().expect("transcript hint present");
                 assert!(hint.contains("read the full transcript"));
                 assert!(hint.ends_with("updates.jsonl"));
-                actor.compaction.compaction_mode = xai_chat_state::CompactionMode::Summary;
+                actor.compaction.compaction_mode = atelier_chat_state::CompactionMode::Summary;
                 assert!(actor.transcript_hint().is_none());
                 let _ = std::fs::remove_file(&updates_path);
                 let _ = std::fs::remove_dir_all(&session_dir);

@@ -42,9 +42,8 @@ use super::prompt::{
 };
 use super::session::fork::build_child_fork_marker;
 use super::session::lifecycle::{dispatch_new_session_inner, drain_startup_actions, finish_trust};
-use super::session::load::{dispatch_load_session_with_restore, reanchor_grouped_selection};
+use super::session::load::reanchor_grouped_selection;
 use super::session::modal::{dispatch_rename_session, dispatch_sessions_confirm_close};
-use super::settings::setters::set_default_model_inner;
 use super::settings::ui::{action_for_reset, apply_setting_rollback};
 use super::task_result::dispatch_task_result;
 use super::*;
@@ -351,8 +350,8 @@ fn make_test_subagent(child_sid: &str, sa_id: &str) -> crate::app::subagent::Sub
         child_updates_replayed: false,
     }
 }
-fn cta_entry(name: &str, status: &str) -> xai_hooks_plugins_types::MarketplacePluginEntry {
-    xai_hooks_plugins_types::MarketplacePluginEntry {
+fn cta_entry(name: &str, status: &str) -> atelier_hooks_plugins_types::MarketplacePluginEntry {
+    atelier_hooks_plugins_types::MarketplacePluginEntry {
         name: name.into(),
         version: None,
         description: None,
@@ -377,10 +376,10 @@ fn cta_entry(name: &str, status: &str) -> xai_hooks_plugins_types::MarketplacePl
     }
 }
 fn cta_outcome(
-    status: xai_hooks_plugins_types::OutcomeStatus,
+    status: atelier_hooks_plugins_types::OutcomeStatus,
     message: &str,
-) -> xai_hooks_plugins_types::ActionOutcome {
-    xai_hooks_plugins_types::ActionOutcome {
+) -> atelier_hooks_plugins_types::ActionOutcome {
+    atelier_hooks_plugins_types::ActionOutcome {
         status,
         message: message.into(),
         requires_reload: false,
@@ -557,8 +556,8 @@ fn fork_test_app() -> AppView {
 fn make_ask_user_question_args(
     tool_call_id: &str,
 ) -> (
-    xai_acp_lib::AcpArgs<acp::ExtRequest>,
-    tokio::sync::oneshot::Receiver<xai_acp_lib::AcpResult<acp::ExtResponse>>,
+    atelier_acp_runtime::AcpArgs<acp::ExtRequest>,
+    tokio::sync::oneshot::Receiver<atelier_acp_runtime::AcpResult<acp::ExtResponse>>,
 ) {
     use atelier_tools::implementations::atelier_build::ask_user_question::{
         AskUserQuestionExtRequest, Question, QuestionOption,
@@ -581,7 +580,7 @@ fn make_ask_user_question_args(
             .into(),
     );
     (
-        xai_acp_lib::AcpArgs {
+        atelier_acp_runtime::AcpArgs {
             request: ext,
             response_tx: tx,
         },
@@ -788,7 +787,7 @@ fn enqueue_permission_with_enable_always_approve(
     );
     let options = request.options.clone();
     agent.permission_queue.push_back(PermissionViewState {
-        request: xai_acp_lib::AcpArgs {
+        request: atelier_acp_runtime::AcpArgs {
             request,
             response_tx,
         },
@@ -895,7 +894,7 @@ fn push_synthetic_permission(
     use crate::views::permission_view::{PermissionFocus, PermissionViewState};
     let (tx, rx) =
         tokio::sync::oneshot::channel::<Result<acp::RequestPermissionResponse, acp::Error>>();
-    let request = xai_acp_lib::AcpArgs {
+    let request = atelier_acp_runtime::AcpArgs {
         request: acp::RequestPermissionRequest::new(
             acp::SessionId::new(std::sync::Arc::from("sess-1")),
             acp::ToolCallUpdate::new(

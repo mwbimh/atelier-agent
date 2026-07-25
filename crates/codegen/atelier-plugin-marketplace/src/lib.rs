@@ -22,16 +22,16 @@ pub use error::MarketplaceError;
 pub use scanner::scan_marketplace;
 pub use types::*;
 
-/// Display name of the official xAI marketplace source.
-pub const OFFICIAL_SOURCE_NAME: &str = "xAI Official";
+/// Display name for Atelier's official marketplace source.
+pub const ATELIER_SOURCE_NAME: &str = "Atelier Official";
 
-/// Git URL of the official xAI marketplace source. Auto-registered on first run.
-pub const OFFICIAL_SOURCE_GIT_URL: &str = "https://github.com/xai-org/plugin-marketplace.git";
+/// Atelier's official marketplace URL.
+pub const ATELIER_SOURCE_GIT_URL: &str = "https://github.com/atelier-org/plugin-marketplace.git";
 
-/// Whether `url` is the official xAI marketplace source, normalizing case, a
+/// Whether `url` is the Atelier marketplace source, normalizing case, a
 /// `www.` prefix, a trailing `/` or `.git`, and HTTPS/SSH forms before comparing.
-pub fn is_official_source_url(url: &str) -> bool {
-    canonical_github_owner_repo(url).as_deref() == Some("xai-org/plugin-marketplace")
+pub fn is_atelier_source_url(url: &str) -> bool {
+    canonical_github_owner_repo(url).as_deref() == Some("atelier-org/plugin-marketplace")
 }
 
 /// Normalized lowercase `owner/repo` from a GitHub URL (HTTPS/http/ssh/scp,
@@ -63,59 +63,59 @@ mod tests {
     use super::*;
 
     #[test]
-    fn is_official_matches_canonical_https() {
-        assert!(is_official_source_url(OFFICIAL_SOURCE_GIT_URL));
-        assert!(is_official_source_url(
-            "https://github.com/xai-org/plugin-marketplace"
+    fn is_atelier_source_matches_canonical_https() {
+        assert!(is_atelier_source_url(ATELIER_SOURCE_GIT_URL));
+        assert!(is_atelier_source_url(
+            "https://github.com/atelier-org/plugin-marketplace"
         ));
     }
 
     #[test]
-    fn is_official_matches_ssh_form() {
-        assert!(is_official_source_url(
-            "git@github.com:xai-org/plugin-marketplace.git"
+    fn is_atelier_source_matches_ssh_form() {
+        assert!(is_atelier_source_url(
+            "git@github.com:atelier-org/plugin-marketplace.git"
         ));
-        assert!(is_official_source_url(
-            "git@github.com:xai-org/plugin-marketplace"
+        assert!(is_atelier_source_url(
+            "git@github.com:atelier-org/plugin-marketplace"
         ));
-        assert!(is_official_source_url(
-            "ssh://git@github.com/xai-org/plugin-marketplace.git"
+        assert!(is_atelier_source_url(
+            "ssh://git@github.com/atelier-org/plugin-marketplace.git"
         ));
-        assert!(is_official_source_url(
-            "ssh://git@github.com/xai-org/plugin-marketplace"
+        assert!(is_atelier_source_url(
+            "ssh://git@github.com/atelier-org/plugin-marketplace"
         ));
     }
 
     #[test]
-    fn is_official_rejects_unrelated_urls() {
-        assert!(!is_official_source_url(
+    fn is_atelier_source_rejects_unrelated_urls() {
+        assert!(!is_atelier_source_url(
             "https://github.com/anthropics/claude-plugins-official.git"
         ));
-        assert!(!is_official_source_url(
-            "https://github.com/xai-org/some-other-repo.git"
+        assert!(!is_atelier_source_url(
+            "https://github.com/atelier-org/some-other-repo.git"
         ));
-        assert!(!is_official_source_url(""));
+        assert!(!is_atelier_source_url(""));
     }
 
     #[test]
-    fn is_official_matches_noncanonical_forms() {
-        assert!(is_official_source_url(
-            "https://GitHub.com/XAI-org/Plugin-Marketplace"
+    fn is_atelier_source_matches_noncanonical_forms() {
+        assert!(is_atelier_source_url(
+            "https://GitHub.com/Atelier-org/Plugin-Marketplace"
         ));
-        assert!(is_official_source_url(
-            "https://github.com/xai-org/plugin-marketplace/"
+        assert!(is_atelier_source_url(
+            "https://github.com/atelier-org/plugin-marketplace/"
         ));
-        assert!(is_official_source_url(
-            "https://github.com/xai-org/plugin-marketplace.git/"
+        assert!(is_atelier_source_url(
+            "https://github.com/atelier-org/plugin-marketplace.git/"
         ));
-        assert!(is_official_source_url(
-            "http://github.com/xai-org/plugin-marketplace"
+        assert!(is_atelier_source_url(
+            "http://github.com/atelier-org/plugin-marketplace"
         ));
-        assert!(is_official_source_url(
-            "https://www.github.com/xai-org/plugin-marketplace.git"
+        assert!(is_atelier_source_url(
+            "https://www.github.com/atelier-org/plugin-marketplace.git"
         ));
-        assert!(is_official_source_url(
-            "git@github.com:XAI-org/plugin-marketplace.git"
+        assert!(is_atelier_source_url(
+            "git@github.com:Atelier-org/plugin-marketplace.git"
         ));
     }
 }

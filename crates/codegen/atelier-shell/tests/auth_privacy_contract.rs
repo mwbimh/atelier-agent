@@ -147,3 +147,123 @@ fn production_auth_and_endpoint_defaults_contain_no_vendor_hosts() {
         violations.join("\n")
     );
 }
+
+#[test]
+fn generic_runtime_contains_no_global_xai_api_key_fallback_or_auth_method() {
+    let sources = [
+        (
+            "agent/auth_method.rs",
+            include_str!("../src/agent/auth_method.rs"),
+        ),
+        ("agent/config.rs", include_str!("../src/agent/config.rs")),
+        ("config/mod.rs", include_str!("../src/config/mod.rs")),
+        ("cli_models.rs", include_str!("../src/cli_models.rs")),
+        (
+            "auth/test_support.rs",
+            include_str!("../src/auth/test_support.rs"),
+        ),
+        ("auth/mod.rs", include_str!("../src/auth/mod.rs")),
+        (
+            "session/unified_list/mod.rs",
+            include_str!("../src/session/unified_list/mod.rs"),
+        ),
+    ];
+    let forbidden = [
+        "XAI_API_KEY",
+        "ATELIER_CODE_XAI_API_KEY",
+        "XAI_API_KEY_METHOD_ID",
+        "XaiApiKey",
+        "read_xai_api_key_env",
+        "has_xai_api_key_env",
+        "should_advertise_xai_api_key",
+        "xai_api_base_url",
+        "ATELIER_XAI_API_BASE_URL",
+        "XAI_API_BASE_URL_DEFAULT",
+        "XAI_OAUTH2_ISSUER",
+        "xai_oauth2_issuer",
+        "is_xai_oauth2_issuer",
+        "LEGACY_VENDOR_TEST_ISSUER",
+        "xai_auth_manager",
+        "https://auth.x.ai",
+        "https://api.x.ai",
+    ];
+    let mut violations = Vec::new();
+    for (path, source) in sources {
+        for needle in forbidden {
+            if source.contains(needle) {
+                violations.push(format!("{path}: contains {needle:?}"));
+            }
+        }
+    }
+    assert!(
+        violations.is_empty(),
+        "generic xAI API-key fallback remains:\n{}",
+        violations.join("\n")
+    );
+}
+
+#[test]
+fn generic_provider_runtime_has_no_xai_auth_or_first_party_gate() {
+    let sources = [
+        ("auth/model.rs", include_str!("../src/auth/model.rs")),
+        (
+            "auth/external_auth.rs",
+            include_str!("../src/auth/external_auth.rs"),
+        ),
+        ("auth/flow.rs", include_str!("../src/auth/flow.rs")),
+        (
+            "agent/auth_method.rs",
+            include_str!("../src/agent/auth_method.rs"),
+        ),
+        (
+            "agent/mvp_agent/agent_ops.rs",
+            include_str!("../src/agent/mvp_agent/agent_ops.rs"),
+        ),
+        (
+            "agent/mvp_agent/mod.rs",
+            include_str!("../src/agent/mvp_agent/mod.rs"),
+        ),
+        (
+            "extensions/mod.rs",
+            include_str!("../src/extensions/mod.rs"),
+        ),
+        (
+            "session/acp_session_impl/sampler_turn.rs",
+            include_str!("../src/session/acp_session_impl/sampler_turn.rs"),
+        ),
+        (
+            "atelier-shell-base/util/mod.rs",
+            include_str!("../../atelier-shell-base/src/util/mod.rs"),
+        ),
+    ];
+    let forbidden = [
+        "is_xai_auth",
+        "require_xai_auth",
+        "first_party_xai_url",
+        "endpoint_is_first_party",
+        "XAI_API_KEY",
+    ];
+    let mut violations = Vec::new();
+    for (path, source) in sources {
+        for needle in forbidden {
+            if source.contains(needle) {
+                violations.push(format!("{path}: contains {needle:?}"));
+            }
+        }
+    }
+    assert!(
+        violations.is_empty(),
+        "generic Provider runtime still contains a global xAI gate:\n{}",
+        violations.join("\n")
+    );
+}
+
+#[test]
+fn grok_model_preset_remains_available_for_explicit_providers() {
+    let defaults = include_str!("../../atelier-config/src/defaults.rs");
+    assert!(
+        defaults.contains("match = \"grok-*\"")
+            && defaults.contains("wire_api = \"chat_completions\""),
+        "the explicit Grok model preset must remain available"
+    );
+}

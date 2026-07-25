@@ -56,7 +56,7 @@
         let raw = serde_json::value::to_raw_value(&raw_payload).unwrap();
         let request = acp::ExtNotification::new("atelier/session_notification", raw.into());
         let (tx, _rx) = tokio::sync::oneshot::channel();
-        let msg = AcpClientMessage::ExtNotification(xai_acp_lib::AcpArgs {
+        let msg = AcpClientMessage::ExtNotification(atelier_acp_runtime::AcpArgs {
             request,
             response_tx: tx,
         });
@@ -146,7 +146,7 @@
             let raw = serde_json::value::to_raw_value(&raw_payload).unwrap();
             let (tx, _rx) = tokio::sync::oneshot::channel();
             handle(
-                AcpClientMessage::ExtNotification(xai_acp_lib::AcpArgs {
+                AcpClientMessage::ExtNotification(atelier_acp_runtime::AcpArgs {
                     request: acp::ExtNotification::new("atelier/session_notification", raw.into()),
                     response_tx: tx,
                 }),
@@ -374,7 +374,7 @@
         let raw = serde_json::value::to_raw_value(&raw_payload).unwrap();
         let request = acp::ExtNotification::new("atelier/session_notification", raw.into());
         let (tx, _rx) = tokio::sync::oneshot::channel();
-        let msg = AcpClientMessage::ExtNotification(xai_acp_lib::AcpArgs {
+        let msg = AcpClientMessage::ExtNotification(atelier_acp_runtime::AcpArgs {
             request,
             response_tx: tx,
         });

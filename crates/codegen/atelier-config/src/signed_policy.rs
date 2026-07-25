@@ -8,7 +8,42 @@
 //! Inert until a public key is provisioned: with no embedded keys the cache
 //! marker stays the (best-effort) authority.
 use base64::Engine;
-pub use prod_mc_cli_chat_proxy_types::{SignatureEnvelope, SignedPayload, now_unix};
+use serde::{Deserialize, Serialize};
+
+pub const SIGNED_PAYLOAD_VERSION: u32 = 1;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SignedPayload {
+    #[serde(default)]
+    pub version: u32,
+    #[serde(default)]
+    pub deployment_id: Option<String>,
+    #[serde(default)]
+    pub team_id: Option<String>,
+    #[serde(default)]
+    pub managed_config: Option<String>,
+    #[serde(default)]
+    pub requirements: Option<String>,
+    #[serde(default)]
+    pub fail_closed: bool,
+    pub expires_at: u64,
+    pub key_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SignatureEnvelope {
+    pub signed_payload: String,
+    pub signature: String,
+    #[serde(default)]
+    pub key_id: String,
+}
+
+pub fn now_unix() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0)
+}
 /// Compiled-in trusted Ed25519 public keys, `(key_id, raw 32 bytes)`; more than one
 /// entry only during a rotation. Empty ships dark (see [`verification_active`]).
 /// Compile-time, not an env flag: the local attacker controls their env.

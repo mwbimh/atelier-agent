@@ -37,6 +37,11 @@ pub use deploy_app::{AppBuilderDeployerConfig, DEPLOY_APP_TOOL_NAME};
 pub use enter_plan_mode::EnterPlanModeTool;
 pub use exit_plan_mode::ExitPlanModeTool;
 pub use grep::GrepTool;
+pub use image_gen::{
+    IMAGE_GEN_TOOL_NAME, IMAGINE_COMMAND_NAME, ImageGenConfig, ImageGenExecutor,
+    ImageGenExecutorError, ImageGenExecutorResponse, ImageGenLimits, ImageGenRequest, ImageGenTool,
+    imagine_instruction, imagine_usage_message,
+};
 pub use kill_task::{KillTaskTool, KillTerminalCommandTool};
 pub use list_dir::ListDirTool;
 pub use lsp::LspTool;

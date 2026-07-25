@@ -11,10 +11,10 @@
 use super::SessionActor;
 use crate::extensions::notification::CompactionSegmentFile;
 use crate::session::persistence::PersistenceMsg;
+use atelier_chat_state::CompactionMode;
+use atelier_chat_state::compaction_transcript::COMPACTION_DIR;
+use atelier_chat_state::compaction_utils::format_compact_summary;
 use atelier_sampling_types::ConversationItem;
-use xai_chat_state::CompactionMode;
-use xai_chat_state::compaction_transcript::COMPACTION_DIR;
-use xai_chat_state::compaction_utils::format_compact_summary;
 impl SessionActor {
     /// Persist the per-segment store (`Segments` only; no-op for `Summary`
     /// and `Transcript`). Queues a write on the persistence channel;

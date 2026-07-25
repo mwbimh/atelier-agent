@@ -20,7 +20,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::Instant;
 impl AgentView {
     /// Bind this view to a root session id, resetting the per-session
-    /// reconnect cursor and both dedup highwaters (ACP + xAI) when the id
+    /// reconnect cursor and both dedup highwaters (ACP + extension) when the id
     /// actually changes — all three are meaningless against another session's
     /// event-id history (a stale cursor relies on exact-match failure for
     /// safety; a stale highwater could dedup-drop the new session's events
@@ -29,7 +29,7 @@ impl AgentView {
         if self.session.session_id.as_ref() != Some(&session_id) {
             self.last_seen_event_id = None;
             self.last_applied_event_seq = None;
-            self.last_applied_xai_event_seq = None;
+            self.last_applied_extension_event_seq = None;
         }
         self.session.session_id = Some(session_id);
     }
@@ -71,7 +71,7 @@ impl AgentView {
             attached_as_viewer: false,
             self_originated_prompt_ids: VecDeque::new(),
             last_applied_event_seq: None,
-            last_applied_xai_event_seq: None,
+            last_applied_extension_event_seq: None,
             last_seen_event_id: None,
             session_reload: None,
             unexpected_replay_drops: 0,
@@ -366,7 +366,7 @@ impl AgentView {
             todo: std::mem::take(&mut self.todo),
             last_seen_event_id: self.last_seen_event_id.clone(),
             last_applied_event_seq: self.last_applied_event_seq,
-            last_applied_xai_event_seq: self.last_applied_xai_event_seq,
+            last_applied_extension_event_seq: self.last_applied_extension_event_seq,
             saw_replay: false,
             saw_todo_update: false,
         });
@@ -528,7 +528,7 @@ impl AgentView {
             self.todo = reload.todo;
             self.last_seen_event_id = reload.last_seen_event_id;
             self.last_applied_event_seq = reload.last_applied_event_seq;
-            self.last_applied_xai_event_seq = reload.last_applied_xai_event_seq;
+            self.last_applied_extension_event_seq = reload.last_applied_extension_event_seq;
             dropped_heavy = true;
         }
         self.session.loading_replay = false;
@@ -736,8 +736,8 @@ impl AgentView {
                 if total > 0 {
                     snap.total = total;
                 }
-                snap.usage_pct = xai_token_estimation::usage_percentage_u8(used, snap.total);
-                snap.free_tokens = xai_token_estimation::free_tokens(snap.total, used);
+                snap.usage_pct = atelier_token_estimation::usage_percentage_u8(used, snap.total);
+                snap.free_tokens = atelier_token_estimation::free_tokens(snap.total, used);
             }
             None => {
                 self.context_state = Some(atelier_shell::session::ContextInfo::from_notification(

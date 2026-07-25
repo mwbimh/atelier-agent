@@ -28,6 +28,8 @@ fn pin_env() {
             std::env::set_var("ATELIER_POOL_MAX_IDLE", "2");
             std::env::set_var("ATELIER_POOL_IDLE_TIMEOUT_SECS", "90");
         }
+        atelier_sampler::set_request_agent_identity("pi".to_owned(), Some("1.0".to_owned()))
+            .unwrap();
     });
 }
 
@@ -67,6 +69,16 @@ async fn shared_client_keeps_per_config_headers_isolated() {
     assert!(!heads[0].contains("token-b") && !heads[0].contains("isolated-b"));
     assert!(heads[1].contains("Bearer token-b") && heads[1].contains("isolated-b"));
     assert!(!heads[1].contains("token-a") && !heads[1].contains("isolated-a"));
+    for head in heads.iter() {
+        let normalized = head.to_ascii_lowercase();
+        assert!(normalized.contains("user-agent: pi/1.0 ("), "{head}");
+        let user_agent_line = normalized
+            .lines()
+            .find(|line| line.starts_with("user-agent:"))
+            .unwrap();
+        assert!(!user_agent_line.contains("token-a"));
+        assert!(!user_agent_line.contains("token-b"));
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

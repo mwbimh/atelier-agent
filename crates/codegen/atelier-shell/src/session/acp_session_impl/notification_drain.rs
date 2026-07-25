@@ -64,8 +64,6 @@ impl SessionActor {
             prompt_id,
             prompt_blocks,
             prompt_mode,
-            trace_gcs_config,
-            artifact_tracker,
             client_identifier,
             screen_mode,
             verbatim,
@@ -80,8 +78,6 @@ impl SessionActor {
                 front.prompt_id.clone(),
                 front.prompt_blocks.clone(),
                 front.prompt_mode,
-                front.trace_gcs_config.clone(),
-                front.artifact_tracker.clone(),
                 front.client_identifier.clone(),
                 front.screen_mode.clone(),
                 front.verbatim,
@@ -120,8 +116,6 @@ impl SessionActor {
             prompt_id,
             prompt_blocks,
             prompt_mode,
-            trace_gcs_config,
-            artifact_tracker,
             client_identifier,
             screen_mode,
             verbatim,
@@ -240,7 +234,7 @@ impl SessionActor {
         }
         for contributor in self.extension_registry.session_lifecycle_contributors() {
             contributor
-                .on_session_idle(&xai_agent_lifecycle::SessionIdleInput)
+                .on_session_idle(&atelier_agent_lifecycle::SessionIdleInput)
                 .await;
         }
     }
@@ -382,8 +376,6 @@ impl SessionActor {
             prompt_id: merged_prompt_id,
             prompt_blocks: merged_blocks,
             prompt_mode: crate::session::plan_mode::PromptMode::Agent,
-            trace_gcs_config: None,
-            artifact_tracker: None,
             client_identifier: None,
             screen_mode: None,
             verbatim: true,

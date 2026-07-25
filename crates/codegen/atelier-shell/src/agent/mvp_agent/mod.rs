@@ -50,10 +50,9 @@ use agent_client_protocol::Client as _;
 use agent_client_protocol::{self as acp, AuthenticateResponse};
 use indexmap::IndexMap;
 use tokio::sync::oneshot;
-use xai_acp_lib::AcpAgentGatewaySender as GatewaySender;
+use atelier_acp_runtime::AcpAgentGatewaySender as GatewaySender;
 use crate::agent::auth_method;
 use crate::agent::config::{self, Config as AgentConfig, ModelEntry, resolve_credentials};
-use crate::agent::feedback_client::FeedbackClient;
 use crate::agent::folder_trust;
 use crate::agent::models::{resolve_catalog_key, selectable_catalog_key_for_persisted};
 use crate::agent::session_config;
@@ -81,25 +80,24 @@ use crate::session::{
 };
 use crate::terminal::{AcpTerminalRunner, TerminalRunner};
 use crate::tools::ToolContext;
-use crate::upload::manifest::write_error_manifest;
-use crate::upload::trace::{
-    GCS_SCHEMA_VERSION, PromptMetadata, TurnResultMetadata,
-    build_chat_history_session_state, local_sandbox_telemetry, upload_config,
-    upload_full_prompt_txt, upload_harness_session_archive, upload_images,
-    upload_metadata, upload_plugin_state, upload_session_state, upload_turn_messages,
-    upload_turn_result, upload_unified_log,
+use crate::local_artifacts::artifacts::{
+    LOCAL_ARTIFACT_SCHEMA_VERSION, PromptMetadata, TurnResultMetadata,
+    build_chat_history_session_state, local_sandbox_telemetry, write_config,
+    write_error_manifest, write_full_prompt_txt, write_harness_session_archive, write_images,
+    write_metadata, write_plugin_state, write_session_state, write_turn_messages,
+    write_turn_result, write_unified_log,
 };
-use crate::upload::turn::{
-    PromptTraceContext, UploadWait, complete_prompt_trace, spawn_upload_task,
+use crate::local_artifacts::turn::{
+    ArtifactWriteWait, PromptTraceContext, complete_prompt_trace, spawn_artifact_task,
 };
-use crate::upload::turn::{
+use crate::local_artifacts::turn::{
     apply_yolo_mode_to_matching_sessions, lookup_session_model,
     parse_agent_profile_from_meta,
 };
 use tokio_util::sync::CancellationToken;
 use atelier_paths::AbsPathBuf;
 use atelier_workspace::session::git::GitDiscoveryResult;
-use xai_hunk_tracker::HunkTrackerActor;
+use atelier_hunk_tracker::HunkTrackerActor;
 /// Hard-error message for legacy Direct hub-bind sessions (`atelier/cloud_server_id`).
 pub(crate) const DIRECT_HUB_CLOUD_REMOVED_MSG: &str = "Direct hub cloud removed; use Gateway (envId or existing-workspace attach)";
 /// Reject session `_meta` that still requests Direct hub bind (D8).
@@ -118,7 +116,7 @@ pub(crate) fn reject_direct_hub_cloud_meta(
 /// Extract the numeric `tier` claim from a JWT access token (no signature
 /// verification). Maps the `prod_auth.SubscriptionTier` proto enum values
 /// to display-style strings that `normalize_tier` in the telemetry crate
-/// will canonicalize for Mixpanel.
+/// will canonicalize for local metrics.
 pub(crate) fn jwt_tier_claim(jwt: &str) -> Option<String> {
     use base64::Engine;
     let payload_b64 = jwt.split('.').nth(1)?;
@@ -141,7 +139,7 @@ pub(crate) fn jwt_tier_claim(jwt: &str) -> Option<String> {
             .to_string(),
     )
 }
-/// Resolve Mixpanel / AuthMeta `subscription_tier`.
+/// Resolve the local-metrics / AuthMeta `subscription_tier`.
 ///
 /// Precedence:
 /// 1. CCP `/settings` `subscription_tier_display` (when present and non-empty)
@@ -656,9 +654,6 @@ pub struct MvpAgent {
     pub(crate) sampling_config: RefCell<SamplingConfig>,
     pub(crate) auth_manager: Arc<AuthManager>,
     pub(crate) models_manager: crate::agent::models::ModelsManager,
-    /// atelier.invalid chat-product catalog (`/rest/modes`) for chat sessions; distinct
-    /// from `models_manager` (the build `/v1/models` catalog).
-    pub(crate) chat_modes: crate::agent::chat_modes::ChatModesManager,
     /// Forwards pasted codes from `handle_auth_submit_code` to the auth flow.
     pub(crate) auth_code_tx: RefCell<Option<tokio::sync::mpsc::Sender<String>>>,
     /// Receives the auth URL from the auth flow; read by `handle_auth_get_url`.
@@ -706,12 +701,6 @@ pub struct MvpAgent {
     /// Per-session YOLO tracking lives in SessionHandle.yolo_mode.
     default_yolo_mode: bool,
     default_auto_mode: bool,
-    /// `Send` mirror of `cfg.is_trace_upload_enabled()` for the per-session
-    /// live collection gates (`cfg` is `!Send`; the gates run on the tokio
-    /// pool). Kept current by
-    /// [`Self::sync_collection_config_gate`] on every mid-session
-    /// `remote_settings` rewrite.
-    pub(crate) trace_upload_live: Arc<std::sync::atomic::AtomicBool>,
     /// Memory system configuration (None when --experimental-memory not set).
     memory_config: Option<crate::config::MemoryConfig>,
     /// Optional channel to the leader's `ConfigFileWatcher` for dynamic
@@ -753,7 +742,7 @@ pub struct MvpAgent {
     /// CodebaseIndexManager holds only Weak; without these the actor would
     /// be reaped immediately. Cleaned up in remove_session.
     session_index_claims: RefCell<
-        HashMap<acp::SessionId, std::sync::Arc<xai_codebase_graph::IndexManagerHandle>>,
+        HashMap<acp::SessionId, std::sync::Arc<atelier_codebase_graph::IndexManagerHandle>>,
     >,
     /// Worktree creation type (resolved: local config > remote > default Linked).
     pub(crate) worktree_type: crate::util::config::WorktreeType,
@@ -896,7 +885,7 @@ pub struct MvpAgent {
     announcements_gen: std::cell::Cell<u64>,
     /// Announcements list last actually emitted via `atelier/announcements/update`
     /// (expiry-filtered), the diff baseline for `emit_announcements`.
-    /// Owned by the emit gate — full-settings refreshes move `remote_settings`
+    /// Owned by the emit gate — full-settings refreshes move `local_runtime_settings`
     /// without touching this, so their changes still get pushed on the next
     /// gate call. LEADER-SAFE(shared): one agent-wide push stream.
     last_emitted_announcements: RefCell<Vec<atelier_announcements::RemoteAnnouncement>>,
@@ -909,7 +898,7 @@ pub struct MvpAgent {
     /// Idempotency guard for the heap-profile poll / kill-switch loop.
     heap_profile_started: std::cell::Cell<bool>,
     /// Test-only spy recording every session id whose cloud replica was
-    /// finalized via `finalize_session_replica`. Lets the no-evict tests assert
+    /// finalized via `finalize_local_session`. Lets the no-evict tests assert
     /// that `finalize()` does NOT fire on a mere client disconnect (only on a
     /// terminal/explicit close).
     #[cfg(test)]
@@ -1033,7 +1022,7 @@ fn read_session_or_init_meta_str<'a>(
     };
     read(session_meta).or_else(|| read(init_meta))
 }
-use xai_chat_state::conversation_util::replace_or_insert_system_head;
+use atelier_chat_state::conversation_util::replace_or_insert_system_head;
 /// Non-empty `systemPromptOverride` from session meta (preferred) or init meta.
 /// A blank string (empty or whitespace-only) is treated as "no override" so a
 /// client cannot accidentally blank the system prompt.
@@ -1206,20 +1195,20 @@ fn inject_proxy_headers(
 fn resolve_inference_idle_timeout_secs(
     models: &indexmap::IndexMap<String, crate::agent::config::ModelEntry>,
     model: &str,
-    remote_settings: Option<&crate::util::config::RemoteSettings>,
+    local_runtime_settings: Option<&crate::util::config::LocalRuntimeSettings>,
 ) -> u64 {
     let per_model = models
         .get(model)
         .or_else(|| models.values().find(|entry| entry.info.model == model))
         .and_then(|entry| entry.info.inference_idle_timeout_secs);
-    let remote = remote_settings.and_then(|s| s.inference_idle_timeout_secs);
+    let remote = local_runtime_settings.and_then(|s| s.inference_idle_timeout_secs);
     per_model.or(remote).unwrap_or(600).max(10)
 }
 /// Parse the client-advertised `atelier/hunkTracker.mode` string. Case-insensitive
 /// and trimmed. Absent/blank/`off`/`disabled` => `None`; unknown => `AllDirty`.
 fn resolve_hunk_tracking_mode(
     mode_str: Option<&str>,
-) -> Option<xai_hunk_tracker::TrackingMode> {
+) -> Option<atelier_hunk_tracker::TrackingMode> {
     let mode = mode_str.map(str::trim)?;
     if mode.is_empty() || mode.eq_ignore_ascii_case("off")
         || mode.eq_ignore_ascii_case("disabled")
@@ -1228,7 +1217,7 @@ fn resolve_hunk_tracking_mode(
     }
     Some(
         serde_json::from_value(serde_json::Value::String(mode.to_ascii_lowercase()))
-            .unwrap_or(xai_hunk_tracker::TrackingMode::AllDirty),
+            .unwrap_or(atelier_hunk_tracker::TrackingMode::AllDirty),
     )
 }
 /// Session wiring derived from the resolved tracking mode. Disabling the tracker
@@ -1237,7 +1226,7 @@ fn resolve_hunk_tracking_mode(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct HunkTrackingPlan {
     /// `Some` → spawn the actor in this mode; `None` → use `noop()`, no actor.
-    actor_mode: Option<xai_hunk_tracker::TrackingMode>,
+    actor_mode: Option<atelier_hunk_tracker::TrackingMode>,
 }
 impl HunkTrackingPlan {
     /// Gate for the fs-notify forward sites (via `ToolContext.hunk_tracking_enabled`)
@@ -1315,7 +1304,7 @@ impl MvpAgent {
     /// Dispatches by on-disk method name:
     /// - ACP updates (`"session/update"`) → typed `SessionNotification` for correct
     ///   TUI dispatch (direct dispatch preserves Rust types, not method strings).
-    /// - xAI updates (`"_atelier/session/update"`) → `ExtNotification`.
+    /// - extension updates (`"_atelier/session/update"`) → `ExtNotification`.
     ///
     /// When `mark_replay` is true, the notification is tagged with
     /// `_meta.isReplay: true` so the client knows it's historical data.
@@ -1327,7 +1316,7 @@ impl MvpAgent {
         persist_data: Option<&serde_json::Value>,
         target_client_id: Option<&serde_json::Value>,
         completions: &mut Vec<
-            tokio::sync::oneshot::Receiver<xai_acp_lib::AcpResult<()>>,
+            tokio::sync::oneshot::Receiver<atelier_acp_runtime::AcpResult<()>>,
         >,
         mark_replay: bool,
         pending_tool_calls: &mut std::collections::HashMap<
@@ -1371,7 +1360,7 @@ impl MvpAgent {
                     serde_json::Value,
                 >(raw_params.get()) else {
                     tracing::debug!(
-                        "replay: skipping xAI update with unparseable params"
+                        "replay: skipping extension update with unparseable params"
                     );
                     return;
                 };
@@ -1561,7 +1550,7 @@ impl MvpAgent {
         persist_data: Option<&serde_json::Value>,
         target_client_id: Option<&serde_json::Value>,
         mark_replay: bool,
-    ) -> Vec<tokio::sync::oneshot::Receiver<xai_acp_lib::AcpResult<()>>> {
+    ) -> Vec<tokio::sync::oneshot::Receiver<atelier_acp_runtime::AcpResult<()>>> {
         use std::io::{Read, Seek, SeekFrom};
         let Some(updates_path) = updates_file_path.clone() else {
             return Vec::new();
@@ -1670,7 +1659,7 @@ impl MvpAgent {
         &self,
         session_id: &acp::SessionId,
         updates_file_path: &Option<PathBuf>,
-    ) -> Vec<tokio::sync::oneshot::Receiver<xai_acp_lib::AcpResult<()>>> {
+    ) -> Vec<tokio::sync::oneshot::Receiver<atelier_acp_runtime::AcpResult<()>>> {
         let orphaned = Self::find_orphaned_background_tasks(updates_file_path);
         if orphaned.is_empty() {
             return Vec::new();
@@ -1829,11 +1818,11 @@ impl MvpAgent {
                 Some((std::path::PathBuf::from(&h.info.cwd), h.cmd_tx.clone()))
             })
             .collect();
-        let remote_settings = self.cfg.borrow().remote_settings.clone();
+        let local_runtime_settings = self.cfg.borrow().local_runtime_settings.clone();
         for (cwd, cmd_tx) in targets {
             let project_trusted = folder_trust::resolve_and_record(
                 cwd.as_path(),
-                remote_settings.as_ref(),
+                local_runtime_settings.as_ref(),
                 false,
             );
             let disk_cfg = crate::config::resolve_effective_plugins_config(cwd.as_path())
@@ -1852,10 +1841,12 @@ impl MvpAgent {
 /// trace context, await turn completion, then upload the trace.
 async fn handle_synthetic_turn_trace(
     agent_ref: LocalRef<MvpAgent>,
-    request: crate::upload::turn::SyntheticTurnTraceRequest,
+    request: crate::local_artifacts::turn::SyntheticTurnTraceRequest,
 ) {
     use crate::session::SessionCommand;
-    use crate::upload::turn::{UploadWait, complete_prompt_trace, spawn_upload_task};
+    use crate::local_artifacts::turn::{
+        ArtifactWriteWait, complete_prompt_trace, spawn_artifact_task,
+    };
     let turn_started_at = chrono::Utc::now().to_rfc3339();
     let (
         info,
@@ -1925,13 +1916,13 @@ async fn handle_synthetic_turn_trace(
     let Some(ctx) = trace_context else {
         tracing::info!(
             session_id = % request.session_id.0, prompt_id = % request.prompt_id,
-            "Synthetic trace: trace uploads disabled, skipping",
+            "Synthetic trace: local artifact capture unavailable, skipping",
         );
         return;
     };
     let before_ctx = ctx.clone();
     let metadata = PromptMetadata {
-        schema_version: GCS_SCHEMA_VERSION.to_string(),
+        schema_version: LOCAL_ARTIFACT_SCHEMA_VERSION.to_string(),
         session_id: ctx.session_info.id.0.to_string(),
         turn_number: ctx.turn_number,
         request_id: request.prompt_id.clone(),
@@ -1960,14 +1951,14 @@ async fn handle_synthetic_turn_trace(
         workspace_type: None,
         sandbox: local_sandbox_telemetry(),
     };
-    spawn_upload_task(
-        "synthetic_before_uploads",
+    spawn_artifact_task(
+        "synthetic_before_artifacts",
         async move {
             futures::join!(
-                upload_session_state(& before_ctx, "before", request
-                .before_session_copy_rx, UploadWait::Confirm,), upload_metadata(&
-                before_ctx, metadata), upload_config(& before_ctx, & agent_config), crate
-                ::upload::config_files::upload_config_files(& before_ctx),
+                write_session_state(&before_ctx, "before", request.before_session_copy_rx),
+                write_metadata(&before_ctx, metadata),
+                write_config(&before_ctx, &agent_config),
+                crate::local_artifacts::artifacts::write_config_files(&before_ctx),
             );
         },
     );
@@ -1983,7 +1974,7 @@ async fn handle_synthetic_turn_trace(
         Ok(turn_ok) => {
             let completed = matches!(turn_ok.stop_reason, acp::StopReason::EndTurn);
             let turn_result_metadata = TurnResultMetadata {
-                schema_version: GCS_SCHEMA_VERSION,
+                schema_version: LOCAL_ARTIFACT_SCHEMA_VERSION,
                 request_id: request.prompt_id.clone(),
                 completed,
                 stop_reason: Some(format!("{:?}", turn_ok.stop_reason)),
@@ -2009,11 +2000,11 @@ async fn handle_synthetic_turn_trace(
                 resolved_model: Some(model.clone()),
                 subagents_spawned: vec![],
             };
-            upload_turn_result(&ctx, &turn_result_metadata, UploadWait::Confirm).await;
+            write_turn_result(&ctx, &turn_result_metadata, ArtifactWriteWait::Confirm).await;
         }
         Err(e) => {
             let turn_result_metadata = TurnResultMetadata {
-                schema_version: GCS_SCHEMA_VERSION,
+                schema_version: LOCAL_ARTIFACT_SCHEMA_VERSION,
                 request_id: request.prompt_id.clone(),
                 completed: false,
                 stop_reason: None,
@@ -2030,10 +2021,10 @@ async fn handle_synthetic_turn_trace(
                 resolved_model: Some(model.clone()),
                 subagents_spawned: vec![],
             };
-            upload_turn_result(&ctx, &turn_result_metadata, UploadWait::Confirm).await;
+            write_turn_result(&ctx, &turn_result_metadata, ArtifactWriteWait::Confirm).await;
         }
     }
-    let turn_messages: Option<xai_chat_state::TurnCapture> = {
+    let turn_messages: Option<atelier_chat_state::TurnCapture> = {
         let (tx, rx) = tokio::sync::oneshot::channel();
         if ctx
             .session_handle
@@ -2062,7 +2053,7 @@ async fn handle_synthetic_turn_trace(
     let synthetic_committed = matches!(
         & prompt_result, Ok(ok) if matches!(ok.stop_reason, acp::StopReason::EndTurn)
     );
-    let streaming_partial = crate::upload::turn::take_streaming_partial(
+    let streaming_partial = crate::local_artifacts::turn::take_streaming_partial(
             &ctx.session_handle.cmd_tx,
             request.prompt_id.clone(),
             synthetic_committed,
@@ -2090,7 +2081,7 @@ async fn handle_synthetic_turn_trace(
                 });
             cap
         });
-    spawn_upload_task(
+    spawn_artifact_task(
         "synthetic_turn_trace",
         async move {
             match complete_prompt_trace(
@@ -2099,14 +2090,14 @@ async fn handle_synthetic_turn_trace(
                     session_copy_rx,
                     turn_messages,
                     streaming_partial,
-                    UploadWait::Confirm,
+                    ArtifactWriteWait::Confirm,
                 )
                 .await
             {
                 Ok(_) => {}
                 Err(e) => {
                     tracing::warn!(
-                        error = % e, "Synthetic turn trace upload failed (non-fatal)",
+                        error = % e, "Synthetic turn local artifact write failed (non-fatal)",
                     );
                 }
             }
@@ -2263,7 +2254,7 @@ fn spawn_post_unblock_jwt_and_catalog_retry(
 /// `retry_subscription_check` (poller gate lift) to keep the decision in
 /// one place.
 pub(crate) fn settings_allow_access(
-    rs: Option<&crate::util::config::RemoteSettings>,
+    rs: Option<&crate::util::config::LocalRuntimeSettings>,
 ) -> bool {
     rs.and_then(|s| s.allow_access).unwrap_or(false)
 }

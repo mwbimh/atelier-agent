@@ -7,7 +7,7 @@ use std::sync::atomic::Ordering;
 
 async fn make_test_actor_with_active_goal() -> SessionActor {
     let (gateway_tx, _gateway_rx) =
-        tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+        tokio::sync::mpsc::unbounded_channel::<atelier_acp_runtime::AcpClientMessage>();
     let (persistence_tx, _persistence_rx) =
         tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
     let mut actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
@@ -186,8 +186,6 @@ async fn seed_pending_classifier_nudge(actor: &SessionActor) {
                 "classifier nudge",
             ))],
             prompt_mode: crate::session::plan_mode::PromptMode::Agent,
-            trace_gcs_config: None,
-            artifact_tracker: None,
             client_identifier: None,
             screen_mode: None,
             verbatim: true,
@@ -881,13 +879,13 @@ fn agent_message_text_from_notification(n: &acp::SessionNotification) -> Option<
 }
 
 fn spawn_gateway_notification_capture(
-    mut gateway_rx: tokio::sync::mpsc::UnboundedReceiver<xai_acp_lib::AcpClientMessage>,
+    mut gateway_rx: tokio::sync::mpsc::UnboundedReceiver<atelier_acp_runtime::AcpClientMessage>,
 ) -> std::sync::Arc<tokio::sync::Mutex<Vec<acp::SessionNotification>>> {
     let sent = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new()));
     let sent_for_task = sent.clone();
     tokio::task::spawn_local(async move {
         while let Some(msg) = gateway_rx.recv().await {
-            if let xai_acp_lib::AcpClientMessage::SessionNotification(args) = msg {
+            if let atelier_acp_runtime::AcpClientMessage::SessionNotification(args) = msg {
                 sent_for_task.lock().await.push(args.request);
                 let _ = args.response_tx.send(Ok(()));
             }
@@ -931,7 +929,7 @@ async fn make_test_actor_with_active_goal_and_gateway_capture() -> (
     std::sync::Arc<tokio::sync::Mutex<Vec<acp::SessionNotification>>>,
 ) {
     let (gateway_tx, gateway_rx) =
-        tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+        tokio::sync::mpsc::unbounded_channel::<atelier_acp_runtime::AcpClientMessage>();
     let sent = spawn_gateway_notification_capture(gateway_rx);
     let (persistence_tx, _persistence_rx) =
         tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
@@ -1213,7 +1211,7 @@ async fn cancelled_turn_without_infra_error_does_not_auto_pause_goal() {
                 turn_snapshot: None,
                 completion_kind: crate::session::commands::PromptCompletionKind::Cancelled {
                     category: Some(
-                        xai_file_utils::events::types::CancellationCategory::MidTurnAbort,
+                        atelier_runtime_events::events::types::CancellationCategory::MidTurnAbort,
                     ),
                     context: None,
                 },
@@ -1878,7 +1876,7 @@ async fn goal_auto_paused_event_emits_verification_reason() {
         .run_until(async {
             let tmp = tempfile::TempDir::new().expect("tempdir");
             let (gateway_tx, _gateway_rx) =
-                tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                tokio::sync::mpsc::unbounded_channel::<atelier_acp_runtime::AcpClientMessage>();
             let (persistence_tx, _persistence_rx) =
                 tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
             let mut actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
@@ -1986,7 +1984,7 @@ async fn goal_resume_with_no_goal_returns_terminal_message() {
     local
         .run_until(async {
             let (gateway_tx, _gateway_rx) =
-                tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                tokio::sync::mpsc::unbounded_channel::<atelier_acp_runtime::AcpClientMessage>();
             let (persistence_tx, _persistence_rx) =
                 tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
             let actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
@@ -2053,7 +2051,7 @@ async fn make_goal_resume_turn_actor(
     tokio::sync::mpsc::UnboundedReceiver<PersistenceMsg>,
 ) {
     let (gateway_tx, gateway_rx) =
-        tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+        tokio::sync::mpsc::unbounded_channel::<atelier_acp_runtime::AcpClientMessage>();
     let sent = spawn_gateway_notification_capture(gateway_rx);
     let (persistence_tx, persistence_rx) = tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
     let (mut actor, event_rx) =
@@ -2105,8 +2103,6 @@ async fn goal_resume_no_goal_through_handle_prompt_ends_turn() {
                     "goal-resume-no-goal",
                     goal_resume_prompt_blocks(),
                     PromptMode::Agent,
-                    None,
-                    None,
                     None,
                     None,
                     false,
@@ -2171,8 +2167,6 @@ async fn goal_resume_paused_through_handle_prompt_runs_inference() {
                         "goal-resume-paused",
                         goal_resume_prompt_blocks(),
                         PromptMode::Agent,
-                        None,
-                        None,
                         None,
                         None,
                         false,
@@ -2311,7 +2305,7 @@ async fn drain_goal_updates_harness_disabled_does_not_drop_ack() {
         .run_until(async {
             // A non-goal session: harness disabled (create_test_actor default).
             let (gateway_tx, _gateway_rx) =
-                tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                tokio::sync::mpsc::unbounded_channel::<atelier_acp_runtime::AcpClientMessage>();
             let (persistence_tx, _persistence_rx) =
                 tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
             let actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
@@ -2930,8 +2924,6 @@ async fn idempotency_matcher_suppresses_goal_summary_when_classifier_nudge_pendi
                         "<system-reminder>fixture</system-reminder>",
                     ))],
                     prompt_mode: crate::session::plan_mode::PromptMode::Agent,
-                    trace_gcs_config: None,
-                    artifact_tracker: None,
                     client_identifier: None,
                     screen_mode: None,
                     verbatim: true,
@@ -3010,7 +3002,7 @@ async fn goal_auto_paused_event_emits_infra_reason() {
         .run_until(async {
             let tmp = tempfile::TempDir::new().expect("tempdir");
             let (gateway_tx, _gateway_rx) =
-                tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                tokio::sync::mpsc::unbounded_channel::<atelier_acp_runtime::AcpClientMessage>();
             let (persistence_tx, _persistence_rx) =
                 tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
             let mut actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
@@ -3054,7 +3046,7 @@ async fn goal_auto_paused_event_is_emitted() {
             // through `make_test_actor_with_active_goal`).
             let tmp = tempfile::TempDir::new().expect("tempdir");
             let (gateway_tx, _gateway_rx) =
-                tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                tokio::sync::mpsc::unbounded_channel::<atelier_acp_runtime::AcpClientMessage>();
             let (persistence_tx, _persistence_rx) =
                 tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
             let mut actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
@@ -3173,18 +3165,18 @@ fn spawn_notif_with_model(
     subagent_id: &str,
     resumed_from: Option<&str>,
     model: Option<&str>,
-) -> XaiSessionNotification {
+) -> ExtensionSessionNotification {
     let mut notif = spawn_notif(subagent_id, resumed_from);
-    if let XaiSessionUpdate::SubagentSpawned { model: m, .. } = &mut notif.update {
+    if let ExtensionSessionUpdate::SubagentSpawned { model: m, .. } = &mut notif.update {
         *m = model.map(str::to_string);
     }
     notif
 }
 
-fn spawn_notif(subagent_id: &str, resumed_from: Option<&str>) -> XaiSessionNotification {
-    XaiSessionNotification {
+fn spawn_notif(subagent_id: &str, resumed_from: Option<&str>) -> ExtensionSessionNotification {
+    ExtensionSessionNotification {
         session_id: acp::SessionId::new("test-actor"),
-        update: XaiSessionUpdate::SubagentSpawned {
+        update: ExtensionSessionUpdate::SubagentSpawned {
             subagent_id: subagent_id.into(),
             parent_session_id: "test-actor".into(),
             parent_prompt_id: None,
@@ -3203,10 +3195,10 @@ fn spawn_notif(subagent_id: &str, resumed_from: Option<&str>) -> XaiSessionNotif
     }
 }
 
-fn finish_notif(subagent_id: &str, tokens_used: u64) -> XaiSessionNotification {
-    XaiSessionNotification {
+fn finish_notif(subagent_id: &str, tokens_used: u64) -> ExtensionSessionNotification {
+    ExtensionSessionNotification {
         session_id: acp::SessionId::new("test-actor"),
-        update: XaiSessionUpdate::SubagentFinished {
+        update: ExtensionSessionUpdate::SubagentFinished {
             subagent_id: subagent_id.into(),
             child_session_id: subagent_id.into(),
             status: "completed".into(),
@@ -3290,7 +3282,7 @@ async fn goal_tokens_used_cross_session_resume_anchors_at_zero() {
             let actor = make_test_actor_with_active_goal().await;
             // Parent id is unknown to this process; anchor falls back to 0.
             actor
-                .handle_xai_session_notification(spawn_notif("x", Some("from-prior-session")))
+                .handle_extension_session_notification(spawn_notif("x", Some("from-prior-session")))
                 .await;
             let anchor = actor
                 .subagent_token_records
@@ -3325,14 +3317,14 @@ async fn goal_tokens_used_monotonic_under_out_of_order_events() {
         .run_until(async {
             let actor = make_test_actor_with_active_goal().await;
             actor
-                .handle_xai_session_notification(spawn_notif("a", None))
+                .handle_extension_session_notification(spawn_notif("a", None))
                 .await;
             actor
-                .handle_xai_session_notification(finish_notif("a", 50_000))
+                .handle_extension_session_notification(finish_notif("a", 50_000))
                 .await;
             // Stale event with smaller cumulative arrives second.
             actor
-                .handle_xai_session_notification(finish_notif("a", 40_000))
+                .handle_extension_session_notification(finish_notif("a", 40_000))
                 .await;
             assert_eq!(
                 actor
@@ -3356,13 +3348,13 @@ async fn integration_subagent_spawn_resume_uses_parent_anchor() {
         .run_until(async {
             let actor = make_test_actor_with_active_goal().await;
             actor
-                .handle_xai_session_notification(spawn_notif("a", None))
+                .handle_extension_session_notification(spawn_notif("a", None))
                 .await;
             actor
-                .handle_xai_session_notification(finish_notif("a", 50_000))
+                .handle_extension_session_notification(finish_notif("a", 50_000))
                 .await;
             actor
-                .handle_xai_session_notification(spawn_notif("a1", Some("a")))
+                .handle_extension_session_notification(spawn_notif("a1", Some("a")))
                 .await;
             let rec = actor
                 .subagent_token_records
@@ -3373,7 +3365,7 @@ async fn integration_subagent_spawn_resume_uses_parent_anchor() {
             assert_eq!(rec.0, 50_000, "child anchor = parent.last");
             assert_eq!(rec.1, 50_000, "child last seeded to anchor at spawn");
             actor
-                .handle_xai_session_notification(finish_notif("a1", 80_000))
+                .handle_extension_session_notification(finish_notif("a1", 80_000))
                 .await;
             // Total marginal: 50k (a) + 30k (a1) = 80k.
             assert_eq!(actor.goal_tokens_used(0), 80_000);
@@ -3388,7 +3380,7 @@ async fn subagent_spawn_captures_effective_model_id() {
         .run_until(async {
             let actor = make_test_actor_with_active_goal().await;
             actor
-                .handle_xai_session_notification(spawn_notif_with_model(
+                .handle_extension_session_notification(spawn_notif_with_model(
                     "a",
                     None,
                     Some("atelier-4.5"),
@@ -3411,7 +3403,7 @@ async fn subagent_spawn_absent_model_captured_as_none() {
         .run_until(async {
             let actor = make_test_actor_with_active_goal().await;
             actor
-                .handle_xai_session_notification(spawn_notif_with_model("a", None, None))
+                .handle_extension_session_notification(spawn_notif_with_model("a", None, None))
                 .await;
             let model = actor
                 .subagent_token_records
@@ -3484,7 +3476,7 @@ async fn handle_turn_end_trips_budget_on_failed_turn() {
     local
         .run_until(async {
             let (gateway_tx, _gateway_rx) =
-                tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                tokio::sync::mpsc::unbounded_channel::<atelier_acp_runtime::AcpClientMessage>();
             let (persistence_tx, _persistence_rx) =
                 tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
             let mut actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
@@ -3522,7 +3514,7 @@ async fn handle_turn_end_keeps_goal_active_under_budget_on_failed_turn() {
     local
         .run_until(async {
             let (gateway_tx, _gateway_rx) =
-                tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                tokio::sync::mpsc::unbounded_channel::<atelier_acp_runtime::AcpClientMessage>();
             let (persistence_tx, _persistence_rx) =
                 tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
             let mut actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
@@ -3556,7 +3548,7 @@ async fn integration_subagent_spawn_captures_active_goal_id() {
         .run_until(async {
             let actor = make_test_actor_with_active_goal().await;
             actor
-                .handle_xai_session_notification(spawn_notif("a", None))
+                .handle_extension_session_notification(spawn_notif("a", None))
                 .await;
             let goal_id = actor
                 .subagent_token_records
@@ -3702,7 +3694,7 @@ async fn goal_tokens_used_returns_zero_when_no_active_goal() {
     local
         .run_until(async {
             let (gateway_tx, _g) =
-                tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                tokio::sync::mpsc::unbounded_channel::<atelier_acp_runtime::AcpClientMessage>();
             let (persistence_tx, _p) = tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
             let actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
             insert_record(&actor, "a", Some("phantom"), 0, 50_000);
@@ -3804,10 +3796,10 @@ async fn blocked_streak_reaches_pause_across_successful_turns() {
         .await;
 }
 
-fn progress_notif(subagent_id: &str, tokens_used: u64) -> XaiSessionNotification {
-    XaiSessionNotification {
+fn progress_notif(subagent_id: &str, tokens_used: u64) -> ExtensionSessionNotification {
+    ExtensionSessionNotification {
         session_id: acp::SessionId::new("test-actor"),
-        update: XaiSessionUpdate::SubagentProgress {
+        update: ExtensionSessionUpdate::SubagentProgress {
             subagent_id: subagent_id.into(),
             parent_session_id: "test-actor".into(),
             child_session_id: subagent_id.into(),
@@ -3834,7 +3826,7 @@ async fn subagent_progress_advances_goal_tokens_live_without_double_count() {
     local
         .run_until(async {
             let (gateway_tx, mut gateway_rx) =
-                tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                tokio::sync::mpsc::unbounded_channel::<atelier_acp_runtime::AcpClientMessage>();
             let (persistence_tx, mut persistence_rx) =
                 tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
             let mut actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
@@ -3849,43 +3841,44 @@ async fn subagent_progress_advances_goal_tokens_live_without_double_count() {
                 None,
             );
             actor
-                .handle_xai_session_notification(spawn_notif("a", None))
+                .handle_extension_session_notification(spawn_notif("a", None))
                 .await;
             // Count (and drain) goal_updated notifications delivered to the
             // gateway. Progress-tick emits are gateway-only now, so coalescing
             // is observed here rather than on the persistence channel.
-            let count_gateway_goal_updated =
-                |rx: &mut tokio::sync::mpsc::UnboundedReceiver<xai_acp_lib::AcpClientMessage>| {
-                    let mut n = 0usize;
-                    while let Ok(msg) = rx.try_recv() {
-                        let xai_acp_lib::AcpClientMessage::ExtNotification(args) = msg else {
-                            continue;
-                        };
-                        if args.request.method.as_ref() != "atelier/session_notification" {
-                            continue;
-                        }
-                        let Ok(v) =
-                            serde_json::from_str::<serde_json::Value>(args.request.params.get())
-                        else {
-                            continue;
-                        };
-                        if v.get("update")
-                            .and_then(|u| u.get("sessionUpdate"))
-                            .and_then(|s| s.as_str())
-                            == Some("goal_updated")
-                        {
-                            n += 1;
-                        }
+            let count_gateway_goal_updated = |rx: &mut tokio::sync::mpsc::UnboundedReceiver<
+                atelier_acp_runtime::AcpClientMessage,
+            >| {
+                let mut n = 0usize;
+                while let Ok(msg) = rx.try_recv() {
+                    let atelier_acp_runtime::AcpClientMessage::ExtNotification(args) = msg else {
+                        continue;
+                    };
+                    if args.request.method.as_ref() != "atelier/session_notification" {
+                        continue;
                     }
-                    n
-                };
+                    let Ok(v) =
+                        serde_json::from_str::<serde_json::Value>(args.request.params.get())
+                    else {
+                        continue;
+                    };
+                    if v.get("update")
+                        .and_then(|u| u.get("sessionUpdate"))
+                        .and_then(|s| s.as_str())
+                        == Some("goal_updated")
+                    {
+                        n += 1;
+                    }
+                }
+                n
+            };
             // Drop the spawn-transition emit + persisted entries so the
             // measurements below isolate the progress ticks.
             let _ = count_gateway_goal_updated(&mut gateway_rx);
             while persistence_rx.try_recv().is_ok() {}
 
             actor
-                .handle_xai_session_notification(progress_notif("a", 30_000))
+                .handle_extension_session_notification(progress_notif("a", 30_000))
                 .await;
             assert_eq!(
                 actor.goal_tokens_used(0),
@@ -3914,7 +3907,7 @@ async fn subagent_progress_advances_goal_tokens_live_without_double_count() {
 
             // Coalescing: a replayed (non-advancing) tick must emit nothing.
             actor
-                .handle_xai_session_notification(progress_notif("a", 30_000))
+                .handle_extension_session_notification(progress_notif("a", 30_000))
                 .await;
             assert_eq!(
                 count_gateway_goal_updated(&mut gateway_rx),
@@ -3927,7 +3920,7 @@ async fn subagent_progress_advances_goal_tokens_live_without_double_count() {
             );
 
             actor
-                .handle_xai_session_notification(finish_notif("a", 50_000))
+                .handle_extension_session_notification(finish_notif("a", 50_000))
                 .await;
             assert_eq!(
                 actor.goal_tokens_used(0),
@@ -3946,10 +3939,12 @@ async fn subagent_progress_advances_goal_tokens_live_without_double_count() {
             );
             // The SubagentProgress notification itself must never persist.
             while let Ok(msg) = persistence_rx.try_recv() {
-                if let PersistenceMsg::Update(crate::session::storage::SessionUpdate::Xai(n)) = msg
+                if let PersistenceMsg::Update(crate::session::storage::SessionUpdate::Extension(
+                    n,
+                )) = msg
                 {
                     assert!(
-                        !matches!(n.update, XaiSessionUpdate::SubagentProgress { .. }),
+                        !matches!(n.update, ExtensionSessionUpdate::SubagentProgress { .. }),
                         "SubagentProgress must never be persisted",
                     );
                 }
@@ -3969,7 +3964,7 @@ async fn subagent_progress_live_tokens_monotonic_across_child_compaction() {
     local
         .run_until(async {
             let (gateway_tx, _gateway_rx) =
-                tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                tokio::sync::mpsc::unbounded_channel::<atelier_acp_runtime::AcpClientMessage>();
             let (persistence_tx, _persistence_rx) =
                 tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
             let mut actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
@@ -3984,12 +3979,12 @@ async fn subagent_progress_live_tokens_monotonic_across_child_compaction() {
                 None,
             );
             actor
-                .handle_xai_session_notification(spawn_notif("a", None))
+                .handle_extension_session_notification(spawn_notif("a", None))
                 .await;
 
             // Climb to a 100k high-water.
             actor
-                .handle_xai_session_notification(progress_notif("a", 100_000))
+                .handle_extension_session_notification(progress_notif("a", 100_000))
                 .await;
             assert_eq!(
                 actor
@@ -4003,7 +3998,7 @@ async fn subagent_progress_live_tokens_monotonic_across_child_compaction() {
 
             // Child compaction: the next tick reports a LOWER cumulative.
             actor
-                .handle_xai_session_notification(progress_notif("a", 60_000))
+                .handle_extension_session_notification(progress_notif("a", 60_000))
                 .await;
             assert_eq!(
                 actor
@@ -4071,26 +4066,26 @@ async fn subagent_progress_edge_ticks_cannot_corrupt_token_records() {
         .run_until(async {
             let actor = make_test_actor_with_active_goal().await;
             actor
-                .handle_xai_session_notification(spawn_notif("a", None))
+                .handle_extension_session_notification(spawn_notif("a", None))
                 .await;
             actor
-                .handle_xai_session_notification(progress_notif("a", 30_000))
+                .handle_extension_session_notification(progress_notif("a", 30_000))
                 .await;
             // Decreasing tick: ratchet holds.
             actor
-                .handle_xai_session_notification(progress_notif("a", 10_000))
+                .handle_extension_session_notification(progress_notif("a", 10_000))
                 .await;
             assert_eq!(actor.goal_tokens_used(0), 30_000, "ratchet must hold");
             // Unknown subagent id: dropped, nothing recorded.
             actor
-                .handle_xai_session_notification(progress_notif("ghost", 99_000))
+                .handle_extension_session_notification(progress_notif("ghost", 99_000))
                 .await;
             assert_eq!(actor.goal_tokens_used(0), 30_000);
             assert!(!actor.subagent_token_records.lock().contains_key("ghost"));
             // Record tagged to a DIFFERENT goal: tick ignored entirely.
             insert_record(&actor, "foreign", Some("other-goal"), 0, 1_000);
             actor
-                .handle_xai_session_notification(progress_notif("foreign", 70_000))
+                .handle_extension_session_notification(progress_notif("foreign", 70_000))
                 .await;
             assert_eq!(
                 actor
@@ -4105,10 +4100,10 @@ async fn subagent_progress_edge_ticks_cannot_corrupt_token_records() {
             assert_eq!(actor.goal_tokens_used(0), 30_000);
             // Tick after finish: sealed record ignores it.
             actor
-                .handle_xai_session_notification(finish_notif("a", 35_000))
+                .handle_extension_session_notification(finish_notif("a", 35_000))
                 .await;
             actor
-                .handle_xai_session_notification(progress_notif("a", 80_000))
+                .handle_extension_session_notification(progress_notif("a", 80_000))
                 .await;
             assert_eq!(
                 actor.goal_tokens_used(0),

@@ -47,7 +47,7 @@ use atelier_workspace::folder_trust::{
 };
 
 use crate::session::managed_mcp::mcp_server_name;
-use crate::util::config::{MCP_SCOPE_PROJECT, RemoteSettings};
+use crate::util::config::{LocalRuntimeSettings, MCP_SCOPE_PROJECT};
 
 // NOTE: this folder-trust store (`~/.atelier/trusted_folders.toml`) is SEPARATE
 // from the pre-existing per-plugin trust store
@@ -117,7 +117,7 @@ pub fn revoke_folder_trust(cwd: &Path) -> bool {
 /// reconciled even on an inert build, where [`resolve_and_record`] would short-
 /// circuit to allow before reaching the cache. `remote = None`: durable
 /// feature-off / kill-switch verdicts are already cached by the launch/session
-/// resolve that ran with the real RemoteSettings.
+/// resolve that ran with the real LocalRuntimeSettings.
 ///
 /// `DECISIONS` uses `parking_lot::Mutex` (no poisoning), so this gate cannot
 /// fail OPEN on a poisoned lock.
@@ -152,7 +152,7 @@ pub fn project_scope_allowed(cwd: &Path) -> bool {
 /// false under the ACP stdio transport. Mirrors the [`decide`] precedence so it
 /// cannot drift from the gate: feature-off (kill-switch / opt-out) / store-trusted
 /// / no-configs all collapse to a non-`Prompt` verdict and return false.
-pub(crate) fn prompt_warranted(cwd: &Path, remote: Option<&RemoteSettings>) -> bool {
+pub(crate) fn prompt_warranted(cwd: &Path, remote: Option<&LocalRuntimeSettings>) -> bool {
     let key = workspace_key(cwd);
     matches!(
         decide(
@@ -229,7 +229,11 @@ pub(crate) fn record_for_test(cwd: &Path, allowed: bool) {
 /// whose cwd differs from the launch dir, `atelier mcp doctor`) passes `false`, so
 /// an unresolved interactive-but-untrusted workspace resolves **fail-closed**
 /// (untrusted, no prompt) — only the launch dir is ever prompted for.
-pub fn resolve_and_record(cwd: &Path, remote: Option<&RemoteSettings>, allow_prompt: bool) -> bool {
+pub fn resolve_and_record(
+    cwd: &Path,
+    remote: Option<&LocalRuntimeSettings>,
+    allow_prompt: bool,
+) -> bool {
     // Local/dev builds are fully inert: project scope is always allowed, so skip
     // the `trusted_folders.toml` read entirely.
     if folder_trust_inert() {
@@ -263,7 +267,7 @@ pub fn resolve_and_record(cwd: &Path, remote: Option<&RemoteSettings>, allow_pro
 /// no-configs case (config added post-startup via git pull / agent write is
 /// caught). The init-time dedup belongs to the one-shot caller (a `OnceCell` on
 /// `MvpAgent`), NOT to any new shared-cache entry.
-pub fn resolve_launch_dir_trust(cwd: &Path, remote: Option<&RemoteSettings>) -> bool {
+pub fn resolve_launch_dir_trust(cwd: &Path, remote: Option<&LocalRuntimeSettings>) -> bool {
     // Local/dev builds are fully inert: project scope is always allowed, skipping
     // the store read + repo scan entirely.
     if folder_trust_inert() {
@@ -340,7 +344,7 @@ fn resolve_and_record_inner(
 fn compute(
     cwd: &Path,
     key: &Path,
-    remote: Option<&RemoteSettings>,
+    remote: Option<&LocalRuntimeSettings>,
     allow_prompt: bool,
 ) -> (bool, bool) {
     let feature = feature_enabled(remote);
@@ -977,14 +981,14 @@ mod tests {
         // Regression (chat/load-path kill-switch): an untrusted folder WITH repo
         // configs under a remote kill-switch (folder_trust_enabled = Some(false))
         // must resolve ALLOWED. The session spawn path resolves once with the real
-        // RemoteSettings before any gate read, so the gate cache-hits that verdict.
+        // LocalRuntimeSettings before any gate read, so the gate cache-hits that verdict.
         // ATELIER_HOME-isolated (empty store); ATELIER_FOLDER_TRUST unset so the kill-switch
         // is the only signal.
         let _sim = simulate_release_build();
         let home = tempfile::tempdir().unwrap();
         let _env = EnvGuard::set("ATELIER_HOME", home.path());
         let _flag = EnvGuard::unset("ATELIER_FOLDER_TRUST");
-        let remote = RemoteSettings {
+        let remote = LocalRuntimeSettings {
             folder_trust_enabled: Some(false),
             ..Default::default()
         };
@@ -1568,7 +1572,7 @@ mod tests {
         // opt-out would otherwise false-fail the Prompt assertion.
         let _sim = EnvGuard::set(atelier_version::TEST_VERSION_ENV, "0.0.0-sim");
         let _flag = EnvGuard::unset("ATELIER_FOLDER_TRUST");
-        let remote = RemoteSettings {
+        let remote = LocalRuntimeSettings {
             folder_trust_enabled: Some(true),
             ..Default::default()
         };
@@ -1589,7 +1593,7 @@ mod tests {
         let _sim = simulate_release_build();
         let tmp = repo_tmp();
         std::fs::write(tmp.path().join(".mcp.json"), "{}").unwrap();
-        let remote = RemoteSettings {
+        let remote = LocalRuntimeSettings {
             folder_trust_enabled: Some(false),
             ..Default::default()
         };
@@ -1606,7 +1610,7 @@ mod tests {
         std::fs::write(tmp.path().join(".mcp.json"), "{}").unwrap();
         let mut store = TrustStore::load();
         store.set_trusted(&workspace_key(tmp.path())).unwrap();
-        let remote = RemoteSettings {
+        let remote = LocalRuntimeSettings {
             folder_trust_enabled: Some(true),
             ..Default::default()
         };
@@ -1620,7 +1624,7 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         let _env = EnvGuard::set("ATELIER_HOME", home.path());
         let tmp = repo_tmp();
-        let remote = RemoteSettings {
+        let remote = LocalRuntimeSettings {
             folder_trust_enabled: Some(true),
             ..Default::default()
         };

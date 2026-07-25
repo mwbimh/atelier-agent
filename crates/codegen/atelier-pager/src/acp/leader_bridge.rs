@@ -14,11 +14,11 @@ use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 use tokio_util::sync::CancellationToken;
 
 use agent_client_protocol as acp;
-pub use atelier_shell::leader::ConnectionStatus;
-use atelier_shell::leader::{LeaderConnection, LeaderReconnector, ReconnectPolicy};
-use xai_acp_lib::{
+use atelier_acp_runtime::{
     AcpClientChannel, AcpGatewayReceiver, AcpGatewaySender, LineBufferedRead, acp_channels,
 };
+pub use atelier_shell::leader::ConnectionStatus;
+use atelier_shell::leader::{LeaderConnection, LeaderReconnector, ReconnectPolicy};
 
 const MAX_BUF: usize = 8 * 1024 * 1024;
 
@@ -269,7 +269,7 @@ pub(crate) fn bridge_channels(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use xai_acp_lib::acp_send;
+    use atelier_acp_runtime::acp_send;
 
     #[tokio::test]
     async fn forward_outbound_line_delivers_on_live_channel() {

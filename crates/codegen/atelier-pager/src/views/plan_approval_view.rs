@@ -1,5 +1,5 @@
 use agent_client_protocol as acp;
-use xai_acp_lib::AcpResult;
+use atelier_acp_runtime::AcpResult;
 
 pub use atelier_tools::implementations::atelier_build::exit_plan_mode::{
     ExitPlanModeExtRequest, ExitPlanModeExtResponse,

@@ -1,6 +1,6 @@
 syntax = "proto3";
 
-package xai.atelier.tools.v1;
+package atelier.tools.v1;
 
 // ============================================================================
 // MAIN SERVICE

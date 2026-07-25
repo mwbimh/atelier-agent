@@ -18,6 +18,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use agent_client_protocol as acp;
+use atelier_acp_runtime::{
+    AcpAgentGatewayReceiver as GatewayReceiver, AcpAgentGatewaySender as GatewaySender,
+    LineBufferedRead,
+};
 use atelier_shell::agent::config::Config as AgentConfig;
 use atelier_shell::agent::mvp_agent::MvpAgent;
 use atelier_shell::leader::{
@@ -28,10 +32,6 @@ use tempfile::TempDir;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 use tokio_util::sync::CancellationToken;
-use xai_acp_lib::{
-    AcpAgentGatewayReceiver as GatewayReceiver, AcpAgentGatewaySender as GatewaySender,
-    LineBufferedRead,
-};
 
 const SIMPLEX_BUF: usize = 8 * 1024 * 1024;
 
@@ -43,7 +43,7 @@ fn env_u64(key: &str, default: u64) -> u64 {
 }
 
 /// Resident set size of THIS process (leader server + agent are in-process).
-/// Copied from `xai-codebase-graph/tests/memory_integration.rs`.
+/// Copied from `atelier-codebase-graph/tests/memory_integration.rs`.
 fn rss_bytes() -> Option<usize> {
     #[cfg(target_os = "linux")]
     {
@@ -141,7 +141,6 @@ async fn leader_soak_churning_clients_no_leaks_no_zombies() {
         std::env::set_var("XAI_API_KEY", "test-key-for-ci");
         std::env::set_var("ATELIER_TELEMETRY_ENABLED", "false");
         std::env::set_var("ATELIER_FEEDBACK_ENABLED", "false");
-        std::env::set_var("ATELIER_TRACE_UPLOAD", "false");
     }
 
     let sock_path = atelier_home.path().join("leader-soak.sock");
@@ -214,7 +213,6 @@ async fn leader_soak_churning_clients_no_leaks_no_zombies() {
                 );
                 tokio::task::spawn_local(
                     GatewayReceiver::new(gw_rx, conn)
-                        .with_on_meta(xai_file_utils::trace_context::span_from_meta_traceparent)
                         .run(),
                 );
                 let _ = handle_io.await;

@@ -1,5 +1,5 @@
 fn main() {
-    xai_proto_build::configure()
+    atelier_proto_build::configure()
         .type_attribute(
             ".", // match every message & enum
             "#[derive(serde::Serialize, serde::Deserialize)]",
@@ -10,23 +10,23 @@ fn main() {
         // type-level) so the required `id` field still fails deserialization
         // when missing instead of silently becoming "". See tests/wire_shape.rs.
         .field_attribute(
-            ".xai.atelier.tools.v1.ToolConfigEntry.params_json",
+            ".atelier.tools.v1.ToolConfigEntry.params_json",
             "#[serde(default)]",
         )
         .field_attribute(
-            ".xai.atelier.tools.v1.ToolConfigEntry.name_override",
+            ".atelier.tools.v1.ToolConfigEntry.name_override",
             "#[serde(default)]",
         )
         .field_attribute(
-            ".xai.atelier.tools.v1.ToolConfigEntry.params_name_overrides",
+            ".atelier.tools.v1.ToolConfigEntry.params_name_overrides",
             "#[serde(default)]",
         )
         .field_attribute(
-            ".xai.atelier.tools.v1.ToolConfigEntry.behavior_version",
+            ".atelier.tools.v1.ToolConfigEntry.behavior_version",
             "#[serde(default)]",
         )
         .field_attribute(
-            ".xai.atelier.tools.v1.ToolConfigEntry.description_override",
+            ".atelier.tools.v1.ToolConfigEntry.description_override",
             "#[serde(default)]",
         )
         .compile_protos(&["proto/atelier-tools.proto"], &["proto/"])

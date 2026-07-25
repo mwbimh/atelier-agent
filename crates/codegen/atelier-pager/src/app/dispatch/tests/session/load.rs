@@ -877,27 +877,6 @@ fn session_loaded_clears_stale_running_entries() {
     );
 }
 #[test]
-fn session_restore_failed_clears_prompt_history_loading() {
-    let mut app = test_app();
-    let effects = dispatch_load_session_with_restore(&mut app, "remote-sess".into(), "/tmp".into());
-    assert!(matches!(
-        effects.as_slice(),
-        [Effect::RestoreAndLoadSession { .. }]
-    ));
-    let id = AgentId(0);
-    assert!(app.agents[&id].session.prompt_history_loading);
-    let effects = dispatch(
-        Action::TaskComplete(TaskResult::SessionRestoreFailed {
-            agent_id: id,
-            error: "boom".into(),
-        }),
-        &mut app,
-    );
-    assert!(effects.is_empty());
-    assert!(!app.agents[&id].session.prompt_history_loading);
-    assert!(!app.agents[&id].session.loading_replay);
-}
-#[test]
 fn resume_focuses_existing_agent_for_open_session() {
     let mut app = test_app();
     dispatch(Action::NewSession, &mut app);
@@ -1462,21 +1441,6 @@ fn pick_conversation_row_from_welcome_dispatches_direct_chat_load() {
         matches!(& effects[..], [Effect::LoadSession { session_id, session_cwd : None,
         chat_kind : true, .. }] if session_id == "conv-pick-2"),
         "expected a direct chat LoadSession, got {effects:?}"
-    );
-}
-/// Canary: a remote Build row not on disk still takes the GCS-restore path.
-#[test]
-fn pick_remote_build_row_still_restores() {
-    let mut app = test_app_with_agent();
-    let id = format!("remote-only-{}", std::process::id());
-    let mut e = make_picker_entry(&id, "/r");
-    e.source = "remote".into();
-    open_session_picker_with(&mut app, vec![e]);
-    let effects = dispatch(Action::PickSession(0), &mut app);
-    assert!(
-        matches!(& effects[..], [Effect::RestoreAndLoadSession { session_id, .. }] if *
-        session_id == id),
-        "expected RestoreAndLoadSession, got {effects:?}"
     );
 }
 /// A content-search hit matching a co-displayed conversation row also

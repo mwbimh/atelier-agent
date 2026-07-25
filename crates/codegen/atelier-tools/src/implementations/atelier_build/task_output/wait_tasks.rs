@@ -16,7 +16,7 @@ use crate::types::requirements::{Expr, ToolRequirement};
 use crate::types::resources::{Terminal, TruncationCfg};
 use crate::types::template_renderer::TemplateRenderer;
 use crate::types::tool::{ToolKind, ToolNamespace};
-use xai_tool_types::{MultiTaskOutputResult, TaskOutputOutput, WaitMode, WaitTasksToolInput};
+use atelier_tool_types::{MultiTaskOutputResult, TaskOutputOutput, WaitMode, WaitTasksToolInput};
 
 #[derive(Debug, Default)]
 pub struct WaitTasksTool;
@@ -35,11 +35,13 @@ impl crate::types::tool_metadata::ToolMetadata for WaitTasksTool {
         // renders it context-aware from the finalized toolset. This static
         // fallback mirrors the default atelier-build toolset.
         static DESC: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
-            xai_tool_types::build_wait_tasks_description(&xai_tool_types::WaitTasksToolNaming {
-                background_retrieval_tool: "get_command_or_subagent_output",
-                bash_background_param: Some("is_background"),
-                subagent_background_param: Some("run_in_background"),
-            })
+            atelier_tool_types::build_wait_tasks_description(
+                &atelier_tool_types::WaitTasksToolNaming {
+                    background_retrieval_tool: "get_command_or_subagent_output",
+                    bash_background_param: Some("is_background"),
+                    subagent_background_param: Some("run_in_background"),
+                },
+            )
         });
         &DESC
     }
@@ -78,7 +80,7 @@ impl crate::types::tool_metadata::ToolMetadata for WaitTasksTool {
 
 /// Resolve the model-facing `wait_tasks` description from the finalized toolset,
 /// honoring an explicit config override. Wording lives in the shared
-/// [`xai_tool_types::build_wait_tasks_description`] builder so the CLI and
+/// [`atelier_tool_types::build_wait_tasks_description`] builder so the CLI and
 /// prod-chat can't drift. When no dedicated background-retrieval tool is
 /// registered, fall back to naming this tool's own get-output sibling.
 fn wait_tasks_description(
@@ -91,7 +93,7 @@ fn wait_tasks_description(
             ovr.to_string()
         });
     }
-    xai_tool_types::build_wait_tasks_description(&xai_tool_types::WaitTasksToolNaming {
+    atelier_tool_types::build_wait_tasks_description(&atelier_tool_types::WaitTasksToolNaming {
         background_retrieval_tool: renderer
             .tool_for_kind(ToolKind::BackgroundTaskAction)
             .unwrap_or("get_task_output"),
@@ -100,28 +102,28 @@ fn wait_tasks_description(
     })
 }
 
-impl xai_tool_runtime::Tool for WaitTasksTool {
+impl atelier_tool_runtime::Tool for WaitTasksTool {
     type Args = WaitTasksToolInput;
     type Output = TaskOutputOutput;
 
-    fn id(&self) -> xai_tool_protocol::ToolId {
-        xai_tool_protocol::ToolId::new("wait_tasks").expect("valid tool id")
+    fn id(&self) -> atelier_tool_protocol::ToolId {
+        atelier_tool_protocol::ToolId::new("wait_tasks").expect("valid tool id")
     }
 
     fn description(
         &self,
-        _ctx: &::xai_tool_runtime::ListToolsContext,
-    ) -> xai_tool_types::ToolDescription {
-        xai_tool_types::ToolDescription::new(
+        _ctx: &::atelier_tool_runtime::ListToolsContext,
+    ) -> atelier_tool_types::ToolDescription {
+        atelier_tool_types::ToolDescription::new(
             "wait_tasks",
             crate::types::tool_metadata::ToolMetadata::description_template(self),
         )
     }
 
-    fn capabilities(&self) -> xai_tool_protocol::ToolCapabilities {
-        xai_tool_protocol::ToolCapabilities {
+    fn capabilities(&self) -> atelier_tool_protocol::ToolCapabilities {
+        atelier_tool_protocol::ToolCapabilities {
             is_read_only: true,
-            tool_scope: Some(xai_tool_protocol::ToolScope::Read),
+            tool_scope: Some(atelier_tool_protocol::ToolScope::Read),
             ..Default::default()
         }
     }
@@ -133,20 +135,20 @@ impl xai_tool_runtime::Tool for WaitTasksTool {
     )]
     async fn run(
         &self,
-        ctx: xai_tool_runtime::ToolCallContext,
+        ctx: atelier_tool_runtime::ToolCallContext,
         input: WaitTasksToolInput,
-    ) -> Result<TaskOutputOutput, xai_tool_runtime::ToolError> {
+    ) -> Result<TaskOutputOutput, atelier_tool_runtime::ToolError> {
         use crate::types::tool_metadata::shared_resources;
 
         let resources = shared_resources(&ctx)?;
 
         if input.task_ids.is_empty() {
-            return Err(xai_tool_runtime::ToolError::invalid_arguments(
+            return Err(atelier_tool_runtime::ToolError::invalid_arguments(
                 "task_ids must not be empty.".to_string(),
             ));
         }
         if input.task_ids.len() > MAX_MULTI_WAIT_IDS {
-            return Err(xai_tool_runtime::ToolError::invalid_arguments(format!(
+            return Err(atelier_tool_runtime::ToolError::invalid_arguments(format!(
                 "task_ids exceeds maximum of {MAX_MULTI_WAIT_IDS} entries."
             )));
         }
@@ -180,7 +182,7 @@ impl xai_tool_runtime::Tool for WaitTasksTool {
             let renderer = res.require::<TemplateRenderer>()?;
             let rfn = renderer
                 .render("${{ tools.by_kind.read }}")
-                .map_err(|e| xai_tool_runtime::ToolError::invalid_arguments(e.to_string()))?;
+                .map_err(|e| atelier_tool_runtime::ToolError::invalid_arguments(e.to_string()))?;
             let mob = res
                 .get::<TruncationCfg>()
                 .map(|cfg| {
@@ -248,7 +250,7 @@ mod tests {
     use super::*;
     use crate::types::tool_metadata::ToolMetadata;
     use crate::types::tool_metadata::test_ctx;
-    use xai_tool_runtime::Tool;
+    use atelier_tool_runtime::Tool;
 
     #[test]
     fn tool_name_and_kind() {

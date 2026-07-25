@@ -8,12 +8,12 @@ use crate::acp::tracker::{AcpUpdateTracker, TurnActivity};
 use crate::scrollback::EntryId;
 use crate::scrollback::state::ScrollbackState;
 use agent_client_protocol as acp;
+use atelier_acp_runtime::AcpAgentTx;
 use atelier_shell::extensions::notification::GoalClassifierVerdict;
 use atelier_shell::sampling::types::ReasoningEffort;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime};
-use xai_acp_lib::AcpAgentTx;
 /// Unique local identifier for an agent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct AgentId(pub usize);
@@ -754,7 +754,7 @@ pub struct InFlightPrompt {
 #[derive(Debug, Clone)]
 pub struct ChipElement {
     pub range: std::ops::Range<usize>,
-    pub kind: xai_ratatui_textarea::ElementKind,
+    pub kind: atelier_ratatui_textarea::ElementKind,
     pub display: Option<ratatui::text::Line<'static>>,
 }
 impl AgentSession {

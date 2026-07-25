@@ -136,7 +136,7 @@ pub(super) fn build_todo_gate_reminder(pending: &[&str], unbacked_in_progress: &
 /// sibling precedence helpers in `crate::util::config`
 /// (`resolve_zdr_access_enabled`, `resolve_restore_code`, …).
 pub(crate) fn resolve_reminder_policy(
-    remote: Option<&crate::util::config::RemoteSettings>,
+    remote: Option<&crate::util::config::LocalRuntimeSettings>,
     todo_gate: bool,
 ) -> atelier_agent::ReminderPolicy {
     let mut policy = atelier_agent::ReminderPolicy::default();

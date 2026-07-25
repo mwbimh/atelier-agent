@@ -831,7 +831,7 @@ mod tests {
                 ..Default::default()
             },
             ann(Some("critical"), None), // no message → not visible
-            promo("promo-1", "upsell", Some(("Go", "https://x.ai"))),
+            promo("promo-1", "upsell", Some(("Go", "https://example.com"))),
             expired_promo,
         ];
         let now = chrono::DateTime::parse_from_rfc3339("2020-01-01T00:00:00Z")
@@ -1057,7 +1057,7 @@ mod tests {
         let list = vec![
             ann(Some("info"), Some("info only")),
             ann(Some("promo"), None), // no message → not visible
-            promo("p-a", "A promo", Some(("Go", "https://x.ai"))),
+            promo("p-a", "A promo", Some(("Go", "https://example.com"))),
             promo("p-b", "B promo", None),
         ];
         assert_eq!(
@@ -1115,7 +1115,7 @@ mod tests {
     #[test]
     fn first_session_announcement_prefers_critical_over_promo() {
         let list = vec![
-            promo("p", "upsell", Some(("Go", "https://x.ai"))),
+            promo("p", "upsell", Some(("Go", "https://example.com"))),
             RemoteAnnouncement {
                 id: Some("c".into()),
                 severity: Some("critical".into()),
@@ -1211,7 +1211,7 @@ mod tests {
     /// stays the button only (the caption is not clickable).
     #[test]
     fn render_promo_row_non_dismissible_shows_configured_caption() {
-        let mut ann = promo("p", &"M".repeat(60), Some(("Go", "https://x.ai")));
+        let mut ann = promo("p", &"M".repeat(60), Some(("Go", "https://example.com")));
         ann.dismissible = Some(false);
         ann.cta.as_mut().unwrap().caption = Some("or use Ctrl+O".into());
         let anns = [ann];
@@ -1248,7 +1248,7 @@ mod tests {
 
         // No caption configured: the pinned row stays a bare button even with
         // `caption_allowed` (nothing hardcoded fills in).
-        let mut bare = promo("p", &"M".repeat(60), Some(("Go", "https://x.ai")));
+        let mut bare = promo("p", &"M".repeat(60), Some(("Go", "https://example.com")));
         bare.dismissible = Some(false);
         let mut buf = Buffer::empty(area);
         let hits = render_banner(area, &mut buf, &[bare], &no_hidden(), false, false, true);
@@ -1293,7 +1293,7 @@ mod tests {
     /// its caption can never surface on the promo row either.
     #[test]
     fn usable_cta_caption_trims_and_never_resurrects_unusable_cta() {
-        let mut p = promo("p", "msg", Some(("Go", "https://x.ai")));
+        let mut p = promo("p", "msg", Some(("Go", "https://example.com")));
         assert_eq!(usable_cta_caption(&p), None, "absent caption");
         p.cta.as_mut().unwrap().caption = Some("  or use Ctrl+O  ".into());
         assert_eq!(usable_cta_caption(&p), Some("or use Ctrl+O"), "trimmed");
@@ -1352,7 +1352,7 @@ mod tests {
             "pinned promo drives the Ctrl+O override"
         );
 
-        let dismissible = [promo("d", "msg", Some(("Go", "https://x.ai")))];
+        let dismissible = [promo("d", "msg", Some(("Go", "https://example.com")))];
         let (owner, label, _) = promo_cta(&dismissible, &no_hidden()).expect("usable cta");
         assert_eq!(label, "Go");
         assert!(
@@ -1542,7 +1542,7 @@ mod tests {
 
     #[test]
     fn render_promo_row_hover_styles() {
-        let anns = [promo("p", "msg", Some(("Go", "https://x.ai")))];
+        let anns = [promo("p", "msg", Some(("Go", "https://example.com")))];
         let area = Rect::new(0, 0, 80, 1);
         let theme = Theme::current();
 
@@ -1571,7 +1571,7 @@ mod tests {
             "msg",
             Some((
                 "Upgrade to SuperAtelier Heavy for the exclusive preview",
-                "https://x.ai",
+                "https://example.com",
             )),
         )];
         let area = Rect::new(0, 0, 50, 1);
@@ -1609,7 +1609,7 @@ mod tests {
     /// [hide]) instead of painting a clipped fragment; nothing panics.
     #[test]
     fn render_promo_row_narrow_width_drops_hide_cta_text() {
-        let anns = [promo("p", "msg body", Some(("Go", "https://x.ai")))];
+        let anns = [promo("p", "msg body", Some(("Go", "https://example.com")))];
         let area = Rect::new(0, 0, 20, 1);
         let mut buf = Buffer::empty(area);
         let hits = render_banner(area, &mut buf, &anns, &no_hidden(), false, false, true);

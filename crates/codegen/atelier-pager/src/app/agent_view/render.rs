@@ -653,7 +653,7 @@ impl AgentView {
         tip: Option<&str>,
         bundle_state: &crate::app::bundle::BundleState,
         in_dashboard_overlay: bool,
-        link_spans_out: &mut Vec<xai_ratatui_inline::LinkSpan>,
+        link_spans_out: &mut Vec<atelier_ratatui_inline::LinkSpan>,
         voice_available: bool,
         voice_listening: bool,
         voice_interim: Option<&str>,
@@ -4127,7 +4127,7 @@ impl AgentView {
                                 && r.x < link.col_end
                         })
                     })
-                    .map(|link| xai_ratatui_inline::LinkSpan {
+                    .map(|link| atelier_ratatui_inline::LinkSpan {
                         row: link.screen_row,
                         col_start: link.col_start,
                         col_end: link.col_end,

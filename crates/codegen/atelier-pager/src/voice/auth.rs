@@ -1,8 +1,7 @@
 //! Bridge the shell's `AuthManager` onto the voice crate's bearer provider.
 //!
-//! The hosted speech transport has been removed from Atelier.
-//! and attributes per-user billing for OAuth, so the voice channel just reuses
-//! the same bearer the agent uses for chat — no separate env var.
+//! The hosted speech transport has been removed from Atelier. The voice channel
+//! just reuses the same bearer the agent uses for chat — no separate env var.
 //!
 //! Resolved per request: the agent's refreshing manager in direct-spawn mode,
 //! or a non-refreshing one that adopts the agent's rotated `auth.json` token
@@ -36,8 +35,8 @@ impl VoiceAuthProvider for AuthManagerVoiceAuth {
 
 /// Build the voice bearer provider from the connection's `AuthManager`.
 ///
-/// Works for every auth method: OAuth / atelier.invalid / OIDC session tokens and
-/// `XAI_API_KEY` / per-model BYOK keys.
+/// Works for every auth method: Provider OAuth or session tokens and
+/// Provider-managed API keys.
 pub fn build_voice_auth(auth_manager: Arc<atelier_shell::auth::AuthManager>) -> SharedVoiceAuth {
     Arc::new(AuthManagerVoiceAuth(
         atelier_shell::auth::shared_api_key_provider(auth_manager),

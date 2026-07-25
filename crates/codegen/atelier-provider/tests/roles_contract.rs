@@ -208,10 +208,10 @@ fn role_config_and_registry_round_trip_through_toml() {
 }
 
 #[test]
-fn old_provider_registry_without_roles_gets_default_roles_and_persists_them() {
+fn missing_roles_file_gets_defaults_and_persists_separately() {
     let directory = tempdir().unwrap();
     let path = directory.path().join("providers.toml");
-    std::fs::write(&path, "schema_version = 1\n\n[providers]\n\n[models]\n").unwrap();
+    std::fs::write(&path, "schema_version = 2\n\n[providers]\n").unwrap();
 
     let mut registry = ProviderRegistry::load_or_create(&path).unwrap();
     assert_eq!(registry.roles().len(), 11);
@@ -220,7 +220,7 @@ fn old_provider_registry_without_roles_gets_default_roles_and_persists_them() {
         .unwrap();
     registry.save().unwrap();
 
-    let text = std::fs::read_to_string(&path).unwrap();
+    let text = std::fs::read_to_string(directory.path().join("roles.toml")).unwrap();
     assert!(text.contains("[roles.main]"));
     let loaded = ProviderRegistry::load_or_create(&path).unwrap();
     assert_eq!(loaded.role(RoleId::Main).unwrap().model, "main-model");
@@ -231,8 +231,9 @@ fn old_provider_registry_without_roles_gets_default_roles_and_persists_them() {
 fn invalid_persisted_role_is_rejected() {
     let directory = tempdir().unwrap();
     let path = directory.path().join("providers.toml");
+    std::fs::write(&path, "schema_version = 2\n\n[providers]\n").unwrap();
     std::fs::write(
-        &path,
+        directory.path().join("roles.toml"),
         "schema_version = 1\n\n[roles.main]\nprovider = \"\"\nmodel = \"model\"\n",
     )
     .unwrap();

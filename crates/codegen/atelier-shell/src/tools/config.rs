@@ -119,7 +119,7 @@ impl WebFetchToolConfig {
     /// Resolve `WebFetchParams` by merging TOML > env > remote settings layers.
     ///
     /// `remote_proxy` and `remote_domains` are the remote settings fallback values
-    /// from `RemoteSettings`. `context_window` comes from the session's
+    /// from `LocalRuntimeSettings`. `context_window` comes from the session's
     /// SamplingConfig (model-provided).
     pub fn resolve_params(
         &self,
@@ -211,6 +211,8 @@ impl ShellToolsetConfig {
             temperature: None,
             top_p: None,
             request_payload: Default::default(),
+            remote_compaction_endpoint: None,
+            image_generation_endpoint: None,
             api_backend: Default::default(),
             auth_scheme: Default::default(),
             extra_headers: indexmap::IndexMap::new(),
@@ -261,10 +263,10 @@ impl ShellToolsetConfig {
     }
 
     /// Resolve the effective file toolset. Local config takes precedence;
-    /// remote `/v1/settings` is used as fallback when local is the default.
+    /// an optional process-local runtime override is the final fallback.
     pub fn resolve_file_toolset(
         &self,
-        remote: Option<&crate::util::config::RemoteSettings>,
+        remote: Option<&crate::util::config::LocalRuntimeSettings>,
     ) -> FileToolset {
         if self.file_toolset != FileToolset::Standard {
             return self.file_toolset;
@@ -535,7 +537,7 @@ mod tests {
     #[test]
     fn resolve_remote_used_when_local_default() {
         let cfg = ShellToolsetConfig::default(); // Standard (default)
-        let remote = crate::util::config::RemoteSettings {
+        let remote = crate::util::config::LocalRuntimeSettings {
             file_toolset: Some("hashline".to_owned()),
             ..Default::default()
         };

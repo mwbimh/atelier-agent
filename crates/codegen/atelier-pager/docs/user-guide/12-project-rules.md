@@ -202,10 +202,10 @@ These are all optional. See the respective guides for details on each.
 
 ## Inspecting Loaded Rules
 
-Use `atelier inspect` to see all loaded project instructions:
+Use `ate inspect` to see all loaded project instructions:
 
 ```bash
-atelier inspect
+ate inspect
 ```
 
 This shows each project instruction file it finds, with its path and approximate token count. Use it to confirm Atelier picks up your rules.

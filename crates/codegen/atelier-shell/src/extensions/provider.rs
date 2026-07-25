@@ -5,12 +5,19 @@
 //! only to the configured OS credential store and never to `providers.toml`.
 
 use agent_client_protocol as acp;
+use atelier_provider::auth::{
+    AuthorizationCodeSession, DeviceCodePoll, DeviceCodeSession, OAuthError, OAuthHttpClient,
+    OAuthHttpResponse, ProviderOAuthCredentialStore, ProviderOAuthMethod,
+};
 use atelier_provider::{
     CapabilityOverrides, CredentialRef, ModelDescriptor, ModelKey, ProviderConfig,
     ProviderDiscovery, ProviderError, ProviderModelOverride, ProviderProtocol, ProviderRegistry,
     ProviderSnapshot, WireApi,
 };
 use serde::Deserialize;
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
+use std::time::Duration;
 
 use super::{ExtResult, parse_params, to_raw_response};
 use crate::agent::MvpAgent;
@@ -22,6 +29,9 @@ pub const PROVIDER_DELETE: &str = "_atelier/provider/delete";
 pub const PROVIDER_TEST: &str = "_atelier/provider/test";
 pub const PROVIDER_REFRESH_MODELS: &str = "_atelier/provider/refresh_models";
 pub const PROVIDER_ENABLE: &str = "_atelier/provider/enable";
+pub const PROVIDER_OAUTH_BEGIN: &str = "_atelier/provider/oauth_begin";
+pub const PROVIDER_OAUTH_COMPLETE: &str = "_atelier/provider/oauth_complete";
+pub const PROVIDER_OAUTH_LOGOUT: &str = "_atelier/provider/oauth_logout";
 pub const MODEL_LIST: &str = "_atelier/model/list";
 pub const MODEL_GET: &str = "_atelier/model/get";
 pub const MODEL_UPDATE: &str = "_atelier/model/update";
@@ -30,7 +40,6 @@ pub const MODEL_PROVIDER_OVERRIDE_LIST: &str = "_atelier/model_provider_override
 pub const MODEL_PROVIDER_OVERRIDE_SET: &str = "_atelier/model_provider_override/set";
 pub const MODEL_PROVIDER_OVERRIDE_DELETE: &str = "_atelier/model_provider_override/delete";
 pub const MODEL_PROVIDER_OVERRIDE_TEST: &str = "_atelier/model_provider_override/test";
-pub const MODEL_SET_DEFAULT: &str = "_atelier/model/set_default";
 pub const MODEL_SET_CAPABILITIES: &str = "_atelier/model/set_capabilities";
 pub const CREDENTIAL_STATUS: &str = "_atelier/credential/status";
 pub const CREDENTIAL_SET: &str = "_atelier/credential/set";
@@ -50,6 +59,36 @@ struct ProviderParams {
 #[serde(rename_all = "camelCase")]
 struct ProviderIdParams {
     provider_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OAuthBeginParams {
+    provider_id: String,
+    #[serde(default)]
+    flow: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OAuthCompleteParams {
+    login_id: String,
+}
+
+enum PendingOAuthLogin {
+    AuthorizationCode {
+        provider_id: String,
+        session: AuthorizationCodeSession,
+    },
+    DeviceCode {
+        provider_id: String,
+        session: DeviceCodeSession,
+    },
+}
+
+fn pending_oauth_logins() -> &'static Mutex<HashMap<String, PendingOAuthLogin>> {
+    static PENDING: OnceLock<Mutex<HashMap<String, PendingOAuthLogin>>> = OnceLock::new();
+    PENDING.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 #[derive(Debug, Deserialize)]
@@ -152,6 +191,11 @@ pub async fn handle(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
             refresh_models(agent, args).await
         }
         PROVIDER_ENABLE | "atelier/provider/enable" => set_provider_enabled(agent, args).await,
+        PROVIDER_OAUTH_BEGIN | "atelier/provider/oauth_begin" => begin_oauth_login(args).await,
+        PROVIDER_OAUTH_COMPLETE | "atelier/provider/oauth_complete" => {
+            complete_oauth_login(agent, args).await
+        }
+        PROVIDER_OAUTH_LOGOUT | "atelier/provider/oauth_logout" => logout_oauth(agent, args).await,
         MODEL_GET | "atelier/model/get" => get_model(args),
         MODEL_UPDATE | "atelier/model/update" => upsert_model(agent, args).await,
         MODEL_UPDATE_WIRE_API | "atelier/model/update_wire_api" => {
@@ -169,7 +213,6 @@ pub async fn handle(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
         MODEL_PROVIDER_OVERRIDE_TEST | "atelier/model_provider_override/test" => {
             test_model_provider_override(args).await
         }
-        MODEL_SET_DEFAULT | "atelier/model/set_default" => set_default_model(agent, args).await,
         MODEL_SET_CAPABILITIES | "atelier/model/set_capabilities" => {
             set_capabilities(agent, args).await
         }
@@ -188,10 +231,246 @@ fn persist(registry: &ProviderRegistry) -> Result<(), ProviderError> {
     registry.save()
 }
 
+fn select_oauth_method(
+    provider: &ProviderConfig,
+    requested_flow: Option<&str>,
+) -> Result<ProviderOAuthMethod, ProviderError> {
+    let CredentialRef::OAuth {
+        provider_id,
+        methods,
+    } = &provider.credential
+    else {
+        return Err(ProviderError::InvalidProvider(format!(
+            "Provider {} does not declare OAuth methods; configure client_id and OAuth endpoints in providers.toml",
+            provider.id
+        )));
+    };
+    if provider_id != &provider.id {
+        return Err(ProviderError::InvalidProvider(format!(
+            "Provider {} OAuth namespace is configured as {provider_id}",
+            provider.id
+        )));
+    }
+    let method = match requested_flow {
+        Some(flow) => methods
+            .iter()
+            .find(|method| method.flow_name() == flow)
+            .cloned()
+            .ok_or_else(|| {
+                ProviderError::InvalidProvider(format!(
+                    "Provider {} does not configure OAuth flow {flow}",
+                    provider.id
+                ))
+            })?,
+        None => methods.first().cloned().ok_or_else(|| {
+            ProviderError::InvalidProvider(format!(
+                "Provider {} does not declare OAuth methods; configure client_id and OAuth endpoints in providers.toml",
+                provider.id
+            ))
+        })?,
+    };
+    method
+        .validate(&provider.id)
+        .map_err(|error| ProviderError::InvalidProvider(error.to_string()))?;
+    Ok(method)
+}
+
+async fn begin_oauth_login(args: &acp::ExtRequest) -> ExtResult {
+    let params: OAuthBeginParams = parse_params(args)?;
+    let registry = registry().map_err(to_acp_error)?;
+    let provider = registry
+        .provider(&params.provider_id)
+        .cloned()
+        .ok_or_else(|| ProviderError::ProviderNotFound(params.provider_id.clone()))
+        .map_err(to_acp_error)?;
+    let method = select_oauth_method(&provider, params.flow.as_deref()).map_err(to_acp_error)?;
+    let provider_id = provider.id.clone();
+    let login_id = uuid::Uuid::new_v4().to_string();
+    let login_id_for_task = login_id.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let client = RuntimeOAuthHttpClient;
+        match method {
+            method @ ProviderOAuthMethod::AuthorizationCode { .. } => {
+                let session = AuthorizationCodeSession::begin(
+                    method.authorization_code_config(&provider_id)?,
+                )?;
+                let url = session.authorization_url().to_string();
+                let browser_opened = webbrowser::open(&url).is_ok();
+                pending_oauth_logins()
+                    .lock()
+                    .map_err(|_| OAuthError::transport("OAuth login state lock is poisoned"))?
+                    .insert(
+                        login_id_for_task.clone(),
+                        PendingOAuthLogin::AuthorizationCode {
+                            provider_id: provider_id.clone(),
+                            session,
+                        },
+                    );
+                Ok::<_, OAuthError>(serde_json::json!({
+                    "providerId": provider_id,
+                    "loginId": login_id_for_task,
+                    "flow": "authorization-code",
+                    "verificationUrl": url,
+                    "userCode": null,
+                    "browserOpened": browser_opened,
+                    "message": "Complete OAuth authorization in the browser",
+                }))
+            }
+            method @ ProviderOAuthMethod::DeviceCode { .. } => {
+                let session =
+                    DeviceCodeSession::begin(&client, method.device_code_config(&provider_id)?)?;
+                let url = session
+                    .verification_uri_complete()
+                    .unwrap_or_else(|| session.verification_uri())
+                    .to_string();
+                let user_code = session.user_code().to_owned();
+                let browser_opened = webbrowser::open(&url).is_ok();
+                pending_oauth_logins()
+                    .lock()
+                    .map_err(|_| OAuthError::transport("OAuth login state lock is poisoned"))?
+                    .insert(
+                        login_id_for_task.clone(),
+                        PendingOAuthLogin::DeviceCode {
+                            provider_id: provider_id.clone(),
+                            session,
+                        },
+                    );
+                Ok(serde_json::json!({
+                    "providerId": provider_id,
+                    "loginId": login_id_for_task,
+                    "flow": "device-code",
+                    "verificationUrl": url,
+                    "userCode": user_code,
+                    "browserOpened": browser_opened,
+                    "message": "Enter the device code, then return to Atelier",
+                }))
+            }
+        }
+    })
+    .await
+    .map_err(|error| {
+        acp::Error::internal_error().data(format!("Provider OAuth setup task failed: {error}"))
+    })?
+    .map_err(to_oauth_acp_error)?;
+    to_raw_response(&result)
+}
+
+async fn complete_oauth_login(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
+    let params: OAuthCompleteParams = parse_params(args)?;
+    let pending = pending_oauth_logins()
+        .lock()
+        .map_err(|_| acp::Error::internal_error().data("OAuth login state lock is poisoned"))?
+        .remove(&params.login_id)
+        .ok_or_else(|| {
+            acp::Error::invalid_params()
+                .data("OAuth login is missing, expired, or already completed")
+        })?;
+    let home = atelier_config::atelier_home();
+    let provider_id = tokio::task::spawn_blocking(move || {
+        let client = RuntimeOAuthHttpClient;
+        let (provider_id, credential) = match pending {
+            PendingOAuthLogin::AuthorizationCode {
+                provider_id,
+                session,
+            } => {
+                let credential = session.complete(&client, Duration::from_secs(600))?;
+                (provider_id, credential)
+            }
+            PendingOAuthLogin::DeviceCode {
+                provider_id,
+                mut session,
+            } => {
+                let credential = loop {
+                    std::thread::sleep(session.poll_interval());
+                    match session.poll_once(&client)? {
+                        DeviceCodePoll::Pending | DeviceCodePoll::SlowDown => continue,
+                        DeviceCodePoll::Complete(credential) => break credential,
+                    }
+                };
+                (provider_id, credential)
+            }
+        };
+        ProviderOAuthCredentialStore::system(home).save(&provider_id, &credential)?;
+        Ok::<_, OAuthError>(provider_id)
+    })
+    .await
+    .map_err(|error| {
+        acp::Error::internal_error().data(format!("Provider OAuth completion task failed: {error}"))
+    })?
+    .map_err(to_oauth_acp_error)?;
+    reload_live_catalog(agent).await?;
+    to_raw_response(&serde_json::json!({
+        "providerId": provider_id,
+        "loggedIn": true,
+        "message": "Provider OAuth login completed",
+    }))
+}
+
+async fn logout_oauth(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
+    let params: ProviderIdParams = parse_params(args)?;
+    let registry = registry().map_err(to_acp_error)?;
+    let provider = registry
+        .provider(&params.provider_id)
+        .ok_or_else(|| ProviderError::ProviderNotFound(params.provider_id.clone()))
+        .map_err(to_acp_error)?;
+    if !matches!(provider.credential, CredentialRef::OAuth { .. }) {
+        return Err(acp::Error::invalid_params().data(format!(
+            "Provider {} is not configured for OAuth",
+            params.provider_id
+        )));
+    }
+    let removed = ProviderOAuthCredentialStore::system(atelier_config::atelier_home())
+        .delete(&params.provider_id)
+        .map_err(to_oauth_acp_error)?;
+    reload_live_catalog(agent).await?;
+    to_raw_response(&serde_json::json!({
+        "providerId": params.provider_id,
+        "loggedOut": removed,
+        "message": if removed {
+            "Provider OAuth credential removed"
+        } else {
+            "Provider OAuth credential was not present"
+        },
+    }))
+}
+
+struct RuntimeOAuthHttpClient;
+
+impl OAuthHttpClient for RuntimeOAuthHttpClient {
+    fn post_form(
+        &self,
+        url: &url::Url,
+        form: &[(String, String)],
+    ) -> Result<OAuthHttpResponse, OAuthError> {
+        let response = crate::http::shared_blocking_client()
+            .post(url.clone())
+            .form(form)
+            .send()
+            .map_err(|error| OAuthError::transport(error.to_string()))?;
+        let status = response.status().as_u16();
+        let body = response
+            .bytes()
+            .map_err(|error| OAuthError::transport(error.to_string()))?
+            .to_vec();
+        Ok(OAuthHttpResponse { status, body })
+    }
+}
+
+fn to_oauth_acp_error(error: OAuthError) -> acp::Error {
+    if matches!(
+        &error,
+        OAuthError::InvalidConfig(_) | OAuthError::InvalidProviderId(_)
+    ) {
+        acp::Error::invalid_params().data(error.to_string())
+    } else {
+        acp::Error::internal_error().data(error.to_string())
+    }
+}
+
 fn redacted_model_override(registry: &ProviderRegistry, key: &ModelKey) -> serde_json::Value {
     let value = serde_json::to_value(registry.model_provider_override(key))
         .unwrap_or(serde_json::Value::Null);
-    xai_acp_lib::redact_payload(&value)
+    atelier_acp_runtime::redact_payload(&value)
 }
 
 fn list(args: &acp::ExtRequest) -> ExtResult {
@@ -199,7 +478,6 @@ fn list(args: &acp::ExtRequest) -> ExtResult {
     if args.method.as_ref() == MODEL_LIST || args.method.as_ref() == "atelier/model/list" {
         return to_raw_response(&serde_json::json!({
             "models": registry.snapshot().models,
-            "defaultModel": registry.default_model(),
         }));
     }
     to_raw_response(&registry.snapshot())
@@ -216,11 +494,15 @@ fn get_model(args: &acp::ExtRequest) -> ExtResult {
         .ok_or_else(|| ProviderError::ModelNotFound(key.to_string()))
         .map_err(to_acp_error)?;
     let resolved = registry.resolve_wire_api(&key).map_err(to_acp_error)?;
+    let experimental = registry
+        .experimental_model_features(&key)
+        .map_err(to_acp_error)?;
     to_raw_response(&serde_json::json!({
         "model": model,
         "wireApi": resolved.wire_api,
         "wireApiSource": format!("{:?}", resolved.source),
         "providerModelOverride": redacted_model_override(&registry, &key),
+        "experimental": experimental,
     }))
 }
 
@@ -347,7 +629,8 @@ fn pair_test_runtime_request(
     ),
     ProviderError,
 > {
-    let models = crate::agent::config::model_entries_from_provider_snapshot(&registry.snapshot());
+    let models =
+        crate::agent::config::model_entries_from_provider_snapshot(&registry.snapshot(), None);
     let config = crate::agent::config::resolve_model_to_sampling_config(
         &key.to_string(),
         &models,
@@ -555,16 +838,6 @@ async fn upsert_model(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
     let params: ModelParams = parse_params(args)?;
     let mut registry = registry().map_err(to_acp_error)?;
     registry.upsert_model(params.model).map_err(to_acp_error)?;
-    persist(&registry).map_err(to_acp_error)?;
-    reload_live_catalog(agent).await?;
-    to_raw_response(&registry.snapshot())
-}
-
-async fn set_default_model(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
-    let params: ModelKeyParams = parse_params(args)?;
-    let mut registry = registry().map_err(to_acp_error)?;
-    let key = parse_model_key(params)?;
-    registry.set_default_model(key).map_err(to_acp_error)?;
     persist(&registry).map_err(to_acp_error)?;
     reload_live_catalog(agent).await?;
     to_raw_response(&registry.snapshot())
@@ -796,7 +1069,7 @@ mod tests {
     use super::{
         apply_credential_update, delete_replaced_secret_store_credential,
         pair_test_runtime_request, parse_model_key, preserve_existing_provider_fields,
-        provider_probe_outcome, redacted_model_override,
+        provider_probe_outcome, redacted_model_override, select_oauth_method,
     };
     use atelier_provider::{
         CredentialRef, ModelCapabilities, ModelDescriptor, ModelKey, ModelSource, ProviderConfig,
@@ -804,6 +1077,50 @@ mod tests {
     };
     use std::collections::BTreeMap;
     use url::Url;
+
+    fn oauth_test_provider() -> ProviderConfig {
+        ProviderConfig {
+            id: "allm".into(),
+            display_name: "AllM".into(),
+            protocol: ProviderProtocol::OpenAiResponses,
+            base_url: Url::parse("https://provider.example/v1").unwrap(),
+            credential: CredentialRef::None,
+            discovery: atelier_provider::ProviderDiscovery::Disabled,
+            extra_headers: BTreeMap::new(),
+            enabled: true,
+        }
+    }
+
+    #[test]
+    fn oauth_method_selection_requires_declared_provider_configuration() {
+        let provider = oauth_test_provider();
+        let error = select_oauth_method(&provider, None).unwrap_err();
+        assert!(error.to_string().contains("does not declare OAuth methods"));
+    }
+
+    #[test]
+    fn oauth_method_selection_supports_explicit_and_single_method_flows() {
+        let mut provider = oauth_test_provider();
+        provider.credential = CredentialRef::OAuth {
+            provider_id: provider.id.clone(),
+            methods: vec![atelier_provider::auth::ProviderOAuthMethod::device_code(
+                "desktop-client",
+                Url::parse("https://login.example.test/device").unwrap(),
+                Url::parse("https://login.example.test/token").unwrap(),
+            )],
+        };
+        assert_eq!(
+            select_oauth_method(&provider, None).unwrap().flow_name(),
+            "device-code"
+        );
+        assert_eq!(
+            select_oauth_method(&provider, Some("device-code"))
+                .unwrap()
+                .flow_name(),
+            "device-code"
+        );
+        assert!(select_oauth_method(&provider, Some("authorization-code")).is_err());
+    }
 
     #[test]
     fn provider_probe_rejects_non_success_http_statuses() {
@@ -1100,6 +1417,8 @@ mod tests {
                 context_window: Some(32_000),
                 capabilities: ModelCapabilities::default(),
                 reasoning_efforts: Vec::new(),
+                default_effort: None,
+                fast_mode: false,
                 source: ModelSource::Static,
                 enabled: true,
             })
@@ -1157,6 +1476,8 @@ mod tests {
                 context_window: None,
                 capabilities: ModelCapabilities::default(),
                 reasoning_efforts: Vec::new(),
+                default_effort: None,
+                fast_mode: false,
                 source: ModelSource::Static,
                 enabled: true,
             })

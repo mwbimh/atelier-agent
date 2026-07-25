@@ -55,6 +55,11 @@ pub enum ConversationItem {
     /// wrapping `rs::WebSearchToolCall` etc.) so no field is dropped on the
     /// way through.
     Reasoning(rs::ReasoningItem),
+    /// Opaque encrypted context returned by the Responses legacy remote
+    /// compaction endpoint. It must be persisted and sent back byte-for-byte
+    /// on subsequent Responses requests; the client never interprets
+    /// `encrypted_content`.
+    Compaction(rs::CompactionSummaryItemParam),
 }
 
 /// System message content
@@ -474,6 +479,12 @@ pub struct ToolSpec {
 /// A tool that the backend executes server-side during inference.
 /// The client sends these as native Responses API tool types (not Function).
 /// The backend's agentic sampler handles execution and streams results back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostedToolCapabilitySource {
+    Provider,
+    Model,
+}
+
 #[derive(Debug, Clone)]
 pub enum HostedTool {
     /// Web search executed server-side by the backend's agentic sampler.
@@ -483,8 +494,12 @@ pub enum HostedTool {
     },
     /// X (Twitter) search executed server-side by the backend's agentic sampler.
     /// This is xAI-specific — not part of the OpenAI Responses API, so it's
-    /// injected as raw JSON into the request body by the sampler client.
-    XSearch,
+    /// injected as raw JSON into the request body by the sampler client. The
+    /// source is required so generic agent definitions cannot request it
+    /// without an explicit provider/model capability decision.
+    XSearch {
+        requested_by: HostedToolCapabilitySource,
+    },
 }
 
 impl HostedTool {
@@ -492,7 +507,7 @@ impl HostedTool {
     pub fn wire_name(&self) -> &'static str {
         match self {
             HostedTool::WebSearch { .. } => "web_search",
-            HostedTool::XSearch => "x_search",
+            HostedTool::XSearch { .. } => "x_search",
         }
     }
 }
@@ -1123,6 +1138,8 @@ impl ConversationItem {
             Self::BackendToolCall(_) => Role::Assistant,
             // Reasoning is semantically part of the assistant's turn.
             Self::Reasoning(_) => Role::Assistant,
+            // A compaction item represents prior assistant-managed context.
+            Self::Compaction(_) => Role::Assistant,
         }
     }
 
@@ -1152,6 +1169,7 @@ impl ConversationItem {
             Self::ToolResult(t) => t.content.as_ref().to_owned(),
             Self::BackendToolCall(b) => b.text_summary(),
             Self::Reasoning(r) => reasoning_item_text(r),
+            Self::Compaction(_) => String::new(),
         }
     }
 }
@@ -1205,7 +1223,7 @@ impl atelier_compaction::CompactionItem for ConversationItem {
         // does not consult this (it summarizes the whole conversation). Revisit
         // (add a dedicated marker) before routing atelier-build history through
         // the shared `history`/`inter` filter.
-        false
+        matches!(self, Self::Compaction(_))
     }
 
     fn attachment_refs(&self) -> Vec<atelier_compaction::CompactionFileRef> {
@@ -1808,6 +1826,10 @@ pub fn conversation_item_to_chat_message(item: ConversationItem) -> ChatRequestM
             "conversation_to_chat_messages folds Reasoning siblings; \
                  conversation_item_to_chat_message is never called with one"
         ),
+        ConversationItem::Compaction(_) => unreachable!(
+            "conversation_to_chat_messages drops opaque Responses compaction items; \
+             conversation_item_to_chat_message is never called with one"
+        ),
     }
 }
 
@@ -1855,6 +1877,12 @@ pub fn conversation_to_chat_messages(items: Vec<ConversationItem>) -> Vec<ChatRe
                 // API path, which preserves reasoning across backend tool
                 // calls.
                 out.push(conversation_item_to_chat_message(item));
+            }
+            ConversationItem::Compaction(_) => {
+                pending_reasoning.clear();
+                tracing::warn!(
+                    "dropping opaque Responses compaction item for Chat Completions request"
+                );
             }
             other => {
                 // Trailing reasoning is held until the next assistant;
@@ -1975,6 +2003,14 @@ pub fn response_to_conversation_items(response: rs::Response) -> Vec<Conversatio
                 // `tco_*` encrypted blobs from parallel backend tool
                 // calls — is emitted as its own sibling, preserving order.
                 items.push(ConversationItem::Reasoning(r));
+            }
+            rs::OutputItem::Compaction(compaction) => {
+                items.push(ConversationItem::Compaction(
+                    rs::CompactionSummaryItemParam {
+                        id: Some(compaction.id),
+                        encrypted_content: compaction.encrypted_content,
+                    },
+                ));
             }
             // Backend-executed tools: the server already ran these and
             // fed results into the model's context. We capture them as
@@ -2175,12 +2211,19 @@ impl From<&ConversationRequest> for rs::CreateResponse {
 /// so they appear inline in the same order the model originally emitted —
 /// which is what lets the server-side prefix KV-cache hit on repeat turns.
 fn build_responses_input(req: &ConversationRequest) -> rs::InputParam {
-    let items: Vec<rs::InputItem> = req
-        .items
+    rs::InputParam::Items(conversation_items_to_responses_input_items(&req.items))
+}
+
+/// Encode persisted conversation items into Responses input items. Exposed for
+/// the legacy remote compaction endpoint so it uses the exact same wire
+/// conversion as ordinary inference.
+pub fn conversation_items_to_responses_input_items(
+    items: &[ConversationItem],
+) -> Vec<rs::InputItem> {
+    items
         .iter()
         .flat_map(conversation_item_to_input_items)
-        .collect();
-    rs::InputParam::Items(items)
+        .collect()
 }
 
 /// Walk a serialized Responses API request body and inject the
@@ -2245,6 +2288,9 @@ fn conversation_item_to_input_items(item: &ConversationItem) -> Vec<rs::InputIte
             r.status = None;
             vec![rs::InputItem::Item(rs::Item::Reasoning(r))]
         }
+        ConversationItem::Compaction(compaction) => vec![rs::InputItem::Item(
+            rs::Item::Compaction(compaction.clone()),
+        )],
         ConversationItem::Assistant(a) => {
             let mut items = Vec::new();
 
@@ -2325,6 +2371,128 @@ fn conversation_item_to_input_items(item: &ConversationItem) -> Vec<rs::InputIte
     }
 }
 
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum ResponsesInputItemConversionError {
+    #[error("unsupported remote compaction output item: {0}")]
+    Unsupported(&'static str),
+    #[error("remote compaction output image is missing image_url")]
+    MissingImageUrl,
+}
+
+/// Decode the legacy `/responses/compact` output into persisted conversation
+/// items. The endpoint may return retained messages followed by one opaque
+/// compaction item. Other item kinds fail closed so the Session can apply its
+/// one permitted local fallback instead of silently discarding context.
+pub fn responses_input_items_to_conversation_items(
+    items: Vec<rs::InputItem>,
+) -> Result<Vec<ConversationItem>, ResponsesInputItemConversionError> {
+    items
+        .into_iter()
+        .map(response_input_item_to_conversation_item)
+        .collect()
+}
+
+fn response_input_item_to_conversation_item(
+    item: rs::InputItem,
+) -> Result<ConversationItem, ResponsesInputItemConversionError> {
+    match item {
+        rs::InputItem::Item(rs::Item::Compaction(compaction)) => {
+            Ok(ConversationItem::Compaction(compaction))
+        }
+        rs::InputItem::EasyMessage(message) => {
+            let content = easy_input_content_to_parts(message.content)?;
+            match message.role {
+                rs::Role::User => Ok(ConversationItem::User(UserItem {
+                    content,
+                    synthetic_reason: None,
+                    prior_turn_interrupt: None,
+                    prompt_index: None,
+                })),
+                rs::Role::System | rs::Role::Developer => {
+                    Ok(ConversationItem::system(text_parts(&content)))
+                }
+                rs::Role::Assistant => Ok(ConversationItem::assistant(text_parts(&content))),
+            }
+        }
+        rs::InputItem::Item(rs::Item::Message(rs::MessageItem::Input(message))) => {
+            let content = input_content_to_parts(message.content)?;
+            match message.role {
+                rs::InputRole::User => Ok(ConversationItem::User(UserItem {
+                    content,
+                    synthetic_reason: None,
+                    prior_turn_interrupt: None,
+                    prompt_index: None,
+                })),
+                rs::InputRole::System | rs::InputRole::Developer => {
+                    Ok(ConversationItem::system(text_parts(&content)))
+                }
+            }
+        }
+        rs::InputItem::Item(rs::Item::Message(rs::MessageItem::Output(message))) => {
+            let text = message
+                .content
+                .into_iter()
+                .map(|part| match part {
+                    rs::OutputMessageContent::OutputText(text) => text.text,
+                    rs::OutputMessageContent::Refusal(refusal) => refusal.refusal,
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            Ok(ConversationItem::assistant(text))
+        }
+        rs::InputItem::Item(_) => Err(ResponsesInputItemConversionError::Unsupported(
+            "non-message/non-compaction item",
+        )),
+        rs::InputItem::ItemReference(_) => Err(ResponsesInputItemConversionError::Unsupported(
+            "item reference",
+        )),
+    }
+}
+
+fn easy_input_content_to_parts(
+    content: rs::EasyInputContent,
+) -> Result<Vec<ContentPart>, ResponsesInputItemConversionError> {
+    match content {
+        rs::EasyInputContent::Text(text) => Ok(vec![ContentPart::Text {
+            text: Arc::<str>::from(text),
+        }]),
+        rs::EasyInputContent::ContentList(parts) => input_content_to_parts(parts),
+    }
+}
+
+fn input_content_to_parts(
+    parts: Vec<rs::InputContent>,
+) -> Result<Vec<ContentPart>, ResponsesInputItemConversionError> {
+    parts
+        .into_iter()
+        .map(|part| match part {
+            rs::InputContent::InputText(text) => Ok(ContentPart::Text {
+                text: Arc::<str>::from(text.text),
+            }),
+            rs::InputContent::InputImage(image) => image
+                .image_url
+                .map(|url| ContentPart::Image {
+                    url: Arc::<str>::from(url),
+                })
+                .ok_or(ResponsesInputItemConversionError::MissingImageUrl),
+            rs::InputContent::InputFile(_) => Err(ResponsesInputItemConversionError::Unsupported(
+                "input file content",
+            )),
+        })
+        .collect()
+}
+
+fn text_parts(parts: &[ContentPart]) -> String {
+    parts
+        .iter()
+        .filter_map(|part| match part {
+            ContentPart::Text { text } => Some(text.as_ref()),
+            ContentPart::Image { .. } => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// Convert ContentParts to Responses API EasyInputContent
 fn content_parts_to_easy_input_content(parts: &[ContentPart]) -> rs::EasyInputContent {
     if parts.len() == 1
@@ -2399,7 +2567,7 @@ fn build_responses_tools(req: &ConversationRequest) -> Vec<rs::Tool> {
             }
             // XSearch is xAI-specific — not in async_openai's rs::Tool enum.
             // Injected as raw JSON by the sampler client after serialization.
-            HostedTool::XSearch => {}
+            HostedTool::XSearch { .. } => {}
         }
     }
 
@@ -2418,7 +2586,7 @@ pub fn extra_raw_tools(hosted_tools: &[HostedTool]) -> Vec<serde_json::Value> {
             // WebSearch is handled natively via rs::Tool::WebSearch in
             // build_responses_tools() — no raw JSON injection needed.
             HostedTool::WebSearch { .. } => {}
-            HostedTool::XSearch => {
+            HostedTool::XSearch { .. } => {
                 raw.push(serde_json::json!({"type": "x_search"}));
             }
         }
@@ -2726,6 +2894,7 @@ pub fn transform_conversation_cwd(
                     }
                 }
             }
+            ConversationItem::Compaction(_) => {}
         }
     }
 }
@@ -3181,6 +3350,9 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
                     });
                 }
             }
+            ConversationItem::Compaction(_) => {
+                tracing::warn!("dropping opaque Responses compaction item for Anthropic request");
+            }
         }
     }
 
@@ -3625,7 +3797,9 @@ mod tests {
                 description: None,
                 parameters: serde_json::json!({"type": "object"}),
             }]);
-        req.hosted_tools = vec![HostedTool::XSearch];
+        req.hosted_tools = vec![HostedTool::XSearch {
+            requested_by: HostedToolCapabilitySource::Model,
+        }];
 
         let responses_req: rs::CreateResponse = (&req).into();
         let tools = responses_req.tools.unwrap_or_default();
@@ -5263,7 +5437,7 @@ mod tests {
 
         // Reasoning now lives as a sibling `ConversationItem::Reasoning`,
         // so "stripping reasoning" means filtering those siblings out — see
-        // `strip_reasoning_blocks` in xai-chat-state. Here the assistant
+        // `strip_reasoning_blocks` in atelier-chat-state. Here the assistant
         // never had a sibling Reasoning, so the strip is a no-op.
         let stripped = with_reasoning;
 
@@ -8407,6 +8581,54 @@ mod tests {
             ],
             "multi-turn ordering must preserve interleaved Reasoning ↔ Assistant per turn"
         );
+    }
+
+    #[test]
+    fn opaque_compaction_item_round_trips_through_storage_and_responses_input() {
+        let item = ConversationItem::Compaction(rs::CompactionSummaryItemParam {
+            id: Some("cmp_123".to_owned()),
+            encrypted_content: "opaque-encrypted-context".to_owned(),
+        });
+
+        let stored = serde_json::to_string(&item).unwrap();
+        let restored: ConversationItem = serde_json::from_str(&stored).unwrap();
+        let req = ConversationRequest::from_items(vec![restored]);
+        let rs::InputParam::Items(wire_items) = build_responses_input(&req) else {
+            panic!("expected Responses input items");
+        };
+
+        assert_eq!(wire_items.len(), 1);
+        assert!(matches!(
+            &wire_items[0],
+            rs::InputItem::Item(rs::Item::Compaction(compaction))
+                if compaction.id.as_deref() == Some("cmp_123")
+                    && compaction.encrypted_content == "opaque-encrypted-context"
+        ));
+    }
+
+    #[test]
+    fn legacy_remote_compact_output_decodes_messages_and_compaction_in_order() {
+        let wire = vec![
+            rs::InputItem::EasyMessage(rs::EasyInputMessage {
+                r#type: rs::MessageType::Message,
+                role: rs::Role::User,
+                content: rs::EasyInputContent::Text("latest user request".to_owned()),
+            }),
+            rs::InputItem::Item(rs::Item::Compaction(rs::CompactionSummaryItemParam {
+                id: Some("cmp_legacy".to_owned()),
+                encrypted_content: "legacy-opaque".to_owned(),
+            })),
+        ];
+
+        let decoded = responses_input_items_to_conversation_items(wire).unwrap();
+        assert_eq!(decoded.len(), 2);
+        assert!(matches!(&decoded[0], ConversationItem::User(_)));
+        assert!(matches!(
+            &decoded[1],
+            ConversationItem::Compaction(compaction)
+                if compaction.id.as_deref() == Some("cmp_legacy")
+                    && compaction.encrypted_content == "legacy-opaque"
+        ));
     }
 
     #[test]

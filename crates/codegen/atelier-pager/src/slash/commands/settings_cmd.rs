@@ -4,7 +4,7 @@
 //! the modal always opens. Use the in-modal `/` filter to search.
 
 use crate::app::actions::Action;
-use crate::slash::command::{CommandExecCtx, CommandResult, SlashCommand};
+use crate::slash::command::{AppCtx, ArgItem, CommandExecCtx, CommandResult, SlashCommand};
 
 /// Open the settings modal.
 pub struct SettingsCommand;
@@ -23,11 +23,43 @@ impl SlashCommand for SettingsCommand {
     }
 
     fn usage(&self) -> &str {
-        "/settings"
+        "/settings [open|reset-defaults]"
     }
 
-    fn run(&self, _ctx: &mut CommandExecCtx, _args: &str) -> CommandResult {
-        CommandResult::Action(Action::OpenSettings)
+    fn takes_args(&self) -> bool {
+        true
+    }
+
+    fn args_required(&self) -> bool {
+        false
+    }
+
+    fn suggest_args(&self, _ctx: &AppCtx, _args_query: &str) -> Option<Vec<ArgItem>> {
+        Some(vec![
+            ArgItem {
+                display: "open".to_owned(),
+                match_text: "open".to_owned(),
+                insert_text: "open".to_owned(),
+                description: "Open the interactive settings modal".to_owned(),
+            },
+            ArgItem {
+                display: "reset-defaults".to_owned(),
+                match_text: "reset defaults restore".to_owned(),
+                insert_text: "reset-defaults".to_owned(),
+                description: "Restore Atelier-owned default config files".to_owned(),
+            },
+        ])
+    }
+
+    fn run(&self, _ctx: &mut CommandExecCtx, args: &str) -> CommandResult {
+        match args.trim() {
+            "" | "open" => CommandResult::Action(Action::OpenSettings),
+            "reset" | "reset-defaults" => CommandResult::Action(Action::RuntimeExtension {
+                method: "_atelier/config/reset_defaults".to_owned(),
+                params: serde_json::json!({}),
+            }),
+            _ => CommandResult::Error(format!("Usage: {}", self.usage())),
+        }
     }
 }
 
@@ -74,19 +106,29 @@ mod tests {
         );
     }
 
-    /// Args are silently discarded — modal always opens.
     #[test]
-    fn args_still_dispatches_open_settings() {
+    fn open_arg_dispatches_open_settings() {
         let models = ModelState::default();
         let mut ctx = make_ctx(&models);
         let cmd = SettingsCommand;
-        for args in ["theme", "  ", "anything goes", "compact-mode"] {
+        for args in ["open", "  "] {
             let result = cmd.run(&mut ctx, args);
             assert!(
                 matches!(result, CommandResult::Action(Action::OpenSettings)),
                 "expected OpenSettings for args={args:?}, got {result:?}",
             );
         }
+    }
+
+    #[test]
+    fn reset_defaults_dispatches_runtime_extension() {
+        let models = ModelState::default();
+        let mut ctx = make_ctx(&models);
+        assert!(matches!(
+            SettingsCommand.run(&mut ctx, "reset-defaults"),
+            CommandResult::Action(Action::RuntimeExtension { method, .. })
+                if method == "_atelier/config/reset_defaults"
+        ));
     }
 
     #[test]

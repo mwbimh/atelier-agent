@@ -11,8 +11,8 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 use agent_client_protocol::{self as acp, Agent as _};
+use atelier_acp_runtime::LineBufferedRead;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
-use xai_acp_lib::LineBufferedRead;
 
 use crate::env::atelier_binary;
 use crate::mock_server::MockInferenceServer;
@@ -145,11 +145,8 @@ impl LeaderStdioClient {
                 home.join(".atelier").join("leader.sock"),
             )
             .env("ATELIER_CLI_CHAT_PROXY_BASE_URL", server.url())
-            .env("ATELIER_XAI_API_BASE_URL", server.url())
-            .env("XAI_API_KEY", "test-key-for-ci")
             .env("ATELIER_TELEMETRY_ENABLED", "false")
             .env("ATELIER_FEEDBACK_ENABLED", "false")
-            .env("ATELIER_TRACE_UPLOAD", "false")
             .env("ATELIER_INSTRUMENTATION", "disabled")
             // Inherited by the spawned leader, whose stderr goes to
             // ~/.atelier/leader.log — keep it chatty for diagnosis.

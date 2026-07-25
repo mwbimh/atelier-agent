@@ -1004,8 +1004,24 @@ fn slash_model_no_args_with_provider_offers_refresh_and_add_and_add_can_continue
         outcome,
         crate::app::app_view::InputOutcome::Changed
     ));
-    assert!(app.agents[&id].active_modal.is_none());
-    assert_eq!(app.agents[&id].prompt.text(), "/provider add ");
+    let Some(crate::views::modal::ActiveModal::ArgPicker {
+        command,
+        args_query,
+        items,
+        ..
+    }) = app.agents[&id].active_modal.as_ref()
+    else {
+        panic!("provider add should continue into the staged Provider form");
+    };
+    assert_eq!(command, "provider");
+    assert_eq!(args_query, "add ");
+    assert_eq!(
+        items
+            .iter()
+            .map(|item| item.insert_text.as_str())
+            .collect::<Vec<_>>(),
+        vec!["add allm ", "add openai ", "add anthropic ", "add local "]
+    );
 }
 #[test]
 fn slash_hooks_opens_modal() {

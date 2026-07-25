@@ -7,13 +7,13 @@ use crate::sampling::{
 };
 use agent_client_protocol as acp;
 use async_openai::types::responses::ResponseStreamEvent;
-use atelier_sampler::SamplerConfig as SamplingConfig;
-use futures_util::StreamExt;
-use reqwest::StatusCode;
-pub use xai_chat_state::compaction_utils::{
+pub use atelier_chat_state::compaction_utils::{
     AUTO_CONTINUE_PROMPT, extract_last_real_user_query, extract_last_user_query,
     extract_messages_since_last_user, extract_real_user_queries, is_synthetic_extracted_query,
 };
+use atelier_sampler::SamplerConfig as SamplingConfig;
+use futures_util::StreamExt;
+use reqwest::StatusCode;
 
 /// Runtime-visible state for an internal model request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -142,7 +142,7 @@ impl AuxiliaryRequestLifecycle {
     }
 
     pub(crate) fn fail(&self, error: impl Into<String>) {
-        let redacted = xai_acp_lib::redact_text(&error.into());
+        let redacted = atelier_acp_runtime::redact_text(&error.into());
         {
             let mut snapshot = self
                 .trace
@@ -155,7 +155,7 @@ impl AuxiliaryRequestLifecycle {
     }
 
     pub(crate) fn disable(&self, reason: impl Into<String>) {
-        let redacted = xai_acp_lib::redact_text(&reason.into());
+        let redacted = atelier_acp_runtime::redact_text(&reason.into());
         {
             let mut snapshot = self
                 .trace
@@ -1308,12 +1308,12 @@ mod compacted_history_shape_tests {
         BackgroundTaskSummary, CompactionInputs, CompactionStateContext, RunningSubagentSummary,
         SubagentToolNames, to_system_reminder_sync,
     };
-    use std::collections::BTreeSet;
-    use xai_chat_state::compaction_utils::{
+    use atelier_chat_state::compaction_utils::{
         CompactedHistoryInput, build_compacted_history as build_compacted_history_shared,
     };
+    use std::collections::BTreeSet;
     /// Thin wrapper around the shared `build_compacted_history` from
-    /// `xai-chat-state`, rendering the system-reminder synchronously (no
+    /// `atelier-chat-state`, rendering the system-reminder synchronously (no
     /// memory backend) to match the old test-local helper signature.
     fn build_compacted_history(
         system_prompt: &str,
@@ -1449,7 +1449,9 @@ mod compacted_history_shape_tests {
             "Summary should start with the continuation preamble"
         );
         let formatted_summary =
-            xai_chat_state::compaction_utils::format_compact_summary_content(compaction_summary);
+            atelier_chat_state::compaction_utils::format_compact_summary_content(
+                compaction_summary,
+            );
         assert_eq!(
             msg_summary_text, formatted_summary,
             "Summary message should be the summary text without <user_query> wrapping"
@@ -1584,7 +1586,7 @@ mod compacted_history_shape_tests {
     /// `acp_session.rs`: build → sanitize → validate → (fallback if needed).
     #[test]
     fn sanitize_then_validate_produces_valid_history() {
-        use xai_chat_state::compaction_utils::{
+        use atelier_chat_state::compaction_utils::{
             sanitize_compacted_history, validate_compacted_history,
         };
         let raw = vec![
@@ -1612,7 +1614,7 @@ mod compacted_history_shape_tests {
     /// the fallback path should produce a minimal valid history.
     #[test]
     fn fallback_minimal_history_has_no_tool_results() {
-        use xai_chat_state::compaction_utils::validate_compacted_history;
+        use atelier_chat_state::compaction_utils::validate_compacted_history;
         let state_context = CompactionStateContext {
             recent_messages: vec![],
             last_user_query: Some("fix the bug".to_string()),
@@ -1993,6 +1995,8 @@ mod reasoning_compaction_regression_tests {
             compactions_remaining: None,
             compaction_at_tokens: None,
             doom_loop_recovery: None,
+            remote_compaction_endpoint: None,
+            image_generation_endpoint: None,
             header_injector: None,
         }
     }

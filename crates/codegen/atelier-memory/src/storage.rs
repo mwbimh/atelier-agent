@@ -22,7 +22,7 @@ pub enum MemoryScope {
 ///
 /// Memory files are human-readable/editable Markdown stored under
 /// `~/.atelier/memory/`. Workspace-scoped files live under a directory
-/// named `{project-slug}-{hash8}`, e.g. `~/.atelier/memory/xai-a3f7b2c9/`.
+/// named `{project-slug}-{hash8}`, e.g. `~/.atelier/memory/atelier-a3f7b2c9/`.
 #[derive(Debug, Clone)]
 pub struct MemoryStorage {
     /// `~/.atelier/memory/`
@@ -109,8 +109,8 @@ impl MemoryStorage {
     pub fn total_chunk_count(&self) -> usize {
         let db_path = self.workspace_dir.join("index.sqlite");
         // Journal-mode-aware open: never mmap a legacy WAL -shm on network
-        // mounts (SIGBUS); see xai_sqlite_journal::JournalMode::open_readonly.
-        xai_sqlite_journal::JournalMode::for_db_path(&db_path)
+        // mounts (SIGBUS); see atelier_sqlite_journal::JournalMode::open_readonly.
+        atelier_sqlite_journal::JournalMode::for_db_path(&db_path)
             .open_readonly(&db_path)
             .and_then(|c| c.query_row("SELECT COUNT(*) FROM chunks", [], |r| r.get::<_, i64>(0)))
             .unwrap_or(0) as usize
@@ -764,9 +764,9 @@ mod tests {
 
     #[test]
     fn test_compute_workspace_hash_human_readable() {
-        let name = compute_workspace_hash(Path::new("/users/me/work/xai"));
+        let name = compute_workspace_hash(Path::new("/users/me/work/atelier"));
         assert!(
-            name.starts_with("xai-"),
+            name.starts_with("atelier-"),
             "should start with project name slug, got: {name}"
         );
         // Format: {slug}-{8 hex chars}

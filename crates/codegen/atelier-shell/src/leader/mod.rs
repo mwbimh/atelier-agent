@@ -1428,7 +1428,7 @@ fn spawn_leader_subprocess(env_urls: &LeaderEnvUrls) -> Result<u32, ConnectionEr
     }
     let leader_log = std::env::var("ATELIER_LEADER_LOG")
         .or_else(|_| std::env::var("RUST_LOG"))
-        .unwrap_or_else(|_| "atelier_shell=info,xai_acp_lib=warn,atelier_mcp=warn".into());
+        .unwrap_or_else(|_| "atelier_shell=info,atelier_acp_runtime=warn,atelier_mcp=warn".into());
     cmd.env("RUST_LOG", leader_log);
     #[cfg(unix)]
     {

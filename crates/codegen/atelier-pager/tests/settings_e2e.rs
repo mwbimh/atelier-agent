@@ -43,7 +43,6 @@ const ALL_SETTINGS_EXERCISED: &[&str] = &[
     "render_mermaid",
     "multiline_mode",
     "permission_mode",
-    "default_model",
     "max_thoughts_width",
     "scroll_speed",
     "scroll_mode",
@@ -1628,14 +1627,13 @@ fn registry_kind_membership_through_pr_14() {
     let string_keys = by_kind.remove("String").unwrap_or_default();
     assert!(
         string_keys.is_empty(),
-        "no String-kind settings should remain — `default_model` + `fork_secondary_model` \
-         migrated to DynamicEnum; got: {string_keys:?}",
+        "no String-kind settings should remain: {string_keys:?}"
     );
 
     let dynamic_enum_keys = by_kind.remove("DynamicEnum").unwrap_or_default();
     assert_eq!(
         dynamic_enum_keys,
-        vec!["default_model", "fork_secondary_model",],
+        vec!["fork_secondary_model"],
         "DynamicEnum kind membership drift",
     );
 
@@ -1733,7 +1731,6 @@ fn defaults_round_trip_through_registry() {
             "render_mermaid" => SettingValue::Enum("auto"),
             "multiline_mode" => SettingValue::Bool(false),
             "permission_mode" => SettingValue::Enum("ask"),
-            "default_model" => SettingValue::String(String::new()),
             "max_thoughts_width" => SettingValue::Int(120),
             "scroll_speed" => SettingValue::Int(50),
             "scroll_mode" => SettingValue::Enum("auto"),
@@ -4014,102 +4011,18 @@ fn pr15_int_stepper_commit_dispatches_typed_setter() {
     );
 }
 
-/// `default_model` DynamicEnum picker: Enter opens, catalog rows
-/// dispatch `SetDefaultModel(<ModelId>)` resolved from snapshot.
 #[test]
-fn pr14_default_model_picker_commits_resolved_model_id() {
-    let snapshot = PagerLocalSnapshot {
-        available_models: vec![
-            (
-                "Atelier 4.5".to_string(),
-                agent_client_protocol::ModelId::new(std::sync::Arc::from("atelier-4.5")),
-            ),
-            (
-                "Atelier 3".to_string(),
-                agent_client_protocol::ModelId::new(std::sync::Arc::from("atelier-3")),
-            ),
-        ],
-        ..PagerLocalSnapshot::default()
-    };
-    let mut s = SettingsModalState::new(
-        Arc::new(SettingsRegistry::defaults()),
-        UiConfig::default(),
-        snapshot,
-    );
-    navigate_to(&mut s, "default_model");
-    let outcome = handle_settings_key(&mut s, &press(KeyCode::Enter));
+fn settings_registry_does_not_expose_default_model() {
+    let reg = SettingsRegistry::defaults();
+    assert!(reg.find("default_model").is_none());
     assert!(
-        matches!(outcome, SettingsKeyOutcome::Changed),
-        "Enter on DynamicEnum row must transition to PickingEnum, got {outcome:?}"
-    );
-    assert!(
-        matches!(s.mode, SettingsModalMode::PickingEnum { key, .. } if key == "default_model"),
-        "Enter must transition to PickingEnum for default_model"
-    );
-
-    // Walk down past row 0 ("(no override)") to row 1 ("Atelier 4.5").
-    let outcome = handle_settings_key(&mut s, &press(KeyCode::Down));
-    assert!(
-        matches!(outcome, SettingsKeyOutcome::Changed),
-        "Down on picker must move the focus, got {outcome:?}"
-    );
-
-    // Enter commits the selected model.
-    let outcome = handle_settings_key(&mut s, &press(KeyCode::Enter));
-    match outcome {
-        SettingsKeyOutcome::Action(Action::SetDefaultModel(id)) => {
-            assert_eq!(
-                id.0.as_ref(),
-                "atelier-4.5",
-                "committed id must match snapshot"
-            );
-        }
-        other => panic!("expected SetDefaultModel(<id>) on commit, got {other:?}"),
-    }
-    assert!(
-        matches!(s.mode, SettingsModalMode::Browse),
-        "successful commit must return to Browse"
+        reg.search("default model")
+            .iter()
+            .all(|meta| meta.key != "default_model")
     );
 }
 
-/// Row-0 "(no override)" dispatches `ClearDefaultModel`.
-#[test]
-fn pr14_default_model_picker_row_zero_commits_clear_action() {
-    let snapshot = PagerLocalSnapshot {
-        available_models: vec![(
-            "Atelier 3".to_string(),
-            agent_client_protocol::ModelId::new(std::sync::Arc::from("atelier-3")),
-        )],
-        ..PagerLocalSnapshot::default()
-    };
-    let mut s = SettingsModalState::new(
-        Arc::new(SettingsRegistry::defaults()),
-        UiConfig::default(),
-        snapshot,
-    );
-    navigate_to(&mut s, "default_model");
-    let _ = handle_settings_key(&mut s, &press(KeyCode::Enter));
-    // Picker opens with choices_idx at the snapshot's current model,
-    // OR at 0 when current_model_name is None. The fixture above
-    // leaves current_model_name as None → picker opens on row 0.
-    match &s.mode {
-        SettingsModalMode::PickingEnum { choices_idx, .. } => {
-            assert_eq!(
-                *choices_idx, 0,
-                "picker must seed at row 0 when no current model is set"
-            );
-        }
-        other => panic!("expected PickingEnum mode, got {other:?}"),
-    }
-    // Enter on row 0 → ClearDefaultModel.
-    let outcome = handle_settings_key(&mut s, &press(KeyCode::Enter));
-    match outcome {
-        SettingsKeyOutcome::Action(Action::ClearDefaultModel) => {}
-        other => panic!("expected ClearDefaultModel from row-0 commit, got {other:?}"),
-    }
-}
-
-/// Mouse click on `default_model` opens picker (keyboard ↔ mouse parity).
+/// Mouse click on a DynamicEnum model row opens its picker.
 #[test]
 fn pr14_mouse_click_on_dynamic_enum_row_opens_picker() {
     let snapshot = PagerLocalSnapshot {
@@ -4131,7 +4044,7 @@ fn pr14_mouse_click_on_dynamic_enum_row_opens_picker() {
         height: 80,
     };
     s.row_rects.resize(s.rows.len(), Rect::default());
-    let row_idx = row_idx_for(&s, "default_model");
+    let row_idx = row_idx_for(&s, "fork_secondary_model");
     s.row_rects[row_idx] = Rect {
         x: 0,
         y: row_idx as u16,
@@ -4158,7 +4071,7 @@ fn pr14_mouse_click_on_dynamic_enum_row_opens_picker() {
         "second click on DynamicEnum row must open picker, got {outcome:?}",
     );
     assert!(
-        matches!(s.mode, SettingsModalMode::PickingEnum { key, .. } if key == "default_model"),
+        matches!(s.mode, SettingsModalMode::PickingEnum { key, .. } if key == "fork_secondary_model"),
         "second click on DynamicEnum row must transition to PickingEnum, got {:?}",
         s.mode,
     );
@@ -4347,32 +4260,13 @@ fn pr8_esc_in_editing_value_cancels_without_dispatch() {
     );
 }
 
-/// `default_model` and `max_thoughts_width` defaults round-trip
-/// against hard-coded literals.
+/// `max_thoughts_width` defaults round-trip against hard-coded literals.
 #[test]
-fn pr8_default_model_and_max_thoughts_width_defaults_roundtrip() {
+fn pr8_max_thoughts_width_default_roundtrips() {
     use atelier_pager::settings::current_value_for;
     let reg = SettingsRegistry::defaults();
     let ui = UiConfig::default();
     let pager = PagerLocalSnapshot::default();
-
-    // default_model: registered default is the empty-string sentinel
-    // (no UiConfig mirror — cfg.models.default is resolved
-    // dynamically). `current_value_for` reads from
-    // `pager.current_model_name` which is None by default →
-    // `unwrap_or_default()` produces the empty string. Both paths
-    // converge on `SettingValue::String("")`.
-    let dm_meta = reg.find("default_model").unwrap();
-    assert_eq!(
-        atelier_pager::settings::default_value_for(dm_meta),
-        SettingValue::String(String::new()),
-        "default_model registered default must be the empty string",
-    );
-    assert_eq!(
-        current_value_for("default_model", &ui, &pager).unwrap(),
-        SettingValue::String(String::new()),
-        "default_model current_value_for with empty pager snapshot must be empty",
-    );
 
     // max_thoughts_width: registered default is 120 (matches
     // UiConfig::default()'s DEFAULT_MAX_THOUGHTS_WIDTH constant).
@@ -5752,12 +5646,12 @@ fn pr14_restart_required_split() {
     );
 }
 
-/// Model settings use `DynamicEnum` with `ActiveModelCatalog`.
+/// The fork-secondary model setting uses the active model catalog.
 #[test]
 fn pr14_string_settings_use_known_model_validator() {
     use atelier_pager::settings::DynamicEnumSource;
     let reg = SettingsRegistry::defaults();
-    for key in ["default_model", "fork_secondary_model"] {
+    for key in ["fork_secondary_model"] {
         let meta = reg
             .find(key)
             .unwrap_or_else(|| panic!("`{key}` must be registered"));

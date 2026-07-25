@@ -215,7 +215,7 @@ fn de_opt_u32_tolerant<'de, D: serde::Deserializer<'de>>(
 /// - New fields added in the future don't break existing clients
 /// - Callers can distinguish "server said false" from "server didn't say"
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
-pub struct RemoteSettings {
+pub struct LocalRuntimeSettings {
     /// When `Some(true)`, the server recommends enabling leader mode.
     /// Used as a fallback when the user hasn't set `[cli] use_leader` locally.
     #[serde(default)]
@@ -424,7 +424,7 @@ pub struct RemoteSettings {
     pub goal_strategist_every: Option<u32>,
     /// Planner role model+toolset. Absent ⇒ inherit current model. A
     /// present-but-malformed value is tolerantly dropped to `None` (not a
-    /// hard parse error) so it cannot nuke the whole `RemoteSettings`
+    /// hard parse error) so it cannot nuke the whole `LocalRuntimeSettings`
     /// payload (see [`deserialize_tolerant_goal_role_model`]).
     #[serde(
         default,
@@ -457,28 +457,12 @@ pub struct RemoteSettings {
     pub managed_mcps_enabled: Option<bool>,
     #[serde(default)]
     pub managed_mcp_gateway_tools_enabled: Option<bool>,
-    /// Fleet kill switch for the **external OTEL** stream (customer
-    /// collectors). Restrictive-only by construction: there is deliberately
-    /// no `external_otel_enabled` remote field — remote settings are fetched
-    /// per-run and never persisted, so a remote "enable" could never reach
-    /// init; org-wide enable ships via managed config instead. Applied
-    /// in-process (tighten-only) via
-    /// `atelier_telemetry::external::apply_remote_policy`.
-    #[serde(default)]
-    pub external_otel_disabled: Option<bool>,
-    /// Force the external stream's content gates (`OTEL_LOG_USER_PROMPTS`,
-    /// `OTEL_LOG_TOOL_DETAILS`) off regardless of local env/config.
-    /// Tighten-only, like `external_otel_disabled`.
-    #[serde(default)]
-    pub external_otel_content_gates_locked: Option<bool>,
     #[serde(default)]
     pub telemetry_enabled: Option<bool>,
     /// Telemetry mode override (string): `"session-metrics"`, `"full"`, `"off"`.
     /// Takes precedence over `telemetry_enabled` (bool) when present.
     #[serde(default)]
     pub telemetry_mode: Option<String>,
-    #[serde(default)]
-    pub trace_upload_enabled: Option<bool>,
     /// Enable user-facing feedback (heuristic popups, `/feedback` command).
     /// Session analytics (signal sync, turn deltas) are gated separately
     /// by `telemetry_enabled`.
@@ -714,7 +698,7 @@ pub struct RemoteSettings {
     /// User-friendly display name for the current subscription tier
     /// (e.g. "SuperAtelier", "X Premium+", "Free", "API Key"). Set by CCP
     /// from the JWT tier claim (OAuth) or credential kind (API key).
-    /// Free/Invalid OAuth → `"Free"`; API keys → `"API Key"` (Mixpanel
+    /// Free/Invalid OAuth → `"Free"`; API keys → `"API Key"` (local metrics
     /// `api_key`, never free).
     #[serde(default)]
     pub subscription_tier_display: Option<String>,
@@ -785,7 +769,7 @@ pub struct RemoteSettings {
     #[serde(default)]
     pub jemalloc_heap_profile_poll_interval_secs: Option<u64>,
 }
-impl RemoteSettings {
+impl LocalRuntimeSettings {
     /// Denylist check for an optional imagine tool. Returns `true` when the
     /// server sent `imagine_tools_disabled` and it contains `tool` (force-off);
     /// otherwise `false` (defer to the tool's own default).
@@ -798,7 +782,7 @@ impl RemoteSettings {
 /// Remote enable tier for the per-tip contextual hints (mirrors the client's
 /// `[ui.contextual_hints]` shape). Each field is a soft default for one tip;
 /// `None` defers to the client default (on). All fields `#[serde(default)]` so
-/// a partial object from remote settings never fails the whole `RemoteSettings` parse.
+/// a partial object from remote settings never fails the whole `LocalRuntimeSettings` parse.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
 pub struct ContextualHintsRemote {
     /// Undo tip (Ctrl+Z after a substantial draft wipe).
@@ -822,7 +806,7 @@ pub struct ContextualHintsRemote {
 }
 /// Tolerant deserializer for `Option<Vec<RemoteAnnouncement>>`.
 /// Parses as Vec<Value>, tries each as RemoteAnnouncement, drops failures.
-/// This ensures one bad item does not poison the whole RemoteSettings.
+/// This ensures one bad item does not poison the whole LocalRuntimeSettings.
 /// Logs a warning when malformed items are dropped.
 fn deserialize_tolerant_announcements<'de, D>(
     deserializer: D,
@@ -856,7 +840,7 @@ where
 /// `tracing::warn!`) instead of erroring when the value is malformed.
 /// Shared by the tolerant deserializers for the single-pair role fields
 /// and the skeptic pool so all three goal-role-model fields drop bad
-/// remote payloads rather than failing the whole `RemoteSettings` parse.
+/// remote payloads rather than failing the whole `LocalRuntimeSettings` parse.
 fn parse_goal_role_model_tolerant(value: serde_json::Value) -> Option<GoalRoleModel> {
     match serde_json::from_value::<GoalRoleModel>(value) {
         Ok(model) => Some(model),
@@ -872,7 +856,7 @@ fn parse_goal_role_model_tolerant(value: serde_json::Value) -> Option<GoalRoleMo
 /// role fields). Parses as `Option<Value>`; a present-but-malformed value
 /// (or an explicit `null`) maps to `None` via
 /// [`parse_goal_role_model_tolerant`] rather than erroring, so one bad
-/// remote payload cannot nuke the whole `RemoteSettings` parse.
+/// remote payload cannot nuke the whole `LocalRuntimeSettings` parse.
 fn deserialize_tolerant_goal_role_model<'de, D>(
     deserializer: D,
 ) -> Result<Option<GoalRoleModel>, D::Error>
@@ -931,8 +915,8 @@ pub struct GoalRoleModel {
 mod tests {
     use super::*;
     #[test]
-    fn remote_settings_vendor_sessions_round_trip_and_default_absent() {
-        let session_flags = |settings: &RemoteSettings| {
+    fn local_runtime_settings_vendor_sessions_round_trip_and_default_absent() {
+        let session_flags = |settings: &LocalRuntimeSettings| {
             (
                 settings.cursor_sessions_enabled,
                 settings.claude_sessions_enabled,
@@ -944,53 +928,53 @@ mod tests {
             "claude_sessions_enabled": false,
             "codex_sessions_enabled": true
         }"#;
-        let settings: RemoteSettings = serde_json::from_str(json).unwrap();
+        let settings: LocalRuntimeSettings = serde_json::from_str(json).unwrap();
         assert_eq!(
             session_flags(&settings),
             (Some(true), Some(false), Some(true))
         );
         let serialized = serde_json::to_string(&settings).unwrap();
-        let round_trip: RemoteSettings = serde_json::from_str(&serialized).unwrap();
+        let round_trip: LocalRuntimeSettings = serde_json::from_str(&serialized).unwrap();
         assert_eq!(
             session_flags(&round_trip),
             (Some(true), Some(false), Some(true))
         );
-        let absent: RemoteSettings = serde_json::from_str("{}").unwrap();
+        let absent: LocalRuntimeSettings = serde_json::from_str("{}").unwrap();
         assert_eq!(session_flags(&absent), (None, None, None));
     }
     #[test]
-    fn remote_settings_image_description_model_round_trip() {
+    fn local_runtime_settings_image_description_model_round_trip() {
         let json = r#"{"image_description_model": "atelier-build"}"#;
-        let s: RemoteSettings = serde_json::from_str(json).unwrap();
+        let s: LocalRuntimeSettings = serde_json::from_str(json).unwrap();
         assert_eq!(s.image_description_model.as_deref(), Some("atelier-build"));
         let out = serde_json::to_string(&s).unwrap();
-        let s2: RemoteSettings = serde_json::from_str(&out).unwrap();
+        let s2: LocalRuntimeSettings = serde_json::from_str(&out).unwrap();
         assert_eq!(s2.image_description_model, s.image_description_model);
     }
     #[test]
-    fn remote_settings_prompt_suggestion_model_round_trip() {
+    fn local_runtime_settings_prompt_suggestion_model_round_trip() {
         let json = r#"{"prompt_suggestion_model": "atelier-build-0.1"}"#;
-        let s: RemoteSettings = serde_json::from_str(json).unwrap();
+        let s: LocalRuntimeSettings = serde_json::from_str(json).unwrap();
         assert_eq!(
             s.prompt_suggestion_model.as_deref(),
             Some("atelier-build-0.1")
         );
         let out = serde_json::to_string(&s).unwrap();
-        let s2: RemoteSettings = serde_json::from_str(&out).unwrap();
+        let s2: LocalRuntimeSettings = serde_json::from_str(&out).unwrap();
         assert_eq!(s2.prompt_suggestion_model, s.prompt_suggestion_model);
-        let s3: RemoteSettings = serde_json::from_str("{}").unwrap();
+        let s3: LocalRuntimeSettings = serde_json::from_str("{}").unwrap();
         assert_eq!(s3.prompt_suggestion_model, None);
     }
     #[test]
-    fn remote_settings_announcements_absent() {
+    fn local_runtime_settings_announcements_absent() {
         let json = r#"{}"#;
-        let settings: RemoteSettings = serde_json::from_str(json).unwrap();
+        let settings: LocalRuntimeSettings = serde_json::from_str(json).unwrap();
         assert_eq!(settings.announcements, None);
     }
     #[test]
-    fn remote_settings_announcements_populated() {
+    fn local_runtime_settings_announcements_populated() {
         let json = r#"{"announcements": [{"id": "a", "message": "m"}]}"#;
-        let settings: RemoteSettings = serde_json::from_str(json).unwrap();
+        let settings: LocalRuntimeSettings = serde_json::from_str(json).unwrap();
         assert_eq!(
             settings.announcements,
             Some(vec![RemoteAnnouncement {
@@ -1007,14 +991,14 @@ mod tests {
         );
     }
     #[test]
-    fn remote_settings_announcements_one_bad_item_does_not_poison() {
+    fn local_runtime_settings_announcements_one_bad_item_does_not_poison() {
         let json = r#"{
             "announcements": [
                 {"id": "good", "message": "ok"},
                 {"id": 999, "message": "bad-id-type"}
             ]
         }"#;
-        let settings: RemoteSettings = serde_json::from_str(json).unwrap();
+        let settings: LocalRuntimeSettings = serde_json::from_str(json).unwrap();
         assert_eq!(
             settings.announcements,
             Some(vec![RemoteAnnouncement {
@@ -1031,18 +1015,18 @@ mod tests {
         );
     }
     #[test]
-    fn remote_settings_goal_role_models_absent_default_clean() {
+    fn local_runtime_settings_goal_role_models_absent_default_clean() {
         let json = r#"{}"#;
-        let s: RemoteSettings = serde_json::from_str(json).unwrap();
+        let s: LocalRuntimeSettings = serde_json::from_str(json).unwrap();
         assert_eq!(s.goal_planner_model, None);
         assert_eq!(s.goal_strategist_model, None);
         assert!(s.goal_skeptic_models.is_empty());
     }
     #[test]
-    fn remote_settings_goal_planner_model_round_trip() {
+    fn local_runtime_settings_goal_planner_model_round_trip() {
         let json =
             r#"{"goal_planner_model": {"model": "atelier-4", "agent_type": "general-purpose"}}"#;
-        let s: RemoteSettings = serde_json::from_str(json).unwrap();
+        let s: LocalRuntimeSettings = serde_json::from_str(json).unwrap();
         assert_eq!(
             s.goal_planner_model,
             Some(GoalRoleModel {
@@ -1051,13 +1035,13 @@ mod tests {
             })
         );
         let out = serde_json::to_string(&s).unwrap();
-        let s2: RemoteSettings = serde_json::from_str(&out).unwrap();
+        let s2: LocalRuntimeSettings = serde_json::from_str(&out).unwrap();
         assert_eq!(s2.goal_planner_model, s.goal_planner_model);
     }
     #[test]
-    fn remote_settings_goal_strategist_model_round_trip() {
+    fn local_runtime_settings_goal_strategist_model_round_trip() {
         let json = r#"{"goal_strategist_model": {"model": "atelier-4.5", "agent_type": "cursor"}}"#;
-        let s: RemoteSettings = serde_json::from_str(json).unwrap();
+        let s: LocalRuntimeSettings = serde_json::from_str(json).unwrap();
         assert_eq!(
             s.goal_strategist_model,
             Some(GoalRoleModel {
@@ -1066,16 +1050,16 @@ mod tests {
             })
         );
         let out = serde_json::to_string(&s).unwrap();
-        let s2: RemoteSettings = serde_json::from_str(&out).unwrap();
+        let s2: LocalRuntimeSettings = serde_json::from_str(&out).unwrap();
         assert_eq!(s2.goal_strategist_model, s.goal_strategist_model);
     }
     #[test]
-    fn remote_settings_goal_skeptic_models_fully_valid_pool_round_trips() {
+    fn local_runtime_settings_goal_skeptic_models_fully_valid_pool_round_trips() {
         let json = r#"{"goal_skeptic_models": [
             {"model": "atelier-4", "agent_type": "general-purpose"},
             {"model": "atelier-3", "agent_type": "cursor"}
         ]}"#;
-        let s: RemoteSettings = serde_json::from_str(json).unwrap();
+        let s: LocalRuntimeSettings = serde_json::from_str(json).unwrap();
         assert_eq!(
             s.goal_skeptic_models,
             vec![
@@ -1090,17 +1074,17 @@ mod tests {
             ]
         );
         let out = serde_json::to_string(&s).unwrap();
-        let s2: RemoteSettings = serde_json::from_str(&out).unwrap();
+        let s2: LocalRuntimeSettings = serde_json::from_str(&out).unwrap();
         assert_eq!(s2.goal_skeptic_models, s.goal_skeptic_models);
     }
     #[test]
-    fn remote_settings_goal_skeptic_models_one_bad_item_does_not_poison_pool() {
+    fn local_runtime_settings_goal_skeptic_models_one_bad_item_does_not_poison_pool() {
         let json = r#"{"goal_skeptic_models": [
             {"model": "atelier-4", "agent_type": "general-purpose"},
             {"model": "atelier-broken"},
             {"model": "atelier-3", "agent_type": "cursor"}
         ]}"#;
-        let s: RemoteSettings = serde_json::from_str(json).unwrap();
+        let s: LocalRuntimeSettings = serde_json::from_str(json).unwrap();
         assert_eq!(
             s.goal_skeptic_models,
             vec![
@@ -1116,36 +1100,36 @@ mod tests {
         );
     }
     #[test]
-    fn remote_settings_goal_skeptic_models_null_yields_empty() {
+    fn local_runtime_settings_goal_skeptic_models_null_yields_empty() {
         let json = r#"{"goal_skeptic_models": null}"#;
-        let s: RemoteSettings = serde_json::from_str(json).unwrap();
+        let s: LocalRuntimeSettings = serde_json::from_str(json).unwrap();
         assert!(s.goal_skeptic_models.is_empty());
     }
     #[test]
-    fn remote_settings_goal_skeptic_models_empty_array_yields_empty() {
+    fn local_runtime_settings_goal_skeptic_models_empty_array_yields_empty() {
         let json = r#"{"goal_skeptic_models": []}"#;
-        let s: RemoteSettings = serde_json::from_str(json).unwrap();
+        let s: LocalRuntimeSettings = serde_json::from_str(json).unwrap();
         assert!(s.goal_skeptic_models.is_empty());
     }
     #[test]
-    fn remote_settings_goal_skeptic_models_all_entries_bad_yields_empty() {
+    fn local_runtime_settings_goal_skeptic_models_all_entries_bad_yields_empty() {
         let json = r#"{"goal_skeptic_models": [
             {"model": "only-model"},
             {"agent_type": "only-agent-type"},
             "scalar-not-an-object",
             42
         ]}"#;
-        let s: RemoteSettings = serde_json::from_str(json).unwrap();
+        let s: LocalRuntimeSettings = serde_json::from_str(json).unwrap();
         assert!(s.goal_skeptic_models.is_empty());
     }
     #[test]
-    fn remote_settings_goal_skeptic_models_non_array_yields_empty() {
+    fn local_runtime_settings_goal_skeptic_models_non_array_yields_empty() {
         for json in [
             r#"{"goal_skeptic_models": {"model": "x", "agent_type": "y"}}"#,
             r#"{"goal_skeptic_models": "not-an-array"}"#,
             r#"{"goal_skeptic_models": 7}"#,
         ] {
-            let s: RemoteSettings = serde_json::from_str(json).unwrap();
+            let s: LocalRuntimeSettings = serde_json::from_str(json).unwrap();
             assert!(
                 s.goal_skeptic_models.is_empty(),
                 "non-array pool must yield empty for {json}"
@@ -1153,12 +1137,12 @@ mod tests {
         }
     }
     #[test]
-    fn remote_settings_goal_skeptic_models_missing_model_entry_dropped() {
+    fn local_runtime_settings_goal_skeptic_models_missing_model_entry_dropped() {
         let json = r#"{"goal_skeptic_models": [
             {"agent_type": "general-purpose"},
             {"model": "atelier-3", "agent_type": "cursor"}
         ]}"#;
-        let s: RemoteSettings = serde_json::from_str(json).unwrap();
+        let s: LocalRuntimeSettings = serde_json::from_str(json).unwrap();
         assert_eq!(
             s.goal_skeptic_models,
             vec![GoalRoleModel {
@@ -1168,13 +1152,13 @@ mod tests {
         );
     }
     #[test]
-    fn remote_settings_goal_skeptic_models_wrong_typed_scalar_dropped() {
+    fn local_runtime_settings_goal_skeptic_models_wrong_typed_scalar_dropped() {
         let json = r#"{"goal_skeptic_models": [
             {"model": 123, "agent_type": "general-purpose"},
             {"model": "atelier-3", "agent_type": ["cursor"]},
             {"model": "atelier-4", "agent_type": "general-purpose"}
         ]}"#;
-        let s: RemoteSettings = serde_json::from_str(json).unwrap();
+        let s: LocalRuntimeSettings = serde_json::from_str(json).unwrap();
         assert_eq!(
             s.goal_skeptic_models,
             vec![GoalRoleModel {
@@ -1184,11 +1168,11 @@ mod tests {
         );
     }
     #[test]
-    fn remote_settings_goal_skeptic_models_extra_unknown_fields_kept() {
+    fn local_runtime_settings_goal_skeptic_models_extra_unknown_fields_kept() {
         let json = r#"{"goal_skeptic_models": [
             {"model": "atelier-4", "agent_type": "general-purpose", "reasoning_effort": "high"}
         ]}"#;
-        let s: RemoteSettings = serde_json::from_str(json).unwrap();
+        let s: LocalRuntimeSettings = serde_json::from_str(json).unwrap();
         assert_eq!(
             s.goal_skeptic_models,
             vec![GoalRoleModel {
@@ -1198,7 +1182,7 @@ mod tests {
         );
     }
     #[test]
-    fn remote_settings_goal_skeptic_models_survivor_order_preserved() {
+    fn local_runtime_settings_goal_skeptic_models_survivor_order_preserved() {
         let json = r#"{"goal_skeptic_models": [
             {"model": "first", "agent_type": "general-purpose"},
             {"model": "bad"},
@@ -1206,7 +1190,7 @@ mod tests {
             "garbage",
             {"model": "third", "agent_type": "general-purpose"}
         ]}"#;
-        let s: RemoteSettings = serde_json::from_str(json).unwrap();
+        let s: LocalRuntimeSettings = serde_json::from_str(json).unwrap();
         let order: Vec<&str> = s
             .goal_skeptic_models
             .iter()
@@ -1215,7 +1199,7 @@ mod tests {
         assert_eq!(order, vec!["first", "second", "third"]);
     }
     #[test]
-    fn remote_settings_goal_planner_model_malformed_yields_none() {
+    fn local_runtime_settings_goal_planner_model_malformed_yields_none() {
         for json in [
             r#"{"goal_planner_model": {"model": "only-model"}}"#,
             r#"{"goal_planner_model": {"agent_type": "only-agent-type"}}"#,
@@ -1223,31 +1207,31 @@ mod tests {
             r#"{"goal_planner_model": "scalar"}"#,
             r#"{"goal_planner_model": null}"#,
         ] {
-            let s: RemoteSettings = serde_json::from_str(json)
+            let s: LocalRuntimeSettings = serde_json::from_str(json)
                 .unwrap_or_else(|e| panic!("must not hard-error for {json}: {e}"));
             assert_eq!(s.goal_planner_model, None, "for {json}");
         }
     }
     #[test]
-    fn remote_settings_goal_strategist_model_malformed_yields_none() {
+    fn local_runtime_settings_goal_strategist_model_malformed_yields_none() {
         for json in [
             r#"{"goal_strategist_model": {"model": "only-model"}}"#,
             r#"{"goal_strategist_model": {"agent_type": ["x"]}}"#,
             r#"{"goal_strategist_model": 42}"#,
         ] {
-            let s: RemoteSettings = serde_json::from_str(json)
+            let s: LocalRuntimeSettings = serde_json::from_str(json)
                 .unwrap_or_else(|e| panic!("must not hard-error for {json}: {e}"));
             assert_eq!(s.goal_strategist_model, None, "for {json}");
         }
     }
     #[test]
-    fn remote_settings_goal_role_models_malformed_pair_does_not_drop_other_fields() {
+    fn local_runtime_settings_goal_role_models_malformed_pair_does_not_drop_other_fields() {
         let json = r#"{
             "goal_planner_model": {"model": "broken"},
             "goal_strategist_model": {"model": "atelier-4.5", "agent_type": "cursor"},
             "default_model": "atelier-4"
         }"#;
-        let s: RemoteSettings = serde_json::from_str(json).unwrap();
+        let s: LocalRuntimeSettings = serde_json::from_str(json).unwrap();
         assert_eq!(s.goal_planner_model, None);
         assert_eq!(
             s.goal_strategist_model,
@@ -1259,9 +1243,9 @@ mod tests {
         assert_eq!(s.default_model.as_deref(), Some("atelier-4"));
     }
     #[test]
-    fn remote_settings_goal_role_model_extra_unknown_fields_kept_single_pair() {
+    fn local_runtime_settings_goal_role_model_extra_unknown_fields_kept_single_pair() {
         let json = r#"{"goal_planner_model": {"model": "atelier-4", "agent_type": "general-purpose", "future": true}}"#;
-        let s: RemoteSettings = serde_json::from_str(json).unwrap();
+        let s: LocalRuntimeSettings = serde_json::from_str(json).unwrap();
         assert_eq!(
             s.goal_planner_model,
             Some(GoalRoleModel {
@@ -1271,57 +1255,57 @@ mod tests {
         );
     }
     #[test]
-    fn remote_settings_inference_idle_timeout_present() {
+    fn local_runtime_settings_inference_idle_timeout_present() {
         let json = r#"{"inference_idle_timeout_secs": 180}"#;
-        let settings: RemoteSettings = serde_json::from_str(json).unwrap();
+        let settings: LocalRuntimeSettings = serde_json::from_str(json).unwrap();
         assert_eq!(settings.inference_idle_timeout_secs, Some(180));
     }
     #[test]
-    fn remote_settings_initial_injection_deserialize_present() {
+    fn local_runtime_settings_initial_injection_deserialize_present() {
         let json = r#"{"memory_initial_injection_enabled": false, "memory_initial_injection_min_score": 0.66}"#;
-        let settings: RemoteSettings = serde_json::from_str(json).unwrap();
+        let settings: LocalRuntimeSettings = serde_json::from_str(json).unwrap();
         assert_eq!(settings.memory_initial_injection_enabled, Some(false));
         assert_eq!(settings.memory_initial_injection_min_score, Some(0.66));
     }
     #[test]
-    fn remote_settings_initial_injection_deserialize_absent() {
+    fn local_runtime_settings_initial_injection_deserialize_absent() {
         let json = r#"{"memory_enabled": true}"#;
-        let settings: RemoteSettings = serde_json::from_str(json).unwrap();
+        let settings: LocalRuntimeSettings = serde_json::from_str(json).unwrap();
         assert_eq!(settings.memory_initial_injection_enabled, None);
         assert_eq!(settings.memory_initial_injection_min_score, None);
     }
     #[test]
-    fn remote_settings_inference_idle_timeout_absent() {
+    fn local_runtime_settings_inference_idle_timeout_absent() {
         let json = r#"{"memory_enabled": true}"#;
-        let settings: RemoteSettings = serde_json::from_str(json).unwrap();
+        let settings: LocalRuntimeSettings = serde_json::from_str(json).unwrap();
         assert_eq!(settings.inference_idle_timeout_secs, None);
     }
     #[test]
-    fn remote_settings_unknown_fields_tolerated() {
+    fn local_runtime_settings_unknown_fields_tolerated() {
         let json = r#"{
             "inference_idle_timeout_secs": 120,
             "future_remote_field": 42,
             "verification_staleness_enabled": true
         }"#;
-        let settings: RemoteSettings = serde_json::from_str(json).unwrap();
+        let settings: LocalRuntimeSettings = serde_json::from_str(json).unwrap();
         assert_eq!(settings.inference_idle_timeout_secs, Some(120));
     }
     #[test]
-    fn remote_settings_web_fetch_fields_absent() {
+    fn local_runtime_settings_web_fetch_fields_absent() {
         let json = r#"{}"#;
-        let s: RemoteSettings = serde_json::from_str(json).unwrap();
+        let s: LocalRuntimeSettings = serde_json::from_str(json).unwrap();
         assert_eq!(s.web_fetch_enabled, None);
         assert_eq!(s.web_fetch_proxy, None);
         assert_eq!(s.web_fetch_allowed_domains, None);
     }
     #[test]
-    fn remote_settings_web_fetch_all_populated() {
+    fn local_runtime_settings_web_fetch_all_populated() {
         let json = r#"{
             "web_fetch_enabled": true,
             "web_fetch_proxy": "https://proxy.corp.example.com",
             "web_fetch_allowed_domains": ["docs.rs", "example.com"]
         }"#;
-        let s: RemoteSettings = serde_json::from_str(json).unwrap();
+        let s: LocalRuntimeSettings = serde_json::from_str(json).unwrap();
         assert_eq!(s.web_fetch_enabled, Some(true));
         assert_eq!(
             s.web_fetch_proxy.as_deref(),
@@ -1333,43 +1317,43 @@ mod tests {
         );
     }
     #[test]
-    fn remote_settings_web_fetch_enabled_false() {
+    fn local_runtime_settings_web_fetch_enabled_false() {
         let json = r#"{"web_fetch_enabled": false}"#;
-        let s: RemoteSettings = serde_json::from_str(json).unwrap();
+        let s: LocalRuntimeSettings = serde_json::from_str(json).unwrap();
         assert_eq!(s.web_fetch_enabled, Some(false));
         assert_eq!(s.web_fetch_proxy, None);
     }
     #[test]
-    fn remote_settings_ask_user_question_absent() {
+    fn local_runtime_settings_ask_user_question_absent() {
         let json = r#"{}"#;
-        let s: RemoteSettings = serde_json::from_str(json).unwrap();
+        let s: LocalRuntimeSettings = serde_json::from_str(json).unwrap();
         assert_eq!(s.ask_user_question_enabled, None);
     }
     #[test]
-    fn remote_settings_ask_user_question_enabled_round_trip() {
+    fn local_runtime_settings_ask_user_question_enabled_round_trip() {
         let json = r#"{"ask_user_question_enabled": true}"#;
-        let s: RemoteSettings = serde_json::from_str(json).unwrap();
+        let s: LocalRuntimeSettings = serde_json::from_str(json).unwrap();
         assert_eq!(s.ask_user_question_enabled, Some(true));
         let out = serde_json::to_string(&s).unwrap();
-        let s2: RemoteSettings = serde_json::from_str(&out).unwrap();
+        let s2: LocalRuntimeSettings = serde_json::from_str(&out).unwrap();
         assert_eq!(s2.ask_user_question_enabled, Some(true));
     }
     #[test]
-    fn remote_settings_ask_user_question_enabled_false() {
+    fn local_runtime_settings_ask_user_question_enabled_false() {
         let json = r#"{"ask_user_question_enabled": false}"#;
-        let s: RemoteSettings = serde_json::from_str(json).unwrap();
+        let s: LocalRuntimeSettings = serde_json::from_str(json).unwrap();
         assert_eq!(s.ask_user_question_enabled, Some(false));
     }
     #[test]
-    fn remote_settings_web_fetch_empty_domains() {
+    fn local_runtime_settings_web_fetch_empty_domains() {
         let json = r#"{"web_fetch_allowed_domains": []}"#;
-        let s: RemoteSettings = serde_json::from_str(json).unwrap();
+        let s: LocalRuntimeSettings = serde_json::from_str(json).unwrap();
         assert_eq!(s.web_fetch_allowed_domains, Some(vec![]));
     }
     #[test]
-    fn remote_settings_display_refresh_present_partial() {
+    fn local_runtime_settings_display_refresh_present_partial() {
         let json = r#"{"display_refresh": {"auto_cadence_enabled": true, "floor_ms": 7}}"#;
-        let s: RemoteSettings = serde_json::from_str(json).unwrap();
+        let s: LocalRuntimeSettings = serde_json::from_str(json).unwrap();
         let dr = s.display_refresh.expect("display_refresh present");
         assert_eq!(dr.auto_cadence_enabled, Some(true));
         assert_eq!(dr.floor_ms, Some(7));
@@ -1379,15 +1363,15 @@ mod tests {
         assert_eq!(dr.max_hz, None);
     }
     #[test]
-    fn remote_settings_display_refresh_absent() {
-        let s: RemoteSettings = serde_json::from_str("{}").unwrap();
+    fn local_runtime_settings_display_refresh_absent() {
+        let s: LocalRuntimeSettings = serde_json::from_str("{}").unwrap();
         assert_eq!(s.display_refresh, None);
     }
     #[test]
-    fn remote_settings_display_refresh_unknown_keys_preserved() {
+    fn local_runtime_settings_display_refresh_unknown_keys_preserved() {
         let json =
             r#"{"display_refresh": {"probe_enabled": true, "future_knob": 42, "floor_ms": "bad"}}"#;
-        let s: RemoteSettings = serde_json::from_str(json).unwrap();
+        let s: LocalRuntimeSettings = serde_json::from_str(json).unwrap();
         let dr = s.display_refresh.expect("display_refresh present");
         assert_eq!(dr.probe_enabled, Some(true));
         assert_eq!(dr.floor_ms, None, "wrong-typed floor_ms ignored");
@@ -1397,136 +1381,140 @@ mod tests {
         assert_eq!(out.get("probe_enabled"), Some(&serde_json::json!(true)));
     }
     #[test]
-    fn remote_settings_contextual_hints_present() {
+    fn local_runtime_settings_contextual_hints_present() {
         let json = r#"{"contextual_hints": {"undo": false, "plan_mode": true}}"#;
-        let s: RemoteSettings = serde_json::from_str(json).unwrap();
+        let s: LocalRuntimeSettings = serde_json::from_str(json).unwrap();
         let hints = s.contextual_hints.expect("contextual_hints present");
         assert_eq!(hints.undo, Some(false));
         assert_eq!(hints.plan_mode, Some(true));
         assert_eq!(hints.image_input, None);
     }
     #[test]
-    fn remote_settings_contextual_hints_absent() {
+    fn local_runtime_settings_contextual_hints_absent() {
         let json = r#"{}"#;
-        let s: RemoteSettings = serde_json::from_str(json).unwrap();
+        let s: LocalRuntimeSettings = serde_json::from_str(json).unwrap();
         assert_eq!(s.contextual_hints, None);
     }
     #[test]
-    fn remote_settings_goal_planner_enabled_present() {
+    fn local_runtime_settings_goal_planner_enabled_present() {
         let json = r#"{"goal_planner_enabled": true}"#;
-        let s: RemoteSettings = serde_json::from_str(json).unwrap();
+        let s: LocalRuntimeSettings = serde_json::from_str(json).unwrap();
         assert_eq!(s.goal_planner_enabled, Some(true));
     }
     #[test]
-    fn remote_settings_goal_planner_enabled_false() {
+    fn local_runtime_settings_goal_planner_enabled_false() {
         let json = r#"{"goal_planner_enabled": false}"#;
-        let s: RemoteSettings = serde_json::from_str(json).unwrap();
+        let s: LocalRuntimeSettings = serde_json::from_str(json).unwrap();
         assert_eq!(s.goal_planner_enabled, Some(false));
     }
     #[test]
-    fn remote_settings_goal_planner_enabled_absent() {
+    fn local_runtime_settings_goal_planner_enabled_absent() {
         let json = r#"{}"#;
-        let s: RemoteSettings = serde_json::from_str(json).unwrap();
+        let s: LocalRuntimeSettings = serde_json::from_str(json).unwrap();
         assert_eq!(s.goal_planner_enabled, None);
     }
     #[test]
-    fn remote_settings_goal_summary_enabled_present() {
+    fn local_runtime_settings_goal_summary_enabled_present() {
         let json = r#"{"goal_summary_enabled": true}"#;
-        let s: RemoteSettings = serde_json::from_str(json).unwrap();
+        let s: LocalRuntimeSettings = serde_json::from_str(json).unwrap();
         assert_eq!(s.goal_summary_enabled, Some(true));
     }
     #[test]
-    fn remote_settings_goal_summary_enabled_false() {
+    fn local_runtime_settings_goal_summary_enabled_false() {
         let json = r#"{"goal_summary_enabled": false}"#;
-        let s: RemoteSettings = serde_json::from_str(json).unwrap();
+        let s: LocalRuntimeSettings = serde_json::from_str(json).unwrap();
         assert_eq!(s.goal_summary_enabled, Some(false));
     }
     #[test]
-    fn remote_settings_goal_summary_enabled_absent() {
+    fn local_runtime_settings_goal_summary_enabled_absent() {
         let json = r#"{}"#;
-        let s: RemoteSettings = serde_json::from_str(json).unwrap();
+        let s: LocalRuntimeSettings = serde_json::from_str(json).unwrap();
         assert_eq!(s.goal_summary_enabled, None);
     }
     #[test]
-    fn remote_settings_folder_trust_enabled_present() {
+    fn local_runtime_settings_folder_trust_enabled_present() {
         let json = r#"{"folder_trust_enabled": true}"#;
-        let s: RemoteSettings = serde_json::from_str(json).unwrap();
+        let s: LocalRuntimeSettings = serde_json::from_str(json).unwrap();
         assert_eq!(s.folder_trust_enabled, Some(true));
     }
     #[test]
-    fn remote_settings_folder_trust_enabled_false() {
+    fn local_runtime_settings_folder_trust_enabled_false() {
         let json = r#"{"folder_trust_enabled": false}"#;
-        let s: RemoteSettings = serde_json::from_str(json).unwrap();
+        let s: LocalRuntimeSettings = serde_json::from_str(json).unwrap();
         assert_eq!(s.folder_trust_enabled, Some(false));
     }
     #[test]
-    fn remote_settings_folder_trust_enabled_absent() {
+    fn local_runtime_settings_folder_trust_enabled_absent() {
         let json = r#"{}"#;
-        let s: RemoteSettings = serde_json::from_str(json).unwrap();
+        let s: LocalRuntimeSettings = serde_json::from_str(json).unwrap();
         assert_eq!(s.folder_trust_enabled, None);
     }
     #[test]
-    fn remote_settings_workspace_command_enabled_present() {
+    fn local_runtime_settings_workspace_command_enabled_present() {
         let json = r#"{"workspace_command_enabled": true}"#;
-        let s: RemoteSettings = serde_json::from_str(json).unwrap();
+        let s: LocalRuntimeSettings = serde_json::from_str(json).unwrap();
         assert_eq!(s.workspace_command_enabled, Some(true));
     }
     #[test]
-    fn remote_settings_workspace_command_enabled_false() {
+    fn local_runtime_settings_workspace_command_enabled_false() {
         let json = r#"{"workspace_command_enabled": false}"#;
-        let s: RemoteSettings = serde_json::from_str(json).unwrap();
+        let s: LocalRuntimeSettings = serde_json::from_str(json).unwrap();
         assert_eq!(s.workspace_command_enabled, Some(false));
     }
     #[test]
-    fn remote_settings_workspace_command_enabled_absent() {
+    fn local_runtime_settings_workspace_command_enabled_absent() {
         let json = r#"{}"#;
-        let s: RemoteSettings = serde_json::from_str(json).unwrap();
+        let s: LocalRuntimeSettings = serde_json::from_str(json).unwrap();
         assert_eq!(s.workspace_command_enabled, None);
     }
     #[test]
-    fn remote_settings_permission_mode_deserializes() {
-        let s: RemoteSettings = serde_json::from_str(r#"{"permission_mode": "auto"}"#).unwrap();
+    fn local_runtime_settings_permission_mode_deserializes() {
+        let s: LocalRuntimeSettings =
+            serde_json::from_str(r#"{"permission_mode": "auto"}"#).unwrap();
         assert_eq!(s.permission_mode.as_deref(), Some("auto"));
-        let s2: RemoteSettings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        let s2: LocalRuntimeSettings =
+            serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
         assert_eq!(s2.permission_mode.as_deref(), Some("auto"));
-        let s: RemoteSettings =
+        let s: LocalRuntimeSettings =
             serde_json::from_str(r#"{"permission_mode": "always-approve"}"#).unwrap();
         assert_eq!(s.permission_mode.as_deref(), Some("always-approve"));
-        let s: RemoteSettings = serde_json::from_str("{}").unwrap();
+        let s: LocalRuntimeSettings = serde_json::from_str("{}").unwrap();
         assert_eq!(s.permission_mode, None);
-        let s: RemoteSettings = serde_json::from_str(r#"{"permission_mode": null}"#).unwrap();
+        let s: LocalRuntimeSettings = serde_json::from_str(r#"{"permission_mode": null}"#).unwrap();
         assert_eq!(s.permission_mode, None);
     }
     #[test]
-    fn remote_settings_crash_handler_enabled_present() {
-        let s: RemoteSettings = serde_json::from_str(r#"{"crash_handler_enabled": true}"#).unwrap();
+    fn local_runtime_settings_crash_handler_enabled_present() {
+        let s: LocalRuntimeSettings =
+            serde_json::from_str(r#"{"crash_handler_enabled": true}"#).unwrap();
         assert_eq!(s.crash_handler_enabled, Some(true));
-        let s2: RemoteSettings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        let s2: LocalRuntimeSettings =
+            serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
         assert_eq!(s2.crash_handler_enabled, Some(true));
     }
     #[test]
-    fn remote_settings_crash_handler_enabled_false() {
-        let s: RemoteSettings =
+    fn local_runtime_settings_crash_handler_enabled_false() {
+        let s: LocalRuntimeSettings =
             serde_json::from_str(r#"{"crash_handler_enabled": false}"#).unwrap();
         assert_eq!(s.crash_handler_enabled, Some(false));
     }
     #[test]
-    fn remote_settings_crash_handler_enabled_absent() {
-        let s: RemoteSettings = serde_json::from_str("{}").unwrap();
+    fn local_runtime_settings_crash_handler_enabled_absent() {
+        let s: LocalRuntimeSettings = serde_json::from_str("{}").unwrap();
         assert_eq!(s.crash_handler_enabled, None);
     }
     type JemallocFields<'a> = (Option<bool>, Option<&'a [u64]>, Option<u64>);
-    fn jemalloc_fields(s: &RemoteSettings) -> JemallocFields<'_> {
+    fn jemalloc_fields(s: &LocalRuntimeSettings) -> JemallocFields<'_> {
         (
             s.jemalloc_heap_profile_enabled,
             s.jemalloc_heap_profile_thresholds_bytes.as_deref(),
             s.jemalloc_heap_profile_poll_interval_secs,
         )
     }
-    fn parse_remote(json: &str) -> RemoteSettings {
+    fn parse_remote(json: &str) -> LocalRuntimeSettings {
         serde_json::from_str(json).unwrap_or_else(|e| panic!("parse failed for {json}: {e}"))
     }
-    fn round_trip_remote(s: &RemoteSettings) -> RemoteSettings {
+    fn round_trip_remote(s: &LocalRuntimeSettings) -> LocalRuntimeSettings {
         let out = serde_json::to_string(s).unwrap();
         parse_remote(&out)
     }
@@ -1537,12 +1525,12 @@ mod tests {
     }
     fn assert_remote_parse_err(json: &str) {
         assert!(
-            serde_json::from_str::<RemoteSettings>(json).is_err(),
+            serde_json::from_str::<LocalRuntimeSettings>(json).is_err(),
             "expected parse error for {json}"
         );
     }
     #[test]
-    fn remote_settings_jemalloc_heap_profile_fields_absent_and_null() {
+    fn local_runtime_settings_jemalloc_heap_profile_fields_absent_and_null() {
         assert_eq!(jemalloc_fields(&parse_remote("{}")), (None, None, None));
         assert_eq!(
             jemalloc_fields(&parse_remote(
@@ -1556,7 +1544,7 @@ mod tests {
         );
     }
     #[test]
-    fn remote_settings_jemalloc_heap_profile_enabled_true_false_round_trip() {
+    fn local_runtime_settings_jemalloc_heap_profile_enabled_true_false_round_trip() {
         assert_jemalloc_round_trip(
             r#"{"jemalloc_heap_profile_enabled": true}"#,
             (Some(true), None, None),
@@ -1567,7 +1555,7 @@ mod tests {
         );
     }
     #[test]
-    fn remote_settings_jemalloc_heap_profile_kill_switch_with_non_empty_thresholds() {
+    fn local_runtime_settings_jemalloc_heap_profile_kill_switch_with_non_empty_thresholds() {
         assert_jemalloc_round_trip(
             r#"{
                 "jemalloc_heap_profile_enabled": false,
@@ -1578,7 +1566,7 @@ mod tests {
         );
     }
     #[test]
-    fn remote_settings_jemalloc_heap_profile_thresholds_populated_and_empty_round_trip() {
+    fn local_runtime_settings_jemalloc_heap_profile_thresholds_populated_and_empty_round_trip() {
         assert_jemalloc_round_trip(
             r#"{
                 "jemalloc_heap_profile_thresholds_bytes": [2147483648, 5368709120, 10737418240]
@@ -1602,14 +1590,14 @@ mod tests {
         );
     }
     #[test]
-    fn remote_settings_jemalloc_heap_profile_poll_interval_round_trip() {
+    fn local_runtime_settings_jemalloc_heap_profile_poll_interval_round_trip() {
         assert_jemalloc_round_trip(
             r#"{"jemalloc_heap_profile_poll_interval_secs": 60}"#,
             (None, None, Some(60)),
         );
     }
     #[test]
-    fn remote_settings_jemalloc_heap_profile_all_fields_populated_round_trip() {
+    fn local_runtime_settings_jemalloc_heap_profile_all_fields_populated_round_trip() {
         assert_jemalloc_round_trip(
             r#"{
                 "jemalloc_heap_profile_enabled": true,
@@ -1620,7 +1608,7 @@ mod tests {
         );
     }
     #[test]
-    fn remote_settings_jemalloc_heap_profile_boundary_u64_values() {
+    fn local_runtime_settings_jemalloc_heap_profile_boundary_u64_values() {
         let json = format!(
             r#"{{
                 "jemalloc_heap_profile_thresholds_bytes": [0, 1, {}],
@@ -1632,7 +1620,7 @@ mod tests {
         assert_jemalloc_round_trip(&json, (None, Some(&[0, 1, u64::MAX]), Some(u64::MAX)));
     }
     #[test]
-    fn remote_settings_jemalloc_heap_profile_coexists_with_unknown_keys() {
+    fn local_runtime_settings_jemalloc_heap_profile_coexists_with_unknown_keys() {
         let s = parse_remote(
             r#"{
                 "jemalloc_heap_profile_enabled": true,
@@ -1648,7 +1636,7 @@ mod tests {
         );
     }
     #[test]
-    fn remote_settings_jemalloc_heap_profile_malformed_fails_whole_parse() {
+    fn local_runtime_settings_jemalloc_heap_profile_malformed_fails_whole_parse() {
         for json in [
             r#"{"jemalloc_heap_profile_enabled": "yes"}"#,
             r#"{"jemalloc_heap_profile_enabled": 1}"#,

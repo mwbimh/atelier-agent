@@ -10,10 +10,10 @@ use crate::handle::WorkspaceHandle;
 use crate::session::WorkspaceSession;
 use crate::session::file_state::{FileRewindResponse, RewindPoint, rewind_files};
 use crate::session::git;
+use atelier_hunk_tracker::{HunkId, HunkTrackerSnapshot, HunkTurnDelta};
+use atelier_tool_protocol::turn_hook::TurnHookOutcome;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
-use xai_hunk_tracker::{HunkId, HunkTrackerSnapshot, HunkTurnDelta};
-use xai_tool_protocol::turn_hook::TurnHookOutcome;
 /// A turn/prompt boundary routed through [`WorkspaceHandle::on_turn_boundary`].
 ///
 /// `prompt_index` selects the origin and keeps the two effect sets disjoint:
@@ -163,8 +163,10 @@ impl WorkspaceSession {
             return;
         }
         prompts.sort_unstable();
-        let mut file_states: HashMap<std::path::PathBuf, xai_hunk_tracker::FileHunkStateSnapshot> =
-            HashMap::new();
+        let mut file_states: HashMap<
+            std::path::PathBuf,
+            atelier_hunk_tracker::FileHunkStateSnapshot,
+        > = HashMap::new();
         let mut turn_index: HashMap<usize, HashSet<HunkId>> = HashMap::new();
         for idx in prompts {
             let delta = &store[&idx];
@@ -234,12 +236,12 @@ impl WorkspaceHandle {
     /// are on). `workspace_rewind_all_outcomes` also finalizes the open FS
     /// checkpoint on non-`Completed` turn-ends (gap #2).
     ///
-    /// Turn-hook ends return the after-turn enqueue handle for the ack path.
+    /// Turn-hook boundaries update local activity and rewind state.
     pub(crate) async fn on_turn_boundary(
         &self,
         session_id: &str,
         boundary: TurnBoundary,
-    ) -> Option<tokio::task::JoinHandle<xai_file_utils::queue::EnqueueOutcome>> {
+    ) -> Option<tokio::task::JoinHandle<()>> {
         match boundary {
             TurnBoundary::Start {
                 prompt_index: Some(idx),
@@ -989,7 +991,7 @@ mod tests {
             .create_session_with_tracker_and_viewer_ctx(
                 "main",
                 handle.root_cwd().unwrap(),
-                xai_hunk_tracker::HunkTrackerHandle::noop(),
+                atelier_hunk_tracker::HunkTrackerHandle::noop(),
                 None,
                 crate::capability::CapabilityMode::All,
                 None,

@@ -103,9 +103,9 @@ Atelier writes to the clipboard through up to three routes, which match the **Cl
 **Known limitation — Apple Terminal + SSH**:
 Apple Terminal ignores OSC 52, so copying from a Atelier session over SSH can't reach your local clipboard. Use the workaround below.
 
-**Temporary workaround**: Use `atelier wrap ssh` instead of plain `ssh` (for example, `atelier wrap ssh user@host`). It runs the command in a local PTY that intercepts OSC 52 sequences, including tmux-wrapped ones, and writes their contents to your local clipboard. The same command wraps anything else whose clipboard can't reach you — for example `atelier wrap docker exec -it <container> bash` or `atelier wrap kubectl exec -it <pod> -- bash`.
+**Temporary workaround**: Use `ate wrap ssh` instead of plain `ssh` (for example, `ate wrap ssh user@host`). It runs the command in a local PTY that intercepts OSC 52 sequences, including tmux-wrapped ones, and writes their contents to your local clipboard. The same command wraps anything else whose clipboard can't reach you — for example `ate wrap docker exec -it <container> bash` or `ate wrap kubectl exec -it <pod> -- bash`.
 
-> **Warning**: `atelier wrap` is **experimental** and may misbehave in some setups.
+> **Warning**: `ate wrap` is **experimental** and may misbehave in some setups.
 
 **iTerm2 setting**:
 iTerm2 requires explicit permission for OSC 52:

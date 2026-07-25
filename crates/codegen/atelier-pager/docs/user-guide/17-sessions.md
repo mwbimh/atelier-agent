@@ -227,24 +227,24 @@ The agent persists all session updates automatically. Clients can reconnect and 
 
 ---
 
-## The atelier sessions Subcommand
+## The ate sessions Subcommand
 
-List or search sessions from the command line. `atelier sessions` requires a subcommand:
+List or search sessions from the command line. `ate sessions` requires a subcommand:
 
 ```bash
 # List recent sessions for the current directory
-atelier sessions list
+ate sessions list
 
 # Limit the number of results (default 20)
-atelier sessions list --limit 50
+ate sessions list --limit 50
 
 # Search sessions by keyword (matches titles and prompts)
-atelier sessions search "rate limit"
+ate sessions search "rate limit"
 ```
 
-`atelier sessions list` shows sessions for the current working directory,
+`ate sessions list` shows sessions for the current working directory,
 grouped by worktree label. Each row lists the session ID, creation and update
-dates, source status, and summary. `atelier sessions search` uses the local
+dates, source status, and summary. `ate sessions search` uses the local
 session index; it does not query a hosted session service.
 
 ---
@@ -273,7 +273,7 @@ Atelier stores the conversation as newline-delimited JSON (JSONL). Each line in 
 - Efficient streaming reads (for session restore)
 - Easy debugging (each line is valid JSON)
 
-The smaller state files -- `summary.json`, `plan.json`, and `signals.json` -- are plain JSON rather than JSONL. JSONL is the source of truth for session content; `atelier sessions search` additionally maintains a local SQLite FTS5 index over session titles and prompts for fast keyword search.
+The smaller state files -- `summary.json`, `plan.json`, and `signals.json` -- are plain JSON rather than JSONL. JSONL is the source of truth for session content; `ate sessions search` additionally maintains a local SQLite FTS5 index over session titles and prompts for fast keyword search.
 
 ### Session Metadata
 

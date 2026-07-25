@@ -1,15 +1,15 @@
 //! Public, transport-neutral Rust SDK for Atelier's versioned RPC protocol.
 //!
 //! Wire contracts live here rather than in the TUI. The low-level JSON-RPC
-//! envelope and transport boundary are reused from `xai-acp-lib`, while the
+//! envelope and transport boundary are reused from `atelier-acp-runtime`, while the
 //! typed Atelier extension results remain independent of shell implementation
 //! types.
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-pub use xai_acp_lib::ProtocolInfo;
-pub use xai_acp_lib::{
+pub use atelier_acp_runtime::ProtocolInfo;
+pub use atelier_acp_runtime::{
     ATELIER_PROTOCOL_CAPABILITIES, ATELIER_PROTOCOL_VERSION, ATELIER_SUPPORTED_PROTOCOL_VERSIONS,
     DEFAULT_EVENT_REPLAY_CAPACITY, EventId, EventReplayBuffer, EventReplayError, EventSequencer,
     REDACTED_VALUE, ReplayError, RpcClientError, RpcError, RpcId, RpcRequest, RpcResponse,
@@ -161,7 +161,7 @@ pub struct StructuredErrorData {
 /// Typed Rust client over a caller-provided stdio, WebSocket, or in-process
 /// transport.
 pub struct AtelierRpcClient<T> {
-    inner: xai_acp_lib::AtelierRpcClient<T>,
+    inner: atelier_acp_runtime::AtelierRpcClient<T>,
 }
 
 macro_rules! value_rpc_methods {
@@ -180,7 +180,7 @@ macro_rules! value_rpc_methods {
 impl<T> AtelierRpcClient<T> {
     pub fn new(transport: T) -> Self {
         Self {
-            inner: xai_acp_lib::AtelierRpcClient::new(transport),
+            inner: atelier_acp_runtime::AtelierRpcClient::new(transport),
         }
     }
 

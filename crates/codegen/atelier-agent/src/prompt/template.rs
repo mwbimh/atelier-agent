@@ -29,7 +29,11 @@ fn decrypt(data: &[u8], seed: u8) -> Zeroizing<String> {
 
 /// The base prompt template (decrypted fresh; zeroed on drop).
 pub(crate) fn base_template() -> Zeroizing<String> {
-    decrypt(BASE_PROMPT_ENC, PROMPT_SEEDS[0])
+    let embedded = decrypt(BASE_PROMPT_ENC, PROMPT_SEEDS[0]);
+    Zeroizing::new(atelier_config::runtime_defaults::runtime_context_prompt(
+        atelier_config::runtime_defaults::ContextPrompt::Main,
+        &embedded,
+    ))
 }
 
 /// The base prompt template source, exposed for `atelier prompt --section template`.
@@ -38,7 +42,11 @@ pub fn base_template_source() -> Zeroizing<String> {
 }
 
 pub(crate) fn apply_patch_template() -> Zeroizing<String> {
-    decrypt(CODEX_PROMPT_ENC, PROMPT_SEEDS[1])
+    let embedded = decrypt(CODEX_PROMPT_ENC, PROMPT_SEEDS[1]);
+    Zeroizing::new(atelier_config::runtime_defaults::runtime_context_prompt(
+        atelier_config::runtime_defaults::ContextPrompt::ApplyPatch,
+        &embedded,
+    ))
 }
 
 /// Apply-patch prompt template source, exposed for `atelier prompt --section apply-patch-template`.
@@ -48,7 +56,11 @@ pub fn apply_patch_template_source() -> Zeroizing<String> {
 
 /// The subagent-specific base template (decrypted fresh; zeroed on drop).
 pub(crate) fn subagent_template() -> Zeroizing<String> {
-    decrypt(SUBAGENT_PROMPT_ENC, PROMPT_SEEDS[2])
+    let embedded = decrypt(SUBAGENT_PROMPT_ENC, PROMPT_SEEDS[2]);
+    Zeroizing::new(atelier_config::runtime_defaults::runtime_context_prompt(
+        atelier_config::runtime_defaults::ContextPrompt::Subagent,
+        &embedded,
+    ))
 }
 
 /// The compact system prompt used after conversation compaction.

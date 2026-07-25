@@ -468,7 +468,7 @@ impl SessionActor {
 
             // Append a RewindMarker to updates.jsonl so the replay pipeline can
             // handle timeline branching (updates.jsonl is append-only).
-            self.persist_xai_update_only(XaiSessionUpdate::RewindMarker {
+            self.persist_extension_update_only(ExtensionSessionUpdate::RewindMarker {
                 target_prompt_index: target_index,
                 created_at: chrono::Utc::now().to_rfc3339(),
             });
@@ -526,7 +526,7 @@ impl SessionActor {
     }
 
     /// Out-of-band history repair (`atelier/session/repair`) for a resident
-    /// session: run `xai_chat_state::compaction_utils::repair_history` inside
+    /// session: run `atelier_chat_state::compaction_utils::repair_history` inside
     /// the chat-state actor, then flush persistence so `chat_history.jsonl`
     /// is rewritten on disk before the caller sees success.
     ///
@@ -538,14 +538,14 @@ impl SessionActor {
     pub(super) async fn handle_repair_history(
         &self,
         dry_run: bool,
-    ) -> anyhow::Result<xai_chat_state::compaction_utils::HistoryRepairReport> {
+    ) -> anyhow::Result<atelier_chat_state::compaction_utils::HistoryRepairReport> {
         // Per-session flag — NOT `tool_context.is_turn_active`, which is the
         // agent-wide coordinator flag shared by all sessions (using it would
         // refuse repair of an idle session while any other session runs a
         // turn, and another session's turn end could clear it mid-turn).
         let turn_flag = self.session_turn_active.clone();
         if turn_flag.load(std::sync::atomic::Ordering::SeqCst) {
-            anyhow::bail!(xai_chat_state::commands::RepairHistoryBlocked);
+            anyhow::bail!(atelier_chat_state::commands::RepairHistoryBlocked);
         }
 
         let report = self

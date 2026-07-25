@@ -1,6 +1,6 @@
 //! Send-safe view of the agent's in-flight work, shared with the leader's
-//! auto-update checker and `RelaunchForUpdate` drain (`tokio::spawn` tasks
-//! that cannot read the `!Send` `MvpAgent` state on the `LocalSet`).
+//! explicit `RelaunchForUpdate` drain (`tokio::spawn` tasks that cannot read
+//! the `!Send` `MvpAgent` state on the `LocalSet`).
 //!
 //! The leader's `agent_busy` flag only counts IPC (Unix-socket) requests;
 //! relay (atelier.invalid WebSocket) traffic is bridged straight into the agent's
@@ -174,9 +174,9 @@ impl AgentActivity {
 
     /// Lock the session list, dropping entries whose actor has exited.
     ///
-    /// Purging happens only here, so in modes with no periodic reader (no
-    /// auto-update checker) a dead entry lingers until the next register —
-    /// bounded and tiny (a sender handle + two `Arc`s per entry).
+    /// Purging happens only here, so a dead entry can linger until the next
+    /// register or explicit relaunch check — bounded and tiny (a sender handle
+    /// + two `Arc`s per entry).
     fn lock_live_sessions(&self) -> std::sync::MutexGuard<'_, Vec<SessionActivityEntry>> {
         let mut guard = self
             .inner

@@ -824,8 +824,6 @@ pub struct LogoutResult {
     pub was_logged_in: bool,
     /// Email of the session that was cleared (if available).
     pub email: Option<String>,
-    /// `true` if `XAI_API_KEY` / `ATELIER_CODE_XAI_API_KEY` env var is set.
-    pub api_key_still_set: bool,
 }
 
 /// Core logout logic shared by the CLI subcommand and the ACP handler.
@@ -852,18 +850,6 @@ pub fn perform_logout(
         })),
     );
     if was_logged_in {
-        // Order matters for the no-leak guarantee (flush-on-logout
-        // parity). Clear the external OTEL identity attrs FIRST so any
-        // record emitted from here on cannot carry the prior user's ids; THEN
-        // flush already-queued records (which were built with their ids during
-        // the active session — that is correct); THEN clear credentials.
-        // Clearing identity before the flush closes the window in which a
-        // concurrent emission between flush and identity-reset would still
-        // stamp the prior user's ids onto a customer-collector record.
-        atelier_telemetry::external::set_identity(
-            atelier_telemetry::external::IdentityAttrs::default(),
-        );
-        atelier_telemetry::external::flush();
         if let Some(scope) = scope {
             auth_manager.remove_scope(scope)?;
         } else {
@@ -876,7 +862,6 @@ pub fn perform_logout(
     Ok(LogoutResult {
         was_logged_in,
         email,
-        api_key_still_set: crate::agent::auth_method::has_xai_api_key_env(),
     })
 }
 
@@ -890,7 +875,7 @@ pub fn run_cli_logout(_config: &crate::agent::config::Config) -> anyhow::Result<
 mod tests {
     use super::*;
     use crate::auth::AuthMode;
-    use crate::auth::XAI_OAUTH2_ISSUER;
+    use crate::auth::TEST_OIDC_ISSUER;
     use crate::env::EnvVarGuard;
     use chrono::Utc;
     use serial_test::serial;
@@ -979,12 +964,12 @@ mod tests {
         );
     }
 
-    // A atelier.invalid first-party (x.ai-issuer) OIDC session — `is_xai_auth()` true.
+    // A configured OIDC session used by auth-manager tests.
     fn oidc_session(key: &str, refresh: Option<&str>) -> AtelierAuth {
         AtelierAuth {
             key: key.into(),
             auth_mode: AuthMode::Oidc,
-            oidc_issuer: Some(XAI_OAUTH2_ISSUER.to_string()),
+            oidc_issuer: Some(TEST_OIDC_ISSUER.to_string()),
             refresh_token: refresh.map(str::to_string),
             ..AtelierAuth::test_default()
         }
@@ -1615,7 +1600,7 @@ mod tests {
     fn cached_cred_with_wrong_team_is_incompatible() {
         let auth = AtelierAuth {
             key: team_jwt("team-wrong"),
-            ..oidc_auth(XAI_OAUTH2_ISSUER)
+            ..oidc_auth(TEST_OIDC_ISSUER)
         };
         assert!(!is_cached_credential_compatible(
             &auth,
@@ -1628,7 +1613,7 @@ mod tests {
     fn cached_cred_with_matching_team_is_compatible() {
         let auth = AtelierAuth {
             key: team_jwt("team-good"),
-            ..oidc_auth(XAI_OAUTH2_ISSUER)
+            ..oidc_auth(TEST_OIDC_ISSUER)
         };
         assert!(is_cached_credential_compatible(
             &auth,
@@ -1655,7 +1640,7 @@ mod tests {
             auth_mode: AuthMode::Oidc,
             expires_at: Some(Utc::now() + chrono::Duration::hours(1)),
             refresh_token: Some("new-rt".into()),
-            oidc_issuer: Some(XAI_OAUTH2_ISSUER.into()),
+            oidc_issuer: Some(TEST_OIDC_ISSUER.into()),
             oidc_client_id: Some("client-1".into()),
             ..AtelierAuth::test_default()
         };
@@ -1668,7 +1653,7 @@ mod tests {
             auth_mode: AuthMode::Oidc,
             expires_at: Some(Utc::now() - chrono::Duration::hours(1)),
             refresh_token: Some("old-rt".into()),
-            oidc_issuer: Some(XAI_OAUTH2_ISSUER.into()),
+            oidc_issuer: Some(TEST_OIDC_ISSUER.into()),
             oidc_client_id: Some("client-1".into()),
             ..AtelierAuth::test_default()
         };
@@ -1705,7 +1690,7 @@ mod tests {
             key: "still-valid".into(),
             auth_mode: AuthMode::Oidc,
             expires_at: Some(Utc::now() + chrono::Duration::hours(1)),
-            oidc_issuer: Some(XAI_OAUTH2_ISSUER.into()),
+            oidc_issuer: Some(TEST_OIDC_ISSUER.into()),
             oidc_client_id: Some("client-1".into()),
             ..AtelierAuth::test_default()
         };
@@ -1740,7 +1725,7 @@ mod tests {
             auth_mode: AuthMode::Oidc,
             expires_at: Some(Utc::now() - chrono::Duration::hours(1)),
             refresh_token: Some("valid-refresh-token".into()),
-            oidc_issuer: Some(XAI_OAUTH2_ISSUER.into()),
+            oidc_issuer: Some(TEST_OIDC_ISSUER.into()),
             oidc_client_id: Some("client-1".into()),
             ..AtelierAuth::test_default()
         };

@@ -12,6 +12,7 @@
 use std::collections::HashSet;
 use std::time::Instant;
 
+use atelier_acp_runtime::AcpResult;
 use atelier_markdown::StreamingMarkdownRenderer;
 pub use atelier_tools::implementations::atelier_build::ask_user_question::{
     AskUserQuestionMode, Question, QuestionOption,
@@ -20,7 +21,6 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use xai_acp_lib::AcpResult;
 
 use unicode_width::UnicodeWidthStr;
 

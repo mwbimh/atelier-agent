@@ -12,7 +12,7 @@ use std::sync::{LazyLock, Mutex, OnceLock};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
-use atelier_config::atelier_home;
+use crate::home::atelier_home;
 
 /// Binary version stamped into every log entry. Set once at startup via
 /// [`set_version()`]; entries emitted before that get `None`.
@@ -393,7 +393,7 @@ pub fn debug(msg: &str, sid: Option<&str>, ctx: Option<serde_json::Value>) {
 /// Read the current unified log file and return its contents.
 ///
 /// Returns `None` if the log file doesn't exist or can't be read.
-/// Used by diagnostic uploads to capture the log state at a point in time.
+/// Capture the local log state at a point in time for diagnostics.
 pub fn snapshot_log() -> Option<Vec<u8>> {
     let path = log_path();
     // Flush pending writes before reading.

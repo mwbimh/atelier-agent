@@ -10,6 +10,7 @@ pub const ROLE_LIST: &str = "_atelier/role/list";
 pub const ROLE_GET: &str = "_atelier/role/get";
 pub const ROLE_UPDATE: &str = "_atelier/role/update";
 pub const ROLE_UPDATE_PAYLOAD: &str = "_atelier/role/update_payload";
+pub const ROLE_SET_FAST_MODE: &str = "_atelier/role/set_fast_mode";
 pub const ROLE_TEST: &str = "_atelier/role/test";
 
 #[derive(Debug, Deserialize)]
@@ -34,20 +35,68 @@ struct RolePayloadParams {
     payload: serde_json::Map<String, serde_json::Value>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RoleFastModeParams {
+    role_id: RoleId,
+    session_id: String,
+    enabled: bool,
+}
+
 fn registry() -> Result<ProviderRegistry, acp::Error> {
     ProviderRegistry::load_or_create(atelier_config::atelier_home().join("providers.toml"))
         .map_err(|error| acp::Error::internal_error().data(error.to_string()))
 }
 
-pub async fn handle(_agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
+pub async fn handle(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
     match args.method.as_ref() {
         ROLE_LIST | "atelier/role/list" => list(),
         ROLE_GET | "atelier/role/get" => get(args),
         ROLE_UPDATE | "atelier/role/update" => update(args),
         ROLE_UPDATE_PAYLOAD | "atelier/role/update_payload" => update_payload(args),
+        ROLE_SET_FAST_MODE | "atelier/role/set_fast_mode" => set_fast_mode(agent, args).await,
         ROLE_TEST | "atelier/role/test" => test(args),
         _ => Err(acp::Error::method_not_found()),
     }
+}
+
+async fn set_fast_mode(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
+    let params: RoleFastModeParams = parse_params(args)?;
+    if params.role_id != RoleId::Main {
+        return Err(acp::Error::invalid_params().data("fast mode can only update the main role"));
+    }
+    let mut registry = registry()?;
+    let mut config = configured_role(&registry, params.role_id)?.clone();
+    config.fast_mode = params.enabled;
+    registry
+        .update_role(params.role_id, config)
+        .map_err(role_error)?;
+    registry
+        .save()
+        .map_err(|error| acp::Error::internal_error().data(error.to_string()))?;
+
+    let session_id = acp::SessionId::new(params.session_id.clone());
+    let handle = agent.get_session_handle(&session_id).ok_or_else(|| {
+        acp::Error::invalid_params().data(format!("session not found: {}", params.session_id))
+    })?;
+    let (responds_to, response) = tokio::sync::oneshot::channel();
+    handle
+        .cmd_tx
+        .send(crate::session::SessionCommand::SetRoleFastMode {
+            enabled: params.enabled,
+            responds_to,
+        })
+        .map_err(|_| acp::Error::internal_error().data("session command channel closed"))?;
+    tokio::time::timeout(std::time::Duration::from_secs(5), response)
+        .await
+        .map_err(|_| acp::Error::internal_error().data("session fast-mode update timed out"))?
+        .map_err(|_| acp::Error::internal_error().data("session fast-mode response dropped"))?;
+
+    to_raw_response(&serde_json::json!({
+        "roleId": params.role_id,
+        "sessionId": params.session_id,
+        "enabled": params.enabled,
+    }))
 }
 
 fn list() -> ExtResult {
@@ -183,7 +232,7 @@ fn get_from_registry(registry: &ProviderRegistry, role_id: RoleId) -> ExtResult 
 fn redacted_role_config(config: &RoleConfig) -> serde_json::Value {
     let mut value = serde_json::to_value(config).expect("RoleConfig is serializable");
     if let Some(payload) = value.get_mut("payload") {
-        *payload = xai_acp_lib::redact_payload(payload);
+        *payload = atelier_acp_runtime::redact_payload(payload);
     }
     value
 }

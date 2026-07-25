@@ -2,7 +2,7 @@
 //!
 //! Routes incoming [`AcpClientMessage`] notifications to the appropriate
 //! agent's tracker, queues permission requests for interactive handling,
-//! and xAI session extension notifications (`atelier/session_notification` and
+//! and Atelier extension notifications (`atelier/session_notification` and
 //! replay-path `atelier/session/update`).
 
 use std::collections::hash_map::Entry;
@@ -10,11 +10,11 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use agent_client_protocol as acp;
-use xai_acp_lib::AcpClientMessage;
+use atelier_acp_runtime::AcpClientMessage;
 
 use super::actions::Effect;
 use atelier_shell::extensions::notification::{
-    SessionNotification, SessionUpdate as XaiSessionUpdate, is_reauthable_failure,
+    SessionNotification, SessionUpdate as ExtensionSessionUpdate, is_reauthable_failure,
 };
 use atelier_shell::tools::todo::todo_item_from_plan_entry;
 use atelier_workspace::permission::bash_command_splitting::BashCommandHighlights;
@@ -170,8 +170,8 @@ pub(crate) fn handle(msg: AcpClientMessage, app: &mut AppView) -> bool {
                     // Premise: ACP-stream live delivery is in id order —
                     // actor ACP lines (chunks and the plan-mode
                     // `CurrentModeUpdate`s) are stamped at `event_tx` enqueue
-                    // time and drained FIFO. The xAI stream is direct-emitted
-                    // and keeps a SEPARATE highwater (see the xAI dedup in
+                    // time and drained FIFO. The extension stream is direct-emitted
+                    // and keeps a SEPARATE highwater (see the extension dedup in
                     // `handle_session_notification`). Residual class: ACP
                     // lines that skip `event_tx` — the bridge's bash stdout
                     // (no `event_tx` surface) and the turn-start user echo —
@@ -595,7 +595,7 @@ pub(crate) fn handle(msg: AcpClientMessage, app: &mut AppView) -> bool {
     }
 }
 
-/// Handle an xAI extension notification.
+/// Handle an Atelier extension notification.
 ///
 /// Dispatches on method string:
 /// - `atelier/session_notification` / `atelier/session/update` → per-agent session updates
@@ -693,7 +693,10 @@ fn handle_interjection(notif: &acp::ExtNotification, app: &mut AppView) -> bool 
 /// Dispatches on method string. Unknown methods get `method_not_found` error.
 /// The response sender is stashed (for `ask_user_question`) or replied to
 /// immediately (for unknown methods).
-fn handle_ext_method(ext: xai_acp_lib::AcpArgs<acp::ExtRequest>, app: &mut AppView) -> bool {
+fn handle_ext_method(
+    ext: atelier_acp_runtime::AcpArgs<acp::ExtRequest>,
+    app: &mut AppView,
+) -> bool {
     match ext.request.method.as_ref() {
         "atelier/ask_user_question" => handle_ask_user_question(ext, app),
         "atelier/exit_plan_mode" => handle_exit_plan_mode(ext, app),

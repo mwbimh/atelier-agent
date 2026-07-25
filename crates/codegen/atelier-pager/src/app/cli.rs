@@ -41,8 +41,8 @@ clipboard (containers, SSH) and your terminal does not handle OSC 52 itself
 sync with your window size.
 
 Examples:
-  atelier wrap docker exec -it my-container bash
-  atelier wrap kubectl exec -it my-pod -- bash
+  ate wrap docker exec -it my-container bash
+  ate wrap kubectl exec -it my-pod -- bash
 
 See ~/.atelier/README.md for more information.
 ")]
@@ -86,10 +86,10 @@ pub struct WrapArgs {
     )]
     pub command: Vec<String>,
 }
-/// Targets a running leader process by PID (used by `atelier leader` / `atelier workspace`).
+/// Targets a running leader process by PID (used by `ate leader` / `ate workspace`).
 #[derive(Debug, clap::Args, Clone, Default)]
 pub struct LeaderTargetArgs {
-    /// Leader process ID from `atelier leader list`.
+    /// Leader process ID from `ate leader list`.
     #[arg(long)]
     pub pid: Option<u32>,
 }
@@ -226,9 +226,6 @@ pub struct AgentArgs {
     /// Override the CLI chat proxy base URL.
     #[arg(long = "cli-chat-proxy-base-url")]
     pub cli_chat_proxy_base_url: Option<String>,
-    /// Override the public xAI API base URL.
-    #[arg(long = "xai-api-base-url")]
-    pub xai_api_base_url: Option<String>,
     /// Agent runtime mode
     #[command(subcommand)]
     pub mode: Option<AgentCmd>,
@@ -333,7 +330,7 @@ fn version_with_channel() -> &'static str {
 }
 #[derive(Debug, Clone, Parser)]
 #[command(
-    name = "atelier",
+    name = "ate",
     version = version_with_channel(),
     about = "Atelier terminal coding agent",
     disable_version_flag = true,
@@ -571,7 +568,7 @@ pub struct PagerArgs {
     pub self_verify: bool,
     /// Exit as soon as the first agent turn ends, without waiting for pending
     /// background bash/monitor tasks or background subagents (headless only).
-    /// Default for all `atelier -p` runs is to wait (up to `--background-wait-timeout`)
+    /// Default for all `ate -p` runs is to wait (up to `--background-wait-timeout`)
     /// so eval harnesses see full task completion. Use this for fast scripts that
     /// only need the first turn's text. Does not wait for server-side auto-wake
     /// output or persistent monitors (those hit the timeout).
@@ -633,7 +630,7 @@ pub struct PagerArgs {
     /// Experimental: scrollback-native rendering. Finalized blocks are printed
     /// into the terminal's native scrollback (use the terminal's own scroll /
     /// selection); a small pinned region holds the prompt + running turn.
-    /// Session-scoped only — does not write config. To default plain `atelier` to
+    /// Session-scoped only — does not write config. To default plain `ate` to
     /// minimal, set `[ui] screen_mode = "minimal"` in ~/.atelier/config.toml.
     #[arg(long = "minimal")]
     pub minimal: bool,
@@ -658,7 +655,7 @@ pub struct PagerArgs {
     /// Run standalone even when leader mode is configured.
     #[arg(long, conflicts_with = "leader", hide = true)]
     pub no_leader: bool,
-    /// Initial prompt for the interactive session, e.g. `atelier "fix the bug"` or `atelier --worktree=feat "create this feature"`.
+    /// Initial prompt for the interactive session, e.g. `ate "fix the bug"` or `ate --worktree=feat "create this feature"`.
     #[arg(
         value_name = "PROMPT",
         conflicts_with_all = &["single",
@@ -694,16 +691,8 @@ pub enum ResumeTarget {
 impl PagerArgs {
     /// Parse CLI arguments and apply `--cwd` if provided.
     pub fn parse_and_apply_cwd() -> anyhow::Result<Self> {
-        let bin_name = std::env::args()
-            .next()
-            .as_deref()
-            .map(std::path::Path::new)
-            .and_then(|p| p.file_name())
-            .and_then(|n| n.to_str())
-            .filter(|n| *n == "atelier" || *n == "agent")
-            .unwrap_or("atelier")
-            .to_owned();
-        let mut args = Self::parse_from(std::iter::once(bin_name).chain(std::env::args().skip(1)));
+        let mut args =
+            Self::parse_from(std::iter::once("ate".to_owned()).chain(std::env::args().skip(1)));
         if let Some(socket) = args.leader_socket.take() {
             args.leader_socket = Some(std::path::absolute(&socket).unwrap_or(socket));
         }
@@ -825,6 +814,13 @@ mod tests {
     use super::*;
 
     #[test]
+    fn public_command_name_is_ate() {
+        use clap::CommandFactory;
+
+        assert_eq!(PagerArgs::command().get_name(), "ate");
+    }
+
+    #[test]
     fn vendor_control_plane_commands_are_not_exposed() {
         use clap::CommandFactory;
 
@@ -844,6 +840,18 @@ mod tests {
     #[test]
     fn vendor_auto_update_flag_is_not_exposed() {
         let err = PagerArgs::try_parse_from(["atelier", "--no-auto-update"]).unwrap_err();
+        assert_eq!(err.kind(), clap::error::ErrorKind::UnknownArgument);
+    }
+    #[test]
+    fn vendor_endpoint_flag_is_not_exposed() {
+        let err = PagerArgs::try_parse_from([
+            "ate",
+            "agent",
+            "--xai-api-base-url",
+            "https://api.x.ai/v1",
+            "stdio",
+        ])
+        .unwrap_err();
         assert_eq!(err.kind(), clap::error::ErrorKind::UnknownArgument);
     }
     #[test]

@@ -10,6 +10,8 @@ use super::*;
 /// verifier.
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum RoleCapability {
+    /// Planner: reads + searches and can update the generated plan file.
+    Planner,
     /// Skeptic: reads + greps code to corroborate diff hunks.
     Skeptic,
     /// Strategist: reads + greps + runs commands while investigating traces.
@@ -25,6 +27,13 @@ impl RoleCapability {
         summary: &atelier_tools::implementations::atelier_build::task::types::SubagentTypeSummary,
     ) -> bool {
         match self {
+            Self::Planner => {
+                use atelier_tools::types::tool::ToolKind;
+                summary.can_read
+                    && summary.can_search
+                    && (summary.tool_names.contains_key(&ToolKind::Write)
+                        || summary.tool_names.contains_key(&ToolKind::Edit))
+            }
             Self::Skeptic => summary.can_read && summary.can_search,
             Self::Strategist => summary.can_read && summary.can_search && summary.can_execute,
         }
@@ -2195,8 +2204,6 @@ impl SessionActor {
                     plan.directive,
                 ))],
                 prompt_mode: crate::session::plan_mode::PromptMode::Agent,
-                trace_gcs_config: None,
-                artifact_tracker: None,
                 client_identifier: None,
                 screen_mode: None,
                 verbatim: true,
@@ -2371,6 +2378,20 @@ mod role_capability_tests {
         assert!(RoleCapability::Skeptic.is_satisfied(&summary(true, true, false)));
         assert!(!RoleCapability::Skeptic.is_satisfied(&summary(true, false, false)));
         assert!(!RoleCapability::Skeptic.is_satisfied(&summary(false, true, false)));
+    }
+
+    #[test]
+    fn planner_requires_read_search_and_a_mutator() {
+        use atelier_tools::types::tool::ToolKind;
+
+        let mut planner = summary(true, true, false);
+        assert!(!RoleCapability::Planner.is_satisfied(&planner));
+
+        planner.tool_names.insert(ToolKind::Edit, "edit".into());
+        assert!(RoleCapability::Planner.is_satisfied(&planner));
+
+        planner.can_search = false;
+        assert!(!RoleCapability::Planner.is_satisfied(&planner));
     }
 
     #[test]

@@ -78,7 +78,7 @@ async fn cleanup_worktree_on_failure(source_cwd: &str, worktree_path: &str) {
         }
     } else {
         let wt_path = wt.to_path_buf();
-        match tokio::task::spawn_blocking(move || xai_fast_worktree::remove_worktree(&wt_path))
+        match tokio::task::spawn_blocking(move || atelier_fast_worktree::remove_worktree(&wt_path))
             .await
         {
             Ok(Ok(_)) => {}
@@ -165,7 +165,7 @@ pub async fn resume_session_in_worktree(
     ops: &atelier_workspace::WorkspaceOps,
     worktree_type_default: ShellWorktreeType,
     restore_code_default: bool,
-    registry_client: Option<&crate::agent::session_registry_client::SessionRegistryClient>,
+    registry_client: Option<&crate::agent::local_session_catalog::LocalSessionCatalog>,
     auth_manager: Option<std::sync::Arc<crate::auth::AuthManager>>,
     agent_id: &str,
 ) -> Result<ResumeSessionInWorktreeResponse> {
@@ -291,7 +291,7 @@ async fn resume_local_session_in_worktree(
     resolved_source_cwd: &str,
     worktree_type_default: ShellWorktreeType,
     restore_code_default: bool,
-    registry_client: Option<&crate::agent::session_registry_client::SessionRegistryClient>,
+    registry_client: Option<&crate::agent::local_session_catalog::LocalSessionCatalog>,
     auth_manager: Option<std::sync::Arc<crate::auth::AuthManager>>,
     agent_id: &str,
 ) -> Result<ResumeSessionInWorktreeResponse> {
@@ -415,7 +415,7 @@ async fn resume_local_session_in_worktree(
 pub async fn rehydrate_session_in_worktree(
     req: &RehydrateSessionRequest,
     #[allow(unused_variables)] ops: &atelier_workspace::WorkspaceOps,
-    registry_client: Option<&crate::agent::session_registry_client::SessionRegistryClient>,
+    registry_client: Option<&crate::agent::local_session_catalog::LocalSessionCatalog>,
 ) -> Result<RehydrateSessionResponse> {
     let worktree_path_str = req.worktree_path.as_deref().unwrap_or(&req.source_cwd);
     let repo_root = Path::new(&req.repo_root);
@@ -459,14 +459,14 @@ pub async fn rehydrate_session_in_worktree(
         let session_id = req.session_id.clone();
         let btrfs_delegate = btrfs_delegate_from_env();
         tokio::task::spawn_blocking(move || {
-            use xai_fast_worktree::{
+            use atelier_fast_worktree::{
                 CreationMode, IgnoredFilesMode, WorkingTreeMode, WorktreeBuilder,
             };
             let mut builder = WorktreeBuilder::new(&source, &dest)
                 .working_tree_mode(WorkingTreeMode::CleanAll)
                 .ignored_files_mode(IgnoredFilesMode::Skip)
                 .creation_mode(CreationMode::Linked)
-                .worktree_kind(xai_fast_worktree::WorktreeKind::Fork)
+                .worktree_kind(atelier_fast_worktree::WorktreeKind::Fork)
                 .session_id(session_id);
             if let Some(delegate) = btrfs_delegate {
                 builder = builder.btrfs_delegate(delegate);
@@ -815,13 +815,13 @@ mod tests {
         let result = resolve_worktree_by_id_or_path(path).unwrap();
         assert_eq!(result.unwrap(), tmp.path());
     }
-    fn make_wt_record(path: &str, source_repo: &str) -> xai_fast_worktree::WorktreeRecord {
-        xai_fast_worktree::WorktreeRecord {
+    fn make_wt_record(path: &str, source_repo: &str) -> atelier_fast_worktree::WorktreeRecord {
+        atelier_fast_worktree::WorktreeRecord {
             id: format!("wt-{}", path.replace('/', "-")),
             path: std::path::PathBuf::from(path),
             source_repo: std::path::PathBuf::from(source_repo),
             repo_name: "repo".into(),
-            kind: xai_fast_worktree::WorktreeKind::Session,
+            kind: atelier_fast_worktree::WorktreeKind::Session,
             creation_mode: "linked".into(),
             git_ref: None,
             head_commit: None,
@@ -829,7 +829,7 @@ mod tests {
             creator_pid: None,
             created_at: 0,
             last_accessed_at: None,
-            status: xai_fast_worktree::WorktreeStatus::Alive,
+            status: atelier_fast_worktree::WorktreeStatus::Alive,
             metadata: None,
         }
     }

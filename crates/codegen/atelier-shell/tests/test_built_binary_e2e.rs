@@ -1282,9 +1282,7 @@ impl ConfigTestHarness {
                 ("ATELIER_CLI_CHAT_PROXY_BASE_URL".into(), server.url()),
                 ("ATELIER_TELEMETRY_ENABLED".into(), "false".into()),
                 ("ATELIER_FEEDBACK_ENABLED".into(), "false".into()),
-                ("ATELIER_TRACE_UPLOAD".into(), "false".into()),
                 ("ATELIER_INSTRUMENTATION".into(), "disabled".into()),
-                ("ATELIER_DISABLE_AUTOUPDATER".into(), "1".into()),
             ],
         }
     }

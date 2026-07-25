@@ -5,6 +5,7 @@
 
 pub mod bridge;
 pub mod config;
+pub(crate) mod image_gen;
 pub mod notification_bridge;
 pub mod retry;
 pub mod todo;

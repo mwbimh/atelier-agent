@@ -1,7 +1,7 @@
 use toml::Value as TomlValue;
 
-/// Announcement entry received from cli-chat-proxy `/v1/settings`.
-/// Re-exported from `atelier-announcements` for backward compatibility.
+/// Locally configured announcement entry.
+/// Re-exported from `atelier-announcements` for shared runtime use.
 pub use atelier_announcements::RemoteAnnouncement;
 
 // ---------------------------------------------------------------------------

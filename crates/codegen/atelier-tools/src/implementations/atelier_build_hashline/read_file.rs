@@ -139,28 +139,28 @@ impl crate::types::tool_metadata::ToolMetadata for HashlineReadTool {
     }
 }
 
-impl xai_tool_runtime::Tool for HashlineReadTool {
+impl atelier_tool_runtime::Tool for HashlineReadTool {
     type Args = ReadFileInput;
     type Output = ReadFileOutput;
 
-    fn id(&self) -> xai_tool_protocol::ToolId {
-        xai_tool_protocol::ToolId::new("hashline_read").expect("valid tool id")
+    fn id(&self) -> atelier_tool_protocol::ToolId {
+        atelier_tool_protocol::ToolId::new("hashline_read").expect("valid tool id")
     }
 
     fn description(
         &self,
-        _ctx: &::xai_tool_runtime::ListToolsContext,
-    ) -> xai_tool_types::ToolDescription {
-        xai_tool_types::ToolDescription::new(
+        _ctx: &::atelier_tool_runtime::ListToolsContext,
+    ) -> atelier_tool_types::ToolDescription {
+        atelier_tool_types::ToolDescription::new(
             "hashline_read",
             crate::types::tool_metadata::ToolMetadata::description_template(self),
         )
     }
 
-    fn capabilities(&self) -> xai_tool_protocol::ToolCapabilities {
-        xai_tool_protocol::ToolCapabilities {
+    fn capabilities(&self) -> atelier_tool_protocol::ToolCapabilities {
+        atelier_tool_protocol::ToolCapabilities {
             is_read_only: true,
-            tool_scope: Some(xai_tool_protocol::ToolScope::Read),
+            tool_scope: Some(atelier_tool_protocol::ToolScope::Read),
             ..Default::default()
         }
     }
@@ -172,9 +172,9 @@ impl xai_tool_runtime::Tool for HashlineReadTool {
     )]
     async fn run(
         &self,
-        ctx: xai_tool_runtime::ToolCallContext,
+        ctx: atelier_tool_runtime::ToolCallContext,
         input: ReadFileInput,
-    ) -> Result<ReadFileOutput, xai_tool_runtime::ToolError> {
+    ) -> Result<ReadFileOutput, atelier_tool_runtime::ToolError> {
         use crate::types::tool_metadata::shared_resources;
         let resources = shared_resources(&ctx)?;
 
@@ -184,7 +184,7 @@ impl xai_tool_runtime::Tool for HashlineReadTool {
         // tracking records the window, and reminders observe the window.
         let cwd_override = ctx
             .extensions
-            .get::<xai_tool_runtime::Cwd>()
+            .get::<atelier_tool_runtime::Cwd>()
             .map(|c| c.0.clone());
         // `None`: the hashline tool does not stream, so it needs no
         // text-path streamability signal (see `run_read_file`).
@@ -210,7 +210,7 @@ impl xai_tool_runtime::Tool for HashlineReadTool {
                     let s = params
                         .0
                         .build_scheme()
-                        .map_err(xai_tool_runtime::ToolError::invalid_arguments)?;
+                        .map_err(atelier_tool_runtime::ToolError::invalid_arguments)?;
                     let fs = res.require::<FileSystem>()?.0.clone();
                     let content = match fs.read_file(&fc.absolute_path).await {
                         Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
@@ -353,9 +353,12 @@ mod tests {
     fn tool_metadata() {
         use crate::types::tool_metadata::ToolMetadata;
         let tool = HashlineReadTool;
-        assert_eq!(xai_tool_runtime::Tool::id(&tool).as_str(), "hashline_read");
+        assert_eq!(
+            atelier_tool_runtime::Tool::id(&tool).as_str(),
+            "hashline_read"
+        );
         assert_eq!(ToolMetadata::kind(&tool), ToolKind::Read);
-        assert!(xai_tool_runtime::Tool::capabilities(&tool).is_read_only);
+        assert!(atelier_tool_runtime::Tool::capabilities(&tool).is_read_only);
         assert!(matches!(
             ToolMetadata::tool_namespace(&tool),
             ToolNamespace::AtelierBuildHashline
@@ -393,9 +396,10 @@ mod tests {
             format: None,
         };
 
-        let result = xai_tool_runtime::Tool::run(&tool, test_ctx(resources.into_shared()), input)
-            .await
-            .unwrap();
+        let result =
+            atelier_tool_runtime::Tool::run(&tool, test_ctx(resources.into_shared()), input)
+                .await
+                .unwrap();
 
         match result {
             ReadFileOutput::FileContent(fc) => {
@@ -436,9 +440,10 @@ mod tests {
             format: None,
         };
 
-        let result = xai_tool_runtime::Tool::run(&tool, test_ctx(resources.into_shared()), input)
-            .await
-            .unwrap();
+        let result =
+            atelier_tool_runtime::Tool::run(&tool, test_ctx(resources.into_shared()), input)
+                .await
+                .unwrap();
 
         match result {
             ReadFileOutput::FileContent(fc) => {
@@ -476,9 +481,10 @@ mod tests {
             format: None,
         };
 
-        let result = xai_tool_runtime::Tool::run(&tool, test_ctx(resources.into_shared()), input)
-            .await
-            .unwrap();
+        let result =
+            atelier_tool_runtime::Tool::run(&tool, test_ctx(resources.into_shared()), input)
+                .await
+                .unwrap();
 
         match result {
             ReadFileOutput::FileContent(fc) => assert!(fc.extracted_images.is_empty()),
@@ -499,9 +505,10 @@ mod tests {
             format: None,
         };
 
-        let result = xai_tool_runtime::Tool::run(&tool, test_ctx(resources.into_shared()), input)
-            .await
-            .unwrap();
+        let result =
+            atelier_tool_runtime::Tool::run(&tool, test_ctx(resources.into_shared()), input)
+                .await
+                .unwrap();
 
         assert!(
             matches!(result, ReadFileOutput::FileNotFound(_)),
@@ -524,9 +531,10 @@ mod tests {
             format: None,
         };
 
-        let result = xai_tool_runtime::Tool::run(&tool, test_ctx(resources.into_shared()), input)
-            .await
-            .unwrap();
+        let result =
+            atelier_tool_runtime::Tool::run(&tool, test_ctx(resources.into_shared()), input)
+                .await
+                .unwrap();
 
         match result {
             ReadFileOutput::FileContent(_fc) => {
@@ -560,9 +568,10 @@ mod tests {
             format: None,
         };
 
-        let result = xai_tool_runtime::Tool::run(&tool, test_ctx(resources.into_shared()), input)
-            .await
-            .unwrap();
+        let result =
+            atelier_tool_runtime::Tool::run(&tool, test_ctx(resources.into_shared()), input)
+                .await
+                .unwrap();
 
         match result {
             ReadFileOutput::FileContent(fc) => {
@@ -623,9 +632,10 @@ mod tests {
             format: None,
         };
 
-        let result = xai_tool_runtime::Tool::run(&tool, test_ctx(resources.into_shared()), input)
-            .await
-            .unwrap();
+        let result =
+            atelier_tool_runtime::Tool::run(&tool, test_ctx(resources.into_shared()), input)
+                .await
+                .unwrap();
 
         match result {
             ReadFileOutput::FileContent(fc) => {
@@ -674,9 +684,10 @@ mod tests {
             format: None,
         };
 
-        let result = xai_tool_runtime::Tool::run(&tool, test_ctx(resources.into_shared()), input)
-            .await
-            .unwrap();
+        let result =
+            atelier_tool_runtime::Tool::run(&tool, test_ctx(resources.into_shared()), input)
+                .await
+                .unwrap();
 
         // Should succeed with FileContent, not FileTooLarge.
         match result {
@@ -709,9 +720,10 @@ mod tests {
             format: None,
         };
 
-        let result = xai_tool_runtime::Tool::run(&tool, test_ctx(resources.into_shared()), input)
-            .await
-            .unwrap();
+        let result =
+            atelier_tool_runtime::Tool::run(&tool, test_ctx(resources.into_shared()), input)
+                .await
+                .unwrap();
 
         match result {
             ReadFileOutput::FileContent(fc) => {
@@ -744,9 +756,10 @@ mod tests {
             format: None,
         };
 
-        let result = xai_tool_runtime::Tool::run(&tool, test_ctx(resources.into_shared()), input)
-            .await
-            .unwrap();
+        let result =
+            atelier_tool_runtime::Tool::run(&tool, test_ctx(resources.into_shared()), input)
+                .await
+                .unwrap();
 
         match result {
             ReadFileOutput::FileContent(fc) => {
@@ -779,9 +792,10 @@ mod tests {
             format: None,
         };
 
-        let result = xai_tool_runtime::Tool::run(&tool, test_ctx(resources.into_shared()), input)
-            .await
-            .unwrap();
+        let result =
+            atelier_tool_runtime::Tool::run(&tool, test_ctx(resources.into_shared()), input)
+                .await
+                .unwrap();
 
         match result {
             ReadFileOutput::FileContent(fc) => {
@@ -809,9 +823,10 @@ mod tests {
             format: None,
         };
 
-        let result = xai_tool_runtime::Tool::run(&tool, test_ctx(resources.into_shared()), input)
-            .await
-            .unwrap();
+        let result =
+            atelier_tool_runtime::Tool::run(&tool, test_ctx(resources.into_shared()), input)
+                .await
+                .unwrap();
 
         match result {
             ReadFileOutput::FileContent(fc) => {

@@ -11,7 +11,6 @@ use indexmap::IndexMap;
 
 use crate::agent::config::{self, ModelEntry, resolve_credentials, sampling_config_for_model};
 use crate::auth::{AtelierAuth, AtelierComConfig, AuthManager};
-use crate::remote::{FetchModelsResult, fetch_models_blocking};
 use crate::sampling::SamplerConfig as SamplingConfig;
 use atelier_sampling_types::{ReasoningEffort, ReasoningEffortOption};
 use globset::{Glob, GlobSet, GlobSetBuilder};
@@ -28,11 +27,7 @@ pub(crate) enum ModelFetchAuth {
 }
 
 impl ModelFetchAuth {
-    /// custom_endpoint > session > deployment > API key.
-    ///
-    /// A `deployment_key` outranks an ambient `XAI_API_KEY` so a stray env key
-    /// can't redirect model fetching from the deployment's entitlement-gated
-    /// proxy to a raw `/v1/models` endpoint that lists the full model registry.
+    /// custom_endpoint > session > deployment.
     pub(crate) fn resolve(endpoints: &config::EndpointsConfig, has_cached_session: bool) -> Self {
         if endpoints.has_custom_endpoint() {
             Self::CustomEndpoint
@@ -40,8 +35,6 @@ impl ModelFetchAuth {
             Self::Session
         } else if endpoints.deployment_key.is_some() {
             Self::Deployment
-        } else if crate::agent::auth_method::has_xai_api_key_env() {
-            Self::ApiKey
         } else {
             Self::Session
         }
@@ -118,7 +111,7 @@ struct Inner {
     auth_manager: Arc<AuthManager>,
     cfg: RwLock<config::Config>,
     fetch_auth: RwLock<ModelFetchAuth>,
-    gateway: RwLock<Option<xai_acp_lib::AcpAgentGatewaySender>>,
+    gateway: RwLock<Option<atelier_acp_runtime::AcpAgentGatewaySender>>,
     cache: ModelsCacheManager,
     /// Guard to prevent overlapping retry loops.
     retry_in_flight: AtomicBool,
@@ -210,7 +203,8 @@ impl ModelsManager {
         *self.inner.model_switch_watch.borrow()
     }
 
-    /// Build from a resolved config. Falls back to bundled default if no models available.
+    /// Build from a resolved config while retaining the configured model identity
+    /// when its Provider catalog is unavailable.
     ///
     /// When `prefetched_models` is `None`, the disk cache is consulted so that
     /// server-side models are available for default-model resolution even when
@@ -220,6 +214,7 @@ impl ModelsManager {
         prefetched_models: Option<IndexMap<String, ModelEntry>>,
         auth_manager: Arc<AuthManager>,
     ) -> Result<Self, String> {
+        validate_required_default_model(cfg)?;
         let has_session = auth_manager.current_or_expired().is_some();
         let is_session_auth = auth_manager
             .current_or_expired()
@@ -231,15 +226,12 @@ impl ModelsManager {
             // manager. Catalog resolution below must remain a pure operation;
             // otherwise config reloads and tests are silently contaminated by
             // whichever providers.toml happens to be in the process HOME.
-            Some(config::load_runtime_provider_models())
+            Some(config::load_runtime_provider_models(cfg.model.as_deref()))
         } else {
             prefetched_models.or_else(|| {
                 let cache = ModelsCacheManager::new();
                 cache
-                    .load_fresh(
-                        &fetch_auth.cache_auth_method(),
-                        &crate::remote::models_list_url(&cfg.endpoints, fetch_auth),
-                    )
+                    .load_fresh(&fetch_auth.cache_auth_method(), &local_catalog_origin())
                     .map(|c| c.models)
             })
         };
@@ -276,7 +268,7 @@ impl ModelsManager {
         Ok(mgr)
     }
 
-    pub(crate) fn set_gateway(&self, gateway: xai_acp_lib::AcpAgentGatewaySender) {
+    pub(crate) fn set_gateway(&self, gateway: atelier_acp_runtime::AcpAgentGatewaySender) {
         *self.inner.gateway.write() = Some(gateway);
     }
 
@@ -285,6 +277,10 @@ impl ModelsManager {
     /// Calls `reselect_default_model` when the preferred model changed
     /// (and is `Some`); otherwise `reselect_current_model_if_missing`.
     pub fn apply_config(&self, new_config: config::Config) {
+        if let Err(error) = validate_required_default_model(&new_config) {
+            tracing::error!(%error, "ignoring config reload: invalid new-session model");
+            return;
+        }
         // Reject an invalid reload instead of mutating live state: bad globs or
         // (once a real catalog exists) an allowlist that excludes everything.
         if let Err(e) = new_config.validate_model_filters() {
@@ -299,14 +295,16 @@ impl ModelsManager {
             return;
         }
 
-        let (old_preferred, old_default_is_campaign) = {
+        let old_preferred = {
             let cfg = self.inner.cfg.read();
-            (
-                cfg.models.default.clone(),
-                cfg.models.default_is_campaign_driven,
-            )
+            cfg.default_model_override
+                .clone()
+                .or_else(|| cfg.model.clone())
         };
-        let new_preferred = new_config.models.default.clone();
+        let new_preferred = new_config
+            .default_model_override
+            .clone()
+            .or_else(|| new_config.model.clone());
         let has_session = self.inner.auth_manager.current_or_expired().is_some();
         *self.inner.fetch_auth.write() =
             ModelFetchAuth::resolve(&new_config.endpoints, has_session);
@@ -320,32 +318,8 @@ impl ModelsManager {
         }
         *self.inner.models.write() = new_catalog;
 
-        // A preferred-model flip caused only by a campaign overlay appearing or
-        // disappearing must not yank an in-flight session whose current model is
-        // still usable — the campaign applies to /new sessions only.
         let preferred_changed = new_preferred != old_preferred && new_preferred.is_some();
-        // Recognize an appearing OR withdrawing campaign from the
-        // `default_is_campaign_driven` flag on each config (no disk I/O); correct
-        // even when the user has no base default (where a value compare would miss).
-        let mut campaign_defaults = std::collections::HashSet::new();
-        if new_config.models.default_is_campaign_driven
-            && let Some(d) = &new_preferred
-        {
-            campaign_defaults.insert(d.clone());
-        }
-        if old_default_is_campaign && let Some(d) = &old_preferred {
-            campaign_defaults.insert(d.clone());
-        }
-        let campaign_only_flip =
-            is_campaign_only_flip(&old_preferred, &new_preferred, &campaign_defaults);
-        let current_still_ok = {
-            let models = self.inner.models.read();
-            let cur = self.inner.current_model_id.read();
-            models
-                .get(cur.0.as_ref())
-                .is_some_and(|e| e.info.user_selectable)
-        };
-        if preferred_changed && !(campaign_only_flip && current_still_ok) {
+        if preferred_changed {
             self.reselect_default_model(&new_config);
         } else {
             self.reselect_current_model_if_missing(&new_config);
@@ -383,7 +357,8 @@ impl ModelsManager {
         if let Err(error) = cfg.validate_model_filters() {
             return Err(error);
         }
-        let local_models = config::model_entries_from_provider_snapshot(&snapshot);
+        let local_models =
+            config::model_entries_from_provider_snapshot(&snapshot, cfg.model.as_deref());
         if !self.apply_refresh_result(&cfg, Some(local_models), None) {
             return Err("local Provider catalog was not applied".into());
         }
@@ -432,6 +407,15 @@ impl ModelsManager {
 
     pub fn current_model_id(&self) -> acp::ModelId {
         self.inner.current_model_id.read().clone()
+    }
+
+    pub fn cli_default_model_override(&self) -> Option<String> {
+        self.inner
+            .cfg
+            .read()
+            .default_model_override
+            .clone()
+            .filter(|model| !model.is_empty())
     }
 
     pub fn set_current_model_id(&self, id: acp::ModelId) {
@@ -803,26 +787,28 @@ impl ModelsManager {
         let auth_manager = self.inner.auth_manager.as_ref();
         let current_model_id = self.current_model_id();
         let all_models = self.models();
-        let fallback;
-        let current_model = match all_models
+        let current_model = all_models
             .get(current_model_id.0.as_ref())
-            .or_else(|| all_models.values().next())
-        {
-            Some(m) => m,
-            None => {
-                tracing::warn!("no models available in catalog; defaulting to bundled model");
-                let default_id = crate::models::default_model().to_string();
-                fallback = ModelEntry::fallback(&default_id, &config.endpoints);
-                &fallback
-            }
-        };
+            .cloned()
+            .unwrap_or_else(|| {
+                tracing::warn!(
+                    model_id = %current_model_id.0,
+                    "configured model is unavailable; retaining its identity for UI startup"
+                );
+                let mut fallback =
+                    ModelEntry::fallback(current_model_id.0.as_ref(), &config.endpoints);
+                fallback.info.user_selectable = false;
+                fallback
+            });
 
         let session_auth = auth_manager.current_or_expired();
-        let credentials =
-            resolve_credentials(current_model, session_auth.as_ref().map(|a| a.key.as_str()));
+        let credentials = resolve_credentials(
+            &current_model,
+            session_auth.as_ref().map(|a| a.key.as_str()),
+        );
 
         sampling_config_for_model(
-            current_model,
+            &current_model,
             credentials,
             config.endpoints.alpha_test_key.clone(),
             config.client_version.clone(),
@@ -838,7 +824,8 @@ impl ModelsManager {
     fn cache_origin(&self) -> String {
         let endpoints = self.inner.cfg.read().endpoints.clone();
         let fetch_auth = *self.inner.fetch_auth.read();
-        crate::remote::models_list_url(&endpoints, fetch_auth)
+        let _ = (endpoints, fetch_auth);
+        local_catalog_origin()
     }
 
     fn try_load_cache(&self) -> bool {
@@ -984,6 +971,13 @@ pub enum RefreshStrategy {
 const MODELS_CACHE_FILE: &str = "models_cache.json";
 const CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(300);
 
+fn local_catalog_origin() -> String {
+    crate::util::atelier_home::atelier_home()
+        .join("providers.toml")
+        .to_string_lossy()
+        .into_owned()
+}
+
 #[derive(serde::Serialize, serde::Deserialize)]
 struct ModelsCache {
     fetched_at: DateTime<Utc>,
@@ -992,7 +986,7 @@ struct ModelsCache {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     auth_method: Option<CacheAuthMethod>,
     /// Models-list URL this catalog was fetched from
-    /// ([`crate::remote::models_list_url`]). Compared on load so a cache
+    /// ([`local_catalog_origin`]). Compared on load so a cache
     /// written against one backend is a miss for another: entries embed
     /// absolute `base_url`s, so adopting a foreign-origin cache silently
     /// re-points inference (the windows lifecycle e2e failed exactly this
@@ -1172,6 +1166,8 @@ fn build_prefetched_map(
             env_key: None,
             api_base_url: m.api_base_url.clone().or(api_base_url_override.clone()),
             request_payload: serde_json::Map::new(),
+            remote_compaction_endpoint: None,
+            image_generation_endpoint: None,
         };
         map.insert(key, entry);
     }
@@ -1187,17 +1183,16 @@ pub(crate) fn prefetch_models_blocking(
     prefetch_models_blocking_gated(endpoints, auth, fetch_auth, false)
 }
 
-/// Blocking models + `/v1/settings` prefetch pair, shared by the early
-/// prefetch thread and the leader's startup phase so the settings gate lives
-/// once. The remote_fetch knob is resolved a single time so the two fetch
-/// decisions cannot disagree mid-startup.
+/// Load the locally configured Provider model catalog for startup.
+/// The second tuple element is retained as a process-local runtime override
+/// slot and is always `None` in the vendorless runtime.
 pub(crate) fn prefetch_models_and_settings_blocking(
     endpoints: &config::EndpointsConfig,
     auth: Option<&AtelierAuth>,
     fetch_auth: ModelFetchAuth,
 ) -> (
     Option<IndexMap<String, ModelEntry>>,
-    Option<crate::util::config::RemoteSettings>,
+    Option<crate::local_runtime::LocalRuntimeSettings>,
 ) {
     let models = prefetch_models_blocking_gated(endpoints, auth, fetch_auth, false);
     (models, None)
@@ -1211,54 +1206,15 @@ fn prefetch_models_blocking_gated(
     fetch_auth: ModelFetchAuth,
     remote_fetch_enabled: bool,
 ) -> Option<IndexMap<String, ModelEntry>> {
-    let cache_auth = fetch_auth.cache_auth_method();
-    // Same URL the fetch below will hit — the cache is only valid for it.
-    let cache_origin = crate::remote::models_list_url(endpoints, fetch_auth);
-    let cache = ModelsCacheManager::new();
-    if let Some(cached) = cache.load_fresh(&cache_auth, &cache_origin) {
-        return Some(cached.models);
-    }
-
-    // Every catalog fetch in the product funnels through here, so this single
-    // gate also covers callers that don't go through the prefetch-env check
-    // (leader, headless, stdio, server). Cache above is local and stays usable.
-    if !remote_fetch_enabled {
-        tracing::info!("models fetch skipped: remote_fetch disabled");
-        return None;
-    }
-
-    let _timer = crate::instrumentation_timer!("startup.fetch_models_blocking");
-    match fetch_models_blocking(endpoints, auth, fetch_auth) {
-        Ok(FetchModelsResult { models, etag }) if !models.is_empty() => {
-            let api_base_url_override = match fetch_auth {
-                ModelFetchAuth::ApiKey => Some(endpoints.xai_api_base_url.clone()),
-                _ => None,
-            };
-            let map = build_prefetched_map(models, api_base_url_override);
-
-            // NOTE: inheriting context_window / agent_type / api_backend
-            // from hardcoded defaults is handled centrally in
-            // `resolve_model_list` (config.rs), not here. Don't re-add it.
-
-            tracing::info!(count = map.len(), etag = ?etag, "Prefetched models");
-            cache.persist(&map, etag.as_deref(), cache_auth, &cache_origin);
-            Some(map)
-        }
-        Ok(FetchModelsResult { .. }) => {
-            tracing::warn!("Models endpoint returned empty list");
-            None
-        }
-        Err(e) => {
-            tracing::warn!("Failed to fetch models: {:?}", e);
-            None
-        }
-    }
+    let _ = (endpoints, auth, fetch_auth, remote_fetch_enabled);
+    let models = config::load_runtime_provider_models(None);
+    (!models.is_empty()).then_some(models)
 }
 
-/// Startup prefetch result: models + remote settings.
+/// Startup prefetch result: models plus an optional local runtime overlay.
 pub struct EarlyPrefetchResult {
     pub models: Option<IndexMap<String, ModelEntry>>,
-    pub settings: Option<crate::util::config::RemoteSettings>,
+    pub settings: Option<crate::local_runtime::LocalRuntimeSettings>,
 }
 
 /// Handle for a startup prefetch thread.
@@ -1285,11 +1241,8 @@ fn resolve_prefetch_env_with_auth(auth: Option<AtelierAuth>) -> Option<PrefetchE
 /// Decision core of [`resolve_prefetch_env_with_auth`], split from the config
 /// loading so the gate is unit-testable.
 ///
-/// `remote_fetch_enabled = false` wins over every credential shape AND over
-/// `has_custom_endpoint()` (which otherwise forces the prefetch to run): the
-/// explicit off switch must hold even when a stray login, `XAI_API_KEY`, or
-/// `deployment_key` would re-arm the prefetch — and with it the `/v1/settings`
-/// fetch and the deployment-config sync on the prefetch thread.
+/// The legacy vendor-fetch path is fail-closed regardless of credentials or
+/// endpoint shape. Provider model discovery is handled by the Provider registry.
 fn resolve_prefetch_env_from_parts(
     auth: Option<AtelierAuth>,
     endpoints: config::EndpointsConfig,
@@ -1401,128 +1354,60 @@ pub(crate) fn selectable_catalog_key_for_persisted(
     resolve_catalog_key(models, id).filter(|key| available.contains_key(key))
 }
 
-/// A "campaign-only" preferred flip: the default changed and either side's value
-/// is an active campaign default, i.e. the change is attributable to a campaign
-/// overlay appearing/disappearing rather than a user/CLI/env edit.
-fn is_campaign_only_flip(
-    old_preferred: &Option<String>,
-    new_preferred: &Option<String>,
-    campaign_defaults: &std::collections::HashSet<String>,
-) -> bool {
-    if new_preferred == old_preferred || new_preferred.is_none() {
-        return false;
+const MISSING_DEFAULT_MODEL_ERROR: &str =
+    "config.toml is missing required `model`; expected model = \"provider/model\"";
+
+fn validate_required_default_model(cfg: &config::Config) -> Result<(), String> {
+    if cfg
+        .default_model_override
+        .as_deref()
+        .is_some_and(|model| !model.trim().is_empty())
+        || cfg
+            .model
+            .as_deref()
+            .is_some_and(|model| !model.trim().is_empty())
+    {
+        Ok(())
+    } else {
+        Err(MISSING_DEFAULT_MODEL_ERROR.to_owned())
     }
-    new_preferred
-        .as_ref()
-        .is_some_and(|p| campaign_defaults.contains(p))
-        || old_preferred
-            .as_ref()
-            .is_some_and(|p| campaign_defaults.contains(p))
 }
 
-/// Pick the default model: CLI > env > config > remote-settings hint, falling
-/// back to the bundled default when the catalog is empty or the preferred
-/// model isn't present.
+/// Pick the UI/initial model without selecting an unrelated catalog entry.
+/// CLI is the only override above top-level `config.toml:model`.
 pub(crate) fn resolve_default_model(
     cfg: &config::Config,
     catalog: &IndexMap<String, ModelEntry>,
-    is_session_auth: bool,
+    _is_session_auth: bool,
 ) -> (String, ModelEntry, config::ConfigSource) {
-    let visible: IndexMap<String, ModelEntry> = catalog
-        .iter()
-        .filter(|(_, e)| e.info.visible_for_auth(is_session_auth) && e.info.user_selectable)
-        .map(|(k, v)| (k.clone(), v.clone()))
-        .collect();
-
-    let model_pref = config::resolve_string_flag(
-        cfg.default_model_override.as_deref(),
-        "ATELIER_DEFAULT_MODEL",
-        cfg.models.default.as_deref(),
-        cfg.remote_settings
-            .as_ref()
-            .and_then(|rs| rs.default_model.as_deref()),
-    );
-
-    let first_or_fallback = || -> (String, ModelEntry) {
-        if let Some((key, first)) = visible.first() {
-            return (key.clone(), first.clone());
-        }
-        if let Some((key, entry)) = catalog.iter().find(|(_, e)| e.info.user_selectable) {
-            tracing::warn!("no auth-visible selectable model; using first selectable entry");
-            return (key.clone(), entry.clone());
-        }
-        // Pre-catalog/degenerate only: nothing selectable. Set the bundled
-        // default's flag from `allowed_models` so no reader treats it as allowed.
-        tracing::warn!("no selectable models; falling back to bundled default (pre-catalog)");
-        let default_id = crate::models::default_model().to_string();
-        let mut entry = ModelEntry::fallback(&default_id, &cfg.endpoints);
-        entry.info.user_selectable = match ModelGlobSet::compile(cfg.models.allowed_models.as_ref())
-        {
-            Ok(None) => true,
-            Ok(Some(set)) => set.matches(&default_id, &default_id),
-            Err(_) => false,
-        };
-        (default_id, entry)
-    };
-
-    match &model_pref {
-        None => {
-            let (key, first) = first_or_fallback();
-            (key, first, config::ConfigSource::Default)
-        }
-        Some(pref) => {
-            let found = visible
-                .get_key_value(&pref.value)
-                .or_else(|| visible.iter().find(|(_, m)| m.model == pref.value));
-
-            if let Some((key, entry)) = found {
-                (key.clone(), entry.clone(), pref.source)
-            } else {
-                let is_explicit = matches!(
-                    pref.source,
-                    config::ConfigSource::Cli
-                        | config::ConfigSource::Env
-                        | config::ConfigSource::Config
-                );
-                if is_explicit {
-                    tracing::warn!(
-                        model_id = %pref.value, source = %pref.source,
-                        "preferred model not in available models, falling back"
-                    );
-                } else {
-                    tracing::debug!(
-                        model_id = %pref.value, source = %pref.source,
-                        "remote default_model not in available models, skipping"
-                    );
-                }
-                // A campaign default missing from the catalog falls back to the
-                // pre-campaign default before the first-visible fallback. Gated
-                // on the missing pref actually being the campaign-driven config
-                // value — a CLI/env pref that misses the catalog is not a
-                // campaign problem and must not detour through campaign state.
-                let campaign_pref_missing = cfg.models.default_is_campaign_driven
-                    && matches!(pref.source, config::ConfigSource::Config);
-                if campaign_pref_missing
-                    && let Some(prev) = cfg
-                        .models
-                        .pre_campaign_default
-                        .as_deref()
-                        .filter(|s| !s.is_empty())
-                    && let Some((key, entry)) = visible
-                        .get_key_value(prev)
-                        .or_else(|| visible.iter().find(|(_, m)| m.model == prev))
-                {
-                    tracing::info!(
-                        unavailable = %pref.value, fallback = %prev,
-                        "campaign-driven default unavailable in catalog; recovering the pre-campaign default"
-                    );
-                    return (key.clone(), entry.clone(), config::ConfigSource::Config);
-                }
-                let (key, first) = first_or_fallback();
-                (key, first, config::ConfigSource::Default)
-            }
-        }
+    let (preferred, source) = cfg
+        .default_model_override
+        .as_deref()
+        .filter(|model| !model.is_empty())
+        .map(|model| (model, config::ConfigSource::Cli))
+        .unwrap_or_else(|| {
+            (
+                cfg.model
+                    .as_deref()
+                    .filter(|model| !model.trim().is_empty())
+                    .expect("Config.model is validated before model resolution"),
+                config::ConfigSource::Config,
+            )
+        });
+    if let Some((key, entry)) = catalog
+        .get_key_value(preferred)
+        .or_else(|| catalog.iter().find(|(_, entry)| entry.model == preferred))
+    {
+        return (key.clone(), entry.clone(), source);
     }
+    tracing::warn!(
+        model_id = preferred,
+        source = %source,
+        "configured model is unavailable; retaining its identity without selecting another model"
+    );
+    let mut entry = ModelEntry::fallback(preferred, &cfg.endpoints);
+    entry.info.user_selectable = false;
+    (preferred.to_owned(), entry, source)
 }
 
 /// Filter hidden and auth-gated entries out of `catalog` and convert to ACP wire format.
@@ -1624,10 +1509,13 @@ pub fn resolve_model_catalog(
         }
     }
 
-    // Persisted default first; CLI override below wins when set.
+    // Top-level config model first; CLI override wins when set.
     // Only apply if the model supports reasoning effort.
     if let Some(effort) = cfg.models.default_reasoning_effort
-        && let Some(default_id) = cfg.models.default.as_deref()
+        && let Some(default_id) = cfg
+            .default_model_override
+            .as_deref()
+            .or(cfg.model.as_deref())
         && let Some(entry) = catalog.get_mut(default_id)
         && entry.info.supports_reasoning_effort
     {
@@ -1701,7 +1589,7 @@ pub(crate) fn validate_selectable(
         ));
     }
     for (src, id) in [
-        ("default", cfg.models.default.as_deref()),
+        ("config.toml model", cfg.model.as_deref()),
         ("-m flag", cfg.default_model_override.as_deref()),
     ] {
         if let Some(id) = id
@@ -1759,6 +1647,35 @@ mod tests {
     }
 
     #[test]
+    fn from_config_rejects_missing_new_session_model() {
+        let mut cfg = config::Config::default();
+        cfg.model = None;
+        cfg.default_model_override = None;
+        let tmp = std::env::temp_dir().join("atelier-test-models-manager-missing-model");
+        let auth_manager = Arc::new(AuthManager::new(&tmp, AtelierComConfig::default()));
+        let error = match ModelsManager::from_config(&cfg, Some(IndexMap::new()), auth_manager) {
+            Ok(_) => panic!("missing model must be rejected"),
+            Err(error) => error,
+        };
+        assert_eq!(error, MISSING_DEFAULT_MODEL_ERROR);
+    }
+
+    #[test]
+    fn sampling_config_never_selects_first_visible_model() {
+        let mgr = test_manager();
+        mgr.insert_test_entry(
+            "first-visible",
+            ModelEntry::fallback("first-visible", &config::EndpointsConfig::default()),
+        );
+        mgr.set_current_model_id(acp::ModelId::new("missing-provider/missing-model"));
+
+        let sampling = mgr.sampling_config();
+
+        assert_eq!(sampling.model, "missing-provider/missing-model");
+        assert_ne!(sampling.model, "first-visible");
+    }
+
+    #[test]
     fn model_show_model_fingerprint_reads_catalog_flag() {
         let mgr = test_manager();
 
@@ -1769,6 +1686,8 @@ mod tests {
             env_key: None,
             api_base_url: None,
             request_payload: serde_json::Map::new(),
+            remote_compaction_endpoint: None,
+            image_generation_endpoint: None,
         };
         flagged.info.show_model_fingerprint = true;
         mgr.insert_test_entry("fp-model", flagged);
@@ -1782,6 +1701,8 @@ mod tests {
                 env_key: None,
                 api_base_url: None,
                 request_payload: serde_json::Map::new(),
+                remote_compaction_endpoint: None,
+                image_generation_endpoint: None,
             },
         );
 
@@ -1793,6 +1714,8 @@ mod tests {
             env_key: None,
             api_base_url: None,
             request_payload: serde_json::Map::new(),
+            remote_compaction_endpoint: None,
+            image_generation_endpoint: None,
         };
         custom.info.show_model_fingerprint = true;
         mgr.insert_test_entry("enterprise-key", custom);
@@ -1809,33 +1732,6 @@ mod tests {
         );
         // Lookup by the catalog KEY itself still works (exact-match path).
         assert!(mgr.model_show_model_fingerprint("enterprise-key"));
-    }
-
-    /// The active model must be selectable, not the first entry of the
-    /// un-allowlisted catalog.
-    #[test]
-    fn default_model_honors_allowlist_when_no_default_set() {
-        let cfg = config_from_toml(
-            r#"
-            [models]
-            allowed_models = ["keep-*"]
-            [model.zzz-first]
-            model = "zzz-first"
-            base_url = "https://api.atelier/v1"
-            context_window = 256000
-            [model.keep-one]
-            model = "keep-one"
-            base_url = "https://api.atelier/v1"
-            context_window = 256000
-            "#,
-        );
-        let catalog = resolve_model_catalog(&cfg, None);
-        let (_key, entry, _src) = resolve_default_model(&cfg, &catalog, true);
-        assert!(
-            entry.info.user_selectable,
-            "picked non-selectable {}",
-            entry.model
-        );
     }
 
     #[test]
@@ -1869,6 +1765,8 @@ mod tests {
                     ..Default::default()
                 },
                 reasoning_efforts: Vec::new(),
+                default_effort: None,
+                fast_mode: false,
                 source: atelier_provider::ModelSource::Static,
                 enabled: true,
             })
@@ -1944,6 +1842,8 @@ mod tests {
                 context_window: Some(128_000),
                 capabilities: atelier_provider::ModelCapabilities::default(),
                 reasoning_efforts: Vec::new(),
+                default_effort: None,
+                fast_mode: false,
                 source: atelier_provider::ModelSource::Static,
                 enabled: true,
             })
@@ -1961,7 +1861,7 @@ mod tests {
         let message = gateway_rx
             .try_recv()
             .expect("catalog reload must notify connected clients");
-        let xai_acp_lib::AcpClientMessage::ExtNotification(args) = message else {
+        let atelier_acp_runtime::AcpClientMessage::ExtNotification(args) = message else {
             panic!("expected model catalog ExtNotification");
         };
         assert_eq!(args.request.method.as_ref(), "atelier/models/update");
@@ -1977,41 +1877,40 @@ mod tests {
 
     #[test]
     fn validate_selectable_rejects_bad_allowlists() {
-        // Excluded explicit default → error names the default.
+        // Excluded top-level new-session default → error names the composite key.
         let excluded = config_from_toml(
             r#"
+            model = "local/atelier-3"
             [models]
-            default = "atelier-3"
-            allowed_models = ["atelier-4*"]
-            [model.atelier-3]
-            model = "atelier-3"
-            base_url = "https://api.atelier/v1"
-            context_window = 256000
-            [model.atelier-4]
-            model = "atelier-4"
-            base_url = "https://api.atelier/v1"
-            context_window = 256000
+            allowed_models = ["local/atelier-4*"]
             "#,
         );
-        let catalog = resolve_model_catalog(&excluded, None);
+        assert!(excluded.model_override_warnings.is_empty());
+        let catalog = resolve_model_catalog(
+            &excluded,
+            Some(make_provider_prefetched(
+                "local",
+                &["atelier-3", "atelier-4"],
+            )),
+        );
         assert!(
             validate_selectable(&excluded, &catalog)
                 .unwrap_err()
-                .contains("atelier-3")
+                .contains("local/atelier-3")
         );
 
         // Matches nothing → error.
         let zero = config_from_toml(
             r#"
+            model = "local/atelier-4"
             [models]
-            allowed_models = ["nomatch-*"]
-            [model.atelier-4]
-            model = "atelier-4"
-            base_url = "https://api.atelier/v1"
-            context_window = 256000
+            allowed_models = ["local/nomatch-*"]
             "#,
         );
-        let catalog = resolve_model_catalog(&zero, None);
+        let catalog = resolve_model_catalog(
+            &zero,
+            Some(make_provider_prefetched("local", &["atelier-4"])),
+        );
         assert!(validate_selectable(&zero, &catalog).is_err());
     }
 
@@ -2101,6 +2000,8 @@ mod tests {
                 env_key: None,
                 api_base_url: None,
                 request_payload: serde_json::Map::new(),
+                remote_compaction_endpoint: None,
+                image_generation_endpoint: None,
             },
         );
 
@@ -2146,7 +2047,7 @@ mod tests {
 
         // Model that supports reasoning effort — effort should be applied.
         let mut cfg = config::Config::default();
-        cfg.models.default = Some("reasoning-model".to_string());
+        cfg.model = Some("reasoning-model".to_string());
         cfg.models.default_reasoning_effort = Some(ReasoningEffort::High);
 
         let mut prefetched = IndexMap::new();
@@ -2156,6 +2057,8 @@ mod tests {
             env_key: None,
             api_base_url: None,
             request_payload: serde_json::Map::new(),
+            remote_compaction_endpoint: None,
+            image_generation_endpoint: None,
         };
         reasoning_entry.info.supports_reasoning_effort = true;
         prefetched.insert("reasoning-model".to_string(), reasoning_entry);
@@ -2169,7 +2072,7 @@ mod tests {
 
         // Model that does NOT support reasoning effort — effort must NOT be applied.
         let mut cfg = config::Config::default();
-        cfg.models.default = Some("plain-model".to_string());
+        cfg.model = Some("plain-model".to_string());
         cfg.models.default_reasoning_effort = Some(ReasoningEffort::High);
 
         let mut prefetched = IndexMap::new();
@@ -2179,6 +2082,8 @@ mod tests {
             env_key: None,
             api_base_url: None,
             request_payload: serde_json::Map::new(),
+            remote_compaction_endpoint: None,
+            image_generation_endpoint: None,
         };
         prefetched.insert("plain-model".to_string(), plain_entry);
 
@@ -2207,6 +2112,8 @@ mod tests {
             env_key: None,
             api_base_url: None,
             request_payload: serde_json::Map::new(),
+            remote_compaction_endpoint: None,
+            image_generation_endpoint: None,
         };
         no_none.info.supports_reasoning_effort = true;
         no_none.info.reasoning_efforts = vec![ReasoningEffortOption {
@@ -2226,6 +2133,8 @@ mod tests {
             env_key: None,
             api_base_url: None,
             request_payload: serde_json::Map::new(),
+            remote_compaction_endpoint: None,
+            image_generation_endpoint: None,
         };
         with_none.info.supports_reasoning_effort = true;
         with_none.info.reasoning_efforts = vec![ReasoningEffortOption {
@@ -2333,6 +2242,8 @@ mod tests {
             env_key: None,
             api_base_url: None,
             request_payload: serde_json::Map::new(),
+            remote_compaction_endpoint: None,
+            image_generation_endpoint: None,
         };
         reasoning_entry.info.supports_reasoning_effort = true;
         prefetched.insert("reasoning-model".to_string(), reasoning_entry);
@@ -2343,6 +2254,8 @@ mod tests {
             env_key: None,
             api_base_url: None,
             request_payload: serde_json::Map::new(),
+            remote_compaction_endpoint: None,
+            image_generation_endpoint: None,
         };
         prefetched.insert("plain-model".to_string(), plain_entry);
 
@@ -2386,6 +2299,8 @@ mod tests {
             env_key: None,
             api_base_url: None,
             request_payload: serde_json::Map::new(),
+            remote_compaction_endpoint: None,
+            image_generation_endpoint: None,
         }
     }
 
@@ -2395,13 +2310,23 @@ mod tests {
             .collect()
     }
 
+    fn make_provider_prefetched(
+        provider: &str,
+        model_ids: &[&str],
+    ) -> IndexMap<String, ModelEntry> {
+        model_ids
+            .iter()
+            .map(|model_id| (format!("{provider}/{model_id}"), make_model_entry(model_id)))
+            .collect()
+    }
+
     // ── auth-change refresh: has_fetched_real_catalog flag ─────────────
 
     #[test]
     fn first_apply_refresh_reselects_default_model() {
         let mgr = test_manager();
         let mut cfg = config::Config::default();
-        cfg.models.default = Some("atelier-3".to_string());
+        cfg.model = Some("atelier-3".to_string());
 
         assert!(!mgr.has_fetched_real_catalog());
 
@@ -2416,7 +2341,7 @@ mod tests {
     fn subsequent_apply_refresh_preserves_user_model() {
         let mgr = test_manager();
         let mut cfg = config::Config::default();
-        cfg.models.default = Some("atelier-3".to_string());
+        cfg.model = Some("atelier-3".to_string());
 
         let prefetched = make_prefetched(&["atelier-3", "atelier-4"]);
         mgr.apply_refresh_result(&cfg, Some(prefetched), None);
@@ -2440,7 +2365,7 @@ mod tests {
     fn subsequent_refresh_reselects_when_model_removed() {
         let mgr = test_manager();
         let mut cfg = config::Config::default();
-        cfg.models.default = Some("atelier-3".to_string());
+        cfg.model = Some("atelier-3".to_string());
 
         let prefetched = make_prefetched(&["atelier-3", "atelier-4"]);
         mgr.apply_refresh_result(&cfg, Some(prefetched), None);
@@ -2476,19 +2401,19 @@ mod tests {
     fn apply_config_honors_new_preferred_model() {
         let mgr = test_manager();
         let mut cfg = config::Config::default();
-        cfg.models.default = Some("atelier-3".to_string());
+        cfg.model = Some("atelier-3".to_string());
 
         let prefetched = make_prefetched(&["atelier-3", "atelier-4"]);
         mgr.apply_refresh_result(&cfg, Some(prefetched), None);
         mgr.set_current_model_id(acp::ModelId::new("atelier-4"));
 
-        // Simulate stale inner cfg (no default) from a racing auth refresh.
+        // Simulate stale inner config from a racing auth refresh.
         let mut stale_cfg = config::Config::default();
-        stale_cfg.models.default = None;
+        stale_cfg.model = Some("atelier-4".to_string());
         *mgr.inner.cfg.write() = stale_cfg;
 
         let mut new_cfg = config::Config::default();
-        new_cfg.models.default = Some("atelier-3".to_string());
+        new_cfg.model = Some("atelier-3".to_string());
         mgr.apply_config(new_cfg);
 
         assert_eq!(
@@ -2520,32 +2445,31 @@ mod tests {
     }
 
     #[test]
-    fn apply_config_falls_back_when_preferred_not_in_catalog() {
+    fn apply_config_retains_configured_identity_when_not_in_catalog() {
         let mgr = test_manager();
         let mut cfg = config::Config::default();
-        cfg.models.default = Some("atelier-3".to_string());
+        cfg.model = Some("atelier-3".to_string());
 
         let prefetched = make_prefetched(&["atelier-3", "atelier-4"]);
         mgr.apply_refresh_result(&cfg, Some(prefetched), None);
 
         mgr.set_current_model_id(acp::ModelId::new("atelier-4"));
 
-        // Preferred model not in catalog — falls back to first entry.
+        // Configured model not in catalog — retain its identity.
         let mut new_cfg = config::Config::default();
-        new_cfg.models.default = Some("atelier-nonexistent".to_string());
+        new_cfg.model = Some("atelier-nonexistent".to_string());
         mgr.apply_config(new_cfg);
 
         let current = mgr.current_model_id();
-        let first_available = mgr.available().keys().next().unwrap().clone();
         assert_eq!(
             current.0.as_ref(),
-            first_available.0.as_ref(),
-            "should fall back to first visible model when preferred not in catalog"
+            "atelier-nonexistent",
+            "must not fall back to the first visible model"
         );
     }
 
     #[test]
-    fn apply_config_both_none_preferred_preserves_current() {
+    fn apply_config_unchanged_preferred_preserves_current() {
         let mgr = test_manager();
         let cfg = config::Config::default();
         let prefetched = make_prefetched(&["atelier-3", "atelier-4"]);
@@ -2557,15 +2481,15 @@ mod tests {
         assert_eq!(
             mgr.current_model_id().0.as_ref(),
             "atelier-4",
-            "both-None preferred must preserve user's runtime model"
+            "unchanged preferred model must preserve the Session model"
         );
     }
 
     #[test]
-    fn apply_config_old_some_new_none_preserves_current() {
+    fn apply_config_rejects_missing_model_and_preserves_current() {
         let mgr = test_manager();
         let mut cfg = config::Config::default();
-        cfg.models.default = Some("atelier-3".to_string());
+        cfg.model = Some("atelier-3".to_string());
 
         let prefetched = make_prefetched(&["atelier-3", "atelier-4"]);
         mgr.apply_refresh_result(&cfg, Some(prefetched), None);
@@ -2573,14 +2497,14 @@ mod tests {
 
         mgr.set_current_model_id(acp::ModelId::new("atelier-4"));
 
-        // [models] default removed — is_some() guard prevents reset.
-        let new_cfg = config::Config::default();
+        let mut new_cfg = config::Config::default();
+        new_cfg.model = None;
         mgr.apply_config(new_cfg);
 
         assert_eq!(
             mgr.current_model_id().0.as_ref(),
             "atelier-4",
-            "old=Some new=None must not reset model (is_some guard)"
+            "invalid reload must not reset the current Session model"
         );
     }
 
@@ -2590,7 +2514,7 @@ mod tests {
     fn auth_refresh_then_config_reload_preserves_user_model() {
         let mgr = test_manager();
         let mut cfg = config::Config::default();
-        cfg.models.default = Some("atelier-3".to_string());
+        cfg.model = Some("atelier-3".to_string());
 
         // Initial fetch.
         let prefetched = make_prefetched(&["atelier-3", "atelier-4"]);
@@ -2608,9 +2532,9 @@ mod tests {
         mgr.apply_refresh_result(&cfg, Some(prefetched), None);
         assert_eq!(mgr.current_model_id().0.as_ref(), "atelier-4");
 
-        // Config reload with persisted preference.
+        // Config reload with the same explicit new-Session default.
         let mut new_cfg = config::Config::default();
-        new_cfg.models.default = Some("atelier-4".to_string());
+        new_cfg.model = Some("atelier-4".to_string());
         mgr.apply_config(new_cfg);
         assert_eq!(mgr.current_model_id().0.as_ref(), "atelier-4");
     }
@@ -2655,11 +2579,16 @@ mod tests {
     #[test]
     fn reload_from_disk_cache_recomputes_allowlist_excludes_all() {
         let mgr = test_manager();
-        let cfg = config_from_toml("[models]\nallowed_models = [\"keep-*\"]");
+        let cfg = config_from_toml(
+            "model = \"local/keep-1\"\n[models]\nallowed_models = [\"local/keep-*\"]",
+        );
 
-        // Latch the flag: neither the fetched model nor the bundled defaults
-        // merged by `resolve_model_catalog` match `keep-*`.
-        mgr.apply_refresh_result(&cfg, Some(make_prefetched(&["other-1"])), None);
+        // Latch the flag: the fetched composite model key does not match.
+        mgr.apply_refresh_result(
+            &cfg,
+            Some(make_provider_prefetched("local", &["other-1"])),
+            None,
+        );
         assert!(
             mgr.allowlist_excludes_all(),
             "setup: allowlist should exclude the entire catalog"
@@ -2673,7 +2602,7 @@ mod tests {
         let cache = test_cache_manager(tmp.path());
         let auth_method = mgr.inner.fetch_auth.read().cache_auth_method();
         cache.persist(
-            &make_prefetched(&["keep-1"]),
+            &make_provider_prefetched("local", &["keep-1"]),
             Some("etag-keep"),
             auth_method,
             &mgr.cache_origin(),
@@ -2681,7 +2610,7 @@ mod tests {
 
         mgr.reload_from_cache_manager(&cache);
 
-        assert!(mgr.models().contains_key("keep-1"));
+        assert!(mgr.models().contains_key("local/keep-1"));
         assert!(
             !mgr.allowlist_excludes_all(),
             "corrective external cache write must unlatch the prompt block"
@@ -2689,14 +2618,14 @@ mod tests {
     }
 
     /// When the *first* real catalog arrives via an external cache write (the
-    /// leader never completed its own fetch), the configured `[models]`
-    /// default must be resolved — mirroring `apply_refresh_result`'s
-    /// first-catalog branch — instead of staying on the bundled placeholder.
+    /// leader never completed its own fetch), top-level `config.toml:model`
+    /// must be resolved by its composite key — mirroring
+    /// `apply_refresh_result`'s first-catalog branch.
     #[test]
     fn reload_from_disk_cache_resolves_default_on_first_catalog() {
         let mgr = test_manager();
         assert!(!mgr.has_fetched_real_catalog());
-        let cfg = config_from_toml("[models]\ndefault = \"keep-1\"");
+        let cfg = config_from_toml("model = \"local/keep-1\"");
         // `reload_from_cache_manager` reads the manager's stored config.
         *mgr.inner.cfg.write() = cfg.clone();
 
@@ -2704,7 +2633,7 @@ mod tests {
         let cache = test_cache_manager(tmp.path());
         let auth_method = mgr.inner.fetch_auth.read().cache_auth_method();
         cache.persist(
-            &make_prefetched(&["keep-1", "other-1"]),
+            &make_provider_prefetched("local", &["keep-1", "other-1"]),
             Some("etag-first"),
             auth_method,
             &mgr.cache_origin(),
@@ -2715,7 +2644,7 @@ mod tests {
         assert!(mgr.has_fetched_real_catalog());
         assert_eq!(
             mgr.current_model_id().0.as_ref(),
-            "keep-1",
+            "local/keep-1",
             "first real catalog must resolve the configured default"
         );
     }
@@ -2862,153 +2791,21 @@ mod tests {
     fn clear_resets_has_fetched_real_catalog() {
         let mgr = test_manager();
         let mut cfg = config::Config::default();
-        cfg.models.default = Some("atelier-3".to_string());
+        cfg.model = Some("local/atelier-3".to_string());
 
-        let prefetched = make_prefetched(&["atelier-3", "atelier-4"]);
+        let prefetched = make_provider_prefetched("local", &["atelier-3", "atelier-4"]);
         mgr.apply_refresh_result(&cfg, Some(prefetched), None);
         assert!(mgr.has_fetched_real_catalog());
+        assert_eq!(mgr.current_model_id().0.as_ref(), "local/atelier-3");
 
         mgr.clear();
         assert!(!mgr.has_fetched_real_catalog());
 
-        // New identity fetch — resolves default via reselect_default_model.
-        let prefetched = make_prefetched(&["atelier-4.5", "atelier-4.3"]);
+        // New identity fetch: the configured model is absent, so retain its
+        // composite identity instead of selecting a catalog entry or bundled default.
+        let prefetched = make_provider_prefetched("local", &["atelier-4.5", "atelier-4.3"]);
         mgr.apply_refresh_result(&cfg, Some(prefetched), None);
-        let first_available = mgr.available().keys().next().unwrap().clone();
-        assert_eq!(
-            mgr.current_model_id().0.as_ref(),
-            first_available.0.as_ref()
-        );
-    }
-
-    /// A flip is "campaign-only" iff the preferred changed and either side is an
-    /// active campaign default.
-    #[test]
-    fn is_campaign_only_flip_detects_campaign_driven_changes() {
-        let camp: std::collections::HashSet<String> = ["beta".into()].into_iter().collect();
-        // New side is the campaign default (campaign appearing) → campaign-only.
-        assert!(is_campaign_only_flip(
-            &Some("alpha".into()),
-            &Some("beta".into()),
-            &camp
-        ));
-        // Old side was the campaign default (campaign withdrawing) → campaign-only.
-        assert!(is_campaign_only_flip(
-            &Some("beta".into()),
-            &Some("alpha".into()),
-            &camp
-        ));
-        // Neither side a campaign default → ordinary user/CLI/env flip.
-        assert!(!is_campaign_only_flip(
-            &Some("alpha".into()),
-            &Some("gamma".into()),
-            &camp
-        ));
-        // No change, cleared default, or empty campaign set → never campaign-only.
-        assert!(!is_campaign_only_flip(
-            &Some("beta".into()),
-            &Some("beta".into()),
-            &camp
-        ));
-        assert!(!is_campaign_only_flip(&Some("beta".into()), &None, &camp));
-        assert!(!is_campaign_only_flip(
-            &Some("alpha".into()),
-            &Some("beta".into()),
-            &std::collections::HashSet::new()
-        ));
-    }
-
-    /// A campaign-only flip must NOT reselect a live session whose current model
-    /// is still selectable; a non-campaign flip must. "Campaign-driven" is marked
-    /// by `default_is_campaign_driven` on the incoming config.
-    #[test]
-    fn campaign_only_flip_does_not_reselect_live_session() {
-        let mgr = test_manager();
-        let mut cfg = config::Config::default();
-        cfg.models.default = Some("alpha".to_string());
-        mgr.apply_refresh_result(&cfg, Some(make_prefetched(&["alpha", "beta"])), None);
-        *mgr.inner.cfg.write() = cfg.clone(); // old_preferred = "alpha"
-        assert_eq!(mgr.current_model_id().0.as_ref(), "alpha");
-
-        let mut new_cfg = config::Config::default();
-        new_cfg.models.default = Some("beta".to_string());
-        new_cfg.models.default_is_campaign_driven = true; // campaign overriding
-        mgr.apply_config(new_cfg);
-        assert_eq!(
-            mgr.current_model_id().0.as_ref(),
-            "alpha",
-            "campaign-only flip must not yank a still-selectable live session"
-        );
-
-        // Control: same flip with no campaign (no pre_campaign_default) → reselect.
-        let mgr2 = test_manager();
-        let mut cfg2 = config::Config::default();
-        cfg2.models.default = Some("alpha".to_string());
-        mgr2.apply_refresh_result(&cfg2, Some(make_prefetched(&["alpha", "beta"])), None);
-        *mgr2.inner.cfg.write() = cfg2.clone();
-        let mut new_cfg2 = config::Config::default();
-        new_cfg2.models.default = Some("beta".to_string());
-        mgr2.apply_config(new_cfg2);
-        assert_eq!(
-            mgr2.current_model_id().0.as_ref(),
-            "beta",
-            "a non-campaign preferred change must reselect"
-        );
-    }
-
-    /// A campaign default missing from the catalog falls back to
-    /// `pre_campaign_default`, then to the first visible model — and only when
-    /// the missing pref is actually the campaign-driven config value.
-    #[test]
-    fn unavailable_campaign_default_falls_back_to_config_default() {
-        let catalog = make_prefetched(&["real-model", "other-model"]);
-
-        let mut cfg = config::Config::default();
-        cfg.models.default = Some("missing-model".to_string());
-        cfg.models.default_is_campaign_driven = true;
-        cfg.models.pre_campaign_default = Some("real-model".to_string());
-        let (key, _, _) = resolve_default_model(&cfg, &catalog, true);
-        assert_eq!(
-            key, "real-model",
-            "must fall back to the pre-campaign default"
-        );
-
-        // Control: pre-campaign default also absent → first visible model.
-        let mut cfg2 = config::Config::default();
-        cfg2.models.default = Some("missing-model".to_string());
-        cfg2.models.default_is_campaign_driven = true;
-        cfg2.models.pre_campaign_default = Some("also-missing".to_string());
-        let (key2, _, _) = resolve_default_model(&cfg2, &catalog, true);
-        assert_eq!(&key2, catalog.keys().next().unwrap());
-
-        // Control: not campaign-driven (e.g. stale recovery value alongside a
-        // user-set default) → the campaign detour must NOT fire; a missing
-        // config pref falls to the first visible model.
-        let mut cfg3 = config::Config::default();
-        cfg3.models.default = Some("missing-model".to_string());
-        cfg3.models.pre_campaign_default = Some("real-model".to_string());
-        let (key3, _, _) = resolve_default_model(&cfg3, &catalog, true);
-        assert_eq!(
-            &key3,
-            catalog.keys().next().unwrap(),
-            "non-campaign catalog miss must not recover via campaign state"
-        );
-
-        // Control: CLI override misses the catalog while campaign state is set
-        // → CLI is not a campaign problem; no campaign detour.
-        let mut cfg4 = config::Config {
-            default_model_override: Some("missing-cli-model".to_string()),
-            ..Default::default()
-        };
-        cfg4.models.default = Some("campaign-model".to_string());
-        cfg4.models.default_is_campaign_driven = true;
-        cfg4.models.pre_campaign_default = Some("real-model".to_string());
-        let (key4, _, _) = resolve_default_model(&cfg4, &catalog, true);
-        assert_eq!(
-            &key4,
-            catalog.keys().next().unwrap(),
-            "a CLI pref miss must not detour through pre_campaign_default"
-        );
+        assert_eq!(mgr.current_model_id().0.as_ref(), "local/atelier-3");
     }
 
     // ── ModelFetchAuth::resolve priority tests ──────────────────────
@@ -3019,7 +2816,6 @@ mod tests {
     #[test]
     #[serial]
     fn resolve_custom_endpoint_always_wins() {
-        let _key = EnvGuard::set("XAI_API_KEY", "test-key");
         let endpoints = config::EndpointsConfig {
             models_base_url: Some("https://custom.example.com".to_owned()),
             ..config::EndpointsConfig::default()
@@ -3036,33 +2832,34 @@ mod tests {
 
     #[test]
     #[serial]
-    fn resolve_cached_session_wins_over_api_key() {
-        let _key = EnvGuard::set("XAI_API_KEY", "test-key");
-        let endpoints = config::EndpointsConfig::default();
+    fn resolve_cached_session_wins_over_deployment() {
+        let endpoints = config::EndpointsConfig {
+            deployment_key: Some("deploy-key".to_owned()),
+            ..config::EndpointsConfig::default()
+        };
         assert_eq!(
             ModelFetchAuth::resolve(&endpoints, true),
             ModelFetchAuth::Session,
-            "cached session should take priority over API key",
+            "cached session should take priority over deployment auth",
         );
     }
 
     #[test]
     #[serial]
-    fn resolve_api_key_used_when_no_session() {
-        let _key = EnvGuard::set("XAI_API_KEY", "test-key");
+    fn resolve_legacy_global_api_keys_are_ignored() {
+        let _key = EnvGuard::set("XAI_API_KEY", "ignored-global-key");
+        let _legacy = EnvGuard::set("ATELIER_CODE_XAI_API_KEY", "ignored-legacy-key");
         let endpoints = config::EndpointsConfig::default();
         assert_eq!(
             ModelFetchAuth::resolve(&endpoints, false),
-            ModelFetchAuth::ApiKey,
-            "API key should be used when no cached session exists",
+            ModelFetchAuth::Session,
+            "model fetch auth must not resolve process-global vendor keys",
         );
     }
 
     #[test]
     #[serial]
     fn resolve_falls_back_to_session_when_nothing_set() {
-        let _unset = EnvGuard::unset("XAI_API_KEY");
-        let _unset_legacy = EnvGuard::unset("ATELIER_CODE_XAI_API_KEY");
         let endpoints = config::EndpointsConfig::default();
         assert_eq!(
             ModelFetchAuth::resolve(&endpoints, false),
@@ -3073,9 +2870,7 @@ mod tests {
 
     #[test]
     #[serial]
-    fn resolve_deployment_key_when_no_session_or_api_key() {
-        let _unset = EnvGuard::unset("XAI_API_KEY");
-        let _unset_legacy = EnvGuard::unset("ATELIER_CODE_XAI_API_KEY");
+    fn resolve_deployment_key_when_no_session() {
         let endpoints = config::EndpointsConfig {
             deployment_key: Some("deploy-key".to_owned()),
             ..config::EndpointsConfig::default()
@@ -3086,11 +2881,13 @@ mod tests {
         );
     }
 
-    /// `deployment_key` outranks a stray `XAI_API_KEY`, but session wins over both.
+    /// Deployment auth is selected from explicit endpoint configuration and is
+    /// unaffected by legacy process-global vendor keys.
     #[test]
     #[serial]
-    fn resolve_deployment_key_outranks_ambient_api_key() {
-        let _key = EnvGuard::set("XAI_API_KEY", "stray-env-key");
+    fn resolve_deployment_key_is_independent_of_legacy_global_api_keys() {
+        let _key = EnvGuard::set("XAI_API_KEY", "ignored-global-key");
+        let _legacy = EnvGuard::set("ATELIER_CODE_XAI_API_KEY", "ignored-legacy-key");
         let endpoints = config::EndpointsConfig {
             deployment_key: Some("deploy-key".to_owned()),
             ..config::EndpointsConfig::default()
@@ -3098,7 +2895,7 @@ mod tests {
         assert_eq!(
             ModelFetchAuth::resolve(&endpoints, false),
             ModelFetchAuth::Deployment,
-            "managed deployment_key should outrank an ambient XAI_API_KEY",
+            "explicit deployment auth must not depend on global vendor keys",
         );
         assert_eq!(
             ModelFetchAuth::resolve(&endpoints, true),
@@ -3156,46 +2953,6 @@ mod tests {
     }
 
     // ── supported_in_api tests ──────────────────────────────────────
-
-    #[test]
-    fn default_model_skips_oauth_only_for_api_key_users() {
-        let cfg = config::Config::default();
-        let mut catalog = IndexMap::new();
-
-        let mut oauth_only = ModelEntry {
-            info: config::ModelInfo::fallback("oauth-only"),
-            api_key: None,
-            env_key: None,
-            api_base_url: None,
-            request_payload: serde_json::Map::new(),
-        };
-        oauth_only.info.supported_in_api = false;
-        catalog.insert("oauth-only".to_string(), oauth_only);
-
-        let public = ModelEntry {
-            info: config::ModelInfo::fallback("public-model"),
-            api_key: None,
-            env_key: None,
-            api_base_url: None,
-            request_payload: serde_json::Map::new(),
-        };
-        catalog.insert("public-model".to_string(), public);
-
-        // API-key user: default should NOT be the oauth-only model
-        let (key, _, _) = resolve_default_model(&cfg, &catalog, false);
-        assert_ne!(
-            key, "oauth-only",
-            "API-key default must not be an OAuth-only model"
-        );
-        assert_eq!(key, "public-model");
-
-        // OAuth user: oauth-only is valid as default (it's first in the map)
-        let (key, _, _) = resolve_default_model(&cfg, &catalog, true);
-        assert!(
-            key == "oauth-only" || key == "public-model",
-            "OAuth user should be able to use either model as default"
-        );
-    }
 
     #[test]
     fn visible_for_auth_logic() {
@@ -3333,7 +3090,7 @@ mod tests {
         );
 
         let mut cfg = config::Config::default();
-        cfg.models.default = Some("atelier-build".to_string());
+        cfg.model = Some("atelier-build".to_string());
 
         let (key, _, _) = resolve_default_model(&cfg, &catalog, true);
         assert_eq!(key, "atelier-build", "must match id, not first slug hit");

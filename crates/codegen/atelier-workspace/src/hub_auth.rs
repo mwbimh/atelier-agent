@@ -9,8 +9,8 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use atelier_tool_hub_sdk::{AuthCredential, AuthIdentity, AuthProvider};
 use url::Url;
-use xai_computer_hub_sdk::{AuthCredential, AuthIdentity, AuthProvider};
 
 #[derive(Debug, serde::Deserialize)]
 #[serde(deny_unknown_fields)]

@@ -3,16 +3,16 @@ name = "atelier-pager"
 version = "0.1.220-alpha.4"
 edition.workspace = true
 license = "Apache-2.0"
-authors = ["xAI"]
+authors = ["Atelier"]
 
 [dependencies]
 # TTY safety — detach subprocesses from the controlling terminal
 dunce = { workspace = true }
-xai-tty-utils = { workspace = true }
+atelier-tty-utils = { workspace = true }
 atelier-version = { workspace = true }
 
 # Shared prompt-queue wire types
-xai-prompt-queue = { workspace = true }
+atelier-prompt-queue = { workspace = true }
 
 # Presentation-primitives layer (extracted)
 atelier-pager-render = { path = "../atelier-pager-render" }
@@ -79,22 +79,21 @@ obfstr = { workspace = true }
 nucleo = { workspace = true }
 
 # Prompt text input
-xai-ratatui-textarea = { workspace = true }
-xai-ratatui-inline = { workspace = true }
+atelier-ratatui-textarea = { workspace = true }
+atelier-ratatui-inline = { workspace = true }
 
 # Update
 
 # ACP
 agent-client-protocol = { workspace = true }
-xai-acp-lib = { workspace = true }
-xai-file-utils = { path = "../xai-file-utils" }
+atelier-acp-runtime = { workspace = true }
 atelier-config = { workspace = true }
 atelier-provider = { path = "../atelier-provider" }
 atelier-shell = { workspace = true }
 atelier-workspace = { workspace = true }
-xai-token-estimation = { workspace = true }
+atelier-token-estimation = { workspace = true }
 atelier-telemetry = { workspace = true }
-xai-fast-worktree = { path = "../xai-fast-worktree", features = ["metadata"] }
+atelier-fast-worktree = { path = "../atelier-fast-worktree", features = ["metadata"] }
 backon = { workspace = true }
 chrono = { workspace = true }
 flate2 = { workspace = true }
@@ -102,7 +101,7 @@ tar = { workspace = true }
 atelier-tools = { workspace = true }
 atelier-agent = { workspace = true }
 atelier-plugin-marketplace = { path = "../atelier-plugin-marketplace" }
-xai-hooks-plugins-types = { path = "../xai-hooks-plugins-types" }
+atelier-hooks-plugins-types = { path = "../atelier-hooks-plugins-types" }
 wait-timeout = { workspace = true }
 atelier-sandbox = { path = "../atelier-sandbox", default-features = false }
 
@@ -130,7 +129,7 @@ urlencoding = { workspace = true }
 url = { workspace = true }
 
 # Crash diagnostics
-xai-crash-handler = { path = "../xai-crash-handler" }
+atelier-crash-handler = { path = "../atelier-crash-handler" }
 
 # Non-poisoning mutex for signal handler (active-sessions crash recovery).
 parking_lot.workspace = true
@@ -150,7 +149,7 @@ core-foundation = { workspace = true }
 # SetConsoleCtrlHandler for the exec-emulating screen-mode relaunch
 # (`/minimal` / `/fullscreen`): the waiting parent must ignore console Ctrl
 # events so only the relaunched child handles them. Version matches the other
-# in-repo consumers (xai-crash-handler, xai-system-power).
+# in-repo consumers (atelier-crash-handler, atelier-system-power).
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_System_Console"] }
 

@@ -1,50 +1,13 @@
 #![cfg_attr(rustfmt, rustfmt::skip)]
-use std::path::Path;
 use agent_client_protocol as acp;
+use std::path::Path;
 use tokio::task::JoinSet;
-use xai_acp_lib::{AcpAgentTx, acp_send};
+use atelier_acp_runtime::{AcpAgentTx, acp_send};
 use super::actions::{PermissionModePersist, SubagentKillOutcome, TaskResult};
 use super::agent::AgentId;
 use crate::unified_log as ulog;
 use atelier_shell::session::ExtMethodResult;
 
-pub(crate) fn persist_preferred_model_as_main_role(
-    path: &Path,
-    model_id: &str,
-    reasoning_effort: Option<atelier_shell::sampling::types::ReasoningEffort>,
-) -> Result<(), String> {
-    use atelier_provider::{ModelKey, ProviderRegistry, RoleConfig, RoleId};
-
-    let model_key = ModelKey::parse(model_id).map_err(|error| error.to_string())?;
-    let mut registry = ProviderRegistry::load_or_create(path).map_err(|error| error.to_string())?;
-    let mut main = registry
-        .role(RoleId::Main)
-        .filter(|config| config.is_configured())
-        .cloned()
-        .unwrap_or_else(|| {
-            RoleConfig::new(&model_key.provider_id, &model_key.model_id)
-                .expect("validated ModelKey always produces a valid RoleConfig")
-        });
-    main.provider = model_key.provider_id;
-    main.model = model_key.model_id;
-    main.effort = reasoning_effort.map(|effort| effort.to_string());
-    registry
-        .update_role(RoleId::Main, main)
-        .map_err(|error| error.to_string())?;
-    registry
-        .set_default_model(None)
-        .map_err(|error| error.to_string())?;
-    registry.save().map_err(|error| error.to_string())
-}
-
-pub(crate) fn clear_legacy_provider_default(path: &Path) -> Result<(), String> {
-    let mut registry = atelier_provider::ProviderRegistry::load_or_create(path)
-        .map_err(|error| error.to_string())?;
-    registry
-        .set_default_model(None)
-        .map_err(|error| error.to_string())?;
-    registry.save().map_err(|error| error.to_string())
-}
 /// Typed progress message for session restore.
 /// Keeps the progress channel from accepting arbitrary `TaskResult` variants.
 pub(crate) struct RestoreProgressMsg {
@@ -197,8 +160,8 @@ pub(crate) fn parse_session_load_running_prompt_id(
 /// Strips protocol jargon (ACP, JSON-RPC) and other technical noise that would
 /// be meaningless in a toast, and collapses known disk-full markers.
 pub(crate) fn sanitize_user_error(raw: &str) -> String {
-    if raw.contains(xai_fast_worktree::OUT_OF_DISK_CONTEXT)
-        || raw.contains(xai_fast_worktree::ENOSPC_OS_MESSAGE)
+    if raw.contains(atelier_fast_worktree::OUT_OF_DISK_CONTEXT)
+        || raw.contains(atelier_fast_worktree::ENOSPC_OS_MESSAGE)
     {
         return "Out of disk space.".to_string();
     }
@@ -825,12 +788,6 @@ pub(crate) async fn persist_setting(
                 .await
                 .map_err(|e| e.to_string())
         }
-        "default_model" => {
-            Err(
-                "default_model is a retired setting; persist model selection through roles.main"
-                    .to_owned(),
-            )
-        }
         "scroll_speed" => {
             let SettingValue::Int(i) = value else {
                 return Err(kind_mismatch("scroll_speed", "Int", &value));
@@ -1093,9 +1050,9 @@ pub(super) fn should_send_yolo_acp_notification(
     }
 }
 pub(super) fn marketplace_outcome_succeeded(
-    outcome: &xai_hooks_plugins_types::ActionOutcome,
+    outcome: &atelier_hooks_plugins_types::ActionOutcome,
 ) -> bool {
-    outcome.status == xai_hooks_plugins_types::OutcomeStatus::Success
+    outcome.status == atelier_hooks_plugins_types::OutcomeStatus::Success
 }
 /// Extract the typed kill outcome from an `atelier/task/kill` ext response.
 ///

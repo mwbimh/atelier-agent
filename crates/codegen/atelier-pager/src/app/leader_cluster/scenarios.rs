@@ -288,7 +288,7 @@ fn leader_kill_reconnect_reloads_without_duplicating_history() {
         let _: acp::AuthenticateResponse = bounded(
             "reconnect re-authenticate",
             acp_send(
-                acp::AuthenticateRequest::new(acp::AuthMethodId::new("xai.api_key"))
+                acp::AuthenticateRequest::new(acp::AuthMethodId::new(PROVIDER_API_KEY_METHOD_ID))
                     .meta(serde_json::json!({ "headless": true }).as_object().cloned()),
                 &a.app.acp_tx,
             ),

@@ -1112,7 +1112,7 @@ auto_update = true
     // Env-var tests share a process-wide mutex to avoid set_var races.
 
     mod resolve_auto_compact {
-        use super::super::super::RemoteSettings;
+        use super::super::super::LocalRuntimeSettings;
         use super::super::super::resolve::{
             DEFAULT_AUTO_COMPACT_THRESHOLD_PERCENT, ENV_AUTO_COMPACT_THRESHOLD_PERCENT,
             resolve_auto_compact_threshold_percent,
@@ -1145,9 +1145,9 @@ auto_update = true
                 );
             }
             if let Some(v) = gb_global {
-                cfg.remote_settings = Some(RemoteSettings {
+                cfg.local_runtime_settings = Some(LocalRuntimeSettings {
                     auto_compact_threshold_percent: Some(v),
-                    ..RemoteSettings::default()
+                    ..LocalRuntimeSettings::default()
                 });
             }
             cfg
@@ -1383,13 +1383,13 @@ auto_update = true
             );
         }
 
-        // ── No remote_settings still works ──────────────────────────────
+        // ── No local_runtime_settings still works ──────────────────────────────
 
         #[test]
-        fn no_remote_settings_falls_through_to_default() {
+        fn no_local_runtime_settings_falls_through_to_default() {
             let _g = EnvVarGuard::unset();
             let cfg = Config {
-                remote_settings: None,
+                local_runtime_settings: None,
                 ..Config::default()
             };
             assert_eq!(resolve(&cfg, None), DEFAULT_AUTO_COMPACT_THRESHOLD_PERCENT);

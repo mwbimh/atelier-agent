@@ -28,29 +28,11 @@ chrono = { workspace = true }
 git2 = { version = "0.20", default-features = false, features = [
     "vendored-libgit2",
 ] }
-reqwest = { workspace = true }
-url = { workspace = true }
-atelier-env = { workspace = true }
 atelier-secrets = { workspace = true }
-atelier-config = { workspace = true }
-atelier-sampler = { workspace = true }
-xai-token-estimation = { workspace = true }
-dirs = { workspace = true }
-# Single cross-edge: `events::ToolCallCompleted.outcome` reuses
-# `xai_file_utils::events::types::ToolOutcome` so the local event log and
-# the product telemetry event share the same enum surface. Semantically this enum
-# lives with the events module in data-collector; not worth a third crate.
-xai-file-utils = { path = "../xai-file-utils" }
-# `session_metrics::TraceUploadReason::from_upload_method` matches on the shared
-# `UploadMethod` enum (small, dependency-light types crate) so the reason->wire
-# mapping lives next to the trace-upload lifecycle events it labels.
-whoami = { workspace = true }
+atelier-token-estimation = { workspace = true }
 uuid = { workspace = true, features = ["v5", "v7"] }
-obfstr = { workspace = true, optional = true }
 mid = "4.0.0"
 tokio = { workspace = true, features = ["macros", "sync", "rt"] }
-parking_lot = { workspace = true }
-atelier-auth = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }

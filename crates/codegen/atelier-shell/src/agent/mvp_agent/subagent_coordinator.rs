@@ -236,7 +236,7 @@ impl MvpAgent {
         });
         {
             let (trace_tx, mut trace_rx) = tokio::sync::mpsc::unbounded_channel::<
-                crate::upload::turn::SyntheticTurnTraceRequest,
+                crate::local_artifacts::turn::SyntheticTurnTraceRequest,
             >();
             self.subagent_coordinator.borrow_mut().synthetic_trace_tx = Some(trace_tx);
             tokio::task::spawn_local({
@@ -336,7 +336,7 @@ impl MvpAgent {
                 ps.map(|h| h.yolo_mode).unwrap_or(self.default_yolo_mode),
                 ps.map(|h| h.tool_context.subagent_depth).unwrap_or(0),
                 ps.map(|h| h.tool_context.hunk_tracker_handle.clone())
-                    .unwrap_or_else(xai_hunk_tracker::HunkTrackerHandle::noop),
+                    .unwrap_or_else(atelier_hunk_tracker::HunkTrackerHandle::noop),
                 ps.map(|h| h.tool_context.hunk_tracking_enabled)
                     .unwrap_or(false),
                 ps.map(|h| h.tool_context.fs.inner().clone())
@@ -388,7 +388,7 @@ impl MvpAgent {
                 .and_then(|e| e.info.inference_idle_timeout_secs);
             let cfg = self.cfg.borrow();
             let remote = cfg
-                .remote_settings
+                .local_runtime_settings
                 .as_ref()
                 .and_then(|s| s.inference_idle_timeout_secs);
             per_model.or(remote).unwrap_or(600).max(10)
@@ -412,26 +412,6 @@ impl MvpAgent {
                 .get(&parent_sid)
                 .map(|h| h.ask_user_question_enabled)
                 .unwrap_or_else(|| self.cfg.borrow().resolve_ask_user_question().value)
-        };
-        let (gcs_upload_method, gcs_bucket_url) = match self.trace_upload_config_snapshot() {
-            Some(method) => {
-                use crate::session::repo_changes::UploadMethod;
-                let bucket = match &method {
-                    UploadMethod::Direct { .. } => self
-                        .cfg
-                        .borrow()
-                        .endpoints
-                        .resolve_trace_bucket_url()
-                        .map(|r| r.value),
-                    UploadMethod::Proxy { .. } => Some("proxy-managed".to_string()),
-                    UploadMethod::S3 { bucket, .. } => Some(format!("s3://{bucket}")),
-                };
-                match bucket {
-                    Some(url) => (Some(method), Some(url)),
-                    None => (None, None),
-                }
-            }
-            None => (None, None),
         };
         Some(crate::agent::subagent::SubagentSpawnContext {
             lsp: parent_lsp,
@@ -493,7 +473,7 @@ impl MvpAgent {
             persona_io_summaries: self.persona_io_summaries.clone(),
             disable_web_search: self.cfg.borrow().disable_web_search,
             todo_gate: self.cfg.borrow().todo_gate,
-            remote_settings: self.cfg.borrow().remote_settings.clone(),
+            local_runtime_settings: self.cfg.borrow().local_runtime_settings.clone(),
             laziness_debug_log: self.cfg.borrow().laziness_debug_log.clone(),
             backend_tools_enabled: self.cfg.borrow().resolve_backend_tools().value,
             respect_gitignore: self.cfg.borrow().respect_gitignore,
@@ -504,16 +484,14 @@ impl MvpAgent {
                 let cfg = self.cfg.borrow();
                 let effective = cfg
                     .toolset
-                    .resolve_file_toolset(cfg.remote_settings.as_ref());
+                    .resolve_file_toolset(cfg.local_runtime_settings.as_ref());
                 if effective != crate::tools::FileToolset::Standard {
                     effective.tool_configs(&cfg.toolset.hashline).ok()
                 } else {
                     None
                 }
             },
-            gcs_bucket_url,
             agent_config: Some(self.cfg.borrow().clone()),
-            gcs_upload_method,
             hook_registry: parent_hook_registry,
             hook_workspace_root: String::new(),
             permission_handle: {

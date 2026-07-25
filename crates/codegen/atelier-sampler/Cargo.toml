@@ -3,7 +3,7 @@ license = "Apache-2.0"
 name = "atelier-sampler"
 version = "0.1.0"
 edition.workspace = true
-description = "Actor-based sampling/inference layer for xAI atelier (HTTP streaming + retry, no shell coupling)"
+description = "Actor-based sampling/inference layer for Atelier (HTTP streaming + retry, no shell coupling)"
 
 [dependencies]
 # Internal

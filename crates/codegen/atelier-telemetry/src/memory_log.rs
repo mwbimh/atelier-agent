@@ -1,6 +1,6 @@
 //! Memory system tracing target and optional file-based logging layer.
 //!
-//! Provides a dedicated tracing target (`xai_memory`) with an optional
+//! Provides a dedicated tracing target (`atelier_memory`) with an optional
 //! file logger that writes to `~/.atelier/logs/memory.log`.
 //!
 //! ## When to use
@@ -18,7 +18,7 @@
 //! ```
 
 /// Tracing target for all memory system operations.
-pub const TARGET: &str = "xai_memory";
+pub const TARGET: &str = "atelier_memory";
 
 #[cfg(feature = "memory-log")]
 mod inner {
@@ -35,7 +35,7 @@ mod inner {
     use tracing_subscriber::registry::LookupSpan;
 
     use super::TARGET;
-    use atelier_config::atelier_home;
+    use crate::home::atelier_home;
 
     const ENV_MEMORY_LOG: &str = "ATELIER_MEMORY_LOG";
 
@@ -65,7 +65,7 @@ mod inner {
 
     /// Build the memory log layer.
     ///
-    /// Writes to `~/.atelier/logs/memory.log`. Filters to `xai_memory=trace`.
+    /// Writes to `~/.atelier/logs/memory.log`. Filters to `atelier_memory=trace`.
     /// Set `ATELIER_MEMORY_LOG=0` to disable, `ATELIER_MEMORY_LOG=/path` to redirect.
     pub fn layer<S>() -> Option<impl Layer<S>>
     where

@@ -510,13 +510,13 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use atelier_shell::agent::config::Config as AgentConfig;
-use atelier_shell::agent::mvp_agent::MvpAgent;
-use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
-use xai_acp_lib::{
+use atelier_acp_runtime::{
     AcpAgentGatewayReceiver as GatewayReceiver, AcpAgentGatewaySender as GatewaySender,
     LineBufferedRead,
 };
+use atelier_shell::agent::config::Config as AgentConfig;
+use atelier_shell::agent::mvp_agent::MvpAgent;
+use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 const DUPLEX_BUFFER_BYTES: usize = 16 * 1024 * 1024;
 
@@ -630,7 +630,6 @@ async fn full_session_load_e2e() {
         std::env::set_var("XAI_API_KEY", "test-key-for-ci");
         std::env::set_var("ATELIER_TELEMETRY_ENABLED", "false");
         std::env::set_var("ATELIER_FEEDBACK_ENABLED", "false");
-        std::env::set_var("ATELIER_TRACE_UPLOAD", "false");
     }
 
     // Install the production instrumentation layer so `instrumentation_timer!`
@@ -678,7 +677,6 @@ async fn full_session_load_e2e() {
                 });
             tokio::task::spawn_local(
                 GatewayReceiver::new(gw_rx, agent_conn)
-                    .with_on_meta(xai_file_utils::trace_context::span_from_meta_traceparent)
                     .run(),
             );
             tokio::task::spawn_local(agent_io);

@@ -26,13 +26,13 @@ use crate::cpu_profile::{
     ShutdownStopDisposition,
 };
 use agent_client_protocol::AGENT_METHOD_NAMES;
+use atelier_tool_hub_sdk::{AuthCredential, AuthIdentity, AuthProvider};
 use atelier_workspace::WorkspaceHandle;
 use kanal::{AsyncReceiver, AsyncSender};
 use parking_lot::Mutex;
 use tokio::sync::{mpsc, watch};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, trace, warn};
-use xai_computer_hub_sdk::{AuthCredential, AuthIdentity, AuthProvider};
 const REGISTRATION_TIMEOUT: Duration = Duration::from_secs(30);
 /// Separator for namespacing request IDs. Using pipe character which is:
 /// - Valid in JSON strings (no escaping needed)
@@ -883,7 +883,8 @@ fn patch_initialize_response_model(
     }
     false
 }
-/// Extract model ID from a `session/setModel` request (for keeping `default_model` in sync).
+
+#[cfg(test)]
 fn extract_model_id_from_set_model(json: &serde_json::Value) -> Option<String> {
     let method = json.get("method")?.as_str()?;
     if method != AGENT_METHOD_NAMES.session_set_model {
@@ -893,9 +894,9 @@ fn extract_model_id_from_set_model(json: &serde_json::Value) -> Option<String> {
     params
         .get("modelId")
         .or_else(|| params.get("model_id"))
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())
-        .map(|s| s.to_string())
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
 }
 fn cpu_profile_status_payload(status: CpuProfileStatus) -> ControlPayload {
     match status {
@@ -1090,8 +1091,6 @@ async fn handle_workspace_start(
         { "source" : "atelier-workspace", "hostname" : gethostname::gethostname()
         .to_string_lossy(), "cwd" : cwd_path.display().to_string(), }
     );
-    let upload_queue_enabled =
-        std::env::var("ATELIER_WORKSPACE_UPLOAD_QUEUE_ENABLED").as_deref() != Ok("false");
     crate::agent::folder_trust::resolve_and_record(&cwd_path, None, false);
     let project_lsp_trusted = crate::agent::folder_trust::project_scope_allowed(&cwd_path);
     let handle = atelier_workspace::connect_local_workspace(
@@ -1103,7 +1102,6 @@ async fn handle_workspace_start(
         alpha_test_key,
         allow_insecure_ws,
         status_config,
-        upload_queue_enabled,
         project_lsp_trusted,
         None,
         None,
@@ -1638,10 +1636,7 @@ pub async fn run_leader_server(
             "Updated client yolo_mode from notification"); } if let Some(auto_mode) =
             extract_auto_mode_change(json) { client.capabilities.auto_mode = auto_mode;
             debug!(client_id = id.0, auto_mode,
-            "Updated client auto_mode from notification"); } if let Some(new_model) =
-            extract_model_id_from_set_model(json) { debug!(client_id = id.0, model = %
-            new_model, "Updated client default_model from session/setModel"); client
-            .capabilities.default_model = Some(new_model); } } if let (Some(json),
+            "Updated client auto_mode from notification"); } } if let (Some(json),
             Some(client)) = (json.as_mut(), clients.get_mut(& id)) { if ! client
             .initialize_seen { let (injected, was_initialize) =
             inject_client_identity_into_initialize(json, & client.client_type);
@@ -3839,10 +3834,10 @@ mod tests {
             "unknown leader version (dev build) must not produce a notification"
         );
     }
-    /// Verify that a session/setModel request updates the client's default_model
-    /// capability, so the next session/new injects the updated model.
+    /// A session/setModel request changes only the current Session and must not
+    /// rewrite the client's next-session default.
     #[tokio::test]
-    async fn set_model_updates_default_model_for_next_session_new() {
+    async fn set_model_does_not_update_default_model_for_next_session_new() {
         let temp = TempDir::new().unwrap();
         let (sock_path, cancel, mut acp_rx) = setup_test_server(&temp).await;
         let stream = LeaderStream::connect(&sock_path).await.unwrap();
@@ -3890,8 +3885,8 @@ mod tests {
         let forwarded = acp_rx.recv().await.unwrap();
         let json: serde_json::Value = serde_json::from_str(&forwarded).unwrap();
         assert_eq!(
-            json["params"]["_meta"]["modelId"], "atelier-4.5",
-            "Leader should inject the updated model after session/setModel, not the stale registration model"
+            json["params"]["_meta"]["modelId"], "atelier-original",
+            "session/setModel must not mutate the next-session default"
         );
         cancel.cancel();
     }

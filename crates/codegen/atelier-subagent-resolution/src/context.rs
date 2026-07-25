@@ -18,7 +18,7 @@ const MAX_VERBATIM_TURNS: usize = 3;
 /// session's system prompt builder, so including them in the background
 /// context is pure duplication.
 ///
-/// See also: `xai-chat-state::compaction_utils::strip_system_tags` which
+/// See also: `atelier-chat-state::compaction_utils::strip_system_tags` which
 /// strips a related (but different) tag set for compaction.
 const FORK_NOISE_TAGS: &[&str] = &[
     "system-reminder",
@@ -189,7 +189,7 @@ fn strip_fork_noise(text: &str) -> String {
 /// silently eat meaningful content on malformed input.
 /// Same-name nesting is not supported: matches the first closing tag.
 ///
-/// See also: `xai-chat-state::compaction_utils::strip_system_tags` which
+/// See also: `atelier-chat-state::compaction_utils::strip_system_tags` which
 /// uses the same leave-unclosed-untouched semantics for a different tag set.
 fn strip_xml_block<'a>(text: &'a str, tag: &str) -> Cow<'a, str> {
     let open_prefix = format!("<{tag}");
@@ -333,6 +333,9 @@ fn render_item_to_background(out: &mut String, item: &ConversationItem) {
         // they're rendered (when needed) inline with the surrounding
         // assistant turn elsewhere.
         ConversationItem::Reasoning(_) => {}
+        // Responses compaction items are opaque provider state. Never expose
+        // their encrypted payload through the child's textual background.
+        ConversationItem::Compaction(_) => {}
     }
 }
 

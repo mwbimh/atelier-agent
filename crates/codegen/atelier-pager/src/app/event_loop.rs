@@ -17,7 +17,7 @@ use crate::theme::system_appearance::{self, SystemAppearanceWatcher};
 use crate::theme::{Theme, ThemeKind, cache as theme_cache};
 
 use agent_client_protocol as acp;
-use xai_acp_lib::acp_send;
+use atelier_acp_runtime::acp_send;
 
 use super::actions::{Action, Effect, TaskResult};
 use super::app_view::{
@@ -161,7 +161,7 @@ fn reconnect_restore_outcome(
 /// local build) short-circuits before any I/O.
 fn seed_trust_state(
     app: &mut AppView,
-    remote: Option<&atelier_shell::util::config::RemoteSettings>,
+    remote: Option<&atelier_shell::util::config::LocalRuntimeSettings>,
 ) {
     use atelier_workspace::folder_trust::{
         TrustOutcome, decide, decide_inputs_with_interactive, feature_enabled,
@@ -463,7 +463,7 @@ pub(crate) async fn run(
     config_watcher: &mut ConfigWatcher,
     args: &PagerArgs,
     session_cwd: Option<std::path::PathBuf>,
-    remote_settings: Option<atelier_shell::util::config::RemoteSettings>,
+    local_runtime_settings: Option<atelier_shell::util::config::LocalRuntimeSettings>,
     term_state: TerminalState,
     materialized: crate::app::session_startup::MaterializedStartup,
 ) -> anyhow::Result<RunResult> {
@@ -507,7 +507,7 @@ pub(crate) async fn run(
     } else if term_state.relaunched_into_fullscreen && !app.screen_mode.is_minimal() {
         app.screen_mode_switch_hint = Some("Switched to fullscreen mode · /minimal to go back");
     }
-    let remote_permission_mode = remote_settings
+    let remote_permission_mode = local_runtime_settings
         .as_ref()
         .and_then(|s| s.permission_mode.as_deref());
     let launch_yolo = atelier_shell::util::config::effective_yolo_for_launch(
@@ -594,16 +594,16 @@ pub(crate) async fn run(
         .map(agent_client_protocol::ModelId::new);
     app.cli_effort_token = args.reasoning_effort.clone();
     app.auth_use_oauth = args.oauth;
-    app.show_resolved_model = remote_settings
+    app.show_resolved_model = local_runtime_settings
         .as_ref()
         .and_then(|s| s.show_resolved_model)
         .unwrap_or(true);
-    app.sharing_enabled = remote_settings
+    app.sharing_enabled = local_runtime_settings
         .as_ref()
         .and_then(|s| s.sharing_enabled)
         .unwrap_or(false);
     app.plugin_cta_enabled = atelier_config::env_bool("ATELIER_PLUGIN_CTA")
-        .or_else(|| remote_settings.as_ref().and_then(|s| s.plugin_cta))
+        .or_else(|| local_runtime_settings.as_ref().and_then(|s| s.plugin_cta))
         .unwrap_or(false);
     // Voice is applied after auth_meta so API-key detection is accurate.
     app.session_picker_grouped = std::env::var("ATELIER_SESSION_PICKER_GROUPED")
@@ -619,7 +619,7 @@ pub(crate) async fn run(
                 .and_then(|cfg| cfg.get("cli")?.get("session_picker_grouped")?.as_bool())
         })
         .or_else(|| {
-            remote_settings
+            local_runtime_settings
                 .as_ref()
                 .and_then(|s| s.session_picker_grouped)
         })
@@ -711,15 +711,16 @@ pub(crate) async fn run(
         }
     } else {
         // No cached session — check if the API key is the active credential.
-        app.is_api_key_auth = app
-            .auth_methods
-            .iter()
-            .any(|m| m.id().0.as_ref() == atelier_shell::agent::auth_method::XAI_API_KEY_METHOD_ID);
+        app.is_api_key_auth = app.auth_methods.iter().any(|m| {
+            m.id().0.as_ref() == atelier_shell::agent::auth_method::PROVIDER_API_KEY_METHOD_ID
+        });
     }
 
     // After auth so API-key + managed policy resolve correctly.
     let voice_mode_enabled = crate::app::resolve_voice_mode_live(
-        remote_settings.as_ref().and_then(|s| s.voice_mode_enabled),
+        local_runtime_settings
+            .as_ref()
+            .and_then(|s| s.voice_mode_enabled),
         app.is_api_key_auth,
     );
     if !voice_mode_enabled {
@@ -746,7 +747,7 @@ pub(crate) async fn run(
     };
     let compat = atelier_shell::agent::config::resolve_compat_sessions_from_raw(
         effective_config.as_ref().ok_or(()),
-        remote_settings.as_ref(),
+        local_runtime_settings.as_ref(),
     );
     app.foreign_session_compat =
         atelier_workspace::foreign_sessions::EnabledForeignSessionSources {
@@ -776,7 +777,7 @@ pub(crate) async fn run(
         requirements.as_ref(),
         user_config.as_ref(),
         managed_config.as_ref(),
-        remote_settings.as_ref(),
+        local_runtime_settings.as_ref(),
     );
 
     // Full layered resolve (env/requirements/remote may beat plain `[ui]`).
@@ -785,7 +786,7 @@ pub(crate) async fn run(
             requirements.as_ref(),
             user_config.as_ref(),
             managed_config.as_ref(),
-            remote_settings.as_ref(),
+            local_runtime_settings.as_ref(),
         )
         .value,
     );
@@ -794,7 +795,7 @@ pub(crate) async fn run(
             requirements.as_ref(),
             user_config.as_ref(),
             managed_config.as_ref(),
-            remote_settings.as_ref(),
+            local_runtime_settings.as_ref(),
         )
         .value,
     );
@@ -803,7 +804,7 @@ pub(crate) async fn run(
             requirements.as_ref(),
             user_config.as_ref(),
             managed_config.as_ref(),
-            remote_settings.as_ref(),
+            local_runtime_settings.as_ref(),
         )
         .value,
     );
@@ -811,7 +812,7 @@ pub(crate) async fn run(
     {
         use atelier_shell::util::config::{resolve_announcements, resolve_tips};
 
-        let remote_announcements = remote_settings
+        let remote_announcements = local_runtime_settings
             .as_ref()
             .and_then(|s| s.announcements.as_deref());
         let announcements = resolve_announcements(
@@ -828,7 +829,9 @@ pub(crate) async fn run(
         }
         app.sync_session_announcement_slash_gate();
 
-        let remote_tips = remote_settings.as_ref().and_then(|s| s.tips.as_deref());
+        let remote_tips = local_runtime_settings
+            .as_ref()
+            .and_then(|s| s.tips.as_deref());
         app.tips = resolve_tips(
             requirements.as_ref(),
             user_config.as_ref(),
@@ -852,7 +855,7 @@ pub(crate) async fn run(
     // Per-tip contextual hints resolve from `[ui.contextual_hints]` (loaded into
     // `app.current_ui` further below) + the remote tier; the resolve + prompt
     // propagation happen after `current_ui` is hydrated.
-    app.remote_contextual_hints = remote_settings
+    app.remote_contextual_hints = local_runtime_settings
         .as_ref()
         .and_then(|s| s.contextual_hints.clone());
     app.new_session_worktree_mode = hints.new_session_worktree_mode.into();
@@ -868,7 +871,7 @@ pub(crate) async fn run(
         requirements.as_ref(),
         user_config.as_ref(),
         managed_config.as_ref(),
-        remote_settings.as_ref(),
+        local_runtime_settings.as_ref(),
     );
     let min_draw_interval = motion.min_draw_interval;
     let scroll_cadence = motion.scroll_cadence;
@@ -1181,7 +1184,7 @@ pub(crate) async fn run(
     // session is created (no repo-local MCP/LSP/hooks/plugins have loaded yet).
     // Feature-off (kill-switch / opt-out / local build) resolves `Trusted`, so
     // this stays `TrustState::Done`.
-    seed_trust_state(&mut app, remote_settings.as_ref());
+    seed_trust_state(&mut app, local_runtime_settings.as_ref());
 
     // Initial render
     app.draw(terminal);

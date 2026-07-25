@@ -165,7 +165,7 @@ pub struct MarketplaceEntry {
     pub domains: Vec<String>,
     /// Homepage URL (from index).
     pub homepage: Option<String>,
-    /// Relative path within marketplace (e.g., "plugins/xai-code-review").
+    /// Relative path within marketplace (e.g., "plugins/atelier-code-review").
     pub relative_path: String,
     /// Number of skills discovered.
     pub skill_count: usize,
@@ -188,7 +188,7 @@ pub struct MarketplaceEntry {
     /// Structured inventory from the marketplace catalog (`plugin-index.json`).
     /// `None` = no catalog data for this plugin.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub components: Option<xai_hooks_plugins_types::PluginComponents>,
+    pub components: Option<atelier_hooks_plugins_types::PluginComponents>,
 }
 
 /// Result of a marketplace scan, with catalog telemetry.

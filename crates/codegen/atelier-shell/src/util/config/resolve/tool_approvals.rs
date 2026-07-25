@@ -1,4 +1,4 @@
-use crate::util::config::RemoteSettings;
+use crate::util::config::LocalRuntimeSettings;
 use toml::Value as TomlValue;
 
 /// Env override for the **remember tool approvals** permission-panel gate.
@@ -33,7 +33,7 @@ pub fn resolve_remember_tool_approvals(
     requirements: Option<&TomlValue>,
     user: Option<&TomlValue>,
     managed: Option<&TomlValue>,
-    remote: Option<&RemoteSettings>,
+    remote: Option<&LocalRuntimeSettings>,
 ) -> crate::agent::config::Resolved<bool> {
     resolve_remember_tool_approvals_layers(
         remember_tool_approvals_from_toml(requirements),
@@ -44,12 +44,12 @@ pub fn resolve_remember_tool_approvals(
 }
 
 /// Process-global cache of the remote tier, read by
-/// [`remember_tool_approvals_from_disk`] at spawn (no live `RemoteSettings`
+/// [`remember_tool_approvals_from_disk`] at spawn (no live `LocalRuntimeSettings`
 /// there). Fail-safe to `None` on lock poisoning.
 static REMOTE_REMEMBER_TOOL_APPROVALS: std::sync::RwLock<Option<bool>> =
     std::sync::RwLock::new(None);
 
-/// Record the remote settings value; called when the agent applies `RemoteSettings`
+/// Record the remote settings value; called when the agent applies `LocalRuntimeSettings`
 /// (`agent::init` at startup, `MvpAgent` on refresh).
 pub fn cache_remote_remember_tool_approvals(value: Option<bool>) {
     if let Ok(mut guard) = REMOTE_REMEMBER_TOOL_APPROVALS.write() {
@@ -62,7 +62,7 @@ fn cached_remote_remember_tool_approvals() -> Option<bool> {
 }
 
 /// Free-function form of [`resolve_remember_tool_approvals`] for the
-/// permission-manager spawn (no live `RemoteSettings`): env + requirements +
+/// permission-manager spawn (no live `LocalRuntimeSettings`): env + requirements +
 /// effective `config.toml` + cached remote tier. Defaults `false`.
 pub fn remember_tool_approvals_from_disk() -> bool {
     let requirements = crate::config::load_merged_requirements();
@@ -95,10 +95,10 @@ mod remember_tool_approvals_gate_tests {
         toml::from_str(&format!("[ui]\nremember_tool_approvals = {v}\n")).unwrap()
     }
 
-    fn remote(v: Option<bool>) -> RemoteSettings {
-        RemoteSettings {
+    fn remote(v: Option<bool>) -> LocalRuntimeSettings {
+        LocalRuntimeSettings {
             remember_tool_approvals: v,
-            ..RemoteSettings::default()
+            ..LocalRuntimeSettings::default()
         }
     }
 

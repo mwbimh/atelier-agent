@@ -33,6 +33,8 @@ fn model(key: ModelKey) -> ModelDescriptor {
         context_window: None,
         capabilities: ModelCapabilities::default(),
         reasoning_efforts: Vec::new(),
+        default_effort: None,
+        fast_mode: false,
         source: ModelSource::Static,
         enabled: true,
     }
@@ -48,11 +50,23 @@ fn model_keys_are_provider_scoped() {
 }
 
 #[test]
-fn absent_wire_api_defaults_to_chat_completions_for_every_provider_protocol() {
-    for (provider_id, protocol) in [
-        ("responses", ProviderProtocol::OpenAiResponses),
-        ("chat", ProviderProtocol::OpenAiChatCompletions),
-        ("messages", ProviderProtocol::AnthropicMessages),
+fn absent_wire_api_falls_back_to_each_provider_protocol() {
+    for (provider_id, protocol, expected) in [
+        (
+            "responses",
+            ProviderProtocol::OpenAiResponses,
+            WireApi::Responses,
+        ),
+        (
+            "chat",
+            ProviderProtocol::OpenAiChatCompletions,
+            WireApi::ChatCompletions,
+        ),
+        (
+            "messages",
+            ProviderProtocol::AnthropicMessages,
+            WireApi::Messages,
+        ),
     ] {
         let key = ModelKey::new(provider_id, "model").unwrap();
         let mut registry = ProviderRegistry::in_memory();
@@ -64,8 +78,8 @@ fn absent_wire_api_defaults_to_chat_completions_for_every_provider_protocol() {
         let resolved = registry.resolve_wire_api(&key).unwrap();
         let snapshot_resolved = registry.snapshot().resolve_wire_api(&key).unwrap();
 
-        assert_eq!(resolved.wire_api, WireApi::ChatCompletions);
-        assert_eq!(resolved.source, WireApiSource::DefaultChatCompletions);
+        assert_eq!(resolved.wire_api, expected);
+        assert_eq!(resolved.source, WireApiSource::ProviderDefault);
         assert_eq!(snapshot_resolved, resolved);
     }
 }
@@ -351,6 +365,8 @@ fn clearing_capability_override_restores_latest_remote_metadata() {
                     ..ModelCapabilities::default()
                 },
                 reasoning_efforts: Vec::new(),
+                default_effort: None,
+                fast_mode: false,
                 source: ModelSource::Remote,
                 enabled: true,
             }],
@@ -390,20 +406,14 @@ fn invalid_discovered_batch_does_not_partially_update_registry() {
 }
 
 #[test]
-fn deleting_provider_does_not_select_another_provider() {
+fn provider_snapshot_has_no_default_model_field() {
     let mut registry = ProviderRegistry::in_memory();
     let first = ModelKey::new("first", "same-model").unwrap();
-    let second = ModelKey::new("second", "same-model").unwrap();
     registry.upsert_provider(provider("first")).unwrap();
-    registry.upsert_provider(provider("second")).unwrap();
     registry.upsert_model(model(first.clone())).unwrap();
-    registry.upsert_model(model(second)).unwrap();
-    registry.set_default_model(Some(first.clone())).unwrap();
-
-    registry.remove_provider("first").unwrap();
-
-    assert_eq!(registry.default_model(), Some(&first));
-    assert!(registry.model(&first).is_none());
+    let value = serde_json::to_value(registry.snapshot()).unwrap();
+    assert!(value.get("default_model").is_none(), "{value}");
+    assert!(value.get("defaultModel").is_none(), "{value}");
 }
 
 #[test]
@@ -496,7 +506,7 @@ fn model_wire_api_and_provider_model_override_resolve_in_order() {
     registry.upsert_model(descriptor).unwrap();
     let resolved = registry.resolve_wire_api(&key).unwrap();
     assert_eq!(resolved.wire_api, WireApi::Responses);
-    assert_eq!(resolved.source, WireApiSource::ModelSetting);
+    assert_eq!(resolved.source, WireApiSource::ProviderModelOverride);
 
     registry
         .set_model_provider_override(
@@ -551,7 +561,7 @@ fn model_wire_api_settings_survive_registry_reload() {
 }
 
 #[test]
-fn absent_model_wire_api_uses_chat_completions_default() {
+fn absent_model_wire_api_uses_provider_default() {
     let key = ModelKey::new("responses-provider", "legacy-model").unwrap();
     let mut registry = ProviderRegistry::in_memory();
     registry
@@ -560,17 +570,19 @@ fn absent_model_wire_api_uses_chat_completions_default() {
     registry.upsert_model(model(key.clone())).unwrap();
 
     let resolved = registry.resolve_wire_api(&key).unwrap();
-    assert_eq!(resolved.wire_api, WireApi::ChatCompletions);
-    assert_eq!(resolved.source, WireApiSource::DefaultChatCompletions);
+    assert_eq!(resolved.wire_api, WireApi::Responses);
+    assert_eq!(resolved.source, WireApiSource::ProviderDefault);
 }
 
 #[test]
-fn model_wire_api_is_shared_across_providers_but_pair_override_remains_local() {
+fn model_wire_api_is_isolated_across_providers() {
     let key_a = ModelKey::new("proxy-a", "shared-model").unwrap();
     let key_b = ModelKey::new("proxy-b", "shared-model").unwrap();
     let mut registry = ProviderRegistry::in_memory();
     registry.upsert_provider(provider("proxy-a")).unwrap();
-    registry.upsert_provider(provider("proxy-b")).unwrap();
+    let mut provider_b = provider("proxy-b");
+    provider_b.protocol = ProviderProtocol::OpenAiChatCompletions;
+    registry.upsert_provider(provider_b).unwrap();
     registry.upsert_model(model(key_a.clone())).unwrap();
     registry.upsert_model(model(key_b.clone())).unwrap();
 
@@ -583,7 +595,8 @@ fn model_wire_api_is_shared_across_providers_but_pair_override_remains_local() {
     );
     assert_eq!(
         registry.resolve_wire_api(&key_b).unwrap().wire_api,
-        WireApi::Responses
+        WireApi::ChatCompletions,
+        "proxy-b still uses its Provider default"
     );
 
     registry
@@ -601,7 +614,7 @@ fn model_wire_api_is_shared_across_providers_but_pair_override_remains_local() {
     );
     assert_eq!(
         registry.resolve_wire_api(&key_b).unwrap().wire_api,
-        WireApi::Responses
+        WireApi::ChatCompletions
     );
     assert!(
         registry

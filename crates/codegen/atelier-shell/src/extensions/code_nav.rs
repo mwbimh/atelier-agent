@@ -1,7 +1,7 @@
 //! Code Navigation Extension Methods
 //!
 //! Provides go-to-definition, go-to-references, and symbol lookup functionality
-//! using the xai-codebase-graph index.
+//! using the atelier-codebase-graph index.
 //!
 //! ## Extension Methods
 //!

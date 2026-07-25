@@ -15,8 +15,8 @@ use crate::session::storage::{JsonlStorageAdapter, StorageAdapter};
 use crate::tools::todo::TodoState;
 use crate::util::atelier_home::atelier_home;
 use agent_client_protocol as acp;
+use atelier_acp_runtime::AcpAgentGatewaySender as GatewaySender;
 use atelier_sampling_types::ReasoningEffort;
-use xai_acp_lib::AcpAgentGatewaySender as GatewaySender;
 
 use crate::session::info::Info;
 use tokio::sync::mpsc;
@@ -40,7 +40,7 @@ impl PersistenceContentChunk {
 /// Mirrors generated titles to the session registry after local persistence succeeds.
 #[derive(Clone)]
 pub(crate) struct RegistryGeneratedTitleSync {
-    pub client: crate::agent::session_registry_client::SessionRegistryClient,
+    pub client: crate::agent::local_session_catalog::LocalSessionCatalog,
     pub suppress_for_zdr: bool,
 }
 
@@ -103,9 +103,9 @@ pub struct UserFeedbackEntry {
     pub session_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub turn_number: Option<i64>,
-    /// Whether this was a response to a server-initiated FeedbackRequest
+    /// Whether this was a response to a locally generated FeedbackRequest.
     pub solicited: bool,
-    /// The feedback request ID (only set for solicited feedback)
+    /// Local correlation ID for a solicited feedback request.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub request_id: Option<String>,
     /// True if the user dismissed the feedback request without responding
@@ -113,7 +113,7 @@ pub struct UserFeedbackEntry {
     pub dismissed: bool,
     /// The full submission payload (omitted when dismissed)
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub submission: Option<prod_mc_cli_chat_proxy_types::feedback_types::FeedbackSubmission>,
+    pub submission: Option<crate::session::feedback_types::FeedbackSubmission>,
 }
 
 /// Helper for `#[serde(skip_serializing_if)]` on bool fields.
@@ -124,7 +124,7 @@ pub(crate) fn is_false(v: &bool) -> bool {
 #[cfg(test)]
 mod feedback_tests {
     use super::*;
-    use prod_mc_cli_chat_proxy_types::feedback_types::{
+    use crate::session::feedback_types::{
         ClientType, FeedbackSubmission, FeedbackType, RatingType,
     };
 
@@ -154,15 +154,9 @@ mod feedback_tests {
             context_type: None,
             feature_name: None,
             tool_name: None,
-            experiment_id: None,
-            comparison_id: None,
-            preferred_model_id: None,
-            preference_strength: None,
-            preference_reasons: vec![],
             request_id: None,
             client_version: None,
             shell_version: None,
-            extension_host: None,
             metadata: None,
             last_user_message: None,
             last_assistant_message: None,
@@ -192,7 +186,17 @@ mod feedback_tests {
         let json = serde_json::to_string(&entry).unwrap();
         assert!(json.contains(r#""type":"user_feedback""#));
         assert!(!json.contains("dismissed")); // skip_serializing_if = is_false
-        assert!(!json.contains("requestId")); // skip_serializing_if = Option::is_none
+
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert!(
+            value.get("requestId").is_none(),
+            "spontaneous feedback has no local request association"
+        );
+        assert_eq!(
+            value.pointer("/submission/requestId"),
+            Some(&serde_json::Value::Null),
+            "the local submission schema may retain its optional requestId field"
+        );
 
         let parsed: LocalFeedbackEntry = serde_json::from_str(&json).unwrap();
         let LocalFeedbackEntry::UserFeedback(ref uf) = parsed;
@@ -312,7 +316,7 @@ pub struct SessionStateCopy {
 #[derive(Debug)]
 #[allow(clippy::large_enum_variant)]
 pub enum PersistenceMsg {
-    /// A session update (ACP update or xAI extension update)
+    /// A session update (ACP update or Atelier extension update)
     Update(SessionUpdate),
     ContentChunk(PersistenceContentChunk),
     Chat(ConversationItem),
@@ -807,7 +811,7 @@ pub struct Summary {
     /// Timestamp when this session was forked (only set for forked sessions)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub forked_at: Option<DateTime<Utc>>,
-    /// Collection ID for telemetry trace uploads (one per session)
+    /// Collection ID for local trace artifacts (one per session).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub collection_id: Option<String>,
     /// Next telemetry trace turn id (monotonic, persisted).
@@ -1552,8 +1556,8 @@ impl SessionPersistence {
                                     .await;
                             }
                         }
-                        SessionUpdate::Xai(_) => {
-                            // xAI notifications are written directly without merging
+                        SessionUpdate::Extension(_) => {
+                            // extension notifications are written directly without merging
                             self.write_update(&update).await;
                         }
                     }
@@ -1659,14 +1663,13 @@ impl SessionPersistence {
                                 let sid = self.info.id.to_string();
                                 let t = title;
                                 tokio::spawn(async move {
-                                    let req =
-                                        crate::agent::session_registry_client::UpdateRequest {
-                                            summary: Some(t),
-                                            first_prompt: None,
-                                            last_turn_number: None,
-                                            repo_head_at_end: None,
-                                            restorable_turn_number: None,
-                                        };
+                                    let req = crate::agent::local_session_catalog::UpdateRequest {
+                                        summary: Some(t),
+                                        first_prompt: None,
+                                        last_turn_number: None,
+                                        repo_head_at_end: None,
+                                        restorable_turn_number: None,
+                                    };
                                     if let Err(e) = client.update(&sid, &req).await {
                                         tracing::warn!(
                                             error = %e,
@@ -2090,7 +2093,7 @@ pub async fn new_with_explicit_dir(
 pub struct PersistedInfo {
     pub summary: Summary,
     pub chat_history: Vec<ConversationItem>,
-    /// All session updates (ACP updates and xAI extension updates) in chronological order
+    /// All session updates (ACP updates and Atelier extension updates) in chronological order
     pub updates: Vec<SessionUpdate>,
     pub plan_state: Option<TodoState>,
     pub rewind_points: Vec<RewindPoint>,
@@ -2124,7 +2127,6 @@ pub(crate) async fn load(
     title_backend: crate::session::summary::TitleBackend,
     _storage_mode: StorageMode,
     _auth_manager: Option<Arc<crate::auth::AuthManager>>,
-    _backend: Option<&crate::remote::BackendClient>,
     gateway: Option<GatewaySender>,
     registry_title_sync: Option<RegistryGeneratedTitleSync>,
 ) -> io::Result<(PersistedInfo, PersistenceHandle)> {
@@ -2186,7 +2188,6 @@ pub(crate) async fn load_light(
     title_backend: crate::session::summary::TitleBackend,
     _storage_mode: StorageMode,
     _auth_manager: Option<Arc<crate::auth::AuthManager>>,
-    _backend: Option<&crate::remote::BackendClient>,
     gateway: Option<GatewaySender>,
     registry_title_sync: Option<RegistryGeneratedTitleSync>,
 ) -> io::Result<(PersistedInfoLight, PersistenceHandle)> {
@@ -2260,73 +2261,40 @@ pub async fn list_summaries(cwd: Option<&str>) -> io::Result<Vec<Summary>> {
 
 /// Failure modes of [`delete_session_history`].
 ///
-/// Kept distinct so callers can surface a precise message: a remote
-/// failure is reported separately from a local-disk failure because the
-/// remote delete runs first and aborts the whole operation (see the doc
-/// on [`delete_session_history`]).
 #[derive(Debug, thiserror::Error)]
 pub enum DeleteSessionError {
     /// Listing local summaries (to resolve the on-disk session dir) failed.
     #[error("failed to list sessions: {0}")]
     List(#[source] io::Error),
-    /// The remote (writeback) copy could not be deleted; local bits were
-    /// left untouched so the operation can be retried.
-    #[error("failed to delete remote session data: {0}")]
-    Remote(#[source] crate::remote::client::BackendError),
     /// The local on-disk session directory could not be removed.
     #[error("failed to delete session: {0}")]
     Local(#[source] io::Error),
 }
 
-/// Where a session copy was actually removed by [`delete_session_history`].
-///
-/// Both fields are `false` when nothing existed to delete (still a
-/// success). Callers use [`Self::any_removed`] to decide between a
-/// "deleted" and a "not found" message without conflating a remote-only
-/// delete with a no-op.
+/// Whether a local session copy was removed by [`delete_session_history`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct SessionDeletion {
     /// A local on-disk session directory was found and removed.
     pub local_removed: bool,
-    /// A remote (writeback) copy was found and removed. `false` when
-    /// `needs_remote` was not set, or the remote copy was already absent
-    /// (the backend returned `404`).
-    pub remote_removed: bool,
 }
 
 impl SessionDeletion {
     /// `true` when a copy was removed from at least one location.
     pub fn any_removed(self) -> bool {
-        self.local_removed || self.remote_removed
+        self.local_removed
     }
 }
 
-/// Permanently delete a session's history: the remote (writeback) copy
-/// when `needs_remote`, the local on-disk session directory, and the
-/// FTS search-index entry.
+/// Permanently delete a local session's history and FTS search-index entry.
 ///
-/// Idempotent: a session that is missing locally (e.g. remote-only)
-/// still succeeds, and a remote `404` (copy already gone) is treated as
-/// success rather than an error. When `needs_remote` is set the remote
-/// delete runs *first* and is authoritative — only on its success (or a
-/// `404`) are the local bits removed. This ordering prevents a partial
-/// delete where the local copy is nuked but the remote copy lingers and
-/// re-appears on the next session list.
-///
-/// Returns a [`SessionDeletion`] recording which copies (local / remote)
-/// were actually removed; both fields `false` means nothing existed
-/// (still `Ok`).
+/// Idempotent: a session that is missing locally still succeeds.
 pub async fn delete_session_history(
     session_id: &str,
     cwd: Option<&str>,
-    needs_remote: bool,
-    auth_manager: Arc<crate::auth::AuthManager>,
 ) -> Result<SessionDeletion, DeleteSessionError> {
     let sid = acp::SessionId::new(Arc::from(session_id));
 
-    // Resolve the local session info, scoping to cwd if provided. A
-    // remote-only session won't be found here — that's fine, the remote
-    // delete (if applicable) still runs.
+    // Resolve the local session info, scoping to cwd if provided.
     let summaries = list_summaries(cwd)
         .await
         .map_err(DeleteSessionError::List)?;
@@ -2335,16 +2303,9 @@ pub async fn delete_session_history(
         .find(|s| s.info.id == sid)
         .map(|s| s.info.clone());
 
-    // Atelier has no vendor session store. Preserve the public deletion
-    // result shape for callers that still pass the upstream flag, but never
-    // construct an authenticated remote client or delete anything remotely.
-    let _ = (needs_remote, auth_manager);
-    let remote_removed = false;
-
     let Some(info) = local_info else {
         return Ok(SessionDeletion {
             local_removed: false,
-            remote_removed,
         });
     };
 
@@ -2359,84 +2320,21 @@ pub async fn delete_session_history(
 
     Ok(SessionDeletion {
         local_removed: true,
-        remote_removed,
     })
-}
-
-/// Classify a remote `delete_session_data` result, reporting whether a
-/// remote copy was actually removed: a `2xx` means a copy was deleted
-/// (`Ok(true)`), a `404` means it was already gone so deletion stays
-/// idempotent (`Ok(false)`), and any other backend error aborts the
-/// delete (`Err`) so local bits are left untouched and it can be retried.
-fn classify_remote_delete(
-    result: Result<(), crate::remote::client::BackendError>,
-) -> Result<bool, DeleteSessionError> {
-    use crate::remote::client::BackendError;
-    match result {
-        Ok(()) => Ok(true),
-        Err(BackendError::RequestFailed { status: 404, .. }) => Ok(false),
-        Err(e) => Err(DeleteSessionError::Remote(e)),
-    }
 }
 
 #[cfg(test)]
 mod delete_session_history_tests {
-    use super::{DeleteSessionError, SessionDeletion, classify_remote_delete};
-    use crate::remote::client::BackendError;
+    use super::SessionDeletion;
 
     #[test]
-    fn remote_ok_reports_removed() {
-        assert!(
-            classify_remote_delete(Ok(())).unwrap(),
-            "a 2xx delete must report that a remote copy was removed"
-        );
-    }
-
-    #[test]
-    fn remote_404_is_treated_as_already_deleted() {
-        let removed = classify_remote_delete(Err(BackendError::RequestFailed {
-            status: 404,
-            body: "not found".into(),
-        }))
-        .expect("a 404 means the remote copy is gone — deletion must stay idempotent");
-        assert!(
-            !removed,
-            "a 404 must report that nothing was removed remotely"
-        );
-    }
-
-    #[test]
-    fn remote_non_404_request_failure_aborts() {
-        let res = classify_remote_delete(Err(BackendError::RequestFailed {
-            status: 500,
-            body: "boom".into(),
-        }));
-        assert!(matches!(res, Err(DeleteSessionError::Remote(_))));
-    }
-
-    #[test]
-    fn remote_auth_failure_aborts() {
-        let res = classify_remote_delete(Err(BackendError::Auth("denied".into())));
-        assert!(matches!(res, Err(DeleteSessionError::Remote(_))));
-    }
-
-    #[test]
-    fn any_removed_reflects_either_location() {
+    fn any_removed_reflects_local_deletion() {
         assert!(!SessionDeletion::default().any_removed());
         assert!(
             SessionDeletion {
                 local_removed: true,
-                remote_removed: false,
             }
             .any_removed()
-        );
-        assert!(
-            SessionDeletion {
-                local_removed: false,
-                remote_removed: true,
-            }
-            .any_removed(),
-            "a remote-only delete must count as removed"
         );
     }
 }

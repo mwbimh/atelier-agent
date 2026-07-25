@@ -305,28 +305,28 @@ impl crate::types::tool_metadata::ToolMetadata for BashTool {
     }
 }
 
-impl xai_tool_runtime::Tool for BashTool {
+impl atelier_tool_runtime::Tool for BashTool {
     type Args = BashInput;
     type Output = BashToolOutput;
 
-    fn id(&self) -> xai_tool_protocol::ToolId {
-        xai_tool_protocol::ToolId::new("bash").expect("valid tool id")
+    fn id(&self) -> atelier_tool_protocol::ToolId {
+        atelier_tool_protocol::ToolId::new("bash").expect("valid tool id")
     }
 
     fn description(
         &self,
-        _ctx: &::xai_tool_runtime::ListToolsContext,
-    ) -> xai_tool_types::ToolDescription {
-        xai_tool_types::ToolDescription::new(
+        _ctx: &::atelier_tool_runtime::ListToolsContext,
+    ) -> atelier_tool_types::ToolDescription {
+        atelier_tool_types::ToolDescription::new(
             "bash",
             crate::types::tool_metadata::ToolMetadata::description_template(self),
         )
     }
 
-    fn capabilities(&self) -> xai_tool_protocol::ToolCapabilities {
-        xai_tool_protocol::ToolCapabilities {
+    fn capabilities(&self) -> atelier_tool_protocol::ToolCapabilities {
+        atelier_tool_protocol::ToolCapabilities {
             is_read_only: false,
-            tool_scope: Some(xai_tool_protocol::ToolScope::Write),
+            tool_scope: Some(atelier_tool_protocol::ToolScope::Write),
             ..Default::default()
         }
     }
@@ -334,9 +334,9 @@ impl xai_tool_runtime::Tool for BashTool {
     #[tracing::instrument(name = "tool.opencode.bash", skip_all)]
     async fn run(
         &self,
-        ctx: xai_tool_runtime::ToolCallContext,
+        ctx: atelier_tool_runtime::ToolCallContext,
         input: BashInput,
-    ) -> Result<BashToolOutput, xai_tool_runtime::ToolError> {
+    ) -> Result<BashToolOutput, atelier_tool_runtime::ToolError> {
         use crate::types::tool_metadata::shared_resources;
         let resources = shared_resources(&ctx)?;
 
@@ -406,8 +406,8 @@ impl xai_tool_runtime::Tool for BashTool {
                     cwd: cwd.clone(),
                     error: e.to_string(),
                 });
-                return Err(xai_tool_runtime::ToolError::execution(
-                    xai_tool_protocol::ToolId::new("run_terminal_command").expect("valid"),
+                return Err(atelier_tool_runtime::ToolError::execution(
+                    atelier_tool_protocol::ToolId::new("run_terminal_command").expect("valid"),
                     e.to_string(),
                 ));
             }
@@ -463,9 +463,9 @@ mod tests {
     fn rt_ctx_with_call_id(
         resources: Resources,
         call_id: &str,
-    ) -> xai_tool_runtime::ToolCallContext {
-        let id = xai_tool_protocol::ToolCallId::new(call_id).unwrap();
-        let mut ctx = xai_tool_runtime::ToolCallContext::new(id);
+    ) -> atelier_tool_runtime::ToolCallContext {
+        let id = atelier_tool_protocol::ToolCallId::new(call_id).unwrap();
+        let mut ctx = atelier_tool_runtime::ToolCallContext::new(id);
         ctx.extensions.insert(resources.into_shared());
         ctx
     }
@@ -588,7 +588,7 @@ mod tests {
         let resources = make_resources(MockTerminal::success("hello world\n", 0));
         let tool = BashTool;
 
-        let result = xai_tool_runtime::Tool::run(
+        let result = atelier_tool_runtime::Tool::run(
             &tool,
             test_ctx(resources.into_shared()),
             make_input("echo hello"),
@@ -614,7 +614,7 @@ mod tests {
         let resources = make_resources(MockTerminal::timed_out("partial output"));
         let tool = BashTool;
 
-        let result = xai_tool_runtime::Tool::run(
+        let result = atelier_tool_runtime::Tool::run(
             &tool,
             test_ctx(resources.into_shared()),
             make_input("sleep 999"),
@@ -636,7 +636,7 @@ mod tests {
         let resources = make_resources(MockTerminal::failing());
         let tool = BashTool;
 
-        let result = xai_tool_runtime::Tool::run(
+        let result = atelier_tool_runtime::Tool::run(
             &tool,
             test_ctx(resources.into_shared()),
             make_input("bad_cmd"),
@@ -680,7 +680,7 @@ mod tests {
     async fn tool_metadata() {
         use crate::types::tool_metadata::ToolMetadata;
         let tool = BashTool;
-        assert_eq!(xai_tool_runtime::Tool::id(&tool).as_str(), "bash");
+        assert_eq!(atelier_tool_runtime::Tool::id(&tool).as_str(), "bash");
         assert!(matches!(tool.kind(), ToolKind::Execute));
         assert!(matches!(tool.tool_namespace(), ToolNamespace::OpenCode));
     }
@@ -693,9 +693,12 @@ mod tests {
         // No Terminal inserted
         let tool = BashTool;
 
-        let result =
-            xai_tool_runtime::Tool::run(&tool, test_ctx(resources.into_shared()), make_input("ls"))
-                .await;
+        let result = atelier_tool_runtime::Tool::run(
+            &tool,
+            test_ctx(resources.into_shared()),
+            make_input("ls"),
+        )
+        .await;
         assert!(result.is_err());
         assert!(
             result
@@ -722,7 +725,7 @@ mod tests {
         let resources = make_resources(mock);
         let tool = BashTool;
 
-        let result = xai_tool_runtime::Tool::run(
+        let result = atelier_tool_runtime::Tool::run(
             &tool,
             test_ctx(resources.into_shared()),
             make_input("cat bigfile"),
@@ -756,7 +759,7 @@ mod tests {
         let resources = make_resources(mock);
         let tool = BashTool;
 
-        let result = xai_tool_runtime::Tool::run(
+        let result = atelier_tool_runtime::Tool::run(
             &tool,
             test_ctx(resources.into_shared()),
             make_input("kill -9 $$"),
@@ -780,7 +783,7 @@ mod tests {
         resources.insert(SessionFolder(PathBuf::from("/sessions/abc")));
 
         let tool = BashTool;
-        let result = xai_tool_runtime::Tool::run(
+        let result = atelier_tool_runtime::Tool::run(
             &tool,
             rt_ctx_with_call_id(resources, "my-call-42"),
             make_input("echo ok"),
@@ -801,7 +804,7 @@ mod tests {
         let resources = make_resources(MockTerminal::success("ok", 0));
         let tool = BashTool;
 
-        let result = xai_tool_runtime::Tool::run(
+        let result = atelier_tool_runtime::Tool::run(
             &tool,
             test_ctx(resources.into_shared()),
             make_input("echo ok"),
@@ -920,7 +923,7 @@ mod tests {
         let resources = make_resources(MockTerminal::success("hello world\n", 0));
         let tool = BashTool;
 
-        let result = xai_tool_runtime::Tool::run(
+        let result = atelier_tool_runtime::Tool::run(
             &tool,
             test_ctx(resources.into_shared()),
             make_input("echo hello"),
@@ -955,9 +958,10 @@ mod tests {
             description: "Check workdir".to_string(),
         };
 
-        let result = xai_tool_runtime::Tool::run(&tool, test_ctx(resources.into_shared()), input)
-            .await
-            .unwrap();
+        let result =
+            atelier_tool_runtime::Tool::run(&tool, test_ctx(resources.into_shared()), input)
+                .await
+                .unwrap();
 
         match result {
             BashToolOutput::Bash(bash) => {
@@ -1044,7 +1048,7 @@ mod tests {
         resources.insert(TruncationCfg(cfg));
 
         let tool = BashTool;
-        let result = xai_tool_runtime::Tool::run(
+        let result = atelier_tool_runtime::Tool::run(
             &tool,
             test_ctx(resources.into_shared()),
             make_input("echo ok"),
@@ -1073,9 +1077,12 @@ mod tests {
         resources.insert(NotificationHandle(ToolNotificationHandle::noop()));
 
         let tool = BashTool;
-        let result =
-            xai_tool_runtime::Tool::run(&tool, test_ctx(resources.into_shared()), make_input("ls"))
-                .await;
+        let result = atelier_tool_runtime::Tool::run(
+            &tool,
+            test_ctx(resources.into_shared()),
+            make_input("ls"),
+        )
+        .await;
 
         assert!(result.is_err());
         assert!(

@@ -1,4 +1,4 @@
-use super::RemoteSettings;
+use super::LocalRuntimeSettings;
 use serde::Deserialize;
 use toml::Value as TomlValue;
 
@@ -93,12 +93,12 @@ pub fn resolve_tips(
 /// Prefer [`resolve_tips`] when layers are already loaded.
 pub fn resolve_tips_from_disk(
     raw_config: &TomlValue,
-    remote_settings: Option<&RemoteSettings>,
+    local_runtime_settings: Option<&LocalRuntimeSettings>,
     atelier_home: &std::path::Path,
 ) -> Option<String> {
     let requirements = crate::config::load_merged_requirements();
     let managed = crate::config::load_managed_config().ok();
-    let remote = remote_settings.and_then(|s| s.tips.as_deref());
+    let remote = local_runtime_settings.and_then(|s| s.tips.as_deref());
 
     let all = resolve_tips(
         requirements.as_ref(),
@@ -128,7 +128,7 @@ pub fn channel_from_toml_opt(root: &TomlValue) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::RemoteSettings;
+    use super::LocalRuntimeSettings;
     use super::*;
     use toml::Value as TomlValue;
 
@@ -151,30 +151,30 @@ mod tests {
     }
 
     #[test]
-    fn remote_settings_tips_absent() {
+    fn local_runtime_settings_tips_absent() {
         let json = r#"{}"#;
-        let s: RemoteSettings = serde_json::from_str(json).unwrap();
+        let s: LocalRuntimeSettings = serde_json::from_str(json).unwrap();
         assert_eq!(s.tips, None);
     }
 
     #[test]
-    fn remote_settings_tips_null() {
+    fn local_runtime_settings_tips_null() {
         let json = r#"{"tips": null}"#;
-        let s: RemoteSettings = serde_json::from_str(json).unwrap();
+        let s: LocalRuntimeSettings = serde_json::from_str(json).unwrap();
         assert_eq!(s.tips, None);
     }
 
     #[test]
-    fn remote_settings_tips_empty() {
+    fn local_runtime_settings_tips_empty() {
         let json = r#"{"tips": []}"#;
-        let s: RemoteSettings = serde_json::from_str(json).unwrap();
+        let s: LocalRuntimeSettings = serde_json::from_str(json).unwrap();
         assert_eq!(s.tips, Some(vec![]));
     }
 
     #[test]
-    fn remote_settings_tips_populated() {
+    fn local_runtime_settings_tips_populated() {
         let json = r#"{"tips": ["a", "b"]}"#;
-        let s: RemoteSettings = serde_json::from_str(json).unwrap();
+        let s: LocalRuntimeSettings = serde_json::from_str(json).unwrap();
         assert_eq!(s.tips, Some(vec!["a".to_string(), "b".to_string()]));
     }
 }

@@ -16,8 +16,6 @@ mod agent_type_mismatch_no_keeps_current_session;
 mod agent_type_mismatch_yes_starts_new_session;
 #[path = "pty_e2e/campaign_nudges_default_until_dismissed_by_model_pick.rs"]
 mod campaign_nudges_default_until_dismissed_by_model_pick;
-#[path = "pty_e2e/campaign_remote_settings_nudge_and_dismiss.rs"]
-mod campaign_remote_settings_nudge_and_dismiss;
 #[path = "pty_e2e/critical_announcement_session_banner_pty.rs"]
 mod critical_announcement_session_banner_pty;
 #[path = "pty_e2e/dashboard_overlay_tab_esc_backout_and_ctrl_backslash.rs"]

@@ -1,14 +1,13 @@
 pub mod activity;
 pub mod app;
 pub mod auth_method;
-pub mod chat_modes;
 pub mod config;
 pub mod config_model_override_parse;
 mod ext_parsers;
-pub mod feedback_client;
 pub mod folder_trust;
 pub(crate) mod handlers;
 pub mod init;
+pub mod local_session_catalog;
 pub mod models;
 pub mod mvp_agent;
 pub(crate) mod proxy;
@@ -17,12 +16,8 @@ pub mod roster;
 pub mod server;
 pub mod session_config;
 pub(crate) mod session_metrics;
-pub mod session_registry_client;
 pub(crate) mod subagent;
 pub(crate) mod update_chunk_merge;
 
 pub use mvp_agent::MvpAgent;
 pub use server::{ServerConfig, run_agent_server};
-
-#[cfg(test)]
-mod storage_client_tests;

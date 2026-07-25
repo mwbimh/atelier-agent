@@ -3,8 +3,8 @@
 //! An idle pager only renders a splash screen — not useful for scroll,
 //! stream, or resize scenarios. [`ContentController`] wraps the shared
 //! [`MockInferenceServer`] from `atelier-test-support` and provides the
-//! env vars that point the bundled shell agent at it, so the pager ends
-//! up rendering real agent output.
+//! isolated Provider configuration that points the bundled shell agent at it,
+//! so the pager ends up rendering real agent output.
 //!
 //! The caller controls the response text via [`ContentController::set_response`].
 //! The mock server streams the set response to every inference request.
@@ -46,7 +46,7 @@ impl ContentController {
     /// `GET /v1/models`. Use [`MockModel::with_agent_type`] to configure
     /// models with different harness types for agent-type-mismatch tests.
     pub async fn start_with_models(models: Vec<MockModel>) -> Result<Self> {
-        let server = MockInferenceServer::start_with_models(models)
+        let server = MockInferenceServer::start_with_models(models.clone())
             .await
             .context("start mock inference server")?;
         // Pre-delegation parity, both load-bearing for PTY tests: settings
@@ -57,6 +57,7 @@ impl ContentController {
         server.set_response(default_response_text());
 
         let home = tempfile::tempdir().context("create temp HOME")?;
+        write_mock_provider_config(home.path(), &server.url(), &models)?;
 
         Ok(Self { server, home })
     }
@@ -72,8 +73,8 @@ impl ContentController {
         self.home.path()
     }
 
-    /// Env vars to pass to the pager process so it hits the mock server
-    /// with telemetry / feedback disabled.
+    /// Env vars to pass to the pager process with an isolated Atelier home
+    /// and unrelated background services disabled.
     ///
     /// Mirrors `atelier_test_support::env::test_env_cmd_tokio`.
     pub fn env_for_pager(&self) -> Vec<(String, String)> {
@@ -90,12 +91,8 @@ impl ContentController {
             // config.toml when $HOME alone isn't sufficient (e.g. if
             // ATELIER_HOME is set in the test runner's env).
             ("ATELIER_HOME".into(), atelier_home),
-            ("ATELIER_CLI_CHAT_PROXY_BASE_URL".into(), self.url()),
-            ("ATELIER_XAI_API_BASE_URL".into(), self.url()),
-            ("XAI_API_KEY".into(), "test-key-for-ci".into()),
             ("ATELIER_TELEMETRY_ENABLED".into(), "false".into()),
             ("ATELIER_FEEDBACK_ENABLED".into(), "false".into()),
-            ("ATELIER_TRACE_UPLOAD".into(), "false".into()),
             // Next-prompt autocomplete fires an extra background model call
             // at every turn end (default ON). Off by default in PTY tests so
             // the mock's fixed response can't leak in as ghost text and
@@ -200,6 +197,87 @@ impl ContentController {
     }
 }
 
+fn write_mock_provider_config(home: &Path, base_url: &str, models: &[MockModel]) -> Result<()> {
+    let default_model = models
+        .first()
+        .context("PTY mock Provider requires at least one model")?;
+    let atelier_home = home.join(".atelier");
+    let provider_models = atelier_home.join("models/providers/mock");
+    std::fs::create_dir_all(&provider_models).context("create mock Provider config directories")?;
+
+    let quoted_base_url = serde_json::to_string(base_url).context("quote mock Provider URL")?;
+    let providers = format!(
+        r#"schema_version = 2
+
+[providers.mock]
+display_name = "PTY mock"
+protocol = "open_ai_chat_completions"
+base_url = {quoted_base_url}
+enabled = true
+
+[providers.mock.credential]
+type = "none"
+
+[providers.mock.discovery]
+type = "open_ai_models"
+path = "models"
+"#,
+    );
+    std::fs::write(atelier_home.join("providers.toml"), providers)
+        .context("write mock providers.toml")?;
+
+    let mut model_config = String::from("schema_version = 1\n");
+    for model in models {
+        let quoted_id = serde_json::to_string(&model.id).context("quote mock model ID")?;
+        let wire_api = match model.api_backend.as_deref() {
+            Some("responses") => "responses",
+            Some("messages") => "messages",
+            _ => "chat_completions",
+        };
+        model_config.push_str(&format!(
+            r#"
+[models.{quoted_id}]
+wire_api = "{wire_api}"
+context_window = 128000
+
+[models.{quoted_id}.capabilities]
+tool_calls = true
+parallel_tool_calls = true
+"#,
+        ));
+    }
+    std::fs::write(provider_models.join("models.toml"), model_config)
+        .context("write mock Provider models.toml")?;
+
+    let quoted_default_model =
+        serde_json::to_string(&default_model.id).context("quote default mock model ID")?;
+    let mut roles = String::from("schema_version = 1\n");
+    for role in [
+        "main",
+        "explore",
+        "implement",
+        "review",
+        "test",
+        "compact",
+        "summary",
+        "title",
+        "planner",
+        "strategist",
+        "skeptic",
+    ] {
+        roles.push_str(&format!(
+            r#"
+[roles.{role}]
+provider = "mock"
+model = {quoted_default_model}
+"#,
+        ));
+    }
+    std::fs::write(atelier_home.join("roles.toml"), roles).context("write mock roles.toml")?;
+
+    Ok(())
+}
+
 fn default_response_text() -> String {
     "Hello from the pty_harness mock inference server.".to_owned()
 }
@@ -261,8 +339,8 @@ mod tests {
         assert!(content.has_chat_completion());
     }
 
-    /// `env_for_pager` keeps the exact sandbox + endpoint env contract the
-    /// pager spawn path depends on.
+    /// `env_for_pager` keeps the exact sandbox env contract the pager spawn
+    /// path depends on without installing a privileged Provider fallback.
     #[tokio::test]
     async fn env_for_pager_shape() {
         let content = ContentController::start().await.unwrap();
@@ -278,14 +356,30 @@ mod tests {
             get("ATELIER_HOME").as_deref(),
             content.home().join(".atelier").to_str()
         );
-        assert_eq!(get("ATELIER_CLI_CHAT_PROXY_BASE_URL"), Some(content.url()));
-        assert_eq!(get("ATELIER_XAI_API_BASE_URL"), Some(content.url()));
-        assert_eq!(get("XAI_API_KEY").as_deref(), Some("test-key-for-ci"));
+        assert_eq!(get("ATELIER_CLI_CHAT_PROXY_BASE_URL"), None);
+        assert_eq!(get("ATELIER_XAI_API_BASE_URL"), None);
+        assert_eq!(get("XAI_API_KEY"), None);
         assert_eq!(get("ATELIER_TELEMETRY_ENABLED").as_deref(), Some("false"));
         assert_eq!(get("ATELIER_FEEDBACK_ENABLED").as_deref(), Some("false"));
-        assert_eq!(get("ATELIER_TRACE_UPLOAD").as_deref(), Some("false"));
         assert_eq!(get("ATELIER_PROMPT_SUGGESTIONS").as_deref(), Some("false"));
         assert_eq!(get("ATELIER_MAX_RETRIES").as_deref(), Some("0"));
-        assert_eq!(env.len(), 10, "env list must not silently grow or shrink");
+        assert_eq!(env.len(), 6, "env list must not silently grow or shrink");
+
+        let atelier_home = content.home().join(".atelier");
+        let providers = std::fs::read_to_string(atelier_home.join("providers.toml")).unwrap();
+        assert!(providers.contains("[providers.mock]"));
+        assert!(providers.contains(&format!("base_url = {:?}", content.url())));
+        assert!(providers.contains("type = \"none\""));
+
+        let models =
+            std::fs::read_to_string(atelier_home.join("models/providers/mock/models.toml"))
+                .unwrap();
+        assert!(models.contains("[models.\"test-model\"]"));
+        assert!(models.contains("tool_calls = true"));
+
+        let roles = std::fs::read_to_string(atelier_home.join("roles.toml")).unwrap();
+        assert!(roles.contains("[roles.main]"));
+        assert!(roles.contains("provider = \"mock\""));
+        assert!(roles.contains("model = \"test-model\""));
     }
 }

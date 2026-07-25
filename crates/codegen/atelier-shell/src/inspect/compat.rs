@@ -96,7 +96,7 @@ pub struct ExternalCompatEntry {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExternalCompatReport {
-    pub remote_settings_loaded: bool,
+    pub local_runtime_settings_loaded: bool,
     pub cells: Vec<ExternalCompatEntry>,
 }
 
@@ -138,7 +138,7 @@ pub(super) fn resolve_inspect_compat_with_env(
         .collect();
 
     ExternalCompatReport {
-        remote_settings_loaded: false,
+        local_runtime_settings_loaded: false,
         cells,
     }
 }
@@ -195,11 +195,11 @@ mod tests {
     }
 
     #[test]
-    fn empty_config_reports_defaults_and_remote_not_loaded() {
+    fn empty_config_reports_defaults_and_local_runtime_not_loaded() {
         let effective_config = toml::Value::Table(toml::map::Map::new());
         let report = resolve_without_env(Ok(&effective_config));
 
-        assert!(!report.remote_settings_loaded);
+        assert!(!report.local_runtime_settings_loaded);
         assert_eq!(report.cells.len(), 13);
         assert!(
             report
@@ -220,7 +220,7 @@ mod tests {
         assert_eq!(session.enabled, CompatConfig::default().codex.sessions);
         assert_eq!(session.source, CompatSource::Default);
         let json = serde_json::to_value(&report).unwrap();
-        assert_eq!(json["remoteSettingsLoaded"], false);
+        assert_eq!(json["localRuntimeSettingsLoaded"], false);
         assert_eq!(
             serde_json::to_value(session).unwrap(),
             serde_json::json!({

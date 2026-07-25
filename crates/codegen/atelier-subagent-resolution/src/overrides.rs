@@ -5,9 +5,9 @@
 use std::collections::HashMap;
 use std::path::Path;
 
+use atelier_tool_types::{SubagentCapabilityMode, SubagentIsolationMode};
 use atelier_tools::implementations::atelier_build::task::types::SubagentRuntimeOverrides;
 use serde::de::DeserializeOwned;
-use xai_tool_types::{SubagentCapabilityMode, SubagentIsolationMode};
 
 use crate::config::{SubagentPersona, SubagentRole};
 use crate::types::EffectiveRuntimeConfig;

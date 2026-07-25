@@ -40,6 +40,8 @@ fn detector_entry(
         env_key: None,
         api_base_url: None,
         request_payload: serde_json::Map::new(),
+        remote_compaction_endpoint: None,
+        image_generation_endpoint: None,
     }
 }
 
@@ -56,7 +58,7 @@ async fn make_laziness_actor(
 ) -> (Arc<SessionActor>, tempfile::TempDir) {
     let tmp = tempfile::TempDir::new().expect("tempdir");
     let (gateway_tx, _gateway_rx) =
-        tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+        tokio::sync::mpsc::unbounded_channel::<atelier_acp_runtime::AcpClientMessage>();
     let (persistence_tx, _persistence_rx) =
         tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
     let mut actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
@@ -330,8 +332,6 @@ async fn idle_recheck_after_sleep_short_circuits_silently() {
                         prompt_id: "user-real-prompt".to_string(),
                         prompt_blocks: vec![],
                         prompt_mode: crate::session::plan_mode::PromptMode::Agent,
-                        trace_gcs_config: None,
-                        artifact_tracker: None,
                         client_identifier: None,
                         screen_mode: None,
                         verbatim: true,
@@ -542,7 +542,7 @@ async fn make_debug_actor(
 ) -> (Arc<SessionActor>, tempfile::TempDir, std::path::PathBuf) {
     let tmp = tempfile::TempDir::new().expect("tempdir");
     let (gateway_tx, _gateway_rx) =
-        tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+        tokio::sync::mpsc::unbounded_channel::<atelier_acp_runtime::AcpClientMessage>();
     let (persistence_tx, _persistence_rx) =
         tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
     let mut actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;

@@ -43,7 +43,7 @@ pub fn bootstrap(
 /// while fd 2 may still point at the `/dev/null` the TUI's `redirect_native_stderr()` set, which
 /// would swallow the message. No-op when stderr was never redirected (headless).
 pub(crate) fn exit_on_config_error<T>(e: String) -> T {
-    xai_tty_utils::restore_native_stderr();
+    atelier_tty_utils::restore_native_stderr();
     eprintln!("\nConfiguration error:\n\n    {e}\n");
     std::process::exit(1);
 }
@@ -77,15 +77,15 @@ fn resolve_config(cfg: &AgentConfig, auth_manager: &AuthManager) -> AgentConfig 
     // Remote settings are a removed vendor control plane. Do not accept a
     // caller-provided snapshot either: the production runtime is local-only
     // apart from explicitly configured Providers/MCP/Web tools.
-    cfg.remote_settings = None;
+    cfg.local_runtime_settings = None;
     crate::util::config::sync_campaign_fields(&mut cfg);
-    crate::agent::config::apply_remote_settings_side_effects(None);
+    crate::agent::config::apply_local_runtime_settings_side_effects(None);
 
     // Session persistence is local-only in Atelier. Do not let an inherited
     // CLI/env/remote setting re-enable the removed vendor writeback path.
     cfg.storage_mode = StorageMode::Local;
 
-    if let Some(rs) = cfg.remote_settings.as_ref()
+    if let Some(rs) = cfg.local_runtime_settings.as_ref()
         && let Some(v) = rs.path_not_found_hints
     {
         cfg.path_not_found_hints = v;
@@ -106,34 +106,18 @@ fn init_process(cfg: &AgentConfig, auth_manager: &AuthManager) {
 
         // Auto-register is gated (default off; env/remote settings enables). Kept out
         // of extract_bundled_files so the gate can read the resolved
-        // remote_settings, which resolve_config has populated by now.
+        // local_runtime_settings, which resolve_config has populated by now.
         if cfg.resolve_official_marketplace_auto_register().value {
             crate::extensions::marketplace::ensure_official_marketplace_source(&atelier_home);
         }
 
         let telemetry_mode = cfg.resolve_telemetry_mode();
-        let trace_upload = cfg.resolve_trace_upload();
         let feedback = cfg.resolve_feedback();
-        let feedback_url = cfg.endpoints.resolve_feedback_base_url();
-        let trace_upload_url = cfg.endpoints.resolve_trace_upload_url();
         tracing::info!(
             telemetry = %telemetry_mode,
-            trace_upload = %trace_upload,
             feedback = %feedback,
-            feedback_url = %feedback_url,
-            feedback_url_custom = cfg.endpoints.feedback_base_url.is_some(),
-            trace_upload_url = %trace_upload_url,
-            trace_upload_url_custom = cfg.endpoints.trace_upload_url.is_some(),
-            trace_upload_bucket = cfg.endpoints.trace_upload_bucket.as_deref().unwrap_or("none"),
-            trace_upload_region = cfg.endpoints.trace_upload_region.as_deref().unwrap_or("none"),
             "data capture config resolved",
         );
-        if telemetry_mode.value.is_disabled() && trace_upload.value {
-            tracing::info!(
-                "Telemetry disabled but trace uploads enabled: \
-                 session artifacts will be uploaded, analytics events will not"
-            );
-        }
         update_telemetry_config(cfg, auth_manager);
     });
 }
@@ -141,25 +125,5 @@ fn init_process(cfg: &AgentConfig, auth_manager: &AuthManager) {
 /// Apply current telemetry config + auth identity. Tears down the client
 /// when telemetry is disabled, so it's safe to call repeatedly.
 pub fn update_telemetry_config(config: &AgentConfig, auth_manager: &AuthManager) {
-    let atelier_auth = auth_manager.current().filter(|a| a.is_xai_auth());
-    let user_id = atelier_auth.as_ref().map(|a| a.user_id.clone());
-    let team_id = atelier_auth.as_ref().and_then(|a| a.team_id.clone());
-    let subscription_tier = super::mvp_agent::resolve_subscription_tier_for_telemetry(
-        config
-            .remote_settings
-            .as_ref()
-            .and_then(|rs| rs.subscription_tier_display.clone()),
-        auth_manager.current_or_expired().as_ref(),
-    );
-    atelier_telemetry::client::init(
-        config.telemetry.clone(),
-        config.resolve_telemetry_mode().value,
-        user_id,
-        team_id,
-        config.endpoints.deployment_key.clone(),
-        crate::http::origin_client_info_from_env(),
-        atelier_version::VERSION.to_owned(),
-        subscription_tier,
-        crate::http::shared_client(),
-    );
+    let _ = (config, auth_manager);
 }

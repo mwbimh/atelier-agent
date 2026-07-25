@@ -1,15 +1,13 @@
 use crate::SandboxError;
-use crate::acl::{ScopedAclGrant, access_mask_for_mode, grant_restricted_sids};
-use crate::env::make_environment_block;
+use crate::logon_runner::PersistentPipedProcess;
 use crate::path_normalization::{
     ensure_no_reparse_points, normalize_existing_path, path_is_within,
 };
-use crate::process::{RestrictedPipedProcess, run_as_user, spawn_as_user_piped};
-use crate::token::{RestrictedToken, create_restricted_token, new_capability_sid};
-use anyhow::Result;
 use std::collections::HashSet;
 use std::ffi::OsString;
+use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 pub(crate) struct ValidatedRequest {
     pub roots: Vec<PathBuf>,
@@ -87,108 +85,98 @@ fn resolve_program(program: &Path) -> Result<PathBuf, SandboxError> {
     Err(SandboxError::MissingPath(program.to_path_buf()))
 }
 
-pub struct SandboxSession {
-    capability: crate::token::LocalSid,
-    token: RestrictedToken,
-    grants: Vec<ScopedAclGrant>,
-    roots: Vec<(String, crate::SandboxMode)>,
+pub struct SandboxSession;
+
+trait ProcessControl {
+    fn try_wait(&mut self) -> anyhow::Result<Option<i32>>;
+    fn cleanup_descendants(&mut self) -> anyhow::Result<()>;
+    fn kill(&mut self) -> anyhow::Result<()>;
+}
+
+impl ProcessControl for PersistentPipedProcess {
+    fn try_wait(&mut self) -> anyhow::Result<Option<i32>> {
+        PersistentPipedProcess::try_wait(self)
+    }
+
+    fn cleanup_descendants(&mut self) -> anyhow::Result<()> {
+        PersistentPipedProcess::cleanup_descendants(self)
+    }
+
+    fn kill(&mut self) -> anyhow::Result<()> {
+        PersistentPipedProcess::kill(self)
+    }
+}
+
+fn wait_for_exit_or_timeout(
+    child: &mut impl ProcessControl,
+    timeout: Option<std::time::Duration>,
+) -> Result<(i32, bool), SandboxError> {
+    let deadline = timeout.map(|timeout| Instant::now() + timeout);
+    loop {
+        if let Some(exit_code) = child.try_wait().map_err(SandboxError::Operation)? {
+            child
+                .cleanup_descendants()
+                .map_err(SandboxError::Operation)?;
+            return Ok((exit_code, false));
+        }
+        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            child.kill().map_err(SandboxError::Operation)?;
+            return Ok((124, true));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
 }
 
 impl SandboxSession {
     pub fn new() -> Result<Self, SandboxError> {
-        let capability = new_capability_sid().map_err(SandboxError::Operation)?;
-        let token = create_restricted_token(&capability).map_err(SandboxError::Operation)?;
-        Ok(Self {
-            capability,
-            token,
-            grants: Vec::new(),
-            roots: Vec::new(),
-        })
+        Ok(Self)
     }
 
     pub fn run(
         &mut self,
         request: crate::CommandRequest,
     ) -> Result<crate::RunOutput, SandboxError> {
-        let validated = validate_request(&request)?;
-        let restricting_sids = self.token.restricting_sids(self.capability.as_ptr());
-        let access_mask = access_mask_for_mode(request.mode);
-        for root in &validated.roots {
-            let key = crate::canonical_path_key(root);
-            let existing_mode = self
-                .roots
-                .iter()
-                .find(|(existing_key, _)| existing_key == &key)
-                .map(|(_, mode)| *mode);
-            let needs_grant = match existing_mode {
-                None => true,
-                Some(crate::SandboxMode::ReadOnly) => {
-                    request.mode == crate::SandboxMode::WorkspaceWrite
-                }
-                Some(crate::SandboxMode::WorkspaceWrite) => false,
-            };
-            if needs_grant {
-                let grant = grant_restricted_sids(root, &restricting_sids, access_mask)
-                    .map_err(SandboxError::Operation)?;
-                self.grants.push(grant);
-                match existing_mode {
-                    Some(_) => {
-                        if let Some((_, mode)) = self
-                            .roots
-                            .iter_mut()
-                            .find(|(existing_key, _)| existing_key == &key)
-                        {
-                            *mode = request.mode;
-                        }
-                    }
-                    None => self.roots.push((key, request.mode)),
-                }
-            }
-        }
-
-        let environment = make_environment_block(&request.env, request.atelier_home.as_deref());
-        run_as_user(
-            self.token.raw(),
-            &validated.program,
-            &request.args,
-            &validated.cwd,
-            &environment,
-            request.timeout,
-        )
-        .map_err(SandboxError::Operation)
+        let timeout = request.timeout;
+        let mut child = crate::logon_runner::spawn(request).map_err(SandboxError::Operation)?;
+        drop(child.take_stdin());
+        let stdout = child
+            .take_stdout()
+            .ok_or_else(|| SandboxError::Operation(anyhow::anyhow!("sandbox stdout missing")))?;
+        let stderr = child
+            .take_stderr()
+            .ok_or_else(|| SandboxError::Operation(anyhow::anyhow!("sandbox stderr missing")))?;
+        let stdout_thread = std::thread::spawn(move || {
+            let mut output = Vec::new();
+            let mut stdout = stdout;
+            let _ = stdout.read_to_end(&mut output);
+            output
+        });
+        let stderr_thread = std::thread::spawn(move || {
+            let mut output = Vec::new();
+            let mut stderr = stderr;
+            let _ = stderr.read_to_end(&mut output);
+            output
+        });
+        let (exit_code, timed_out) = wait_for_exit_or_timeout(&mut child, timeout)?;
+        Ok(crate::RunOutput {
+            exit_code,
+            stdout: stdout_thread.join().unwrap_or_default(),
+            stderr: stderr_thread.join().unwrap_or_default(),
+            timed_out,
+        })
     }
 
     pub fn spawn_piped(
-        mut self,
+        self,
         request: crate::CommandRequest,
     ) -> Result<SandboxedPipedChild, SandboxError> {
-        let validated = validate_request(&request)?;
-        let restricting_sids = self.token.restricting_sids(self.capability.as_ptr());
-        let access_mask = access_mask_for_mode(request.mode);
-        for root in &validated.roots {
-            let grant = grant_restricted_sids(root, &restricting_sids, access_mask)
-                .map_err(SandboxError::Operation)?;
-            self.grants.push(grant);
-        }
-        let environment = make_environment_block(&request.env, request.atelier_home.as_deref());
-        let child = spawn_as_user_piped(
-            self.token.raw(),
-            &validated.program,
-            &request.args,
-            &validated.cwd,
-            &environment,
-        )
-        .map_err(SandboxError::Operation)?;
-        Ok(SandboxedPipedChild {
-            child,
-            _session: self,
-        })
+        let child = crate::logon_runner::spawn(request).map_err(SandboxError::Operation)?;
+        Ok(SandboxedPipedChild { child })
     }
 }
 
 pub struct SandboxedPipedChild {
-    child: RestrictedPipedProcess,
-    _session: SandboxSession,
+    child: PersistentPipedProcess,
 }
 
 // The object owns Windows kernel handles and heap-backed SID/ACL state. It is
@@ -222,13 +210,6 @@ impl SandboxedPipedChild {
     }
 }
 
-impl Drop for SandboxSession {
-    fn drop(&mut self) {
-        let grants = std::mem::take(&mut self.grants);
-        let _ = restore_grants(grants);
-    }
-}
-
 pub fn run_command(request: crate::CommandRequest) -> Result<crate::RunOutput, SandboxError> {
     SandboxSession::new()?.run(request)
 }
@@ -239,21 +220,60 @@ pub fn spawn_piped_command(
     SandboxSession::new()?.spawn_piped(request)
 }
 
-fn restore_grants(grants: Vec<ScopedAclGrant>) -> Result<()> {
-    let mut first_error = None;
-    for grant in grants.into_iter().rev() {
-        if let Err(err) = grant.restore() {
-            first_error.get_or_insert(err);
-        }
-    }
-    first_error.map_or(Ok(()), Err)
-}
-
 #[cfg(test)]
 mod tests {
-    use super::validate_request;
+    use super::{ProcessControl, validate_request, wait_for_exit_or_timeout};
     use crate::{CommandRequest, SandboxMode};
     use std::path::PathBuf;
+    use std::time::Duration;
+
+    #[derive(Default)]
+    struct FakeProcess {
+        exit_code: Option<i32>,
+        cleanup_calls: usize,
+        kill_calls: usize,
+    }
+
+    impl ProcessControl for FakeProcess {
+        fn try_wait(&mut self) -> anyhow::Result<Option<i32>> {
+            Ok(self.exit_code)
+        }
+
+        fn cleanup_descendants(&mut self) -> anyhow::Result<()> {
+            self.cleanup_calls += 1;
+            Ok(())
+        }
+
+        fn kill(&mut self) -> anyhow::Result<()> {
+            self.kill_calls += 1;
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn timeout_uses_process_tree_kill_path() {
+        let mut process = FakeProcess::default();
+
+        let outcome = wait_for_exit_or_timeout(&mut process, Some(Duration::ZERO)).unwrap();
+
+        assert_eq!(outcome, (124, true));
+        assert_eq!(process.kill_calls, 1);
+        assert_eq!(process.cleanup_calls, 0);
+    }
+
+    #[test]
+    fn normal_exit_cleans_remaining_job_descendants() {
+        let mut process = FakeProcess {
+            exit_code: Some(0),
+            ..Default::default()
+        };
+
+        let outcome = wait_for_exit_or_timeout(&mut process, None).unwrap();
+
+        assert_eq!(outcome, (0, false));
+        assert_eq!(process.kill_calls, 0);
+        assert_eq!(process.cleanup_calls, 1);
+    }
 
     #[test]
     fn validate_request_rejects_directory_symlink() {

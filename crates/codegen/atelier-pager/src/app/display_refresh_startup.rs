@@ -7,8 +7,8 @@
 use std::time::Duration;
 
 use atelier_shell::util::config::{
-    DISPLAY_REFRESH_DEFAULT_CADENCE_MS, MotionCadence, RemoteSettings, resolve_display_refresh,
-    resolve_motion_cadence,
+    DISPLAY_REFRESH_DEFAULT_CADENCE_MS, LocalRuntimeSettings, MotionCadence,
+    resolve_display_refresh, resolve_motion_cadence,
 };
 use toml::Value as TomlValue;
 
@@ -69,7 +69,7 @@ pub fn start(
     requirements: Option<&TomlValue>,
     user: Option<&TomlValue>,
     managed: Option<&TomlValue>,
-    remote: Option<&RemoteSettings>,
+    remote: Option<&LocalRuntimeSettings>,
 ) -> MotionClocks {
     let policy = resolve_display_refresh(requirements, user, managed, remote);
     let default_cadence_ms = DISPLAY_REFRESH_DEFAULT_CADENCE_MS;

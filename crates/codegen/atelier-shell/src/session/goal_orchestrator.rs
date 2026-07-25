@@ -5,7 +5,7 @@
 //! `GoalUpdated` events and format elapsed time.
 
 use crate::extensions::notification::{
-    SessionNotification as XaiSessionNotification, SessionUpdate as XaiSessionUpdate,
+    SessionNotification as ExtensionSessionNotification, SessionUpdate as ExtensionSessionUpdate,
 };
 use crate::session::goal_tracker::{GoalOrchestration, GoalPhase, GoalStatus, GoalTracker};
 use crate::session::persistence::PersistenceMsg;
@@ -20,14 +20,14 @@ use crate::session::persistence::PersistenceMsg;
 /// `update_goal` tool reports progress.
 pub(crate) struct GoalNotifySender {
     session_id: agent_client_protocol::SessionId,
-    gateway: xai_acp_lib::AcpAgentGatewaySender,
+    gateway: atelier_acp_runtime::AcpAgentGatewaySender,
     persistence_tx: tokio::sync::mpsc::UnboundedSender<PersistenceMsg>,
 }
 
 impl GoalNotifySender {
     pub(crate) fn new(
         session_id: agent_client_protocol::SessionId,
-        gateway: xai_acp_lib::AcpAgentGatewaySender,
+        gateway: atelier_acp_runtime::AcpAgentGatewaySender,
         persistence_tx: tokio::sync::mpsc::UnboundedSender<PersistenceMsg>,
     ) -> Self {
         Self {
@@ -75,9 +75,9 @@ impl GoalNotifySender {
 
     /// Persist + fire-and-forget a notification to the gateway. Used for
     /// snapshot-derived payloads and for the "planning…" / "Verifying…"
-    /// latch updates that must not run the `send_xai_notification`
+    /// latch updates that must not run the `send_extension_notification`
     /// rewind-window-close side effect.
-    pub(crate) fn send_update(&self, update: XaiSessionUpdate) {
+    pub(crate) fn send_update(&self, update: ExtensionSessionUpdate) {
         self.dispatch_update(update, true);
     }
 
@@ -85,11 +85,11 @@ impl GoalNotifySender {
     /// `persist == false` ships the update to the gateway only (no JSONL
     /// append) for recurring/transient ticks — see
     /// [`Self::emit_goal_updated_ephemeral`].
-    fn dispatch_update(&self, update: XaiSessionUpdate, persist: bool) {
+    fn dispatch_update(&self, update: ExtensionSessionUpdate, persist: bool) {
         // Stamped before the persist/broadcast fork — see `ensure_event_id_meta`.
         let mut meta = None;
         crate::util::event_id::ensure_event_id_meta(&self.session_id.0, &mut meta);
-        let notification = XaiSessionNotification {
+        let notification = ExtensionSessionNotification {
             session_id: self.session_id.clone(),
             update,
             meta: meta.map(serde_json::Value::Object),
@@ -99,7 +99,7 @@ impl GoalNotifySender {
             .ok();
         if persist {
             let _ = self.persistence_tx.send(PersistenceMsg::Update(
-                crate::session::storage::SessionUpdate::Xai(Box::new(notification)),
+                crate::session::storage::SessionUpdate::Extension(Box::new(notification)),
             ));
         }
         if let Some(raw) = raw {
@@ -142,7 +142,7 @@ pub(crate) fn build_goal_updated(
     o: &GoalOrchestration,
     tokens_used: i64,
     finished_subagent_tokens: i64,
-) -> XaiSessionUpdate {
+) -> ExtensionSessionUpdate {
     let last_entry = o.history.last();
 
     let status_str = match o.status {
@@ -163,7 +163,7 @@ pub(crate) fn build_goal_updated(
 
     let last_event = last_entry.map(|e| goal_event_as_str(&e.event).to_owned());
 
-    XaiSessionUpdate::GoalUpdated {
+    ExtensionSessionUpdate::GoalUpdated {
         goal_id: o.goal_id.clone(),
         objective: o.objective.clone(),
         status: status_str.to_owned(),
@@ -222,8 +222,8 @@ pub(crate) fn build_goal_updated(
 
 /// Build a `GoalUpdated` with `status: "cleared"` to tell the pager to
 /// drop its goal state.
-pub(crate) fn build_goal_cleared() -> XaiSessionUpdate {
-    XaiSessionUpdate::GoalUpdated {
+pub(crate) fn build_goal_cleared() -> ExtensionSessionUpdate {
+    ExtensionSessionUpdate::GoalUpdated {
         goal_id: String::new(),
         objective: String::new(),
         status: "cleared".to_owned(),
@@ -299,7 +299,7 @@ mod tests {
         let o = make_base_orchestration();
         let update = build_goal_updated(&o, 0, 0);
         match update {
-            XaiSessionUpdate::GoalUpdated {
+            ExtensionSessionUpdate::GoalUpdated {
                 total_deliverables,
                 completed_deliverables,
                 classifier_runs_attempted,
@@ -335,7 +335,7 @@ mod tests {
 
         let update = build_goal_updated(&o, 0, 0);
         match update {
-            XaiSessionUpdate::GoalUpdated {
+            ExtensionSessionUpdate::GoalUpdated {
                 classifier_runs_attempted,
                 classifier_max_runs,
                 last_classifier_verdict,
@@ -375,9 +375,9 @@ mod tests {
         );
     }
 
-    fn planning_field(update: &XaiSessionUpdate) -> Option<bool> {
+    fn planning_field(update: &ExtensionSessionUpdate) -> Option<bool> {
         match update {
-            XaiSessionUpdate::GoalUpdated { planning, .. } => *planning,
+            ExtensionSessionUpdate::GoalUpdated { planning, .. } => *planning,
             _ => panic!("expected GoalUpdated"),
         }
     }
@@ -388,8 +388,8 @@ mod tests {
         // mid-verification GoalUpdated fired. Sourced from the latch, every
         // snapshot-derived update keeps the "Verifying…" badge.
         let mut o = make_base_orchestration();
-        let verifying = |u: &XaiSessionUpdate| match u {
-            XaiSessionUpdate::GoalUpdated {
+        let verifying = |u: &ExtensionSessionUpdate| match u {
+            ExtensionSessionUpdate::GoalUpdated {
                 verifying_completion,
                 ..
             } => *verifying_completion,
@@ -410,7 +410,7 @@ mod tests {
         o.live_subagent_tokens = 5_000;
         let update = build_goal_updated(&o, 60_000, 40_000);
         match update {
-            XaiSessionUpdate::GoalUpdated {
+            ExtensionSessionUpdate::GoalUpdated {
                 tokens_used,
                 finished_subagent_tokens,
                 live_subagent_tokens,
@@ -434,7 +434,7 @@ mod tests {
         let mut o = make_base_orchestration();
         o.live_tokens_by_model = vec![("atelier-4".into(), 5_000)];
         match build_goal_updated(&o, 0, 0) {
-            XaiSessionUpdate::GoalUpdated {
+            ExtensionSessionUpdate::GoalUpdated {
                 live_tokens_by_model,
                 ..
             } => assert!(
@@ -447,7 +447,7 @@ mod tests {
         // ≥2 distinct models are transmitted verbatim.
         o.live_tokens_by_model = vec![("atelier-4".into(), 5_000), ("atelier-3".into(), 3_000)];
         match build_goal_updated(&o, 0, 0) {
-            XaiSessionUpdate::GoalUpdated {
+            ExtensionSessionUpdate::GoalUpdated {
                 live_tokens_by_model,
                 ..
             } => assert_eq!(
@@ -465,7 +465,7 @@ mod tests {
     fn build_goal_cleared_is_cleared() {
         let update = build_goal_cleared();
         match update {
-            XaiSessionUpdate::GoalUpdated {
+            ExtensionSessionUpdate::GoalUpdated {
                 status,
                 classifier_runs_attempted,
                 classifier_max_runs,

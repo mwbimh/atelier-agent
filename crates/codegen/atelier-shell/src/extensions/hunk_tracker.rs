@@ -1,6 +1,6 @@
 //! Hunk Tracker extension API layer.
 //!
-//! Provides access to the xai-hunk-tracker functionality for tracking file changes
+//! Provides access to the atelier-hunk-tracker functionality for tracking file changes
 //! with agent/external attribution.
 
 use std::collections::HashSet;
@@ -12,13 +12,13 @@ use serde::{Deserialize, Serialize};
 
 use super::{ExtResult, parse_params, to_ext_response};
 use crate::agent::MvpAgent;
+use atelier_hunk_tracker::{
+    FileContentEntry, FileContentStatus, FileContentView, Hunk, HunkTrackerHandle,
+};
 use atelier_workspace::workspace_ops::{
     FileContentEntryWire, FileContentStatusWire, FileContentViewWire, HunkActionKind,
     HunkActionReq, HunkAllActionReq, HunkFileActionReq, HunkGetAllFileContentsReq,
     HunkGetSessionSummaryReq, HunkSingleActionReq, HunkTurnActionReq,
-};
-use xai_hunk_tracker::{
-    FileContentEntry, FileContentStatus, FileContentView, Hunk, HunkTrackerHandle,
 };
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -547,13 +547,13 @@ pub async fn handle(
 #[cfg(test)]
 mod tests {
     use super::{GetAllFileContentsResponse, GetHunksResponse, compute_file_summaries};
+    use atelier_hunk_tracker::{
+        FileContentStatus, FileContentView, Hunk, HunkId, HunkLineInfo, HunkSource,
+    };
     use chrono::Utc;
     use std::collections::HashSet;
     use std::path::PathBuf;
     use std::sync::Arc;
-    use xai_hunk_tracker::{
-        FileContentStatus, FileContentView, Hunk, HunkId, HunkLineInfo, HunkSource,
-    };
 
     fn make_hunk(
         id: &str,
@@ -889,7 +889,7 @@ mod tests {
     /// GetAllFileContentsResponse serializes with all fields using camelCase
     #[test]
     fn get_all_file_contents_response_serializes_correctly() {
-        use xai_hunk_tracker::FileContentEntry;
+        use atelier_hunk_tracker::FileContentEntry;
 
         let response = GetAllFileContentsResponse {
             files: vec![FileContentEntry {
@@ -930,7 +930,7 @@ mod tests {
     /// GetAllFileContentsResponse handles missing baseline (new file)
     #[test]
     fn get_all_file_contents_response_missing_baseline() {
-        use xai_hunk_tracker::FileContentEntry;
+        use atelier_hunk_tracker::FileContentEntry;
 
         let response = GetAllFileContentsResponse {
             files: vec![FileContentEntry {
@@ -956,7 +956,7 @@ mod tests {
     /// GetAllFileContentsResponse handles binary files
     #[test]
     fn get_all_file_contents_response_binary_file() {
-        use xai_hunk_tracker::FileContentEntry;
+        use atelier_hunk_tracker::FileContentEntry;
 
         let response = GetAllFileContentsResponse {
             files: vec![FileContentEntry {
@@ -994,7 +994,7 @@ mod tests {
     /// GetAllFileContentsResponse with multiple files preserves all entries
     #[test]
     fn get_all_file_contents_response_multiple_files() {
-        use xai_hunk_tracker::FileContentEntry;
+        use atelier_hunk_tracker::FileContentEntry;
 
         let response = GetAllFileContentsResponse {
             files: vec![

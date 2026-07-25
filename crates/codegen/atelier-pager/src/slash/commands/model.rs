@@ -37,7 +37,7 @@ impl SlashCommand for ModelCommand {
     }
 
     fn usage(&self) -> &str {
-        "/model <name> [effort]"
+        "/model <name> [effort] | /model default <provider/model>"
     }
 
     fn takes_args(&self) -> bool {
@@ -68,16 +68,30 @@ impl SlashCommand for ModelCommand {
             });
         }
 
+        if let Some(model) = trimmed.strip_prefix("default ") {
+            let model = model.trim();
+            if model.is_empty() || model.split('/').count() != 2 {
+                return CommandResult::Error("Usage: /model default <provider/model>".to_owned());
+            }
+            return CommandResult::Action(Action::RuntimeExtension {
+                method: "_atelier/config/update".to_owned(),
+                params: serde_json::json!({ "model": model }),
+            });
+        }
+
         // Prefer an exact full-string catalog match first. Model display names
         // often contain spaces ("Atelier 4.5"); if we split on the last token
         // first, a shorter catalog entry ("Atelier") would steal the prefix and
         // treat "4.5" as an effort level.
         if let Some(id) = ctx.models.resolve_by_name_or_id(trimmed) {
-            return CommandResult::Action(Action::SetDefaultModel(id));
+            return CommandResult::Action(Action::SwitchModel {
+                model_id: id,
+                effort: None,
+            });
         }
 
         // Trailing effort token + reasoning model → typed switch. Successful
-        // completion persists the resolved model and effort to `roles.main`.
+        // completion switches only the current Session.
         // Resolve via the shared gate so a rejected
         // level (e.g. `none` on atelier-4.5) surfaces the effort error with the
         // model's offered ids — not "Unknown model: … none".
@@ -207,13 +221,18 @@ mod tests {
 
     fn model_with_reasoning(id: &str, name: &str) -> (acp::ModelId, acp::ModelInfo) {
         let id = acp::ModelId::new(Arc::from(id));
-        let mut meta = serde_json::Map::new();
-        meta.insert(
-            "supportsReasoningEffort".into(),
-            serde_json::Value::Bool(true),
+        let info = acp::ModelInfo::new(id.clone(), name.to_string()).meta(
+            serde_json::json!({
+                "supportsReasoningEffort": true,
+                "reasoningEfforts": [
+                    { "value": "low", "label": "Low" },
+                    { "value": "medium", "label": "Medium", "default": true },
+                    { "value": "high", "label": "High" },
+                ],
+            })
+            .as_object()
+            .cloned(),
         );
-        let info = acp::ModelInfo::new(id.clone(), name.to_string())
-            .meta(serde_json::Value::Object(meta).as_object().cloned());
         (id, info)
     }
 
@@ -311,19 +330,18 @@ mod tests {
             screen_mode: crate::app::ScreenMode::Fullscreen,
         };
         // Args query has a trailing space -> effort phase. Items come out
-        // ordered xhigh -> low (strongest first) per EFFORT_LEVELS.
+        // Ordered exactly as the model-specific metadata declares it.
         let items = cmd.suggest_args(&ctx, "Reasoning X ").unwrap();
-        assert_eq!(items.len(), 4);
-        assert_eq!(items[0].insert_text, "Reasoning X xhigh");
-        assert_eq!(items[1].insert_text, "Reasoning X high");
-        assert_eq!(items[2].insert_text, "Reasoning X medium");
-        assert_eq!(items[3].insert_text, "Reasoning X low");
+        assert_eq!(items.len(), 3);
+        assert_eq!(items[0].insert_text, "Reasoning X low");
+        assert_eq!(items[1].insert_text, "Reasoning X medium");
+        assert_eq!(items[2].insert_text, "Reasoning X high");
         // Display is just the level so the user sees a clean column.
-        assert_eq!(items[0].display, "xhigh");
+        assert_eq!(items[0].display, "Low");
         // match_text carries the sort-key prefix that forces the matcher's
-        // alphabetical tiebreak to render rows in EFFORT_LEVELS order.
+        // alphabetical tiebreak to preserve the declared option order.
         assert!(items[0].match_text.starts_with("a "));
-        assert!(items[3].match_text.starts_with("d "));
+        assert!(items[2].match_text.starts_with("c "));
     }
 
     #[test]
@@ -339,9 +357,9 @@ mod tests {
             has_session_announcements: false,
             screen_mode: crate::app::ScreenMode::Fullscreen,
         };
-        // Still in effort phase; matcher upstream narrows to high / xhigh.
+        // Still in effort phase; matcher upstream narrows to high.
         let items = cmd.suggest_args(&ctx, "Reasoning X h").unwrap();
-        assert_eq!(items.len(), 4);
+        assert_eq!(items.len(), 3);
     }
 
     #[test]
@@ -369,11 +387,11 @@ mod tests {
         let (id, info) = model_with_reasoning("reasoning-x", "Reasoning X");
         state.available.insert(id, info);
         let mut ctx = dummy_exec_ctx(&state);
-        let result = ModelCommand.run(&mut ctx, "Reasoning X xhigh");
+        let result = ModelCommand.run(&mut ctx, "Reasoning X high");
         match result {
             CommandResult::Action(Action::SwitchModel { model_id, effort }) => {
                 assert_eq!(model_id.0.as_ref(), "reasoning-x");
-                assert_eq!(effort, Some(ReasoningEffort::Xhigh));
+                assert_eq!(effort, Some(ReasoningEffort::High));
             }
             other => panic!("expected SwitchModel with effort, got {other:?}"),
         }
@@ -424,10 +442,11 @@ mod tests {
         let mut ctx = dummy_exec_ctx(&state);
         let result = ModelCommand.run(&mut ctx, "Atelier 4.5");
         match result {
-            CommandResult::Action(Action::SetDefaultModel(resolved_id)) => {
-                assert_eq!(resolved_id, long_id);
+            CommandResult::Action(Action::SwitchModel { model_id, effort }) => {
+                assert_eq!(model_id, long_id);
+                assert_eq!(effort, None);
             }
-            other => panic!("expected SetDefaultModel(Atelier 4.5), got {other:?}"),
+            other => panic!("expected SwitchModel(Atelier 4.5), got {other:?}"),
         }
     }
 
@@ -443,43 +462,53 @@ mod tests {
         assert!(matches!(result, CommandResult::Error(_)));
     }
 
-    /// The bare `/model <name>` form dispatches
-    /// `Action::SetDefaultModel(<ModelId>)` instead of the legacy
-    /// `Action::SwitchModel { effort: None }`. The dispatcher routes
-    /// the typed setter through `Effect::SwitchModel`; successful completion
-    /// persists the same selection to `roles.main` for new Sessions.
-    ///
-    /// The payload is the typed `acp::ModelId` (resolved at the slash
-    /// boundary), not a String.
+    /// The bare `/model <name>` form resolves a typed `ModelId` and switches
+    /// only the current Session.
     #[test]
-    fn run_bare_model_name_dispatches_set_default_model() {
+    fn run_bare_model_name_switches_only_the_current_session() {
         let mut state = ModelState::default();
         let (id, info) = plain_model("atelier-4.5", "Atelier 4.5");
         state.available.insert(id.clone(), info);
         let mut ctx = dummy_exec_ctx(&state);
         let result = ModelCommand.run(&mut ctx, "Atelier 4.5");
         match result {
-            CommandResult::Action(Action::SetDefaultModel(resolved_id)) => {
-                assert_eq!(resolved_id, id);
+            CommandResult::Action(Action::SwitchModel { model_id, effort }) => {
+                assert_eq!(model_id, id);
+                assert_eq!(effort, None);
             }
-            other => panic!("expected Action::SetDefaultModel(<id>), got {other:?}"),
+            other => panic!("expected Action::SwitchModel, got {other:?}"),
         }
     }
 
     /// Case-insensitive matching against the catalog: `/model atelier 4.5`
     /// resolves to the same `ModelId` as `/model Atelier 4.5`.
     #[test]
-    fn run_set_default_model_resolves_case_insensitively() {
+    fn run_switch_model_resolves_case_insensitively() {
         let mut state = ModelState::default();
         let (id, info) = plain_model("atelier-4.5", "Atelier 4.5");
         state.available.insert(id.clone(), info);
         let mut ctx = dummy_exec_ctx(&state);
         let result = ModelCommand.run(&mut ctx, "atelier 4.5");
         match result {
-            CommandResult::Action(Action::SetDefaultModel(resolved_id)) => {
-                assert_eq!(resolved_id, id);
+            CommandResult::Action(Action::SwitchModel { model_id, effort }) => {
+                assert_eq!(model_id, id);
+                assert_eq!(effort, None);
             }
-            other => panic!("expected Action::SetDefaultModel(<id>), got {other:?}"),
+            other => panic!("expected Action::SwitchModel, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn run_default_subcommand_updates_new_session_default_through_config_rpc() {
+        let state = ModelState::default();
+        let mut ctx = dummy_exec_ctx(&state);
+        let result = ModelCommand.run(&mut ctx, "default provider/model");
+        match result {
+            CommandResult::Action(Action::RuntimeExtension { method, params }) => {
+                assert_eq!(method, "_atelier/config/update");
+                assert_eq!(params["model"], "provider/model");
+            }
+            other => panic!("expected config update extension, got {other:?}"),
         }
     }
 }

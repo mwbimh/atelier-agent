@@ -224,7 +224,7 @@
                 .push_block(RenderBlock::system("pre-outage content"));
             agent.last_seen_event_id = Some("sess-rc-3".into());
             agent.last_applied_event_seq = Some(3);
-            agent.last_applied_xai_event_seq = Some(5);
+            agent.last_applied_extension_event_seq = Some(5);
             agent.begin_session_reload(1);
         }
 
@@ -239,16 +239,16 @@
             make_agent_chunk_with_event("sess-rc", "live tail", "p9", Some("sess-rc-40")),
             &mut app,
         );
-        let _ = handle_ext_notification(&xai_model_switch_notif("sess-rc", "sess-rc-30"), &mut app);
+        let _ = handle_ext_notification(&extension_model_switch_notif("sess-rc", "sess-rc-30"), &mut app);
         assert_eq!(
             app.agents[&id].last_applied_event_seq,
             Some(40),
             "the live ACP tail advanced its highwater in-window"
         );
         assert_eq!(
-            app.agents[&id].last_applied_xai_event_seq,
+            app.agents[&id].last_applied_extension_event_seq,
             Some(30),
-            "the live xAI line advanced its highwater in-window"
+            "the live extension line advanced its highwater in-window"
         );
         // Highest EntryId the discarded staging handed out (its last entry).
         let staged_max_id = {
@@ -272,9 +272,9 @@
         );
         assert_eq!(agent.last_applied_event_seq, Some(3));
         assert_eq!(
-            agent.last_applied_xai_event_seq,
+            agent.last_applied_extension_event_seq,
             Some(5),
-            "the xAI highwater reverts with the transcript — left at 30 it would \
+            "the extension highwater reverts with the transcript — left at 30 it would \
              dedup-drop the next reload's re-delivery of the discarded blocks"
         );
         let next = agent.scrollback.push_block(RenderBlock::system("after"));
@@ -528,31 +528,31 @@
         );
     }
 
-    /// xAI updates dedup on their OWN per-session `eventId` highwater: a
+    /// extension updates dedup on their OWN per-session `eventId` highwater: a
     /// re-delivered live copy (cursor-tail overlap when stamp order and file
     /// order diverge, leader fan-out) is dropped instead of re-applied — the
-    /// xAI arms have no other dedup. Replay stays exempt.
+    /// Extension arms have no other dedup. Replay stays exempt.
     #[test]
-    fn xai_session_update_dedup_drops_already_applied_event() {
+    fn extension_session_update_dedup_drops_already_applied_event() {
         let mut app = make_app_with_agent("sess-xdup");
         let id = AgentId(0);
 
         assert!(handle_ext_notification(
-            &xai_model_switch_notif("sess-xdup", "sess-xdup-10"),
+            &extension_model_switch_notif("sess-xdup", "sess-xdup-10"),
             &mut app
         ));
         assert_eq!(app.agents[&id].scrollback.len(), 1);
-        assert_eq!(app.agents[&id].last_applied_xai_event_seq, Some(10));
+        assert_eq!(app.agents[&id].last_applied_extension_event_seq, Some(10));
 
         // Exact re-delivery: dropped, nothing re-applied, cursor unchanged.
         assert!(!handle_ext_notification(
-            &xai_model_switch_notif("sess-xdup", "sess-xdup-10"),
+            &extension_model_switch_notif("sess-xdup", "sess-xdup-10"),
             &mut app
         ));
         assert_eq!(
             app.agents[&id].scrollback.len(),
             1,
-            "a duplicate xAI event must not push a second block"
+            "a duplicate extension event must not push a second block"
         );
         assert_eq!(
             app.agents[&id].last_seen_event_id.as_deref(),
@@ -561,76 +561,76 @@
 
         // A newer event still applies.
         assert!(handle_ext_notification(
-            &xai_model_switch_notif("sess-xdup", "sess-xdup-11"),
+            &extension_model_switch_notif("sess-xdup", "sess-xdup-11"),
             &mut app
         ));
         assert_eq!(app.agents[&id].scrollback.len(), 2);
-        assert_eq!(app.agents[&id].last_applied_xai_event_seq, Some(11));
+        assert_eq!(app.agents[&id].last_applied_extension_event_seq, Some(11));
 
         // Lower-stale re-delivery (an already-applied lower id re-sent by
         // the cursor tail, e.g. goal mode) is dropped too — `<=`, not just
         // equality.
         assert!(!handle_ext_notification(
-            &xai_model_switch_notif("sess-xdup", "sess-xdup-9"),
+            &extension_model_switch_notif("sess-xdup", "sess-xdup-9"),
             &mut app
         ));
         assert_eq!(
             app.agents[&id].scrollback.len(),
             2,
-            "a stale lower-id xAI event must not push a block"
+            "a stale lower-id extension event must not push a block"
         );
-        assert_eq!(app.agents[&id].last_applied_xai_event_seq, Some(11));
+        assert_eq!(app.agents[&id].last_applied_extension_event_seq, Some(11));
     }
 
-    /// An unhandled xAI kind (the default `_` arm) leaves no trace, so it must
+    /// An unhandled extension kind (the default `_` arm) leaves no trace, so it must
     /// NOT advance the reconnect cursor or the dedup highwater — a cursor
     /// reconnect must still re-deliver it. An applied kind advances both.
     #[test]
-    fn unhandled_xai_update_does_not_advance_cursor_or_highwater() {
+    fn unhandled_extension_update_does_not_advance_cursor_or_highwater() {
         let mut app = make_app_with_agent("sess-ig");
         let id = AgentId(0);
 
         assert!(!handle_ext_notification(
-            &xai_unhandled_notif("sess-ig", "sess-ig-7"),
+            &extension_unhandled_notif("sess-ig", "sess-ig-7"),
             &mut app
         ));
         assert_eq!(
             app.agents[&id].last_seen_event_id, None,
-            "an unhandled xAI update must not advance the reconnect cursor"
+            "an unhandled extension update must not advance the reconnect cursor"
         );
         assert_eq!(
-            app.agents[&id].last_applied_xai_event_seq, None,
-            "an unhandled xAI update must not advance the dedup highwater"
+            app.agents[&id].last_applied_extension_event_seq, None,
+            "an unhandled extension update must not advance the dedup highwater"
         );
 
         // An applied kind (ModelAutoSwitched) advances both.
         assert!(handle_ext_notification(
-            &xai_model_switch_notif("sess-ig", "sess-ig-8"),
+            &extension_model_switch_notif("sess-ig", "sess-ig-8"),
             &mut app
         ));
         assert_eq!(
             app.agents[&id].last_seen_event_id.as_deref(),
             Some("sess-ig-8")
         );
-        assert_eq!(app.agents[&id].last_applied_xai_event_seq, Some(8));
+        assert_eq!(app.agents[&id].last_applied_extension_event_seq, Some(8));
     }
 
-    /// Split-highwater regression: a fresh direct-emitted xAI id must NOT
-    /// make a queued lower-id ACP chunk look stale. xAI lines bypass the
+    /// Split-highwater regression: a fresh direct-emitted extension id must NOT
+    /// make a queued lower-id ACP chunk look stale. Extension lines bypass the
     /// agent's FIFO pipeline, so this ordering happens routinely (goal mode,
     /// subagent progress while the parent streams) — a shared highwater
     /// would silently drop the late chunk (live-text loss).
     #[test]
-    fn direct_xai_event_does_not_shoot_down_delayed_acp_chunk() {
+    fn direct_extension_event_does_not_shoot_down_delayed_acp_chunk() {
         let mut app = make_app_with_agent("sess-split");
         let id = AgentId(0);
 
-        // Direct xAI emission stamped N+1 arrives first.
+        // Direct extension emission stamped N+1 arrives first.
         assert!(handle_ext_notification(
-            &xai_model_switch_notif("sess-split", "sess-split-21"),
+            &extension_model_switch_notif("sess-split", "sess-split-21"),
             &mut app
         ));
-        assert_eq!(app.agents[&id].last_applied_xai_event_seq, Some(21));
+        assert_eq!(app.agents[&id].last_applied_extension_event_seq, Some(21));
 
         // The delayed ACP chunk stamped N arrives after — it must render.
         let len_before = app.agents[&id].scrollback.len();
@@ -657,9 +657,9 @@
             "the ACP highwater is seeded by the ACP stream only"
         );
         assert_eq!(
-            app.agents[&id].last_applied_xai_event_seq,
+            app.agents[&id].last_applied_extension_event_seq,
             Some(21),
-            "…and the ACP apply must not clobber the xAI highwater either"
+            "…and the ACP apply must not clobber the extension highwater either"
         );
     }
 
@@ -695,7 +695,7 @@
                 .cloned(),
         );
         let _ = handle(
-            AcpClientMessage::SessionNotification(xai_acp_lib::AcpArgs {
+            AcpClientMessage::SessionNotification(atelier_acp_runtime::AcpArgs {
                 request,
                 response_tx: tx,
             }),
@@ -787,14 +787,14 @@
         );
     }
 
-    /// xAI extension session updates: replay-stamped ones are gated like ACP
+    /// Atelier extension session updates: replay-stamped ones are gated like ACP
     /// updates, and applied ones advance the reconnect cursor.
     #[test]
-    fn xai_session_update_replay_gating_and_cursor() {
+    fn extension_session_update_replay_gating_and_cursor() {
         fn model_switch_notif(meta: Option<serde_json::Value>) -> acp::ExtNotification {
             let payload = SessionNotification {
-                session_id: acp::SessionId::new("sess-xai"),
-                update: XaiSessionUpdate::ModelAutoSwitched {
+                session_id: acp::SessionId::new("sess-extension"),
+                update: ExtensionSessionUpdate::ModelAutoSwitched {
                     previous_model_id: "m-old".into(),
                     new_model_id: "m-new".into(),
                     reason: "gone".into(),
@@ -807,18 +807,18 @@
             )
         }
 
-        let mut app = make_app_with_agent("sess-xai");
+        let mut app = make_app_with_agent("sess-extension");
         let id = AgentId(0);
 
         // Replay-stamped with no load in flight → dropped, nothing pushed.
-        let replay_meta = serde_json::json!({ "isReplay": true, "eventId": "sess-xai-7" });
+        let replay_meta = serde_json::json!({ "isReplay": true, "eventId": "sess-extension-7" });
         assert!(!handle_ext_notification(
             &model_switch_notif(Some(replay_meta.clone())),
             &mut app
         ));
         {
             let agent = app.agents.get_mut(&id).unwrap();
-            assert!(agent.scrollback.is_empty(), "unexpected xAI replay dropped");
+            assert!(agent.scrollback.is_empty(), "unexpected extension replay dropped");
             assert!(agent.last_seen_event_id.is_none());
         }
 
@@ -838,18 +838,18 @@
         let agent = app.agents.get_mut(&id).unwrap();
         assert_eq!(
             agent.last_seen_event_id.as_deref(),
-            Some("sess-xai-7"),
-            "applied xAI updates advance the reconnect cursor"
+            Some("sess-extension-7"),
+            "applied extension updates advance the reconnect cursor"
         );
         assert!(agent.finish_session_reload(1, true));
         assert!(
             !scrollback_has_system_text(agent, "pre-outage content"),
-            "an xAI replay line counts as replay for the swap decision"
+            "an extension replay line counts as replay for the swap decision"
         );
         assert_eq!(
             agent.scrollback.len(),
             1,
-            "the staged xAI block is the new transcript"
+            "the staged extension block is the new transcript"
         );
     }
 
@@ -966,7 +966,7 @@
 
         // The running turn's terminal arrives in the reconnect replay → recorded.
         let _ = handle_ext_notification(
-            &xai_turn_completed_notif("sess-1", "p-run", "end_turn", true),
+            &extension_turn_completed_notif("sess-1", "p-run", "end_turn", true),
             &mut app,
         );
         assert!(app.agents[&id].replayed_terminal_prompts.contains("p-run"));
@@ -985,7 +985,7 @@
         assert!(agent.session.state.is_idle());
     }
 
-    /// Apply-only cursor rule (xAI path): a `ModelChanged` the catalog can't
+    /// Apply-only cursor rule (extension path): a `ModelChanged` the catalog can't
     /// resolve is ignored, so it must NOT advance the reconnect cursor or the
     /// dedup highwater — a later reconnect (catalog now has the model) must
     /// still replay it. An applied follower switch advances both. Mirrors the
@@ -1009,7 +1009,7 @@
             "an ignored ModelChanged must not advance the reconnect cursor"
         );
         assert_eq!(
-            app.agents[&id].last_applied_xai_event_seq, None,
+            app.agents[&id].last_applied_extension_event_seq, None,
             "an ignored ModelChanged must not advance the dedup highwater"
         );
 
@@ -1023,7 +1023,7 @@
             Some("sess-1-8"),
             "an applied ModelChanged advances the reconnect cursor"
         );
-        assert_eq!(app.agents[&id].last_applied_xai_event_seq, Some(8));
+        assert_eq!(app.agents[&id].last_applied_extension_event_seq, Some(8));
     }
 
     #[test]

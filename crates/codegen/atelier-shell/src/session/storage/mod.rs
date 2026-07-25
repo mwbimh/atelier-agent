@@ -17,8 +17,8 @@ use atelier_workspace::session::file_state::RewindPoint;
 
 pub mod jsonl;
 pub mod search;
+pub mod search_bootstrap_state;
 pub mod search_fts;
-pub mod search_remote_sync;
 pub(crate) mod summary_write;
 
 /// Iterator that streams session updates from a JSONL file without loading all into memory.
@@ -92,10 +92,10 @@ impl Iterator for UpdatesIterator {
 /// Method name for standard ACP session/update notifications.
 const ACP_SESSION_UPDATE_METHOD: &str = "session/update";
 
-/// Method name for xAI extension session/update notifications.
-pub(crate) const XAI_SESSION_UPDATE_METHOD: &str = "_atelier/session/update";
+/// Method name for Atelier extension session/update notifications.
+pub(crate) const ATELIER_SESSION_UPDATE_METHOD: &str = "_atelier/session/update";
 
-/// A unified session update that can be either an ACP notification or an xAI extension notification.
+/// A unified session update that can be either an ACP notification or an Atelier extension notification.
 /// This allows storing all session updates in chronological order.
 ///
 /// Note: The `Serialize` implementation produces a format without timestamp (for GCS uploads, etc.).
@@ -104,8 +104,8 @@ pub(crate) const XAI_SESSION_UPDATE_METHOD: &str = "_atelier/session/update";
 pub enum SessionUpdate {
     /// Standard ACP session/update notification (boxed due to large size)
     Acp(Box<acp::SessionNotification>),
-    /// xAI extension session notification (e.g., diff_review)
-    Xai(Box<SessionNotification>),
+    /// Atelier extension session notification (e.g., diff_review)
+    Extension(Box<SessionNotification>),
 }
 
 impl serde::Serialize for SessionUpdate {
@@ -121,8 +121,8 @@ impl serde::Serialize for SessionUpdate {
                 map.serialize_entry("method", ACP_SESSION_UPDATE_METHOD)?;
                 map.serialize_entry("params", notification)?;
             }
-            SessionUpdate::Xai(notification) => {
-                map.serialize_entry("method", XAI_SESSION_UPDATE_METHOD)?;
+            SessionUpdate::Extension(notification) => {
+                map.serialize_entry("method", ATELIER_SESSION_UPDATE_METHOD)?;
                 map.serialize_entry("params", notification)?;
             }
         }
@@ -153,7 +153,7 @@ pub(crate) struct SessionUpdateEnvelope {
     #[serde(default)]
     pub timestamp: u64,
     /// The method name identifying the update type.
-    /// Either "session/update" for ACP or "_atelier/session/update" for xAI extensions.
+    /// Either "session/update" for ACP or "_atelier/session/update" for Atelier extensions.
     pub method: String,
     /// The actual notification payload.
     pub params: serde_json::Value,
@@ -173,9 +173,9 @@ impl SessionUpdateEnvelope {
                 method: ACP_SESSION_UPDATE_METHOD.to_string(),
                 params: serde_json::to_value(notification)?,
             }),
-            SessionUpdate::Xai(notification) => Ok(Self {
+            SessionUpdate::Extension(notification) => Ok(Self {
                 timestamp,
-                method: XAI_SESSION_UPDATE_METHOD.to_string(),
+                method: ATELIER_SESSION_UPDATE_METHOD.to_string(),
                 params: serde_json::to_value(notification)?,
             }),
         }
@@ -183,9 +183,9 @@ impl SessionUpdateEnvelope {
 
     /// Convert this envelope back into a SessionUpdate.
     pub(crate) fn into_update(self) -> Result<SessionUpdate, serde_json::Error> {
-        if self.method == XAI_SESSION_UPDATE_METHOD {
+        if self.method == ATELIER_SESSION_UPDATE_METHOD {
             let notification: SessionNotification = serde_json::from_value(self.params)?;
-            Ok(SessionUpdate::Xai(Box::new(notification)))
+            Ok(SessionUpdate::Extension(Box::new(notification)))
         } else {
             // ACP notification (method == "session/update" or unknown)
             let notification: acp::SessionNotification = serde_json::from_value(self.params)?;
@@ -224,9 +224,9 @@ impl SessionUpdateEnvelope {
         // Try to parse as envelope first (has "method" + "params")
         if let Ok(envelope) = serde_json::from_str::<BorrowedEnvelope<'_>>(line) {
             let raw_params = envelope.params.get();
-            return if envelope.method == Some(XAI_SESSION_UPDATE_METHOD) {
+            return if envelope.method == Some(ATELIER_SESSION_UPDATE_METHOD) {
                 let notification: SessionNotification = serde_json::from_str(raw_params)?;
-                Ok(SessionUpdate::Xai(Box::new(notification)))
+                Ok(SessionUpdate::Extension(Box::new(notification)))
             } else {
                 let notification: acp::SessionNotification = serde_json::from_str(raw_params)?;
                 Ok(SessionUpdate::Acp(Box::new(notification)))
@@ -244,7 +244,7 @@ impl SessionUpdateEnvelope {
 pub struct PersistedData {
     pub summary: Summary,
     pub chat_history: Vec<ConversationItem>,
-    /// All session updates (ACP updates and xAI extension updates) in chronological order
+    /// All session updates (ACP updates and Atelier extension updates) in chronological order
     pub updates: Vec<SessionUpdate>,
     pub plan_state: Option<TodoState>,
     /// Persisted plan mode lifecycle state (None for sessions created before plan mode)
@@ -509,7 +509,7 @@ pub trait StorageAdapter: Send + Sync {
         session_title: String,
     ) -> io::Result<bool>;
 
-    /// Append a session update (ACP update or xAI extension update) and increment counter
+    /// Append a session update (ACP update or Atelier extension update) and increment counter
     async fn append_update(&self, info: &Info, update: &SessionUpdate) -> io::Result<()>;
 
     /// Append a chat message and increment counter
@@ -774,7 +774,7 @@ pub(crate) fn filter_rewind_lines<'a>(lines: Vec<&'a str>) -> Vec<&'a str> {
     for line in &lines {
         let (raw_params, is_xai) = if let Ok(env) = serde_json::from_str::<RawLinePeek<'_>>(line) {
             let raw = env.params.map(|p| p.get()).unwrap_or(line);
-            let xai = env.method == Some(XAI_SESSION_UPDATE_METHOD);
+            let xai = env.method == Some(ATELIER_SESSION_UPDATE_METHOD);
             (raw, xai)
         } else {
             (*line, false)
@@ -829,7 +829,7 @@ pub fn filter_rewind_updates(updates: Vec<SessionUpdate>) -> Vec<SessionUpdate> 
     let has_rewinds = updates.iter().any(|u| {
         matches!(
             u,
-            SessionUpdate::Xai(n) if matches!(
+            SessionUpdate::Extension(n) if matches!(
                 n.update,
                 crate::extensions::notification::SessionUpdate::RewindMarker { .. }
             )
@@ -845,7 +845,7 @@ pub fn filter_rewind_updates(updates: Vec<SessionUpdate>) -> Vec<SessionUpdate> 
 
     for update in updates {
         // Check for rewind marker — truncate back to the target prompt.
-        if let SessionUpdate::Xai(ref n) = update
+        if let SessionUpdate::Extension(ref n) = update
             && let crate::extensions::notification::SessionUpdate::RewindMarker {
                 target_prompt_index,
                 ..
@@ -952,7 +952,7 @@ fn load_updates_for_replay_from_dir(
         .into_iter()
         .filter_map(|u| match u {
             SessionUpdate::Acp(notif) => Some(strip_context_wrappers(notif.update)),
-            SessionUpdate::Xai(_) => None,
+            SessionUpdate::Extension(_) => None,
         })
         .collect();
 
@@ -1227,7 +1227,7 @@ pub enum PromptExtractEvent {
         prompt_index: Option<usize>,
     },
 
-    /// A `RewindMarker` xAI update: truncate accumulated prompts to this index.
+    /// A `RewindMarker` extension update: truncate accumulated prompts to this index.
     ///
     /// Any in-progress user message should be flushed before truncating.
     RewindTo(usize),
@@ -1499,7 +1499,7 @@ pub fn collect_assistant_text(
                     }
                 }
             }
-            SessionUpdate::Xai(_) => {
+            SessionUpdate::Extension(_) => {
                 if !current.is_empty() {
                     let t = current.trim().to_string();
                     if !t.is_empty() {
@@ -1590,7 +1590,7 @@ pub fn collect_tool_metadata(iter: impl Iterator<Item = io::Result<SessionUpdate
                     _ => {}
                 }
             }
-            SessionUpdate::Xai(_) => {}
+            SessionUpdate::Extension(_) => {}
         }
     }
     meta
@@ -1666,7 +1666,7 @@ pub(crate) fn parse_prompt_extract_event(line: &str) -> PromptExtractEvent {
     // Step 1: try to extract the envelope (method + raw params).
     let (raw_params, is_xai) = if let Ok(env) = serde_json::from_str::<RawLinePeek<'_>>(line) {
         let raw = env.params.map(|p| p.get()).unwrap_or(line);
-        let xai = env.method == Some(XAI_SESSION_UPDATE_METHOD);
+        let xai = env.method == Some(ATELIER_SESSION_UPDATE_METHOD);
         (raw, xai)
     } else {
         // Not a valid envelope → try legacy format: the line IS the params.
@@ -1736,7 +1736,7 @@ mod tests {
         )
     }
 
-    /// Wrap a xAI notification as the envelope stored in updates.jsonl.
+    /// Wrap a extension notification as the envelope stored in updates.jsonl.
     fn xai_envelope(session_update_json: &str) -> String {
         format!(
             r#"{{"timestamp":1,"method":"_atelier/session/update","params":{{"sessionId":"s","update":{session_update_json}}}}}"#
@@ -3115,13 +3115,13 @@ mod tests {
         let line = xai_envelope(r#"{"sessionUpdate":"git_branch_update","branch":"main"}"#);
         let update = SessionUpdateEnvelope::from_str(&line).unwrap();
         match update {
-            SessionUpdate::Xai(notif) => {
+            SessionUpdate::Extension(notif) => {
                 assert_eq!(
                     notif.update,
                     crate::extensions::notification::SessionUpdate::Unknown
                 );
             }
-            SessionUpdate::Acp(_) => panic!("expected Xai variant"),
+            SessionUpdate::Acp(_) => panic!("expected extension variant"),
         }
     }
 
@@ -3130,13 +3130,13 @@ mod tests {
         let line = xai_envelope(r#"{"sessionUpdate":"memory_flush_started"}"#);
         let update = SessionUpdateEnvelope::from_str(&line).unwrap();
         match update {
-            SessionUpdate::Xai(notif) => {
+            SessionUpdate::Extension(notif) => {
                 assert_eq!(
                     notif.update,
                     crate::extensions::notification::SessionUpdate::MemoryFlushStarted
                 );
             }
-            SessionUpdate::Acp(_) => panic!("expected Xai variant"),
+            SessionUpdate::Acp(_) => panic!("expected extension variant"),
         }
     }
 }

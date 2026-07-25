@@ -9,12 +9,12 @@ use std::path::PathBuf;
 /// If optional workspace env vars are set, returns the user's config directory
 /// when the resolved path exists on disk. Unset or missing paths yield `None`.
 pub fn optional_workspace_user_dir() -> Option<PathBuf> {
-    let root = std::env::var("XAI_ROOT").ok()?;
-    let user = std::env::var("XAI_USER").ok()?;
+    let root = std::env::var("ATELIER_ROOT").ok()?;
+    let user = std::env::var("ATELIER_USER").ok()?;
     resolve_workspace_user_dir(&root, &workspace_user_relpath(&user))
 }
 
-/// Map `$XAI_USER` to a path relative to the workspace root.
+/// Map `$ATELIER_USER` to a path relative to the workspace root.
 ///
 /// A bare username is nested one level under `x/` so it cannot collide with an
 /// unrelated same-named directory at the workspace root. Values that already
@@ -47,6 +47,64 @@ pub fn resolve_workspace_user_dir(root: &str, user: &str) -> Option<PathBuf> {
 mod tests {
     use super::*;
     use std::fs;
+
+    use serial_test::serial;
+
+    struct EnvVarGuard {
+        key: &'static str,
+        old: Option<std::ffi::OsString>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: &std::path::Path) -> Self {
+            let old = std::env::var_os(key);
+            unsafe { std::env::set_var(key, value) };
+            Self { key, old }
+        }
+
+        fn unset(key: &'static str) -> Self {
+            let old = std::env::var_os(key);
+            unsafe { std::env::remove_var(key) };
+            Self { key, old }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            match self.old.take() {
+                Some(value) => unsafe { std::env::set_var(self.key, value) },
+                None => unsafe { std::env::remove_var(self.key) },
+            }
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn optional_workspace_user_dir_uses_atelier_environment() {
+        let tmp = tempfile::tempdir().unwrap();
+        let user_dir = tmp.path().join("users").join("alice");
+        fs::create_dir_all(&user_dir).unwrap();
+        let _root = EnvVarGuard::set("ATELIER_ROOT", tmp.path());
+        let _user = EnvVarGuard::set("ATELIER_USER", std::path::Path::new("users/alice"));
+        let _legacy_root = EnvVarGuard::unset("XAI_ROOT");
+        let _legacy_user = EnvVarGuard::unset("XAI_USER");
+
+        assert_eq!(optional_workspace_user_dir(), Some(user_dir));
+    }
+
+    #[test]
+    #[serial]
+    fn optional_workspace_user_dir_ignores_legacy_xai_environment() {
+        let tmp = tempfile::tempdir().unwrap();
+        let user_dir = tmp.path().join("users").join("alice");
+        fs::create_dir_all(&user_dir).unwrap();
+        let _root = EnvVarGuard::unset("ATELIER_ROOT");
+        let _user = EnvVarGuard::unset("ATELIER_USER");
+        let _legacy_root = EnvVarGuard::set("XAI_ROOT", tmp.path());
+        let _legacy_user = EnvVarGuard::set("XAI_USER", std::path::Path::new("users/alice"));
+
+        assert_eq!(optional_workspace_user_dir(), None);
+    }
 
     // ── resolve_workspace_user_dir (pure, no env vars) ───────────────
 

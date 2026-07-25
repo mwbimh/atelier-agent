@@ -26,9 +26,9 @@ use crate::session::goal_planner::{
     parse_terminal_response, spawn_with_fail_open_retry,
 };
 use crate::session::goal_role_tools::RoleToolNames;
+use atelier_runtime_events::events::EventWriter;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use xai_file_utils::events::EventWriter;
 
 // Constants
 
@@ -43,6 +43,13 @@ const GOAL_STRATEGIST_SUBAGENT_TYPE: &str = GOAL_ROLE_SUBAGENT_TYPE;
 pub(crate) const GOAL_STRATEGIST_SUBAGENT_DESCRIPTION: &str = "goal strategist";
 
 const GOAL_STRATEGIST_PROMPT_TEMPLATE: &str = include_str!("templates/goal_strategist_prompt.md");
+
+fn goal_strategist_prompt_template() -> String {
+    atelier_config::runtime_defaults::runtime_context_prompt(
+        atelier_config::runtime_defaults::ContextPrompt::GoalStrategist,
+        GOAL_STRATEGIST_PROMPT_TEMPLATE,
+    )
+}
 
 /// Cap (in `char`s, not bytes) on the recommendation snippet read back
 /// from the strategy note and inlined into the continuation directive.
@@ -114,7 +121,7 @@ pub(crate) struct ChannelSpawner {
     pub(crate) cwd: Option<String>,
     /// Trace-artifact sink + resolved `task` tool name; `None` disables
     /// recording. See [`crate::session::goal_classifier::record_subagent_trace`].
-    pub(crate) trace_sink: Option<(xai_chat_state::ChatStateHandle, String)>,
+    pub(crate) trace_sink: Option<(atelier_chat_state::ChatStateHandle, String)>,
     /// Resolved per-role model+toolset override. Default (inherit) keeps the
     /// historic `::default()` spawn behavior.
     pub(crate) role_override: RoleSpawnOverride,
@@ -294,7 +301,7 @@ pub(crate) async fn run_goal_strategist(
     let plan_file_str = inputs.plan_file.to_string_lossy();
     let traces_dir_str = inputs.session_traces_dir.to_string_lossy();
     let scratch_root_str = inputs.scratch_root.to_string_lossy();
-    let with_paths = GOAL_STRATEGIST_PROMPT_TEMPLATE
+    let with_paths = goal_strategist_prompt_template()
         .replace("{STRATEGY_FILE}", &strategy_file_str)
         .replace("{PLAN_FILE}", &plan_file_str)
         .replace("{SESSION_TRACES_DIR}", &traces_dir_str)

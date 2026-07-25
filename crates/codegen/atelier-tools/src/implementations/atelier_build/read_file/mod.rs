@@ -64,11 +64,11 @@ const STREAM_DELTA_TARGET_BYTES: usize = 4 * 1024;
 /// ReadFile's capabilities incl. its streaming spec (single source of
 /// truth). Streams the formatted projection (not raw bytes) as inert
 /// `PlainText` / `Append`.
-static READ_FILE_CAPABILITIES: LazyLock<xai_tool_protocol::ToolCapabilities> =
-    LazyLock::new(|| xai_tool_protocol::ToolCapabilities {
+static READ_FILE_CAPABILITIES: LazyLock<atelier_tool_protocol::ToolCapabilities> =
+    LazyLock::new(|| atelier_tool_protocol::ToolCapabilities {
         is_read_only: true,
-        tool_scope: Some(xai_tool_protocol::ToolScope::Read),
-        streaming: Some(xai_tool_protocol::StreamingSpec {
+        tool_scope: Some(atelier_tool_protocol::ToolScope::Read),
+        streaming: Some(atelier_tool_protocol::StreamingSpec {
             subkind: "read_file_chunk".to_owned(),
             max_delta_bytes: None,
         }),
@@ -79,7 +79,7 @@ const PPTX_PROCESS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs
 async fn handle_pptx(
     file_bytes: Vec<u8>,
     path: &std::path::Path,
-) -> Result<ReadFileOutput, xai_tool_runtime::ToolError> {
+) -> Result<ReadFileOutput, atelier_tool_runtime::ToolError> {
     run_document_extraction(
         file_bytes,
         path,
@@ -299,7 +299,7 @@ pub(crate) async fn run_read_file(
     contract_version: Option<&str>,
     resources: SharedResources,
     streamable_out: Option<&mut bool>,
-) -> Result<ReadFileOutput, xai_tool_runtime::ToolError> {
+) -> Result<ReadFileOutput, atelier_tool_runtime::ToolError> {
     let (cwd, display_cwd, fs, hints_enabled);
     {
         let res = resources.lock().await;
@@ -468,10 +468,10 @@ pub(crate) async fn run_read_file(
             let renderer = res.require::<TemplateRenderer>()?;
             grep_name = renderer
                 .render("${{ tools.by_kind.search }}")
-                .map_err(|e| xai_tool_runtime::ToolError::invalid_arguments(e.to_string()))?;
+                .map_err(|e| atelier_tool_runtime::ToolError::invalid_arguments(e.to_string()))?;
             execute_name = renderer
                 .render("${{ tools.by_kind.execute }}")
-                .map_err(|e| xai_tool_runtime::ToolError::invalid_arguments(e.to_string()))?;
+                .map_err(|e| atelier_tool_runtime::ToolError::invalid_arguments(e.to_string()))?;
         }
         let single_content_line = extracted.raw_output.lines().count() <= 1;
         let single_line_hint = if single_content_line && !execute_name.is_empty() {
@@ -561,22 +561,22 @@ impl crate::types::tool_metadata::ToolMetadata for ReadFileTool {
         Expr::True
     }
 }
-impl xai_tool_runtime::Tool for ReadFileTool {
+impl atelier_tool_runtime::Tool for ReadFileTool {
     type Args = ReadFileInput;
     type Output = ReadFileOutput;
-    fn id(&self) -> xai_tool_protocol::ToolId {
-        xai_tool_protocol::ToolId::new("read_file").expect("valid tool id")
+    fn id(&self) -> atelier_tool_protocol::ToolId {
+        atelier_tool_protocol::ToolId::new("read_file").expect("valid tool id")
     }
     fn description(
         &self,
-        _ctx: &::xai_tool_runtime::ListToolsContext,
-    ) -> xai_tool_types::ToolDescription {
-        xai_tool_types::ToolDescription::new(
+        _ctx: &::atelier_tool_runtime::ListToolsContext,
+    ) -> atelier_tool_types::ToolDescription {
+        atelier_tool_types::ToolDescription::new(
             "read_file",
             crate::types::tool_metadata::ToolMetadata::description_template(self),
         )
     }
-    fn capabilities(&self) -> xai_tool_protocol::ToolCapabilities {
+    fn capabilities(&self) -> atelier_tool_protocol::ToolCapabilities {
         READ_FILE_CAPABILITIES.clone()
     }
     /// Streaming entry point. Only the line-oriented text path streams: the
@@ -585,18 +585,18 @@ impl xai_tool_runtime::Tool for ReadFileTool {
     /// Gated by `WorkspaceViewerContext::stream_tool_progress`.
     async fn execute(
         &self,
-        ctx: xai_tool_runtime::ToolCallContext,
+        ctx: atelier_tool_runtime::ToolCallContext,
         input: ReadFileInput,
-    ) -> xai_tool_runtime::ToolStream<ReadFileOutput> {
+    ) -> atelier_tool_runtime::ToolStream<ReadFileOutput> {
         let admitted_spec = ctx
-            .get::<xai_tool_runtime::WorkspaceViewerContext>()
+            .get::<atelier_tool_runtime::WorkspaceViewerContext>()
             .zip(READ_FILE_CAPABILITIES.streaming.as_ref())
             .filter(|(vctx, _)| vctx.stream_tool_progress)
             .map(|(_, spec)| spec);
         let Some(spec) = admitted_spec else {
             let this = ReadFileTool;
             return Box::pin(async_stream::stream! {
-                yield xai_tool_runtime::ToolStreamItem::Terminal(this.run(ctx, input)
+                yield atelier_tool_runtime::ToolStreamItem::Terminal(this.run(ctx, input)
                 . await);
             });
         };
@@ -609,20 +609,20 @@ impl xai_tool_runtime::Tool for ReadFileTool {
             window_end = (window_start + STREAM_DELTA_TARGET_BYTES).min(content
             .len()); while window_end > window_start && ! fc.content
             .is_char_boundary(window_end) { window_end -= 1; } if let Some(p) =
-            xai_tool_runtime::stream_chunk(spec, & content[..window_end], window_end
+            atelier_tool_runtime::stream_chunk(spec, & content[..window_end], window_end
             as u64, & mut last_total, false,) { yield
-            xai_tool_runtime::ToolStreamItem::Progress(p); } window_start =
+            atelier_tool_runtime::ToolStreamItem::Progress(p); } window_start =
             window_end; } } yield
-            xai_tool_runtime::ToolStreamItem::Terminal(Ok(output)); } Err(e) => yield
-            xai_tool_runtime::ToolStreamItem::Terminal(Err(e)), }
+            atelier_tool_runtime::ToolStreamItem::Terminal(Ok(output)); } Err(e) => yield
+            atelier_tool_runtime::ToolStreamItem::Terminal(Err(e)), }
         })
     }
     #[tracing::instrument(name = "tool.read_file", skip_all, fields(path = %input.path))]
     async fn run(
         &self,
-        ctx: xai_tool_runtime::ToolCallContext,
+        ctx: atelier_tool_runtime::ToolCallContext,
         input: ReadFileInput,
-    ) -> Result<ReadFileOutput, xai_tool_runtime::ToolError> {
+    ) -> Result<ReadFileOutput, atelier_tool_runtime::ToolError> {
         Self::read_with_streamability(&ctx, input)
             .await
             .map(|(output, _streamable)| output)
@@ -633,13 +633,13 @@ impl ReadFileTool {
     /// apply read-lint tracking. `streamable` is a call-local flag, so
     /// concurrent reads cannot flip each other's value.
     async fn read_with_streamability(
-        ctx: &xai_tool_runtime::ToolCallContext,
+        ctx: &atelier_tool_runtime::ToolCallContext,
         input: ReadFileInput,
-    ) -> Result<(ReadFileOutput, bool), xai_tool_runtime::ToolError> {
+    ) -> Result<(ReadFileOutput, bool), atelier_tool_runtime::ToolError> {
         let resources = crate::types::tool_metadata::shared_resources(ctx)?;
         let cwd_override = ctx
             .extensions
-            .get::<xai_tool_runtime::Cwd>()
+            .get::<atelier_tool_runtime::Cwd>()
             .map(|c| c.0.clone());
         let bv = crate::types::tool_metadata::behavior_version(ctx);
         let mut streamable_text = false;
@@ -689,7 +689,7 @@ mod tests {
             format: None,
         };
         let shared = resources.into_shared();
-        let result = xai_tool_runtime::Tool::run(&tool, test_ctx(shared.clone()), input)
+        let result = atelier_tool_runtime::Tool::run(&tool, test_ctx(shared.clone()), input)
             .await
             .unwrap();
         match result {
@@ -716,10 +716,10 @@ mod tests {
             format: None,
         };
         let mut ctx = test_ctx(resources.into_shared());
-        ctx.extensions.insert(xai_tool_runtime::BehaviorVersion(
+        ctx.extensions.insert(atelier_tool_runtime::BehaviorVersion(
             "legacy-0.4.10".to_string(),
         ));
-        let result = xai_tool_runtime::Tool::run(&tool, ctx, input)
+        let result = atelier_tool_runtime::Tool::run(&tool, ctx, input)
             .await
             .unwrap();
         let expected = format!(
@@ -745,9 +745,10 @@ mod tests {
             pages: None,
             format: None,
         };
-        let result = xai_tool_runtime::Tool::run(&tool, test_ctx(resources.into_shared()), input)
-            .await
-            .unwrap();
+        let result =
+            atelier_tool_runtime::Tool::run(&tool, test_ctx(resources.into_shared()), input)
+                .await
+                .unwrap();
         match result {
             ReadFileOutput::FileNotFound(msg) => {
                 assert!(msg.contains("does not exist"), "got: {msg}");
@@ -769,10 +770,10 @@ mod tests {
             format: None,
         };
         let mut ctx = test_ctx(resources.into_shared());
-        ctx.extensions.insert(xai_tool_runtime::BehaviorVersion(
+        ctx.extensions.insert(atelier_tool_runtime::BehaviorVersion(
             "legacy-0.4.10".to_string(),
         ));
-        let result = xai_tool_runtime::Tool::run(&tool, ctx, input)
+        let result = atelier_tool_runtime::Tool::run(&tool, ctx, input)
             .await
             .unwrap();
         let expected_path = dunce::canonicalize(tmp.path().join("subdir"))
@@ -798,9 +799,10 @@ mod tests {
             pages: None,
             format: None,
         };
-        let result = xai_tool_runtime::Tool::run(&tool, test_ctx(resources.into_shared()), input)
-            .await
-            .unwrap();
+        let result =
+            atelier_tool_runtime::Tool::run(&tool, test_ctx(resources.into_shared()), input)
+                .await
+                .unwrap();
         match result {
             ReadFileOutput::IsADirectory(msg) => {
                 assert!(msg.contains("is a directory, not a file"), "got: {msg}");
@@ -821,9 +823,10 @@ mod tests {
             pages: None,
             format: None,
         };
-        let result = xai_tool_runtime::Tool::run(&tool, test_ctx(resources.into_shared()), input)
-            .await
-            .unwrap();
+        let result =
+            atelier_tool_runtime::Tool::run(&tool, test_ctx(resources.into_shared()), input)
+                .await
+                .unwrap();
         match result {
             ReadFileOutput::FileContent(content) => {
                 assert_eq!(content.content, "");
@@ -847,9 +850,10 @@ mod tests {
             pages: None,
             format: None,
         };
-        let result = xai_tool_runtime::Tool::run(&tool, test_ctx(resources.into_shared()), input)
-            .await
-            .unwrap();
+        let result =
+            atelier_tool_runtime::Tool::run(&tool, test_ctx(resources.into_shared()), input)
+                .await
+                .unwrap();
         match result {
             ReadFileOutput::FileContent(content) => {
                 assert!(content.content.contains("2"));
@@ -873,9 +877,10 @@ mod tests {
             pages: None,
             format: None,
         };
-        let result = xai_tool_runtime::Tool::run(&tool, test_ctx(resources.into_shared()), input)
-            .await
-            .unwrap();
+        let result =
+            atelier_tool_runtime::Tool::run(&tool, test_ctx(resources.into_shared()), input)
+                .await
+                .unwrap();
         match result {
             ReadFileOutput::FileContent(content) => {
                 assert!(content.raw_output.contains("content"));
@@ -896,9 +901,10 @@ mod tests {
             pages: None,
             format: None,
         };
-        let result = xai_tool_runtime::Tool::run(&tool, test_ctx(resources.into_shared()), input)
-            .await
-            .unwrap();
+        let result =
+            atelier_tool_runtime::Tool::run(&tool, test_ctx(resources.into_shared()), input)
+                .await
+                .unwrap();
         match result {
             ReadFileOutput::FileContent(content) => {
                 assert_eq!(content.content, "1→hello\n");
@@ -920,9 +926,10 @@ mod tests {
             pages: None,
             format: None,
         };
-        let result = xai_tool_runtime::Tool::run(&tool, test_ctx(resources.into_shared()), input)
-            .await
-            .unwrap();
+        let result =
+            atelier_tool_runtime::Tool::run(&tool, test_ctx(resources.into_shared()), input)
+                .await
+                .unwrap();
         match result {
             ReadFileOutput::FileContent(content) => {
                 let concise = content.content_concise.unwrap();
@@ -952,9 +959,10 @@ mod tests {
             pages: None,
             format: None,
         };
-        let result = xai_tool_runtime::Tool::run(&tool, test_ctx(resources.into_shared()), input)
-            .await
-            .unwrap();
+        let result =
+            atelier_tool_runtime::Tool::run(&tool, test_ctx(resources.into_shared()), input)
+                .await
+                .unwrap();
         match result {
             ReadFileOutput::FileTooLarge(msg) => {
                 assert!(msg.contains("exceeds maximum allowed tokens"));
@@ -988,9 +996,10 @@ mod tests {
             pages: None,
             format: None,
         };
-        let result = xai_tool_runtime::Tool::run(&tool, test_ctx(resources.into_shared()), input)
-            .await
-            .unwrap();
+        let result =
+            atelier_tool_runtime::Tool::run(&tool, test_ctx(resources.into_shared()), input)
+                .await
+                .unwrap();
         match result {
             ReadFileOutput::FileTooLarge(msg) => {
                 assert!(msg.contains("requested line range"));
@@ -1177,9 +1186,10 @@ mod tests {
             pages: None,
             format: None,
         };
-        let result = xai_tool_runtime::Tool::run(&tool, test_ctx(resources.into_shared()), input)
-            .await
-            .unwrap();
+        let result =
+            atelier_tool_runtime::Tool::run(&tool, test_ctx(resources.into_shared()), input)
+                .await
+                .unwrap();
         match result {
             ReadFileOutput::FileContent(content) => {
                 assert!(
@@ -1213,9 +1223,10 @@ mod tests {
             pages: None,
             format: None,
         };
-        let result = xai_tool_runtime::Tool::run(&tool, test_ctx(resources.into_shared()), input)
-            .await
-            .unwrap();
+        let result =
+            atelier_tool_runtime::Tool::run(&tool, test_ctx(resources.into_shared()), input)
+                .await
+                .unwrap();
         match result {
             ReadFileOutput::FileReadError(msg) => {
                 assert!(
@@ -1249,10 +1260,10 @@ mod tests {
             format: None,
         };
         let mut ctx = test_ctx(resources.into_shared());
-        ctx.extensions.insert(xai_tool_runtime::BehaviorVersion(
+        ctx.extensions.insert(atelier_tool_runtime::BehaviorVersion(
             "legacy-0.4.10".to_string(),
         ));
-        let result = xai_tool_runtime::Tool::run(&tool, ctx, input)
+        let result = atelier_tool_runtime::Tool::run(&tool, ctx, input)
             .await
             .unwrap();
         match result {
@@ -1283,9 +1294,10 @@ mod tests {
             pages: None,
             format: None,
         };
-        let result = xai_tool_runtime::Tool::run(&tool, test_ctx(resources.into_shared()), input)
-            .await
-            .unwrap();
+        let result =
+            atelier_tool_runtime::Tool::run(&tool, test_ctx(resources.into_shared()), input)
+                .await
+                .unwrap();
         match result {
             ReadFileOutput::FileContent(content) => {
                 assert!(content.raw_output.contains("fn main()"));
@@ -1311,9 +1323,10 @@ mod tests {
             pages: None,
             format: None,
         };
-        let result = xai_tool_runtime::Tool::run(&tool, test_ctx(resources.into_shared()), input)
-            .await
-            .unwrap();
+        let result =
+            atelier_tool_runtime::Tool::run(&tool, test_ctx(resources.into_shared()), input)
+                .await
+                .unwrap();
         match result {
             ReadFileOutput::FileContent(content) => {
                 assert!(content.raw_output.contains("log data for read_file test"));
@@ -1341,9 +1354,10 @@ mod tests {
             pages: None,
             format: None,
         };
-        let result = xai_tool_runtime::Tool::run(&tool, test_ctx(resources.into_shared()), input)
-            .await
-            .unwrap();
+        let result =
+            atelier_tool_runtime::Tool::run(&tool, test_ctx(resources.into_shared()), input)
+                .await
+                .unwrap();
         match result {
             ReadFileOutput::FileContent(_) => {}
             other => {
@@ -1661,9 +1675,10 @@ pub fn verify(req: &HttpRequest) -> Result<Claims, Error> {
             pages: None,
             format: None,
         };
-        let result = xai_tool_runtime::Tool::run(&tool, test_ctx(resources.into_shared()), input)
-            .await
-            .unwrap();
+        let result =
+            atelier_tool_runtime::Tool::run(&tool, test_ctx(resources.into_shared()), input)
+                .await
+                .unwrap();
         match result {
             ReadFileOutput::FileContent(fc) => {
                 assert!(
@@ -1705,9 +1720,10 @@ pub fn verify(req: &HttpRequest) -> Result<Claims, Error> {
             pages: None,
             format: None,
         };
-        let result = xai_tool_runtime::Tool::run(&tool, test_ctx(resources.into_shared()), input)
-            .await
-            .unwrap();
+        let result =
+            atelier_tool_runtime::Tool::run(&tool, test_ctx(resources.into_shared()), input)
+                .await
+                .unwrap();
         assert!(
             matches!(result, ReadFileOutput::FileContent(_)),
             "SKILL.md should not be truncated, got {:?}",
@@ -1809,7 +1825,7 @@ pub fn verify(req: &HttpRequest) -> Result<Claims, Error> {
             pages: None,
             format: None,
         };
-        xai_tool_runtime::Tool::run(&ReadFileTool, test_ctx(resources.into_shared()), input)
+        atelier_tool_runtime::Tool::run(&ReadFileTool, test_ctx(resources.into_shared()), input)
             .await
             .unwrap()
     }
@@ -1896,26 +1912,26 @@ pub fn verify(req: &HttpRequest) -> Result<Claims, Error> {
     /// Drive `execute` to completion; returns ordered deltas + terminal.
     /// Asserts `[Progress*, Terminal]` and the canonical envelope.
     async fn execute_collect(
-        ctx: xai_tool_runtime::ToolCallContext,
+        ctx: atelier_tool_runtime::ToolCallContext,
         input: ReadFileInput,
     ) -> (Vec<String>, ReadFileOutput) {
         use futures::StreamExt;
-        let mut stream = xai_tool_runtime::Tool::execute(&ReadFileTool, ctx, input).await;
+        let mut stream = atelier_tool_runtime::Tool::execute(&ReadFileTool, ctx, input).await;
         let mut deltas = Vec::new();
         let mut terminal: Option<ReadFileOutput> = None;
         while let Some(item) = stream.next().await {
             match item {
-                xai_tool_runtime::ToolStreamItem::Progress(p) => {
+                atelier_tool_runtime::ToolStreamItem::Progress(p) => {
                     assert!(terminal.is_none(), "Progress arrived after Terminal");
                     match p {
-                        xai_tool_runtime::ToolProgress::Custom { subkind, payload } => {
+                        atelier_tool_runtime::ToolProgress::Custom { subkind, payload } => {
                             assert_eq!(subkind, "read_file_chunk", "unexpected subkind");
                             deltas.push(payload["delta"].as_str().unwrap().to_owned());
                         }
                         other => panic!("expected Custom progress, got {other:?}"),
                     }
                 }
-                xai_tool_runtime::ToolStreamItem::Terminal(r) => {
+                atelier_tool_runtime::ToolStreamItem::Terminal(r) => {
                     assert!(terminal.is_none(), "more than one Terminal yielded");
                     terminal = Some(r.expect("read_file terminal should be Ok"));
                 }
@@ -1974,7 +1990,7 @@ pub fn verify(req: &HttpRequest) -> Result<Claims, Error> {
             pages: None,
             format: None,
         };
-        let mut ctx = xai_tool_runtime::ToolCallContext::default();
+        let mut ctx = atelier_tool_runtime::ToolCallContext::default();
         ctx.extensions
             .insert(test_resources(tmp.path()).into_shared());
         let (deltas, terminal) = execute_collect(ctx, input).await;

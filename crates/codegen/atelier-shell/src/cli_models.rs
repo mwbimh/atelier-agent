@@ -2,14 +2,13 @@
 
 use agent_client_protocol as acp;
 use anyhow::Result;
-use xai_acp_lib::{AcpAgentTx, acp_send};
+use atelier_acp_runtime::{AcpAgentTx, acp_send};
 
 use crate::agent::config::Config as AgentConfig;
 
 /// Status for the `atelier models` banner (display order ≠ sampling priority; see [`AuthStatus::resolve`]).
 #[derive(Debug, PartialEq, Eq)]
 pub enum AuthStatus {
-    ApiKey,
     /// Auth host from `atelier_ws_origin` (scheme stripped).
     LoggedIn(String),
     /// Catalog key of the first model with own `api_key`/`env_key`.
@@ -19,16 +18,13 @@ pub enum AuthStatus {
 }
 
 impl AuthStatus {
-    /// Banner status: env key → session → BYOK → deployment → none.
+    /// Banner status: session → Provider credentials → deployment → none.
     ///
     /// Differs from sampling (`resolve_credentials`: BYOK → session → env) so a
-    /// logged-in user sees the login host. BYOK uses
-    /// [`crate::agent::auth_method::should_advertise_xai_api_key`] so
+    /// logged-in user sees the login host. Provider credentials use
+    /// [`crate::agent::auth_method::should_advertise_provider_api_key`] so
     /// `disable_api_key_auth` is honored.
     pub fn resolve(agent_config: &AgentConfig) -> Self {
-        if crate::agent::auth_method::has_xai_api_key_env() {
-            return Self::ApiKey;
-        }
         if agent_config.create_auth_manager().current().is_some() {
             let origin = &agent_config.atelier_com_config.atelier_ws_origin;
             let host = origin
@@ -38,7 +34,7 @@ impl AuthStatus {
             return Self::LoggedIn(host.to_owned());
         }
         let models = crate::agent::config::resolve_model_list(agent_config, None);
-        if crate::agent::auth_method::should_advertise_xai_api_key(
+        if crate::agent::auth_method::should_advertise_provider_api_key(
             agent_config.atelier_com_config.api_key_auth_disabled(),
             models.values(),
         ) && let Some(name) = models
@@ -92,9 +88,7 @@ pub async fn list_models(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::auth_method::{LEGACY_XAI_API_KEY_ENV_VAR, XAI_API_KEY_ENV_VAR};
     use crate::agent::config::Config;
-    use crate::auth::{AtelierAuth, AuthMode};
     use atelier_test_support::EnvGuard;
     use serial_test::serial;
 
@@ -102,12 +96,10 @@ mod tests {
     ///
     /// Uses `ATELIER_AUTH_PATH` (not `ATELIER_HOME`) so a OnceLock-cached real home
     /// with `auth.json` cannot leak into these tests.
-    fn isolate_auth_sources() -> (tempfile::TempDir, [EnvGuard; 7]) {
+    fn isolate_auth_sources() -> (tempfile::TempDir, [EnvGuard; 5]) {
         let dir = tempfile::tempdir().unwrap();
         let auth_path = dir.path().join("no-auth.json");
         let guards = [
-            EnvGuard::unset(XAI_API_KEY_ENV_VAR),
-            EnvGuard::unset(LEGACY_XAI_API_KEY_ENV_VAR),
             EnvGuard::unset("ATELIER_AUTH"),
             EnvGuard::set("ATELIER_AUTH_PATH", auth_path.to_str().unwrap()),
             EnvGuard::unset("ATELIER_DEPLOYMENT_KEY"),
@@ -133,22 +125,6 @@ mod tests {
     fn config_from_toml(toml_src: &str) -> Config {
         let toml: toml::Value = toml::from_str(toml_src).unwrap();
         Config::new_from_toml_cfg(&toml).expect("config should parse")
-    }
-
-    #[test]
-    #[serial]
-    fn resolve_api_key_env() {
-        let (_dir, _g) = isolate_auth_sources();
-        let _key = EnvGuard::set(XAI_API_KEY_ENV_VAR, "xai-test-key");
-        assert_eq!(AuthStatus::resolve(&Config::default()), AuthStatus::ApiKey);
-    }
-
-    #[test]
-    #[serial]
-    fn resolve_legacy_api_key_env() {
-        let (_dir, _g) = isolate_auth_sources();
-        let _key = EnvGuard::set(LEGACY_XAI_API_KEY_ENV_VAR, "legacy-key");
-        assert_eq!(AuthStatus::resolve(&Config::default()), AuthStatus::ApiKey);
     }
 
     #[test]
@@ -236,12 +212,14 @@ mod tests {
 
     #[test]
     #[serial]
-    fn resolve_priority_api_key_over_byok_and_deployment() {
+    fn resolve_provider_credentials_over_deployment() {
         let (_dir, _g) = isolate_auth_sources();
-        let _key = EnvGuard::set(XAI_API_KEY_ENV_VAR, "xai-test-key");
         let dm = crate::models::default_model();
         let cfg = config_from_toml(&byok_and_deployment_toml(dm));
-        assert_eq!(AuthStatus::resolve(&cfg), AuthStatus::ApiKey);
+        assert_eq!(
+            AuthStatus::resolve(&cfg),
+            AuthStatus::ModelCredentials(dm.to_owned())
+        );
     }
 
     #[test]

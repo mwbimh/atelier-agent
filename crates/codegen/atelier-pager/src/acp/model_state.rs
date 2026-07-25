@@ -7,8 +7,6 @@ use atelier_shell::sampling::types::{
 };
 use indexmap::IndexMap;
 
-use crate::slash::commands::effort_levels::legacy_effort_options;
-
 /// Why an effort token could not be applied to a model. Shared by every effort
 /// surface (`/effort`, the CLI deferred switch, and headless) so they classify
 /// the same input identically and differ only in how they surface the error.
@@ -93,11 +91,7 @@ impl ModelState {
     /// `meta` (the ACP extension point — same source as `totalContextTokens`).
     ///
     /// Honors an explicit `acceptsImages` bool, else an `inputModalities` array
-    /// containing `"image"`. DEFAULTS TO `true` when neither key is present:
-    /// correct today (all current Atelier models accept images, so nothing is
-    /// suppressed) and forward-compatible (suppresses non-vision models once the
-    /// ACP server populates the key). Populating that key server-side is a
-    /// separate change.
+    /// containing `"image"`. Unknown capability is fail-closed (`false`).
     pub fn current_model_accepts_images(&self) -> bool {
         let Some(meta) = self
             .current
@@ -105,7 +99,7 @@ impl ModelState {
             .and_then(|id| self.available.get(id))
             .and_then(|info| info.meta.as_ref())
         else {
-            return true;
+            return false;
         };
         if let Some(accepts) = meta.get("acceptsImages").and_then(|v| v.as_bool()) {
             return accepts;
@@ -115,7 +109,20 @@ impl ModelState {
                 .iter()
                 .any(|m| m.as_str().is_some_and(|s| s.eq_ignore_ascii_case("image")));
         }
-        true
+        false
+    }
+
+    /// Whether the current Provider/model profile exposes a fast-mode switch.
+    /// Unknown capability is fail-closed so the TUI never offers a control the
+    /// runtime cannot honor.
+    pub fn current_model_supports_fast_mode(&self) -> bool {
+        self.current
+            .as_ref()
+            .and_then(|id| self.available.get(id))
+            .and_then(|info| info.meta.as_ref())
+            .and_then(|meta| meta.get("supportsFastMode"))
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false)
     }
 
     /// Get the effective context window size (tokens).
@@ -178,8 +185,8 @@ impl ModelState {
     }
 
     /// The reasoning-effort menu for the current model. Gate-first: an unset or
-    /// unsupported model yields no menu; a supported model uses the server list
-    /// when present, else the built-in fallback.
+    /// unsupported model yields no menu; a supported model uses only the
+    /// model-specific list advertised by the runtime.
     pub fn reasoning_effort_options(&self) -> Vec<ReasoningEffortOption> {
         match self.current.as_ref() {
             Some(id) => self.reasoning_effort_options_for(id),
@@ -188,9 +195,7 @@ impl ModelState {
     }
 
     /// Menu for a specific catalog model id (used by `/model`'s effort phase).
-    /// `parse_reasoning_efforts_meta` returns `None` for absent, non-array, or
-    /// present-but-unusable lists, so all of those fall back to the built-in menu
-    /// exactly as the shell's session picker does.
+    /// Absent or unusable metadata yields no selectable levels.
     pub(crate) fn reasoning_effort_options_for(
         &self,
         id: &acp::ModelId,
@@ -201,7 +206,7 @@ impl ModelState {
         if !supports_reasoning_effort_meta(info.meta.as_ref()) {
             return Vec::new();
         }
-        parse_reasoning_efforts_meta(info.meta.as_ref()).unwrap_or_else(legacy_effort_options)
+        parse_reasoning_efforts_meta(info.meta.as_ref()).unwrap_or_default()
     }
 
     /// Map a typed/selected effort token to its canonical value for the current
@@ -451,13 +456,12 @@ mod tests {
     }
 
     #[test]
-    fn accepts_images_defaults_true_when_meta_absent() {
-        // No current model, empty meta, and a meta without the key all default
-        // permissive — correct today and a no-op until the server populates it.
-        assert!(ModelState::default().current_model_accepts_images());
-        assert!(state_with_meta(None).current_model_accepts_images());
+    fn accepts_images_fails_closed_when_meta_absent() {
+        // Unknown capabilities must not expose image input controls.
+        assert!(!ModelState::default().current_model_accepts_images());
+        assert!(!state_with_meta(None).current_model_accepts_images());
         assert!(
-            state_with_meta(Some(serde_json::json!({ "totalContextTokens": 256000 })))
+            !state_with_meta(Some(serde_json::json!({ "totalContextTokens": 256000 })))
                 .current_model_accepts_images()
         );
     }
@@ -491,24 +495,17 @@ mod tests {
     }
 
     #[test]
-    fn reasoning_effort_options_falls_back_to_builtin_menu() {
-        // Supported but no server list → today's four-row built-in menu.
+    fn reasoning_effort_options_requires_model_specific_menu() {
         let state = state_with_meta(Some(serde_json::json!({
             "supportsReasoningEffort": true,
         })));
-        let ids: Vec<_> = state
-            .reasoning_effort_options()
-            .into_iter()
-            .map(|o| o.id)
-            .collect();
-        assert_eq!(ids, ["xhigh", "high", "medium", "low"]);
+        assert!(state.reasoning_effort_options().is_empty());
     }
 
     #[test]
-    fn reasoning_effort_options_falls_back_when_list_present_but_unusable() {
-        // Matches the shell picker: an explicit empty list, and a list where every
-        // entry skip-invalidated under version skew, both fall back to the built-in
-        // menu rather than silently vanishing.
+    fn reasoning_effort_options_is_empty_when_list_is_unusable() {
+        // An explicit empty list or an invalid list must fail closed rather than
+        // advertising levels the Provider/model did not declare.
         for meta in [
             serde_json::json!({ "supportsReasoningEffort": true, "reasoningEfforts": [] }),
             serde_json::json!({
@@ -516,12 +513,12 @@ mod tests {
                 "reasoningEfforts": [{ "value": "quantum" }],
             }),
         ] {
-            let ids: Vec<_> = state_with_meta(Some(meta.clone()))
-                .reasoning_effort_options()
-                .into_iter()
-                .map(|o| o.id)
-                .collect();
-            assert_eq!(ids, ["xhigh", "high", "medium", "low"], "for meta {meta}");
+            assert!(
+                state_with_meta(Some(meta.clone()))
+                    .reasoning_effort_options()
+                    .is_empty(),
+                "for meta {meta}"
+            );
         }
     }
 
@@ -611,17 +608,13 @@ mod tests {
     }
 
     #[test]
-    fn resolve_effort_token_legacy_menu_rejects_none() {
-        // supportsReasoningEffort without a server list → built-in low..xhigh.
+    fn resolve_effort_token_without_model_menu_rejects_all_levels() {
         let state = state_with_meta(Some(serde_json::json!({
             "supportsReasoningEffort": true,
         })));
         assert!(state.resolve_effort_token("none").is_none());
         assert!(state.resolve_effort_token("minimal").is_none());
-        assert_eq!(
-            state.resolve_effort_token("low"),
-            Some(ReasoningEffort::Low)
-        );
+        assert!(state.resolve_effort_token("low").is_none());
     }
 
     #[test]
@@ -645,5 +638,18 @@ mod tests {
             !state_with_meta(Some(serde_json::json!({ "inputModalities": ["text"] })))
                 .current_model_accepts_images()
         );
+    }
+
+    #[test]
+    fn fast_mode_support_is_model_specific_and_fail_closed() {
+        assert!(
+            state_with_meta(Some(serde_json::json!({ "supportsFastMode": true })))
+                .current_model_supports_fast_mode()
+        );
+        assert!(
+            !state_with_meta(Some(serde_json::json!({ "supportsFastMode": false })))
+                .current_model_supports_fast_mode()
+        );
+        assert!(!ModelState::default().current_model_supports_fast_mode());
     }
 }

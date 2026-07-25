@@ -23,11 +23,11 @@ pub const CONTENT_EXPAND_OFFSET: usize = 100_000;
 /// Derive a short repo display name from a CWD path.
 ///
 /// Uses the last 2 normal path components joined by `-`. For paths with
-/// only one normal component (e.g., `/xai`), returns that component alone.
+/// only one normal component (e.g., `/repo`), returns that component alone.
 /// Does not perform tilde expansion — callers provide absolute paths.
 /// Returns `"unknown"` for empty input.
 ///
-/// Examples: `/home/user/fw/1` → `"fw-1"`, `/xai` → `"xai"`, `/` → `"/"`.
+/// Examples: `/home/user/fw/1` → `"fw-1"`, `/repo` → `"repo"`, `/` → `"/"`.
 ///
 /// Shared by the session-list builder (which stamps each entry's `repo_name`)
 /// and the picker pinning below, so the current-cwd key matches a group key.
@@ -772,7 +772,7 @@ mod tests {
 
     #[test]
     fn repo_name_from_cwd_standard_path() {
-        assert_eq!(repo_name_from_cwd("/home/user/xai"), "user-xai");
+        assert_eq!(repo_name_from_cwd("/home/user/repo"), "user-repo");
     }
 
     #[test]
@@ -795,7 +795,7 @@ mod tests {
 
     #[test]
     fn repo_name_from_cwd_single_dir() {
-        assert_eq!(repo_name_from_cwd("/xai"), "xai");
+        assert_eq!(repo_name_from_cwd("/repo"), "repo");
     }
 
     /// Substring-only title matching: the old ordered-chars fallback let

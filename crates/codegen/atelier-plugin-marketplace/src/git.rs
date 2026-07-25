@@ -114,7 +114,10 @@ fn acquire_cache_lock(lock_path: &Path, timeout: Duration) -> Result<File, Strin
     loop {
         match file.try_lock_exclusive() {
             Ok(()) => return Ok(file),
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+            Err(e)
+                if e.kind() == io::ErrorKind::WouldBlock
+                    || matches!(e.raw_os_error(), Some(32 | 33)) =>
+            {
                 if Instant::now() >= deadline {
                     return Err(format!(
                         "cache lock timeout after {}s for {}",
@@ -251,9 +254,9 @@ pub const GIT_AUTH_SUPPRESSION_ENVS: [(&str, &str); 4] = [
 /// Git command with auth/LFS/SSH prompt suppression and `--no-optional-locks`.
 pub fn git_command() -> std::process::Command {
     let mut cmd = std::process::Command::new("git");
-    xai_tty_utils::detach_std_command(&mut cmd);
+    atelier_tty_utils::detach_std_command(&mut cmd);
     cmd.stdin(std::process::Stdio::null());
-    cmd.envs(xai_tty_utils::pager_env());
+    cmd.envs(atelier_tty_utils::pager_env());
     for &(key, val) in &GIT_AUTH_SUPPRESSION_ENVS {
         cmd.env(key, val);
     }
@@ -323,7 +326,7 @@ mod tests {
 
     #[test]
     fn cache_hash_is_deterministic() {
-        let url = "https://github.com/xai-org/xai-plugin-marketplace.git";
+        let url = "https://github.com/atelier-org/atelier-plugin-marketplace.git";
         let h1 = cache_hash(url);
         let h2 = cache_hash(url);
         assert_eq!(h1, h2);
@@ -400,7 +403,10 @@ mod tests {
 
         let start = Instant::now();
         let err = acquire_cache_lock(&lock_path, Duration::from_millis(50)).unwrap_err();
-        assert!(err.contains("cache lock timeout"));
+        assert!(
+            err.contains("cache lock timeout"),
+            "unexpected error: {err}"
+        );
         assert!(start.elapsed() >= Duration::from_millis(50));
         drop(lease);
         let _lock = acquire_cache_lock(&lock_path, Duration::from_millis(1)).unwrap();

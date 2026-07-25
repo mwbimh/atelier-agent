@@ -1,6 +1,6 @@
 use agent_client_protocol as acp;
+use atelier_acp_runtime::AcpAgentGatewaySender as GatewaySender;
 use serde::{Deserialize, Serialize};
-use xai_acp_lib::AcpAgentGatewaySender as GatewaySender;
 
 // Re-export from workspace crate (canonical home for fuzzy search).
 pub use atelier_workspace::file_system::{ClientId, TargetClientId};

@@ -523,7 +523,7 @@ async fn derived_agent_worktree_isolation_uses_a_real_independent_checkout() {
                 "derived worktree must contain the committed source checkout"
             );
 
-            xai_fast_worktree::remove_worktree(&worktree_path).unwrap();
+            atelier_fast_worktree::remove_worktree(&worktree_path).unwrap();
         })
         .await;
 }

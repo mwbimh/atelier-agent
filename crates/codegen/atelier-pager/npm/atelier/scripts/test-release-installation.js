@@ -53,8 +53,6 @@ for (const installerPath of installerPaths) {
 }
 
 const assembler = read('crates/codegen/atelier-pager/npm/atelier/scripts/assemble-platform-packages.js');
-assertDoesNotMatch(assembler, /xai-atelier/, 'assemble-platform-packages.js');
-assertDoesNotMatch(assembler, /xai-atelier-tools/, 'assemble-platform-packages.js');
 assert.match(assembler, /target', 'release', 'atelier'/);
 assert.match(assembler, /THIRD_PARTY_NOTICES\.md/);
 

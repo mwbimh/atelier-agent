@@ -20,11 +20,11 @@ use crate::session::goal_planner::{
 };
 use crate::session::goal_role_tools::RoleToolNames;
 use crate::session::goal_tracker::GoalClassifierVerdict;
+use atelier_runtime_events::events::EventWriter;
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
-use xai_file_utils::events::EventWriter;
 
 // Constants
 
@@ -94,6 +94,13 @@ const GOAL_CLASSIFIER_SUBAGENT_TYPE: &str = GOAL_ROLE_SUBAGENT_TYPE;
 const GOAL_CLASSIFIER_SUBAGENT_DESCRIPTION: &str = "goal achievement skeptic";
 
 const GOAL_VERIFIER_PROMPT_TEMPLATE: &str = include_str!("templates/goal_verifier_prompt.md");
+
+fn goal_verifier_prompt_template() -> String {
+    atelier_config::runtime_defaults::runtime_context_prompt(
+        atelier_config::runtime_defaults::ContextPrompt::GoalSkeptic,
+        GOAL_VERIFIER_PROMPT_TEMPLATE,
+    )
+}
 
 /// Default number of adversarial skeptics spawned per verification
 /// attempt. Override via `ATELIER_GOAL_VERIFIER_N` (clamped 1..=5) or the
@@ -441,7 +448,7 @@ pub(crate) async fn capture_git_baseline(workspace_root: &Path) -> Option<String
 /// harness-spawned subagent, shaped like a model-issued `task` spawn.
 ///
 /// The tool_result MUST carry the real task tool's `<subagent_result>` footer
-/// (via [`xai_tool_types::format_resume_footer`]): trace tooling
+/// (via [`atelier_tool_types::format_resume_footer`]): trace tooling
 /// discovers subagents by scanning tool_result bodies for that
 /// `subagent_id:` block, so without it the harness subagent never shows in the
 /// session tree. The footer id equals the child session id, so the viewer can
@@ -466,7 +473,7 @@ pub(crate) fn build_subagent_trace_items(
         name: task_tool_name.to_string(),
         arguments: std::sync::Arc::from(arguments),
     }]);
-    let footer = xai_tool_types::format_resume_footer(subagent_id, subagent_type, None);
+    let footer = atelier_tool_types::format_resume_footer(subagent_id, subagent_type, None);
     let result = ConversationItem::tool_result(subagent_id, format!("{output}\n\n{footer}"));
     vec![call, result]
 }
@@ -474,12 +481,12 @@ pub(crate) fn build_subagent_trace_items(
 /// Record a harness-spawned subagent into the in-progress harness trace phase
 /// as a synthetic `task` call (see [`build_subagent_trace_items`]). The items
 /// accumulate in a side buffer (never the live model context); the caller seals
-/// the phase via [`xai_chat_state::ChatStateHandle::flush_harness_trace_turn`]
+/// the phase via [`atelier_chat_state::ChatStateHandle::flush_harness_trace_turn`]
 /// so it uploads as its own sibling `turn_{N}` artifact. No-op when tracing is
 /// off (`sink` absent) or no prompt was captured. `sink` carries the chat-state
 /// handle and the resolved `task` tool name.
 pub(crate) fn record_subagent_trace(
-    sink: Option<&(xai_chat_state::ChatStateHandle, String)>,
+    sink: Option<&(atelier_chat_state::ChatStateHandle, String)>,
     subagent_id: &str,
     subagent_type: &str,
     description: &str,
@@ -516,7 +523,7 @@ pub(crate) struct ChannelSpawner {
     pub(crate) cwd: Option<String>,
     /// Trace-artifact sink + the resolved `task` tool name. `None` disables
     /// trace recording (tests, or sessions without trace capture).
-    pub(crate) trace_sink: Option<(xai_chat_state::ChatStateHandle, String)>,
+    pub(crate) trace_sink: Option<(atelier_chat_state::ChatStateHandle, String)>,
     /// Per-skeptic-index resolved model+toolset override, indexed by
     /// `skeptic_idx`. An out-of-range index (or `Default`) inherits the
     /// current model — round-robin expansion + auth/capability fail-open is
@@ -1522,8 +1529,9 @@ fn render_skeptic_prompt(
     tool_names: &RoleToolNames,
     scratch_ready: bool,
 ) -> String {
+    let prompt_template = goal_verifier_prompt_template();
     render_verifier_prompt(
-        GOAL_VERIFIER_PROMPT_TEMPLATE,
+        &prompt_template,
         objective,
         changes_ref,
         changed_files,
@@ -5970,7 +5978,7 @@ mod tests {
                 verifier_count: config,
                 ..Default::default()
             },
-            remote_settings: remote.map(|v| crate::util::config::RemoteSettings {
+            local_runtime_settings: remote.map(|v| crate::util::config::LocalRuntimeSettings {
                 goal_verifier_count: Some(v),
                 ..Default::default()
             }),
@@ -5984,7 +5992,7 @@ mod tests {
                 classifier_max_runs: config,
                 ..Default::default()
             },
-            remote_settings: remote.map(|v| crate::util::config::RemoteSettings {
+            local_runtime_settings: remote.map(|v| crate::util::config::LocalRuntimeSettings {
                 goal_classifier_max_runs: Some(v),
                 ..Default::default()
             }),
@@ -5998,7 +6006,7 @@ mod tests {
                 strategist_every: config,
                 ..Default::default()
             },
-            remote_settings: remote.map(|v| crate::util::config::RemoteSettings {
+            local_runtime_settings: remote.map(|v| crate::util::config::LocalRuntimeSettings {
                 goal_strategist_every: Some(v),
                 ..Default::default()
             }),

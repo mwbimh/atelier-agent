@@ -3,7 +3,7 @@
 
 use super::*;
 
-use crate::remote::DEFAULT_CONTEXT_WINDOW;
+use crate::runtime_defaults::DEFAULT_CONTEXT_WINDOW;
 use crate::session::helpers::session_compact::{
     AuxiliaryRequestLifecycle, AuxiliaryRequestState, auxiliary_provider_label,
 };
@@ -37,7 +37,7 @@ impl SessionActor {
         // Anthropic Messages API rejects requests that include thinking blocks in
         // messages but omit the `thinking` parameter.
         let mut items: Vec<ConversationItem> =
-            xai_chat_state::compaction_utils::strip_reasoning_blocks(
+            atelier_chat_state::compaction_utils::strip_reasoning_blocks(
                 self.chat_state_handle.get_conversation().await,
             );
 
@@ -251,7 +251,7 @@ impl SessionActor {
         // RECAP_MAX_CHARS safety net, so an explicit token cap isn't needed.
         let started_at = chrono::Utc::now().to_rfc3339();
         let x_atelier_conv_id = format!("recap-{}", uuid::Uuid::new_v4());
-        let x_atelier_req_id = format!("xai-recap-{}", uuid::Uuid::new_v4());
+        let x_atelier_req_id = format!("atelier-recap-{}", uuid::Uuid::new_v4());
         let lifecycle = AuxiliaryRequestLifecycle::new(
             "summary",
             auxiliary_provider_label(&sampling_config.base_url),
@@ -407,7 +407,7 @@ impl SessionActor {
             }
             return;
         }
-        self.send_xai_notification(
+        self.send_extension_notification(
             crate::extensions::notification::SessionUpdate::SessionRecap { summary, auto },
         )
         .await;
@@ -504,7 +504,7 @@ impl SessionActor {
     ///
     /// Only the manual path shows a spinner, so callers gate this on `!auto`.
     async fn emit_recap_unavailable(&self) {
-        self.send_xai_notification(
+        self.send_extension_notification(
             crate::extensions::notification::SessionUpdate::SessionRecapUnavailable,
         )
         .await;

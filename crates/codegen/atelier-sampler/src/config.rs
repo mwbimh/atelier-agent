@@ -62,6 +62,14 @@ pub struct SamplerConfig {
     /// models and is applied after typed defaults have been materialized.
     #[serde(default, skip_serializing_if = "Map::is_empty")]
     pub request_payload: Map<String, Value>,
+    /// Provider/model-exact remote compaction path. This is transport routing
+    /// metadata and is never merged into an ordinary inference request body.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_compaction_endpoint: Option<String>,
+    /// Provider/model-exact OpenAI Images-compatible path. This is transport
+    /// routing metadata and is never merged into ordinary inference JSON.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_generation_endpoint: Option<String>,
     pub api_backend: ApiBackend,
     #[serde(default)]
     pub auth_scheme: AuthScheme,
@@ -149,6 +157,11 @@ impl fmt::Debug for SamplerConfig {
                 "request_payload",
                 &RedactedJsonMap(self.request_payload.len()),
             )
+            .field(
+                "remote_compaction_endpoint",
+                &self.remote_compaction_endpoint,
+            )
+            .field("image_generation_endpoint", &self.image_generation_endpoint)
             .field("api_backend", &self.api_backend)
             .field("auth_scheme", &self.auth_scheme)
             .field("extra_headers", &RedactedHeaders(self.extra_headers.len()))
@@ -211,6 +224,8 @@ impl Default for SamplerConfig {
             temperature: None,
             top_p: None,
             request_payload: Map::new(),
+            remote_compaction_endpoint: None,
+            image_generation_endpoint: None,
             api_backend: ApiBackend::default(),
             auth_scheme: AuthScheme::default(),
             extra_headers: IndexMap::new(),

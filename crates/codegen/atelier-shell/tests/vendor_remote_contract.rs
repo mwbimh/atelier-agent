@@ -1,257 +1,149 @@
-use atelier_shell::agent::config::EndpointsConfig;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-fn crate_source(path: &str) -> String {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(path);
+fn crate_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+}
+
+fn workspace_root() -> PathBuf {
+    crate_root()
+        .ancestors()
+        .nth(3)
+        .expect("shell crate must live under the workspace root")
+        .to_path_buf()
+}
+
+fn assert_absent(path: impl AsRef<Path>) {
+    let path = path.as_ref();
+    assert!(
+        !path.exists(),
+        "removed vendor remote path still exists: {}",
+        path.display()
+    );
+}
+
+fn source(relative: &str) -> String {
+    let path = crate_root().join(relative);
     std::fs::read_to_string(&path)
         .unwrap_or_else(|error| panic!("failed to read {}: {error}", path.display()))
 }
 
 #[test]
-fn local_trace_modules_cannot_upload_auth_diagnostics_or_use_a_default_bucket() {
-    let source = include_str!("../src/upload/gcs.rs");
-    assert!(
-        source.contains("SESSION_TRACES_BUCKET: Option<&str> = None"),
-        "a compiled-in trace bucket would re-enable remote export"
-    );
-
-    let diagnostics = source
-        .split_once("pub(crate) async fn upload_to_auth_diagnostics")
-        .expect("diagnostic compatibility function must remain discoverable")
-        .1;
-    assert!(
-        !diagnostics.contains("xai_file_utils::gcs::upload_bytes"),
-        "auth diagnostics still invoke remote object storage"
-    );
-}
-
-#[test]
-fn trace_upload_configuration_is_ignored_and_resolves_to_disabled() {
-    let config: EndpointsConfig = toml::from_str(
-        r#"
-trace_upload_url = "https://collector.example"
-trace_upload_bucket = "s3://private-bucket"
-trace_upload_region = "test-region"
-trace_upload_credentials_file = "credentials.json"
-trace_upload_credentials = "secret"
-trace_upload_endpoint_url = "https://storage.example"
-"#,
-    )
-    .expect("unknown legacy keys must not make the whole config unreadable");
-
-    assert!(config.trace_upload_url.is_none());
-    assert!(config.trace_upload_bucket.is_none());
-    assert!(config.trace_upload_region.is_none());
-    assert!(config.trace_upload_credentials_file.is_none());
-    assert!(config.trace_upload_credentials.is_none());
-    assert!(config.trace_upload_endpoint_url.is_none());
-    assert!(config.resolve_trace_upload_url().is_empty());
-    assert!(config.resolve_trace_credentials().is_none());
-    assert!(config.resolve_trace_bucket_url().is_none());
-    assert!(config.resolve_upload_method(None).is_none());
-    assert!(config.resolve_direct_upload_method().is_none());
-    assert!(!config.has_noninteractive_upload_auth());
-}
-
-#[test]
-fn vendor_remote_settings_fetch_pipeline_is_not_compiled() {
-    let lib = crate_source("src/lib.rs");
-    let agent = crate_source("src/agent/mvp_agent/mod.rs");
-    let operations = crate_source("src/agent/mvp_agent/agent_ops.rs");
-    let models = crate_source("src/agent/models.rs");
-    let remote = crate_source("src/remote/mod.rs");
-    let remote_client = crate_source("src/remote/client.rs");
-
-    for (name, source) in [
-        ("lib.rs", lib.as_str()),
-        ("mvp_agent/mod.rs", agent.as_str()),
-        ("mvp_agent/agent_ops.rs", operations.as_str()),
-        ("agent/models.rs", models.as_str()),
-        ("remote/mod.rs", remote.as_str()),
-        ("remote/client.rs", remote_client.as_str()),
+fn vendor_upload_and_remote_modules_are_physically_absent() {
+    let root = crate_root();
+    for relative in [
+        "src/upload",
+        "src/remote",
+        "src/agent/feedback_client.rs",
+        "src/agent/session_registry_client.rs",
+        "src/agent/storage_client_tests.rs",
+        "src/session/storage/search_remote_sync.rs",
     ] {
-        assert!(
-            !source.contains("fetch_remote_settings")
-                && !source.contains("maybe_fetch_post_auth_settings")
-                && !source.contains("refresh_remote_settings")
-                && !source.contains("resolve_remote_fetch_enabled")
-                && !source.contains("fetch_settings_blocking")
-                && !source.contains("fetch_login_device_flow")
-                && !source.contains("login-config"),
-            "{name} still compiles the removed vendor remote-settings pipeline"
-        );
+        assert_absent(root.join(relative));
+    }
+
+    let workspace = workspace_root();
+    for relative in [
+        "crates/codegen/atelier-workspace/src/upload",
+        "crates/codegen/atelier-workspace/src/recovery.rs",
+        "crates/codegen/atelier-workspace/src/bin/workspace_server.rs",
+        "crates/codegen/atelier-workspace/src/bin/workspace_server_probe.rs",
+        "prod/mc/cli-chat-proxy-types",
+    ] {
+        assert_absent(workspace.join(relative));
     }
 }
 
 #[test]
-fn vendor_websocket_relay_is_not_compiled() {
-    let lib = crate_source("src/lib.rs");
-    let app = crate_source("src/agent/app.rs");
-    let leader = crate_source("src/leader/server.rs");
-
-    assert!(
-        !lib.contains("pub mod relay"),
-        "the vendor relay module is still exported"
-    );
-    for (name, source) in [("agent/app.rs", app), ("leader/server.rs", leader)] {
-        assert!(
-            !source.contains("spawn_relay_connection")
-                && !source.contains("RelayConfig")
-                && !source.contains("RelayHandle"),
-            "{name} still compiles the vendor WebSocket relay startup path"
-        );
-    }
-}
-
-#[test]
-fn vendor_session_writeback_is_not_compiled() {
-    let persistence = crate_source("src/session/persistence.rs");
-    let remote = crate_source("src/remote/mod.rs");
-
-    for forbidden in ["RemoteSync", "init_remote_sync", "StorageMode::Writeback"] {
-        assert!(
-            !persistence.contains(forbidden),
-            "session persistence still compiles vendor writeback symbol {forbidden}"
-        );
-    }
-    assert!(
-        !remote.contains("pub use sync::RemoteSync") && !remote.contains("mod sync"),
-        "the vendor HTTP session sync module is still compiled"
-    );
-}
-
-#[test]
-fn acp_startup_and_auth_compile_only_local_provider_paths() {
-    let acp_agent = crate_source("src/agent/mvp_agent/acp_agent.rs");
+fn endpoint_config_exposes_no_upload_or_vendor_control_plane_fields() {
+    let config = source("src/agent/config.rs");
+    let endpoint_section = config
+        .split_once("pub struct EndpointsConfig")
+        .expect("EndpointsConfig must exist")
+        .1
+        .split_once("impl Default for EndpointsConfig")
+        .expect("EndpointsConfig default must exist")
+        .0;
 
     for forbidden in [
-        "run_auth_flow(",
-        "run_auth_flow_with_stderr_bridge",
-        "maybe_sync_bundle_in_background",
-        "post_login_sync",
-        "spawn_managed_gateway_tool_catalog_fetch",
-        "fetch_managed_mcps",
+        "trace_upload",
+        "upload_bucket",
+        "upload_credentials",
+        "managed_config_url",
+        "remote_settings",
+        "events_api_key",
     ] {
         assert!(
-            !acp_agent.contains(forbidden),
-            "ACP startup/auth still compiles vendor service path {forbidden}"
+            !endpoint_section.contains(forbidden),
+            "EndpointsConfig still exposes removed vendor field `{forbidden}`"
         );
     }
 }
 
 #[test]
-fn vendor_bundle_sync_is_not_compiled() {
-    let extensions = crate_source("src/extensions/mod.rs");
-    let acp_agent = crate_source("src/agent/mvp_agent/acp_agent.rs");
-    let agent = crate_source("src/agent/mvp_agent/mod.rs");
-    let operations = crate_source("src/agent/mvp_agent/agent_ops.rs");
-    let remote = crate_source("src/remote/mod.rs");
-    let remote_client = crate_source("src/remote/client.rs");
-
-    assert!(
-        !extensions.contains("pub mod bundle"),
-        "the vendor bundle extension is still compiled"
-    );
-    assert!(
-        !PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("src/extensions/bundle.rs")
-            .exists(),
-        "the vendor bundle extension source still exists"
-    );
-    for (name, source) in [
-        ("mvp_agent/acp_agent.rs", acp_agent.as_str()),
-        ("mvp_agent/mod.rs", agent.as_str()),
-        ("mvp_agent/agent_ops.rs", operations.as_str()),
-        ("remote/mod.rs", remote.as_str()),
-        ("remote/client.rs", remote_client.as_str()),
-    ] {
-        for forbidden in [
-            "atelier/bundle/",
-            "maybe_sync_bundle_in_background",
-            "bundle_sync_in_flight",
-            "fetch_subagent_bundle",
-            "fetch_bundle",
-            "FetchedBundle",
-        ] {
-            assert!(
-                !source.contains(forbidden),
-                "{name} still compiles vendor bundle symbol {forbidden}"
-            );
-        }
-    }
-}
-
-#[test]
-fn vendor_managed_mcp_fetch_is_not_compiled() {
-    let operations = crate_source("src/agent/mvp_agent/agent_ops.rs");
-    let doctor = crate_source("src/mcp_doctor.rs");
-    let session_mcp = crate_source("src/session/acp_session_impl/mcp.rs");
-    let spawn = crate_source("src/session/acp_session_impl/spawn.rs");
-    let support = crate_source("../atelier-shell-session-support/src/managed_mcp.rs");
-
-    for (name, source) in [
-        ("mvp_agent/agent_ops.rs", operations.as_str()),
-        ("mcp_doctor.rs", doctor.as_str()),
-        ("acp_session_impl/mcp.rs", session_mcp.as_str()),
-        ("acp_session_impl/spawn.rs", spawn.as_str()),
+fn runtime_startup_contains_no_vendor_fetch_sync_or_relay_hooks() {
+    let checks = [
         (
-            "atelier-shell-session-support/managed_mcp.rs",
-            support.as_str(),
+            "src/lib.rs",
+            &["pub mod relay", "pub mod remote"] as &[&str],
         ),
-    ] {
-        for forbidden in [
-            "can_fetch_managed_mcps",
-            "can_fetch_managed_mcp_gateway_tools",
-            "get_managed_mcp_configs",
-            "get_managed_mcp_gateway_tool_catalog",
-            "spawn_managed_gateway_tool_catalog_fetch",
-            "fetch_managed_mcp_configs",
-            "fetch_managed_configs",
-            "get_or_fetch_gateway_tool_catalog",
-            "refresh_managed_mcp_if_stale",
-            "ShellManagedGatewayToolClient",
-            "managed_mcp_proxy_base_url",
-        ] {
+        (
+            "src/agent/mvp_agent/acp_agent.rs",
+            &[
+                "maybe_sync_bundle_in_background",
+                "post_login_sync",
+                "spawn_managed_gateway_tool_catalog_fetch",
+                "fetch_managed_mcps",
+            ],
+        ),
+        (
+            "src/agent/mvp_agent/agent_ops.rs",
+            &[
+                "fetch_local_runtime_settings",
+                "refresh_local_runtime_settings",
+                "fetch_subagent_bundle",
+                "spawn_relay_connection",
+            ],
+        ),
+        (
+            "src/agent/app.rs",
+            &["spawn_relay_connection", "run_auto_update_checker"],
+        ),
+        (
+            "src/leader/server.rs",
+            &[
+                "ATELIER_WORKSPACE_UPLOAD_QUEUE_ENABLED",
+                "spawn_relay_connection",
+                "fetch_remote_settings",
+            ],
+        ),
+        (
+            "src/managed_config.rs",
+            &[
+                "fetch_managed_config",
+                "fetch_setup_report",
+                "deployment/config",
+            ],
+        ),
+    ];
+
+    for (relative, forbidden) in checks {
+        let contents = source(relative);
+        for marker in forbidden {
             assert!(
-                !source.contains(forbidden),
-                "{name} still compiles vendor managed-MCP symbol {forbidden}"
+                !contents.contains(marker),
+                "{relative} still contains removed vendor runtime marker `{marker}`"
             );
         }
     }
 }
 
 #[test]
-fn vendor_managed_config_sync_is_not_compiled() {
-    let managed = crate_source("src/managed_config.rs");
-    let init = crate_source("src/agent/init.rs");
-    let models = crate_source("src/agent/models.rs");
-    let config = crate_source("src/agent/config.rs");
-
-    for forbidden in [
-        "fetch_managed_config",
-        "fetch_managed_config_once",
-        "spawn_sync",
-        "post_login_sync",
-        "fetch_setup_report",
-        "run_setup",
-        "deployment/config",
-        "resolve_managed_config_url",
-    ] {
-        assert!(
-            !managed.contains(forbidden),
-            "managed_config.rs still compiles vendor control-plane symbol {forbidden}"
-        );
-    }
+fn local_artifacts_remain_local_and_available() {
+    let root = crate_root();
+    assert!(root.join("src/local_artifacts").is_dir());
     assert!(
-        !init.contains("managed_config::spawn_sync"),
-        "agent init still starts vendor managed-config synchronization"
-    );
-    assert!(
-        !models.contains("managed_config::sync"),
-        "model prefetch still performs vendor managed-config synchronization"
-    );
-    assert!(
-        !config.contains("resolve_managed_config_url") && !config.contains("managed_config_url"),
-        "endpoint config still exposes the removed vendor managed-config service"
+        workspace_root()
+            .join("crates/codegen/atelier-memory/src/archive.rs")
+            .is_file()
     );
 }

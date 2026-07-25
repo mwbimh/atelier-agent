@@ -414,7 +414,7 @@ pub fn init_tracing() -> TracingHandle {
     let (make_writer, rx) = TracingChannelMakeWriter::new();
     let payload_level = if false { "debug" } else { "off" };
     let directives = format!(
-        "atelier_shell=info,atelier_pager=trace,atelier_tools=info,xai_acp_lib=info,{RMCP_SSE_NOISE_TARGET}=error,sampling_log=off,{ACP_UPDATE_TARGET}=debug,{ACP_UPDATE_PAYLOAD_TARGET}={payload_level}"
+        "atelier_shell=info,atelier_pager=trace,atelier_tools=info,atelier_acp_runtime=info,{RMCP_SSE_NOISE_TARGET}=error,sampling_log=off,{ACP_UPDATE_TARGET}=debug,{ACP_UPDATE_PAYLOAD_TARGET}={payload_level}"
     );
     let env_filter = EnvFilter::builder()
         .with_default_directive(LevelFilter::WARN.into())
@@ -423,15 +423,6 @@ pub fn init_tracing() -> TracingHandle {
         .with_target(true)
         .with_ansi(true)
         .with_writer(make_writer);
-    let otel_layer = atelier_telemetry::otel_layer::build_otel_layer(
-        atelier_telemetry::otel_layer::OtelClientInfo {
-            client_name: "atelier",
-            client_version: atelier_version::VERSION,
-            service_version: env!("VERSION_WITH_COMMIT"),
-            app_entrypoint: "tui",
-        },
-        atelier_shell::auth::credential_provider::build_default_otel_layer_config(),
-    );
     let instrumentation_layer = atelier_telemetry::instrumentation::layer();
     let sampling_log_layer = atelier_telemetry::sampling_log::layer();
     let hooks_log_layer = atelier_telemetry::hooks_log::layer();
@@ -439,16 +430,8 @@ pub fn init_tracing() -> TracingHandle {
         .with(fmt_layer.with_filter(env_filter))
         .with(instrumentation_layer)
         .with(sampling_log_layer)
-        .with(hooks_log_layer)
-        .with(otel_layer);
+        .with(hooks_log_layer);
     atelier_telemetry::debug_log::install_firehose(registry, "tui");
-    atelier_telemetry::external::init(atelier_shell::agent::config::resolve_external_otel_config(
-        atelier_telemetry::external::config::ExternalClientInfo {
-            service_version: env!("VERSION_WITH_COMMIT").to_owned(),
-            client_version: atelier_version::VERSION.to_owned(),
-            app_entrypoint: "tui".to_owned(),
-        },
-    ));
     TracingHandle { rx }
 }
 #[cfg(test)]

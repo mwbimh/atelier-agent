@@ -14,10 +14,10 @@ use tokio_util::sync::CancellationToken;
 
 use crate::runtime_identity::{HEADLESS_CLIENT_TYPE, PAGER_CLIENT_TYPE, PAGER_CLIENT_VERSION};
 use agent_client_protocol as acp;
+use atelier_acp_runtime::{AcpAgentTx, AcpClientRx, acp_send};
 use atelier_shell::agent::auth_method::AuthMethodKind;
 use atelier_shell::agent::config::Config as AgentConfig;
 use atelier_shell::sampling::types::ReasoningEffort;
-use xai_acp_lib::{AcpAgentTx, AcpClientRx, acp_send};
 
 pub use model_state::ModelState;
 
@@ -71,7 +71,7 @@ pub struct AcpConnection {
     pub needs_login: bool,
     /// Login button label from `AuthMethod.name` (e.g., "atelier.invalid", "Acme Corp").
     pub login_label: Option<String>,
-    /// The auth method ID to use for login (copied from the first advertised method).
+    /// The auth method ID to use for login (copied from the selected advertised method).
     pub login_method_id: Option<acp::AuthMethodId>,
     /// Initial auth mode hint (Command vs Pending) from method metadata.
     pub auth_start_mode: AuthStartMode,
@@ -128,7 +128,7 @@ pub struct ConnectFlags {
     /// Installer field for config.toml.
     pub installer: Option<String>,
     /// Remote settings from early prefetch (used for memory config resolution).
-    pub remote_settings: Option<atelier_shell::util::config::RemoteSettings>,
+    pub local_runtime_settings: Option<atelier_shell::util::config::LocalRuntimeSettings>,
     /// Override the entire system prompt.
     pub system_prompt_override: Option<String>,
     /// Extra rules appended to the system prompt (from `--rules`).
@@ -158,7 +158,7 @@ pub async fn connect(cancel: &CancellationToken, flags: ConnectFlags) -> Result<
 
     agent_config.resolve_runtime_fields(&atelier_shell::agent::config::RuntimeResolutionContext {
         raw_config: &raw_config,
-        remote_settings: flags.remote_settings.as_ref(),
+        local_runtime_settings: flags.local_runtime_settings.as_ref(),
         cwd: None,
         is_headless: false,
         cli_subagents: Some(flags.subagents),
@@ -207,7 +207,7 @@ pub async fn connect(cancel: &CancellationToken, flags: ConnectFlags) -> Result<
 
     // Determine whether interactive login is needed.
     let (needs_login, login_label, login_method_id, auth_start_mode) =
-        startup_auth_metadata(&auth_methods);
+        startup_auth_metadata(&auth_methods, default_auth_method_id.as_ref());
 
     let (needs_login, login_label, login_method_id, auth_start_mode, auth_meta) =
         eager_auth_or_login_fallback(
@@ -264,8 +264,8 @@ pub async fn connect_via_leader(
 
     let mut agent_config = AgentConfig::new_from_toml_cfg(raw_config)
         .map_err(|e| anyhow::anyhow!("Failed to create agent config: {e}"))?;
-    // resolve_telemetry_mode reads remote_settings.
-    agent_config.remote_settings = flags.remote_settings.clone();
+    // resolve_telemetry_mode reads local_runtime_settings.
+    agent_config.local_runtime_settings = flags.local_runtime_settings.clone();
 
     let client_type = flags
         .client_identifier
@@ -276,7 +276,7 @@ pub async fn connect_via_leader(
         // Leader agent is pre-running; seed modes via capabilities → session meta.
         yolo_mode: flags.default_yolo_mode,
         auto_mode: flags.default_auto_mode && !flags.default_yolo_mode,
-        default_model: agent_config.models.default.clone(),
+        default_model: agent_config.default_model_override.clone(),
         client_version: Some(PAGER_CLIENT_VERSION.to_string()),
         code_nav_enabled: false,
         terminal: flags.terminal,
@@ -319,7 +319,7 @@ pub async fn connect_via_leader(
     ) = initialize(&tx, &flags).await?;
 
     let (needs_login, login_label, login_method_id, auth_start_mode) =
-        startup_auth_metadata(&auth_methods);
+        startup_auth_metadata(&auth_methods, default_auth_method_id.as_ref());
 
     let (needs_login, login_label, login_method_id, auth_start_mode, auth_meta) =
         eager_auth_or_login_fallback(
@@ -566,28 +566,34 @@ pub fn parse_session_recap_available(meta: Option<&acp::Meta>) -> bool {
 
 /// Determine whether interactive login is needed based on the advertised auth methods.
 ///
-/// Matches TUI startup behavior: if the first method is `atelier.invalid`, defer auth
-/// and show the login-aware welcome flow. Otherwise, authenticate eagerly.
+/// Uses the agent-selected default method when available, then the legacy eager-auth
+/// fallback. Interactive methods defer auth and show the login-aware welcome flow;
+/// non-interactive methods authenticate eagerly. Method ordering is not a Provider
+/// contract.
 ///
 /// Returns `(needs_login, login_label, login_method_id, auth_start_mode)`.
 pub fn startup_auth_metadata(
     auth_methods: &[acp::AuthMethod],
+    default_auth_method_id: Option<&acp::AuthMethodId>,
 ) -> (
     bool,
     Option<String>,
     Option<acp::AuthMethodId>,
     AuthStartMode,
 ) {
-    let first_method = auth_methods.first();
-    let needs_login = first_method
-        .map(|m| AuthMethodKind::from_id(m.id()).needs_interactive_login())
+    let selected_method_id = select_eager_auth_method(auth_methods, default_auth_method_id);
+    let selected_method = selected_method_id
+        .as_ref()
+        .and_then(|id| auth_methods.iter().find(|method| method.id() == id));
+    let needs_login = selected_method
+        .map(|method| AuthMethodKind::from_id(method.id()).needs_interactive_login())
         .unwrap_or(false);
 
     if !needs_login {
         return (false, None, None, AuthStartMode::Pending);
     }
 
-    let method = first_method.unwrap(); // safe: needs_login == true implies first_method.is_some()
+    let method = selected_method.unwrap(); // safe: needs_login implies a selected method
     let login_label = Some(method.name().to_string());
     let login_method_id = Some(method.id().clone());
 
@@ -645,7 +651,7 @@ pub fn find_interactive_login_method(
 /// Attempt eager auth; on failure fall back to the interactive login screen.
 ///
 /// Errors from `authenticate` are caught so the connection still succeeds.
-/// When `xai.api_key` was advertised, non-interactive credentials were
+/// When `provider.api_key` is advertised, non-interactive credentials are
 /// available — do not promote to interactive auto-Login (shell owns
 /// unpinned fallthrough; a failed api_key must not open a browser). Otherwise
 /// hand the interactive method for the login screen.
@@ -695,7 +701,7 @@ async fn eager_auth_or_login_fallback(
             // already preferred them — do not auto-open browser login.
             let has_api_key = auth_methods
                 .iter()
-                .any(|m| AuthMethodKind::from_id(m.id()) == AuthMethodKind::XaiApiKey);
+                .any(|m| AuthMethodKind::from_id(m.id()) == AuthMethodKind::ProviderApiKey);
             if has_api_key {
                 return (false, login_label, login_method_id, auth_start_mode, None);
             }
@@ -845,7 +851,7 @@ mod tests {
 
     #[test]
     fn startup_auth_empty_methods_no_login() {
-        let (needs, label, method_id, mode) = startup_auth_metadata(&[]);
+        let (needs, label, method_id, mode) = startup_auth_metadata(&[], None);
         assert!(!needs);
         assert!(label.is_none());
         assert!(method_id.is_none());
@@ -855,7 +861,7 @@ mod tests {
     #[test]
     fn startup_auth_atelier_com_no_provider_needs_login_pending() {
         let methods = vec![make_auth_method("atelier.invalid", "atelier.invalid", None)];
-        let (needs, label, method_id, mode) = startup_auth_metadata(&methods);
+        let (needs, label, method_id, mode) = startup_auth_metadata(&methods, None);
         assert!(needs);
         assert_eq!(label.as_deref(), Some("atelier.invalid"));
         assert_eq!(method_id.as_ref().unwrap().0.as_ref(), "atelier.invalid");
@@ -866,7 +872,7 @@ mod tests {
     fn startup_auth_atelier_com_with_external_provider_command() {
         let meta = serde_json::json!({ "external_provider": true });
         let methods = vec![make_auth_method("atelier.invalid", "Acme Corp", Some(meta))];
-        let (needs, label, method_id, mode) = startup_auth_metadata(&methods);
+        let (needs, label, method_id, mode) = startup_auth_metadata(&methods, None);
         assert!(needs);
         assert_eq!(label.as_deref(), Some("Acme Corp"));
         assert_eq!(method_id.as_ref().unwrap().0.as_ref(), "atelier.invalid");
@@ -876,95 +882,53 @@ mod tests {
     #[test]
     fn startup_auth_non_atelier_com_no_login() {
         let methods = vec![make_auth_method("api-key", "API Key", None)];
-        let (needs, label, method_id, mode) = startup_auth_metadata(&methods);
+        let (needs, label, method_id, mode) = startup_auth_metadata(&methods, None);
         assert!(!needs);
         assert!(label.is_none());
         assert!(method_id.is_none());
         assert_eq!(mode, AuthStartMode::Pending);
     }
 
-    /// CROSS-CRATE REGRESSION GUARD:
-    ///
-    /// Enterprise/BYOK configs (e.g. an enterprise `~/.atelier/config.toml` with a
-    /// `[model.*]` table containing `env_key = "ANTHROPIC_AUTH_TOKEN"`) MUST
-    /// NOT send the user to the login screen at startup.
-    ///
-    /// This test exercises the SHELL-PAGER JOIN, not just the pager half:
-    /// it calls the shell-side `build_auth_methods()` with the exact inputs
-    /// `MvpAgent::initialize()` would compute for an enterprise user, then feeds
-    /// the result into the pager's `startup_auth_metadata()`. If a future
-    /// change re-orders `build_auth_methods()` to put `xai.api_key` anywhere
-    /// other than first (the shape of a past regression), this test fails
-    /// because `startup_auth_metadata()` returns `needs_login = true`.
-    ///
-    /// Counterpart shell-side tests
-    /// (`agent::auth_method::tests::enterprise_byok_first_method_is_xai_api_key`
-    /// and `enterprise_byok_config_does_not_require_login`) pin the same
-    /// invariant from the shell side; this test pins the cross-crate
-    /// contract that the pager actually consumes the shell's output as
-    /// expected.
     #[test]
-    fn shell_built_auth_methods_for_byok_user_skip_login_screen() {
-        use atelier_shell::agent::auth_method::{AuthMethodsBuildInputs, build_auth_methods};
+    fn startup_auth_uses_noninteractive_default_independent_of_order() {
+        use atelier_shell::agent::auth_method::{
+            ATELIER_COM_METHOD_ID, PROVIDER_API_KEY_METHOD_ID,
+        };
 
-        let built = build_auth_methods(AuthMethodsBuildInputs {
-            vendorless: false,
-            has_local_provider: false,
-            // enterprise-style: model has `env_key` set and the env var resolves,
-            // so the shell-side predicate returns true.
-            has_external_api_key: true,
-            // Realistic enterprise user: no cached session token, default `atelier.invalid`
-            // login (no enterprise OIDC).
-            has_cached_token: false,
-            has_enterprise_oidc: false,
-            enterprise_oidc_issuer: None,
-            login_label: None,
-            has_auth_provider_command: false,
-            preferred_method: None,
-        });
-
-        let (needs, label, method_id, mode) = startup_auth_metadata(&built.methods);
-        assert!(
-            !needs,
-            "shell built auth_methods for a BYOK user, but the pager still \
-             reports needs_login = true. Either the shell stopped putting \
-             xai.api_key first or the pager stopped treating xai.api_key as \
-             a no-login method.",
-        );
+        let methods = vec![
+            make_auth_method(ATELIER_COM_METHOD_ID, "Atelier", None),
+            make_auth_method(PROVIDER_API_KEY_METHOD_ID, "Provider API key", None),
+        ];
+        let default_id = acp::AuthMethodId::new(PROVIDER_API_KEY_METHOD_ID);
+        let (needs, label, method_id, mode) = startup_auth_metadata(&methods, Some(&default_id));
+        assert!(!needs);
         assert!(label.is_none());
         assert!(method_id.is_none());
         assert_eq!(mode, AuthStartMode::Pending);
     }
 
-    /// Inverse direction: when `xai.api_key` is NOT in the list, the pager
-    /// MUST show the login screen. We assert this with `xai.api_key` present
-    /// LATER in the list (the shape of a past regression) and confirm the
-    /// pager still requires login -- because the pager only inspects
-    /// `auth_methods.first()`. This locks the failure mode of the regression:
-    /// if a future refactor makes the pager scan past `.first()`, this test
-    /// stops being equivalent to
-    /// `startup_auth_atelier_com_no_provider_needs_login_pending` above and
-    /// either passes or fails on a meaningful new code path.
     #[test]
-    fn startup_auth_xai_api_key_not_first_still_requires_login() {
-        use atelier_shell::agent::auth_method::{ATELIER_COM_METHOD_ID, XAI_API_KEY_METHOD_ID};
+    fn startup_auth_uses_interactive_default_independent_of_order() {
+        use atelier_shell::agent::auth_method::{
+            ATELIER_COM_METHOD_ID, PROVIDER_API_KEY_METHOD_ID,
+        };
 
         let methods = vec![
-            make_auth_method(ATELIER_COM_METHOD_ID, "Atelier", None),
-            make_auth_method(XAI_API_KEY_METHOD_ID, "xai.api_key", None),
+            make_auth_method(PROVIDER_API_KEY_METHOD_ID, "provider.api_key", None),
+            make_auth_method(ATELIER_COM_METHOD_ID, "Atelier Login", None),
         ];
-        let (needs, _, _, _) = startup_auth_metadata(&methods);
-        assert!(
-            needs,
-            "with atelier.invalid first, the pager must require login -- pinning \
-             the BAD-ordering failure mode (xai.api_key not first)",
-        );
+        let default_id = acp::AuthMethodId::new(ATELIER_COM_METHOD_ID);
+        let (needs, label, method_id, mode) = startup_auth_metadata(&methods, Some(&default_id));
+        assert!(needs);
+        assert_eq!(label.as_deref(), Some("Atelier Login"));
+        assert_eq!(method_id.as_ref(), Some(&default_id));
+        assert_eq!(mode, AuthStartMode::Pending);
     }
 
     #[test]
     fn startup_auth_method_id_is_copied_not_synthesized() {
         let methods = vec![make_auth_method("atelier.invalid", "My Login", None)];
-        let (_, _, method_id, _) = startup_auth_metadata(&methods);
+        let (_, _, method_id, _) = startup_auth_metadata(&methods, None);
         // Verify it's the exact same ID from the method, not hardcoded
         assert_eq!(&method_id.unwrap(), methods[0].id());
     }
@@ -977,7 +941,7 @@ mod tests {
             "atelier.invalid",
             Some(meta),
         )];
-        let (_, _, _, mode) = startup_auth_metadata(&methods);
+        let (_, _, _, mode) = startup_auth_metadata(&methods, None);
         assert_eq!(mode, AuthStartMode::Pending);
     }
 

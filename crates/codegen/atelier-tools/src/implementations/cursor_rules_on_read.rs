@@ -695,7 +695,7 @@ mod tests {
             format: None,
         };
 
-        let first = xai_tool_runtime::Tool::run(&AtelierReadFileTool, test_ctx(shared), input)
+        let first = atelier_tool_runtime::Tool::run(&AtelierReadFileTool, test_ctx(shared), input)
             .await
             .unwrap();
         let ReadFileOutput::FileContent(first) = first else {

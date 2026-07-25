@@ -4,18 +4,18 @@ use super::{
     resolve_reminder_policy, todo_gate_active,
 };
 use crate::session::persistence::PersistenceMsg;
-use crate::util::config::RemoteSettings;
+use crate::util::config::LocalRuntimeSettings;
 use atelier_agent::AgentDefinition;
 use atelier_agent::prompt::context::{PromptAudience, TemplateOverride};
 use atelier_agent::system_reminder::{DEFAULT_TODO_GATE_MAX_FIRES, ReminderPolicy, TodoGateConfig};
-/// Helper: a `RemoteSettings` whose only non-default fields are the
+/// Helper: a `LocalRuntimeSettings` whose only non-default fields are the
 /// TodoGate knobs we want to vary. Mirrors `Default::default()` for
 /// everything else so the test stays robust to unrelated additions.
-fn remote_with_todo_gate(enabled: Option<bool>, cap: Option<u32>) -> RemoteSettings {
-    RemoteSettings {
+fn remote_with_todo_gate(enabled: Option<bool>, cap: Option<u32>) -> LocalRuntimeSettings {
+    LocalRuntimeSettings {
         todo_gate_enabled: enabled,
         todo_gate_max_fires_per_prompt: cap,
-        ..RemoteSettings::default()
+        ..LocalRuntimeSettings::default()
     }
 }
 #[test]
@@ -80,9 +80,9 @@ fn cli_todo_gate_overrides_remote_enable_false() {
     );
 }
 #[test]
-fn remote_settings_deserializes_without_todo_gate_fields() {
+fn local_runtime_settings_deserializes_without_todo_gate_fields() {
     let legacy_json = "{}";
-    let settings: RemoteSettings = serde_json::from_str(legacy_json).unwrap();
+    let settings: LocalRuntimeSettings = serde_json::from_str(legacy_json).unwrap();
     assert_eq!(settings.todo_gate_enabled, None);
     assert_eq!(settings.todo_gate_max_fires_per_prompt, None);
     let policy = resolve_reminder_policy(Some(&settings), false);
@@ -95,22 +95,22 @@ fn remote_settings_deserializes_without_todo_gate_fields() {
     );
 }
 #[test]
-fn remote_settings_accepts_explicit_null_todo_gate_fields() {
+fn local_runtime_settings_accepts_explicit_null_todo_gate_fields() {
     let json = r#"{
             "todo_gate_enabled": null,
             "todo_gate_max_fires_per_prompt": null
         }"#;
-    let settings: RemoteSettings = serde_json::from_str(json).unwrap();
+    let settings: LocalRuntimeSettings = serde_json::from_str(json).unwrap();
     assert_eq!(settings.todo_gate_enabled, None);
     assert_eq!(settings.todo_gate_max_fires_per_prompt, None);
 }
 #[test]
-fn remote_settings_preserves_false_and_zero_todo_gate_fields() {
+fn local_runtime_settings_preserves_false_and_zero_todo_gate_fields() {
     let json = r#"{
             "todo_gate_enabled": false,
             "todo_gate_max_fires_per_prompt": 0
         }"#;
-    let settings: RemoteSettings = serde_json::from_str(json).unwrap();
+    let settings: LocalRuntimeSettings = serde_json::from_str(json).unwrap();
     assert_eq!(settings.todo_gate_enabled, Some(false));
     assert_eq!(settings.todo_gate_max_fires_per_prompt, Some(0));
 }
@@ -292,7 +292,7 @@ async fn same_session_rolls_over_once_when_local_date_advances() {
     local
         .run_until(async {
             let (gateway_tx, _) =
-                tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                tokio::sync::mpsc::unbounded_channel::<atelier_acp_runtime::AcpClientMessage>();
             let (persistence_tx, _) = tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
             let actor = create_test_actor(50_000, 256_000, 85, gateway_tx, persistence_tx).await;
             let today = chrono::Local::now().date_naive();

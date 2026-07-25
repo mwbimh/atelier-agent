@@ -39,7 +39,7 @@
         let id = AgentId(0);
         assert!(app.agents[&id].session.bg_tasks.is_empty());
 
-        let update = XaiSessionUpdate::TaskBackgrounded {
+        let update = ExtensionSessionUpdate::TaskBackgrounded {
             tool_call_id: "tc-mon".into(),
             task_id: "mon-1".into(),
             command: "tail -f deploy.log".into(),
@@ -77,7 +77,7 @@
             make_ext_session_notification_with_method(
                 "sess-1",
                 "atelier/session/update",
-                XaiSessionUpdate::ScheduledTaskCreated {
+                ExtensionSessionUpdate::ScheduledTaskCreated {
                     task_id: "loop-1".into(),
                     prompt: "check deploy".into(),
                     human_schedule: "every 5 minutes".into(),
@@ -98,7 +98,7 @@
             make_ext_session_notification_with_method(
                 "sess-1",
                 "atelier/session/update",
-                XaiSessionUpdate::ScheduledTaskDeleted {
+                ExtensionSessionUpdate::ScheduledTaskDeleted {
                     task_id: "loop-1".into(),
                 },
             ),
@@ -190,7 +190,7 @@
 
         let notif = SessionNotification {
             session_id: acp::SessionId::new("sess-1"),
-            update: XaiSessionUpdate::TaskBackgrounded {
+            update: ExtensionSessionUpdate::TaskBackgrounded {
                 tool_call_id: tc_id.into(),
                 task_id: "task-late-desc".into(),
                 command: "sleep 9999".into(),
@@ -245,7 +245,7 @@
 
         let notif = SessionNotification {
             session_id: acp::SessionId::new("sess-1"),
-            update: XaiSessionUpdate::TaskBackgrounded {
+            update: ExtensionSessionUpdate::TaskBackgrounded {
                 tool_call_id: tc_id.into(),
                 task_id: "task-blank-wire".into(),
                 command: "sleep 9999".into(),

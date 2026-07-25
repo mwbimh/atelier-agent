@@ -1,7 +1,4 @@
-//! Logo component — renders the braille art logo.
-//!
-//! Hidden entirely on legacy Windows consoles: the U+2800 braille block is
-//! not covered by the ConHost raster fonts and would render as tofu.
+//! Logo component — renders the user-editable `~/.atelier/branding/logo.txt`.
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Alignment, Rect};
@@ -12,8 +9,13 @@ use ratatui::widgets::{Paragraph, Widget};
 use crate::render::color::blend_color;
 use crate::theme::Theme;
 
-const LOGO: &str = include_str!("../../../assets/logo/logo07.txt");
-const LOGO_SMALL: &str = include_str!("../../../assets/logo/logo05.txt");
+const EMBEDDED_LOGO: &str = r#"    ___  ____________
+   /   |/_  __/ ____/
+  / /| | / / / __/
+ / ___ |/ / / /___
+/_/  |_/_/ /_____/
+     A T E L I E R
+"#;
 
 /// Height at or above which the small logo is shown (below it, no logo).
 const SMALL_LOGO_MIN_HEIGHT: u16 = 22;
@@ -28,16 +30,20 @@ fn pick_logo(window_height: u16) -> Option<&'static str> {
 fn pick_logo_for(window_height: u16, hidden: bool) -> Option<&'static str> {
     if hidden || window_height < SMALL_LOGO_MIN_HEIGHT {
         None
-    } else if window_height < FULL_LOGO_MIN_HEIGHT {
-        Some(LOGO_SMALL)
     } else {
-        Some(LOGO)
+        Some(logo_source())
     }
 }
 
-/// The braille art has no ASCII stand-in; see the module doc.
 fn logo_hidden() -> bool {
-    crate::glyphs::is_legacy_windows_console()
+    false
+}
+
+fn logo_source() -> &'static str {
+    use std::sync::OnceLock;
+    static LOGO: OnceLock<String> = OnceLock::new();
+    LOGO.get_or_init(|| atelier_config::runtime_defaults::runtime_logo(EMBEDDED_LOGO))
+        .as_str()
 }
 
 fn non_empty_lines(logo: &str) -> impl Iterator<Item = &str> {
@@ -179,7 +185,11 @@ pub fn full_logo_line_count() -> u16 {
 }
 
 fn full_logo_line_count_for(hidden: bool) -> u16 {
-    if hidden { 0 } else { count_lines(LOGO) }
+    if hidden {
+        0
+    } else {
+        count_lines(logo_source())
+    }
 }
 
 pub fn full_logo_visual_width() -> u16 {
@@ -187,12 +197,16 @@ pub fn full_logo_visual_width() -> u16 {
 }
 
 fn full_logo_visual_width_for(hidden: bool) -> u16 {
-    if hidden { 0 } else { visual_width(LOGO) }
+    if hidden {
+        0
+    } else {
+        visual_width(logo_source())
+    }
 }
 
 pub fn render_full_logo(area: Rect, buf: &mut Buffer, theme: &Theme) {
     if !logo_hidden() {
-        render_into(area, buf, theme, LOGO);
+        render_into(area, buf, theme, logo_source());
     }
 }
 
@@ -202,7 +216,7 @@ pub fn compact_logo_line_count() -> u16 {
     if logo_hidden() {
         0
     } else {
-        count_lines(LOGO_SMALL)
+        count_lines(logo_source())
     }
 }
 
@@ -210,7 +224,7 @@ pub fn compact_logo_line_count() -> u16 {
 /// card. No-op when the logo is hidden.
 pub fn render_compact_logo(area: Rect, buf: &mut Buffer, theme: &Theme) {
     if !logo_hidden() {
-        render_into(area, buf, theme, LOGO_SMALL);
+        render_into(area, buf, theme, logo_source());
     }
 }
 
@@ -223,13 +237,16 @@ mod tests {
         assert!(pick_logo_for(SMALL_LOGO_MIN_HEIGHT - 1, false).is_none());
         assert_eq!(
             pick_logo_for(SMALL_LOGO_MIN_HEIGHT, false),
-            Some(LOGO_SMALL)
+            Some(logo_source())
         );
         assert_eq!(
             pick_logo_for(FULL_LOGO_MIN_HEIGHT - 1, false),
-            Some(LOGO_SMALL)
+            Some(logo_source())
         );
-        assert_eq!(pick_logo_for(FULL_LOGO_MIN_HEIGHT, false), Some(LOGO));
+        assert_eq!(
+            pick_logo_for(FULL_LOGO_MIN_HEIGHT, false),
+            Some(logo_source())
+        );
     }
 
     // The braille art has no legacy-safe stand-in, so every height tier must
@@ -243,12 +260,11 @@ mod tests {
 
     #[test]
     fn hero_box_always_uses_full_logo() {
-        // The box renders the full logo regardless of height (it's laid out
-        // beside the menu), and it's the large variant — never the small one.
-        assert_eq!(full_logo_line_count_for(false), count_lines(LOGO));
-        assert_eq!(full_logo_visual_width_for(false), visual_width(LOGO));
-        assert!(full_logo_line_count_for(false) > count_lines(LOGO_SMALL));
-        assert!(full_logo_visual_width_for(false) > visual_width(LOGO_SMALL));
+        assert_eq!(full_logo_line_count_for(false), count_lines(logo_source()));
+        assert_eq!(
+            full_logo_visual_width_for(false),
+            visual_width(logo_source())
+        );
     }
 
     #[test]
@@ -259,12 +275,8 @@ mod tests {
 
     #[test]
     fn compact_logo_line_count_matches_small_logo_when_visible() {
-        // The minimal welcome card budgets exactly the small logo's rows. When
-        // the logo isn't hidden, the count equals the small art's line count and
-        // is strictly shorter than the full logo.
         if !logo_hidden() {
-            assert_eq!(compact_logo_line_count(), count_lines(LOGO_SMALL));
-            assert!(compact_logo_line_count() < count_lines(LOGO));
+            assert_eq!(compact_logo_line_count(), count_lines(logo_source()));
             assert!(compact_logo_line_count() > 0);
         } else {
             assert_eq!(compact_logo_line_count(), 0);

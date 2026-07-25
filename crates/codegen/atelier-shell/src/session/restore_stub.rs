@@ -1,9 +1,8 @@
 use std::time::Duration;
 
 use anyhow::{Result, bail};
-use xai_file_utils::storage_client::StorageClient;
 
-use crate::agent::session_registry_client::{SessionRecord, SessionRegistryClient};
+use crate::agent::local_session_catalog::{LocalSessionCatalog, SessionRecord};
 
 const UNAVAILABLE: &str = "Remote session restore is not available in this build";
 
@@ -128,7 +127,7 @@ impl SessionStateRestoreResult {
 }
 
 pub async fn restore_session(
-    _client: &SessionRegistryClient,
+    _client: &LocalSessionCatalog,
     _session_id: &str,
     _target_cwd: &str,
     _turn_override: Option<i32>,
@@ -137,18 +136,7 @@ pub async fn restore_session(
 }
 
 pub async fn restore_session_with_progress(
-    _client: &SessionRegistryClient,
-    _session_id: &str,
-    _target_cwd: &str,
-    _turn_override: Option<i32>,
-    _progress: Option<ProgressCallback>,
-) -> Result<RestoreResult> {
-    bail!(UNAVAILABLE)
-}
-
-pub async fn restore_session_with_storage(
-    _client: &SessionRegistryClient,
-    _storage_client: &StorageClient,
+    _client: &LocalSessionCatalog,
     _session_id: &str,
     _target_cwd: &str,
     _turn_override: Option<i32>,
@@ -166,7 +154,7 @@ pub fn resolve_restore_turn(record: &SessionRecord, turn_override: Option<i32>) 
 }
 
 pub async fn download_to_tempfile(
-    _client: &SessionRegistryClient,
+    _client: &LocalSessionCatalog,
     _session_id: &str,
     _filename: &str,
     _turn: i32,

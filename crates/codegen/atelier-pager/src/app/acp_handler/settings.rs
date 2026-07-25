@@ -59,13 +59,9 @@ pub(super) fn handle_settings_update(notif: &acp::ExtNotification, app: &mut App
     };
 
     if let Some(v) = update.auto_permission_mode_enabled {
-        // Keep the pager's auto-permission-mode gate live with the remote settings
-        // remote tier (the leader caches it agent-side; the pager process needs
-        // its own copy). Refresh the startup snapshot so the Shift+Tab cycle and
-        // the settings modal both reflect a remote-only enablement/kill-switch
-        // without a restart.
-        atelier_shell::util::config::cache_remote_auto_permission_mode_enabled(Some(v));
-        app.auto_mode_gate = atelier_shell::util::config::auto_permission_mode_enabled_from_disk();
+        // Apply the local runtime update directly. The removed remote-settings
+        // transport no longer owns an in-memory configuration tier.
+        app.auto_mode_gate = v;
         // Mid-session kill switch: when the gate just went off, drop displayed
         // Auto to Ask + clear every agent's per-session flag (shared with the
         // startup reconcile), AND tell live sessions to leave Auto. Clearing only
@@ -161,7 +157,7 @@ pub(super) fn handle_settings_update(notif: &acp::ExtNotification, app: &mut App
     // correct, and it reverts a previously cached remote enable back to the
     // local/default (off) resolution instead of leaving Some(true) stuck
     // until restart.
-    let remote = atelier_shell::util::config::RemoteSettings {
+    let remote = atelier_shell::util::config::LocalRuntimeSettings {
         group_tool_verbs: update.group_tool_verbs,
         ..Default::default()
     };
@@ -192,7 +188,7 @@ pub(super) fn handle_settings_update(notif: &acp::ExtNotification, app: &mut App
     // Same None-reverts contract as group_tool_verbs above: re-resolve the
     // full local chain with the pushed remote tier so a cleared remote settings
     // field falls back to local/default instead of staying latched.
-    let remote = atelier_shell::util::config::RemoteSettings {
+    let remote = atelier_shell::util::config::LocalRuntimeSettings {
         collapsed_edit_blocks: update.collapsed_edit_blocks,
         ..Default::default()
     };
@@ -289,7 +285,7 @@ pub(super) fn notify_sessions_leave_auto(app: &AppView, session_ids: &[acp::Sess
             .into(),
     );
     let (response_tx, _response_rx) = tokio::sync::oneshot::channel();
-    let args = xai_acp_lib::AcpArgs {
+    let args = atelier_acp_runtime::AcpArgs {
         request: notification,
         response_tx,
     };
@@ -404,7 +400,7 @@ pub(super) fn pick_random_announcement(
 ///
 /// This is intentionally a separate struct from `SettingsUpdateNotification` in
 /// `atelier-shell/src/agent/mvp_agent.rs`. The shell side derives `Serialize`
-/// and owns the canonical field set from `RemoteSettings`; this pager side
+/// and owns the canonical field set from `LocalRuntimeSettings`; this pager side
 /// derives `Deserialize` and selectively consumes only the fields relevant to
 /// the TUI. Keeping them separate avoids coupling the pager to shell internals
 /// and lets each side evolve independently (e.g. adding a shell-only field
@@ -428,7 +424,7 @@ pub(super) struct PagerSettingsUpdate {
     #[serde(default)]
     tips: Option<Vec<String>>,
     // `announcements` is deliberately NOT consumed here: every shell writer of
-    // remote_settings also emits gen-ordered `atelier/announcements/update`
+    // local_runtime_settings also emits gen-ordered `atelier/announcements/update`
     // (emit_announcements_if_changed), and a gen-less apply on this path could
     // clobber a newer push. Single ingest path: handle_announcements_update.
     #[serde(default)]

@@ -13,7 +13,7 @@ use super::*;
 /// String fallbacks remain for tools that surface auth failures without
 /// going through the structured `HttpFailure` path (e.g. JSON-only
 /// `invalid_token` payloads, BYOK key-validation messages).
-pub(super) fn is_auth_tool_error(err: &xai_tool_runtime::ToolError) -> bool {
+pub(super) fn is_auth_tool_error(err: &atelier_tool_runtime::ToolError) -> bool {
     if let Some(details) = &err.details
         && let Some(status) = details
             .get(HTTP_STATUS_DETAILS_KEY)
@@ -68,13 +68,13 @@ pub(super) async fn call_with_auth_retry<F, Fut>(
     shared_recovery: Option<&tokio::sync::OnceCell<bool>>,
     tool_name: &str,
     mut call: F,
-) -> Result<atelier_tools::types::output::ToolRunResult, xai_tool_runtime::ToolError>
+) -> Result<atelier_tools::types::output::ToolRunResult, atelier_tool_runtime::ToolError>
 where
     F: FnMut() -> Fut,
     Fut: std::future::Future<
             Output = Result<
                 atelier_tools::types::output::ToolRunResult,
-                xai_tool_runtime::ToolError,
+                atelier_tool_runtime::ToolError,
             >,
         >,
 {
@@ -230,18 +230,6 @@ impl SessionActor {
     /// so the sampler crate stays URL-agnostic.
     pub(super) async fn reconstruct_full_config(&self) -> SamplingConfig {
         #[allow(clippy::items_after_statements)]
-        #[derive(Debug)]
-        struct TraceContextInjector;
-        impl atelier_sampler::HeaderInjector for TraceContextInjector {
-            fn inject(&self, headers: &mut reqwest::header::HeaderMap) {
-                if let Some(tp) = xai_file_utils::trace_context::current_traceparent()
-                    && let Ok(v) = reqwest::header::HeaderValue::from_str(&tp)
-                {
-                    headers.insert("traceparent", v);
-                }
-            }
-        }
-        #[allow(clippy::items_after_statements)]
         struct AuthManagerBearerResolver(std::sync::Arc<crate::auth::AuthManager>);
         impl std::fmt::Debug for AuthManagerBearerResolver {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -315,6 +303,8 @@ impl SessionActor {
             temperature: cfg.temperature,
             top_p: cfg.top_p,
             request_payload: self.role_request_payload.borrow().clone(),
+            remote_compaction_endpoint: self.remote_compaction_endpoint.borrow().clone(),
+            image_generation_endpoint: self.image_generation_endpoint.borrow().clone(),
             api_backend: cfg.api_backend,
             auth_scheme,
             extra_headers,
@@ -350,7 +340,7 @@ impl SessionActor {
             compactions_remaining: self.compactions_remaining.get(),
             compaction_at_tokens: self.compaction_at_tokens.get(),
             doom_loop_recovery: self.doom_loop_recovery,
-            header_injector: Some(std::sync::Arc::new(TraceContextInjector)),
+            header_injector: None,
         }
     }
 
@@ -714,7 +704,7 @@ impl SessionActor {
                 .expect("should_compact_on_error guarantees context_window");
             {
                 let total_tokens = self.chat_state_handle.get_estimated_total_tokens().await;
-                let percentage = xai_token_estimation::usage_percentage_u8(total_tokens, cw);
+                let percentage = atelier_token_estimation::usage_percentage_u8(total_tokens, cw);
                 if let Some(mut cfg) = self.chat_state_handle.get_sampling_config().await
                     && let Some(new_cw) = std::num::NonZeroU64::new(cw)
                     && self.compaction.context_window_override.is_none()
@@ -742,7 +732,7 @@ impl SessionActor {
                             with the current model. Please start a new session."
                 .to_string();
             self.log_terminal_failure("encrypted_content_mismatch", error.status_code, &friendly);
-            self.send_xai_notification(XaiSessionUpdate::RetryState(
+            self.send_extension_notification(ExtensionSessionUpdate::RetryState(
                 crate::extensions::notification::RetryState::Failed {
                     error_type: "encrypted_content_mismatch".to_string(),
                     message: friendly.clone(),
@@ -753,7 +743,7 @@ impl SessionActor {
         }
         if matches!(error.kind, SamplingErrorKind::RateLimited) {
             self.log_terminal_failure("rate_limited", error.status_code, &detailed_message);
-            self.send_xai_notification(XaiSessionUpdate::RetryState(
+            self.send_extension_notification(ExtensionSessionUpdate::RetryState(
                 crate::extensions::notification::RetryState::Exhausted {
                     attempts: 0,
                     reason: detailed_message.clone(),
@@ -904,7 +894,7 @@ impl SessionActor {
                  Version: {client_version}"
             );
             self.log_terminal_failure("legacy_auth", error.status_code, &msg);
-            self.send_xai_notification(XaiSessionUpdate::RetryState(
+            self.send_extension_notification(ExtensionSessionUpdate::RetryState(
                 crate::extensions::notification::RetryState::Failed {
                     error_type: "legacy_auth".to_string(),
                     message: msg.clone(),
@@ -956,7 +946,7 @@ impl SessionActor {
             error.kind.as_str()
         };
         self.log_terminal_failure(error_type, error.status_code, &detailed_message);
-        self.send_xai_notification(XaiSessionUpdate::RetryState(
+        self.send_extension_notification(ExtensionSessionUpdate::RetryState(
             crate::extensions::notification::RetryState::Failed {
                 error_type: error_type.to_string(),
                 message: detailed_message.clone(),
@@ -982,7 +972,7 @@ impl SessionActor {
     /// * `Ok(SamplerTurnOutcome::RefreshAuthAndResubmit)` - auth 401
     ///    recovery succeeded, credentials refreshed, retry once.
     /// * `Err(acp::Error)` - terminal failure already reported via
-    ///    `send_xai_notification(RetryState::Failed)`.
+    ///    `send_extension_notification(RetryState::Failed)`.
     pub(crate) async fn run_turn_via_sampler(
         self: &Arc<Self>,
         request: ConversationRequest,

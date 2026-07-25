@@ -258,7 +258,7 @@ impl MvpAgent {
                 self.runtime_control
                     .lock()
                     .discard_pending_retry(&retry_request_id);
-                Err(xai_acp_lib::redact_text(&error.to_string()))
+                Err(atelier_acp_runtime::redact_text(&error.to_string()))
             }
         }
     }

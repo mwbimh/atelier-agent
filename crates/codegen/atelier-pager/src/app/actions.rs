@@ -343,11 +343,11 @@ pub enum Action {
     /// Refresh MCP server list from the modal.
     RefreshMcpList,
     /// Execute a hooks management action from the modal.
-    ExecuteHooksAction(xai_hooks_plugins_types::HooksAction),
+    ExecuteHooksAction(atelier_hooks_plugins_types::HooksAction),
     /// Execute a plugins management action from the modal.
-    ExecutePluginsAction(xai_hooks_plugins_types::PluginsAction),
+    ExecutePluginsAction(atelier_hooks_plugins_types::PluginsAction),
     /// Execute a marketplace management action from the modal.
-    ExecuteMarketplaceAction(xai_hooks_plugins_types::MarketplaceAction),
+    ExecuteMarketplaceAction(atelier_hooks_plugins_types::MarketplaceAction),
     /// Add or update an MCP server via atelier/mcp/upsert.
     UpsertMcpServer {
         name: String,
@@ -523,14 +523,6 @@ pub enum Action {
     SetAutoDarkTheme(String),
     /// Commit the theme used when the OS is in light mode.
     SetAutoLightTheme(String),
-    /// Commit the user's default model. Payload is a resolved `ModelId`
-    /// (NOT a free-form string). The dispatcher switches the active
-    /// session and persists the successful selection through `roles.main`.
-    /// Does not carry effort — use `Action::SwitchModel` for that.
-    SetDefaultModel(acp::ModelId),
-    /// Delete obsolete default-model fields. If the active Session has a
-    /// selected model, retain it as the explicit `roles.main` value.
-    ClearDefaultModel,
     /// Commit the max-thoughts-width (column budget for the thoughts panel).
     /// Payload is `i64`; clamped to `u16` at the shell helper boundary.
     SetMaxThoughtsWidth(i64),
@@ -1427,13 +1419,6 @@ pub enum Effect {
         cwd: String,
         generation: u64,
     },
-    /// Restore a remote session from GCS then load it. Only Build rows reach
-    /// this effect: conversation rows have no GCS archive.
-    RestoreAndLoadSession {
-        agent_id: AgentId,
-        session_id: String,
-        session_cwd: String,
-    },
     /// Send a prompt to the agent.
     SendPrompt {
         agent_id: AgentId,
@@ -1505,10 +1490,9 @@ pub enum Effect {
         session_id: acp::SessionId,
         model_id: acp::ModelId,
         effort: Option<ReasoningEffort>,
-        /// The model that was active before the optimistic UI update
-        /// in `set_default_model`. `None` for `Action::SwitchModel`
-        /// (no optimistic update). Threaded through to
-        /// `SwitchModelComplete` so `IncompatibleAgent` can roll back.
+        /// The model that was active before the optimistic UI update.
+        /// Threaded through to `SwitchModelComplete` so
+        /// `IncompatibleAgent` can roll back.
         prev_model_id: Option<acp::ModelId>,
     },
     /// Fetch changelog from CDN (both markdown + structured JSON).
@@ -1536,16 +1520,6 @@ pub enum Effect {
         mode: crate::app::app_view::WorktreeMode,
         config_key: &'static str,
     },
-    /// Persist preferred model and effort to the fixed `roles.main` entry.
-    /// This is the only cross-session model source of truth.
-    PersistPreferredModel {
-        model_id: acp::ModelId,
-        reasoning_effort: Option<ReasoningEffort>,
-    },
-    /// Delete obsolete model-default fields while preserving the configured
-    /// `roles.main` entry. Used when the settings UI is reset before the live
-    /// model catalog has selected a current model.
-    ClearLegacyModelDefaults,
     /// Persist the permission mode to config.toml and notify the agent
     /// via ACP. See [`PermissionModePersist`] for rollback semantics.
     PersistPermissionMode {
@@ -1691,13 +1665,13 @@ pub enum Effect {
     HooksAction {
         agent_id: AgentId,
         session_id: acp::SessionId,
-        action: xai_hooks_plugins_types::HooksAction,
+        action: atelier_hooks_plugins_types::HooksAction,
     },
     /// Execute a plugins management action via ACP.
     PluginsAction {
         agent_id: AgentId,
         session_id: acp::SessionId,
-        action: xai_hooks_plugins_types::PluginsAction,
+        action: atelier_hooks_plugins_types::PluginsAction,
     },
     /// Fetch marketplace plugin list from the shell.
     FetchMarketplaceList {
@@ -1731,7 +1705,7 @@ pub enum Effect {
     MarketplaceAction {
         agent_id: AgentId,
         session_id: acp::SessionId,
-        action: xai_hooks_plugins_types::MarketplaceAction,
+        action: atelier_hooks_plugins_types::MarketplaceAction,
     },
     /// Install a plugin from the inline CTA via `atelier/marketplace/action`,
     /// reported back via `TaskResult::CtaPluginInstallDone`.
@@ -2254,9 +2228,6 @@ pub enum TaskResult {
         subagent_id: String,
         outcome: SubagentKillOutcome,
     },
-    PreferredModelPersisted {
-        result: Result<(), String>,
-    },
     /// Manual `/compact` command completed.
     CompactComplete {
         agent_id: AgentId,
@@ -2343,32 +2314,32 @@ pub enum TaskResult {
     /// Hooks list fetched from shell.
     HooksListLoaded {
         agent_id: AgentId,
-        result: Result<xai_hooks_plugins_types::HooksListResponse, String>,
+        result: Result<atelier_hooks_plugins_types::HooksListResponse, String>,
     },
     /// Plugins list fetched from shell.
     PluginsListLoaded {
         agent_id: AgentId,
-        result: Result<xai_hooks_plugins_types::PluginsListResponse, String>,
+        result: Result<atelier_hooks_plugins_types::PluginsListResponse, String>,
     },
     /// Hooks action completed.
     HooksActionResult {
         agent_id: AgentId,
-        result: Result<xai_hooks_plugins_types::ActionOutcome, String>,
+        result: Result<atelier_hooks_plugins_types::ActionOutcome, String>,
     },
     /// Plugins action completed.
     PluginsActionResult {
         agent_id: AgentId,
-        result: Result<xai_hooks_plugins_types::ActionOutcome, String>,
+        result: Result<atelier_hooks_plugins_types::ActionOutcome, String>,
     },
     /// Marketplace list loaded.
     MarketplaceListLoaded {
         agent_id: AgentId,
-        result: Result<xai_hooks_plugins_types::MarketplaceListResponse, String>,
+        result: Result<atelier_hooks_plugins_types::MarketplaceListResponse, String>,
     },
     /// Official-marketplace CTA catalog loaded into agent-level state.
     PluginCtaCatalogLoaded {
         agent_id: AgentId,
-        result: Result<xai_hooks_plugins_types::MarketplaceListResponse, String>,
+        result: Result<atelier_hooks_plugins_types::MarketplaceListResponse, String>,
     },
     /// Skills list loaded.
     SkillsListLoaded {
@@ -2388,19 +2359,19 @@ pub enum TaskResult {
     /// Marketplace action completed.
     MarketplaceActionResult {
         agent_id: AgentId,
-        result: Result<xai_hooks_plugins_types::ActionOutcome, String>,
+        result: Result<atelier_hooks_plugins_types::ActionOutcome, String>,
     },
     /// Inline-CTA plugin install completed.
     CtaPluginInstallDone {
         agent_id: AgentId,
         plugin_name: String,
-        result: Result<xai_hooks_plugins_types::ActionOutcome, String>,
+        result: Result<atelier_hooks_plugins_types::ActionOutcome, String>,
     },
     /// Post-CTA-install plugins reload completed (modal-independent).
     CtaPluginReloadDone {
         agent_id: AgentId,
         plugin_name: String,
-        result: Result<xai_hooks_plugins_types::ActionOutcome, String>,
+        result: Result<atelier_hooks_plugins_types::ActionOutcome, String>,
     },
     /// Post-CTA-install MCP server list loaded (modal-independent).
     PluginCtaMcpsLoaded {

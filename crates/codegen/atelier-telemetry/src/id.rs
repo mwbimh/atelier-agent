@@ -1,8 +1,7 @@
 //! Stable agent identifier.
 //!
-//! Extracted from `atelier-shell::agent::unique_identifier` so the
-//! telemetry engine can stamp events without depending on shell internals.
-//! `$ATELIER_HOME` is resolved through `atelier-config::atelier_home`.
+//! Shared by local runtime components without depending on shell internals.
+//! `$ATELIER_HOME` is resolved locally by this crate.
 
 use std::sync::OnceLock;
 
@@ -32,7 +31,7 @@ pub fn agent_instance_id() -> String {
 }
 
 fn load_or_compute_agent_id() -> String {
-    let cache_path = atelier_config::atelier_home().join("agent_id");
+    let cache_path = crate::home::atelier_home().join("agent_id");
 
     // Try to read from cache file first (fast path)
     if let Ok(cached) = std::fs::read_to_string(&cache_path) {
@@ -64,23 +63,4 @@ fn load_or_compute_agent_id() -> String {
     let _ = std::fs::write(&cache_path, &id);
 
     id
-}
-
-/// Returns true when workspace marker env vars (`XAI_ROOT` and `XAI_USER`) are set.
-///
-/// Used as a coarse local gate for features that require a full workspace
-/// checkout. External installs typically leave both unset.
-pub fn has_workspace_env_markers() -> bool {
-    std::env::var("XAI_ROOT").is_ok() && std::env::var("XAI_USER").is_ok()
-}
-
-/// Opt-in special-user gate for telemetry.
-///
-/// Enabled only when `ATELIER_TELEMETRY_SPECIAL_USER=1` (or `true`). There is no
-/// hardcoded username allowlist.
-pub fn is_special_user() -> bool {
-    matches!(
-        std::env::var("ATELIER_TELEMETRY_SPECIAL_USER").as_deref(),
-        Ok("1") | Ok("true") | Ok("TRUE")
-    )
 }

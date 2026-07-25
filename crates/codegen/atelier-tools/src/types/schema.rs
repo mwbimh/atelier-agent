@@ -139,9 +139,9 @@ where
             .map_err(serde::de::Error::custom),
     }
 }
-/// Lenient boolean deserializers (shared via `xai-tool-types`), re-exported so
+/// Lenient boolean deserializers (shared via `atelier-tool-types`), re-exported so
 /// fields reference them under the same `crate::types::schema::` path as above.
-pub use xai_tool_types::{deserialize_lenient_bool, deserialize_lenient_option_bool};
+pub use atelier_tool_types::{deserialize_lenient_bool, deserialize_lenient_option_bool};
 #[cfg(test)]
 mod tests {
     use super::*;

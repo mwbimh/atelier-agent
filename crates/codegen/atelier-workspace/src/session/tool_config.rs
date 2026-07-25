@@ -31,9 +31,9 @@ pub(crate) fn resolve_session_toolset(
     session_env: Arc<HashMap<String, String>>,
     session_id: &str,
     factory: &dyn SessionContextFactory,
-    local_registry: Option<xai_computer_hub_sdk::LocalRegistry>,
+    local_registry: Option<atelier_tool_hub_sdk::LocalRegistry>,
     lsp: Option<std::sync::Arc<dyn atelier_tools::implementations::lsp::LspBackend>>,
-    viewer_ctx: Option<xai_tool_runtime::WorkspaceViewerContext>,
+    viewer_ctx: Option<atelier_tool_runtime::WorkspaceViewerContext>,
     notification_handle: Option<atelier_tools::notification::types::ToolNotificationHandle>,
 ) -> WorkspaceResult<(
     ToolServerConfig,
@@ -83,9 +83,9 @@ pub(crate) fn resolve_session_toolset_rebuild(
     session_env: Arc<HashMap<String, String>>,
     session_id: &str,
     factory: &dyn SessionContextFactory,
-    local_registry: Option<xai_computer_hub_sdk::LocalRegistry>,
+    local_registry: Option<atelier_tool_hub_sdk::LocalRegistry>,
     lsp: Option<std::sync::Arc<dyn atelier_tools::implementations::lsp::LspBackend>>,
-    viewer_ctx: Option<xai_tool_runtime::WorkspaceViewerContext>,
+    viewer_ctx: Option<atelier_tool_runtime::WorkspaceViewerContext>,
     notification_handle: Option<atelier_tools::notification::types::ToolNotificationHandle>,
     terminal_backend: Arc<dyn atelier_tools::computer::types::TerminalBackend>,
 ) -> WorkspaceResult<(ToolServerConfig, Arc<FinalizedToolset>)> {
@@ -279,11 +279,19 @@ fn sanitize_session_id(session_id: &str) -> String {
         modified = true;
     }
     if modified {
-        let digest = xai_file_utils::sha256_hex(session_id.as_bytes());
+        let digest = sha256_hex(session_id.as_bytes());
         safe.push('-');
         safe.push_str(&digest[..8]);
     }
     safe
+}
+
+fn sha256_hex(data: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+
+    let mut hasher = Sha256::new();
+    hasher.update(data);
+    format!("{:x}", hasher.finalize())
 }
 /// `<root>/sessions/<sanitized_id>`, creating the directory when possible.
 fn ensure_session_dir(root: &std::path::Path, session_id: &str) -> (PathBuf, std::io::Result<()>) {
@@ -319,7 +327,7 @@ pub(crate) use crate::ENV_TEST_LOCK as TOOL_STATE_ENV_LOCK;
 /// [`build_session_context`]: crate::config::SessionContextFactory::build_session_context
 /// [`LocalTerminalBackend`]: atelier_tools::computer::local::LocalTerminalBackend
 pub struct WorkspaceSessionContextFactory {
-    auth: Option<xai_computer_hub_sdk::SharedAuthProvider>,
+    auth: Option<atelier_tool_hub_sdk::SharedAuthProvider>,
     api_base_url: Option<String>,
     /// Optional process-isolated filesystem.  The default stays local for
     /// tests and legacy in-process sessions; production callers that require
@@ -345,7 +353,7 @@ impl WorkspaceSessionContextFactory {
         }
     }
     /// Factory with auth — gen tools use the provider's live token.
-    pub fn with_auth(auth: xai_computer_hub_sdk::SharedAuthProvider, api_base_url: String) -> Self {
+    pub fn with_auth(auth: atelier_tool_hub_sdk::SharedAuthProvider, api_base_url: String) -> Self {
         Self {
             auth: Some(auth),
             api_base_url: Some(api_base_url),
@@ -427,7 +435,7 @@ impl SessionContextFactory for WorkspaceSessionContextFactory {
             if let (Some(auth), Some(url)) = (&self.auth, &self.api_base_url) {
                 let cred = auth.current();
                 match cred {
-                    xai_computer_hub_sdk::AuthCredential::Bearer { token, .. } => {
+                    atelier_tool_hub_sdk::AuthCredential::Bearer { token, .. } => {
                         let headers = build_proxy_headers(url);
                         (
                             ImageGenConfig::Enabled {

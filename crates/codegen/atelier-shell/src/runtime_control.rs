@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, VecDeque};
 
-pub use xai_acp_lib::RuntimeState;
+pub use atelier_acp_runtime::RuntimeState;
 
 const DEFAULT_EVENT_LIMIT: usize = 512;
 const DEFAULT_REQUEST_LIMIT: usize = 128;
@@ -284,8 +284,9 @@ impl RuntimeControl {
             status.state = state;
             status.last_progress_at_ms = now_ms;
             if diagnostic_message.is_some() {
-                status.diagnostic_message =
-                    diagnostic_message.as_deref().map(xai_acp_lib::redact_text);
+                status.diagnostic_message = diagnostic_message
+                    .as_deref()
+                    .map(atelier_acp_runtime::redact_text);
             }
             status.request_id.clone()
         };
@@ -315,8 +316,9 @@ impl RuntimeControl {
             task.state = state;
             task.last_event_id = event_id;
             if diagnostic_message.is_some() {
-                task.diagnostic_message =
-                    diagnostic_message.as_deref().map(xai_acp_lib::redact_text);
+                task.diagnostic_message = diagnostic_message
+                    .as_deref()
+                    .map(atelier_acp_runtime::redact_text);
             }
         }
         true
@@ -458,7 +460,9 @@ impl RuntimeControl {
         now_ms: u64,
         diagnostic_message: Option<String>,
     ) -> bool {
-        let redacted_diagnostic = diagnostic_message.as_deref().map(xai_acp_lib::redact_text);
+        let redacted_diagnostic = diagnostic_message
+            .as_deref()
+            .map(atelier_acp_runtime::redact_text);
         let session_id = {
             let Some(task) = self.tasks.iter_mut().rev().find(|task| task.id == task_id) else {
                 return false;
@@ -550,7 +554,9 @@ impl RuntimeControl {
         error_stage: Option<String>,
         diagnostic_message: Option<String>,
     ) -> bool {
-        let redacted_diagnostic = diagnostic_message.as_deref().map(xai_acp_lib::redact_text);
+        let redacted_diagnostic = diagnostic_message
+            .as_deref()
+            .map(atelier_acp_runtime::redact_text);
         let request_started_at = self
             .requests
             .iter()
@@ -579,7 +585,7 @@ impl RuntimeControl {
             .find(|request| request.request_id == request_id)
         {
             request.state = state;
-            request.error_stage = error_stage.map(|stage| xai_acp_lib::redact_text(&stage));
+            request.error_stage = error_stage.map(|stage| atelier_acp_runtime::redact_text(&stage));
             request.finished_at_ms = Some(now_ms);
             request.total_duration_ms = Some(now_ms.saturating_sub(started_at));
         }
@@ -633,7 +639,7 @@ impl RuntimeControl {
         request.context_blocks = context_blocks;
         request.input_tokens = input_tokens;
         request.output_token_budget = output_token_budget;
-        request.payload = xai_acp_lib::redact_payload(&payload);
+        request.payload = atelier_acp_runtime::redact_payload(&payload);
         true
     }
 
@@ -910,7 +916,7 @@ impl RuntimeControl {
             session_id,
             request_id,
             kind: kind.into(),
-            details: xai_acp_lib::redact_payload(&details),
+            details: atelier_acp_runtime::redact_payload(&details),
         });
         self.trim();
         let _ = self.event_watch.send(event_id);
@@ -977,7 +983,10 @@ mod tests {
         assert_eq!(request.state, RuntimeState::Completed);
         assert_eq!(request.total_duration_ms, Some(80));
         assert_eq!(request.context_blocks[0].tokens, 12);
-        assert_eq!(request.payload["api_key"], xai_acp_lib::REDACTED_VALUE);
+        assert_eq!(
+            request.payload["api_key"],
+            atelier_acp_runtime::REDACTED_VALUE
+        );
         assert_eq!(
             control.status("session-1").unwrap().state,
             RuntimeState::Completed

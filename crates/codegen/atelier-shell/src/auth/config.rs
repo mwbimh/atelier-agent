@@ -162,7 +162,7 @@ pub fn is_configured_oauth2_issuer(issuer: &str) -> bool {
     }
 
     #[cfg(test)]
-    if issuer == crate::auth::test_support::LEGACY_VENDOR_TEST_ISSUER {
+    if issuer == crate::auth::test_support::TEST_OIDC_ISSUER {
         return true;
     }
 

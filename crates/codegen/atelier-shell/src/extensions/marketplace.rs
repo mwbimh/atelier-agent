@@ -4,7 +4,7 @@
 //! Delegates to `atelier-plugin-marketplace` crate for scanning and install logic.
 
 use agent_client_protocol as acp;
-use xai_hooks_plugins_types::{
+use atelier_hooks_plugins_types::{
     MarketplaceAction, MarketplaceActionRequest, MarketplaceListResponse, MarketplacePluginEntry,
     MarketplaceScanResult,
 };
@@ -164,8 +164,8 @@ async fn handle_action(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
                     errors.join("; ")
                 )
             };
-            xai_hooks_plugins_types::ActionOutcome {
-                status: xai_hooks_plugins_types::OutcomeStatus::Success,
+            atelier_hooks_plugins_types::ActionOutcome {
+                status: atelier_hooks_plugins_types::OutcomeStatus::Success,
                 message: msg,
                 requires_reload: false,
                 requires_restart: false,
@@ -197,9 +197,9 @@ async fn handle_update(
     sid: &acp::SessionId,
     source_url_or_path: &str,
     plugin_relative_path: &str,
-) -> xai_hooks_plugins_types::ActionOutcome {
+) -> atelier_hooks_plugins_types::ActionOutcome {
+    use atelier_hooks_plugins_types::{ActionOutcome, OutcomeStatus};
     use atelier_plugin_marketplace::installer;
-    use xai_hooks_plugins_types::{ActionOutcome, OutcomeStatus};
 
     let sources = load_filtered_marketplace_sources();
 
@@ -308,7 +308,7 @@ async fn handle_update(
                 tracing::warn!("{w}");
             }
             let reload_outcome = agent
-                .execute_plugins_action(sid, xai_hooks_plugins_types::PluginsAction::Reload)
+                .execute_plugins_action(sid, atelier_hooks_plugins_types::PluginsAction::Reload)
                 .await;
             let mut msg = format!(
                 "Updated {} ({} -> {})",
@@ -349,9 +349,9 @@ async fn handle_install(
     sid: &acp::SessionId,
     source_url_or_path: &str,
     plugin_relative_path: &str,
-) -> xai_hooks_plugins_types::ActionOutcome {
+) -> atelier_hooks_plugins_types::ActionOutcome {
+    use atelier_hooks_plugins_types::{ActionOutcome, OutcomeStatus};
     use atelier_plugin_marketplace::installer;
-    use xai_hooks_plugins_types::{ActionOutcome, OutcomeStatus};
 
     let sources = load_filtered_marketplace_sources();
 
@@ -419,7 +419,7 @@ async fn handle_install(
                     tracing::warn!("{w}");
                 }
                 let _ = agent
-                    .execute_plugins_action(sid, xai_hooks_plugins_types::PluginsAction::Reload)
+                    .execute_plugins_action(sid, atelier_hooks_plugins_types::PluginsAction::Reload)
                     .await;
                 ActionOutcome {
                     status: OutcomeStatus::Success,
@@ -537,7 +537,7 @@ async fn handle_install(
                     tracing::warn!("{w}");
                 }
                 let _ = agent
-                    .execute_plugins_action(sid, xai_hooks_plugins_types::PluginsAction::Reload)
+                    .execute_plugins_action(sid, atelier_hooks_plugins_types::PluginsAction::Reload)
                     .await;
                 ActionOutcome {
                     status: OutcomeStatus::Success,
@@ -574,9 +574,9 @@ async fn handle_uninstall(
     sid: &acp::SessionId,
     source_url_or_path: &str,
     plugin_relative_path: &str,
-) -> xai_hooks_plugins_types::ActionOutcome {
+) -> atelier_hooks_plugins_types::ActionOutcome {
+    use atelier_hooks_plugins_types::{ActionOutcome, OutcomeStatus};
     use atelier_plugin_marketplace::installer;
-    use xai_hooks_plugins_types::{ActionOutcome, OutcomeStatus};
 
     let mut registry = atelier_agent::plugins::install_registry::InstallRegistry::load();
 
@@ -625,7 +625,7 @@ async fn handle_uninstall(
 
     // Trigger plugin reload so the removed plugin disappears from the session.
     let _ = agent
-        .execute_plugins_action(sid, xai_hooks_plugins_types::PluginsAction::Reload)
+        .execute_plugins_action(sid, atelier_hooks_plugins_types::PluginsAction::Reload)
         .await;
 
     ActionOutcome {
@@ -740,7 +740,7 @@ async fn auto_install_defaults(
     // Trigger plugin reload if we auto-installed anything.
     if any_changed && let Some(sid) = session_id {
         let _ = agent
-            .execute_plugins_action(sid, xai_hooks_plugins_types::PluginsAction::Reload)
+            .execute_plugins_action(sid, atelier_hooks_plugins_types::PluginsAction::Reload)
             .await;
     }
 }
@@ -888,9 +888,9 @@ fn to_plugin_entry(
 }
 
 /// Add a new git or local-path marketplace source to `~/.atelier/config.toml`.
-async fn handle_add_source(url: &str) -> xai_hooks_plugins_types::ActionOutcome {
+async fn handle_add_source(url: &str) -> atelier_hooks_plugins_types::ActionOutcome {
     use crate::plugin::{self, MarketplaceAddInput};
-    use xai_hooks_plugins_types::{ActionOutcome, OutcomeStatus};
+    use atelier_hooks_plugins_types::{ActionOutcome, OutcomeStatus};
 
     let url = url.trim();
     if url.is_empty() {
@@ -966,9 +966,9 @@ async fn handle_add_source(url: &str) -> xai_hooks_plugins_types::ActionOutcome 
     }
 
     let is_official = matches!(&input, MarketplaceAddInput::GitUrl(u)
-        if atelier_plugin_marketplace::is_official_source_url(u));
+        if atelier_plugin_marketplace::is_atelier_source_url(u));
     let name = if is_official {
-        atelier_plugin_marketplace::OFFICIAL_SOURCE_NAME.to_string()
+        atelier_plugin_marketplace::ATELIER_SOURCE_NAME.to_string()
     } else {
         match &input {
             MarketplaceAddInput::GitUrl(u) => plugin::name_from_url(u),
@@ -1101,14 +1101,16 @@ fn add_marketplace_source(
 
 /// Remove a marketplace source from `~/.atelier/config.toml` and uninstall all
 /// plugins that were installed from it.
-async fn handle_remove_source(source_url_or_path: &str) -> xai_hooks_plugins_types::ActionOutcome {
+async fn handle_remove_source(
+    source_url_or_path: &str,
+) -> atelier_hooks_plugins_types::ActionOutcome {
     let src = source_url_or_path.to_string();
     // Lock + run the blocking FS work off the reactor.
     let _save_guard = crate::util::config::lock_config_writes().await;
     match tokio::task::spawn_blocking(move || remove_source_locked(&src)).await {
         Ok(outcome) => outcome,
-        Err(e) => xai_hooks_plugins_types::ActionOutcome {
-            status: xai_hooks_plugins_types::OutcomeStatus::InternalError,
+        Err(e) => atelier_hooks_plugins_types::ActionOutcome {
+            status: atelier_hooks_plugins_types::OutcomeStatus::InternalError,
             message: format!("Config write task failed: {e}"),
             requires_reload: false,
             requires_restart: false,
@@ -1119,9 +1121,9 @@ async fn handle_remove_source(source_url_or_path: &str) -> xai_hooks_plugins_typ
 /// Sync body of [`handle_remove_source`], run on a blocking thread under the
 /// flock for the whole read-modify-write so a concurrent auto-register can't
 /// re-add the source mid-removal.
-fn remove_source_locked(source_url_or_path: &str) -> xai_hooks_plugins_types::ActionOutcome {
+fn remove_source_locked(source_url_or_path: &str) -> atelier_hooks_plugins_types::ActionOutcome {
     use crate::plugin;
-    use xai_hooks_plugins_types::{ActionOutcome, OutcomeStatus};
+    use atelier_hooks_plugins_types::{ActionOutcome, OutcomeStatus};
 
     let atelier_home = atelier_config::atelier_home();
     let _flock = acquire_init_lock(&atelier_home).ok();
@@ -1131,7 +1133,7 @@ fn remove_source_locked(source_url_or_path: &str) -> xai_hooks_plugins_types::Ac
     // Remove the source and (if official) set the flag in ONE atomic write so a
     // crash can't drop the flag and re-add the source next startup.
     let config_path = atelier_home.join("config.toml");
-    let is_official = atelier_plugin_marketplace::is_official_source_url(source_url_or_path);
+    let is_official = atelier_plugin_marketplace::is_atelier_source_url(source_url_or_path);
     let mut removed_from_config = false;
     let content = match crate::util::config::read_to_string_or_empty(&config_path) {
         Ok(c) => c,
@@ -1291,13 +1293,10 @@ fn acquire_init_lock(atelier_home: &std::path::Path) -> std::io::Result<std::fs:
     ))
 }
 
-/// Auto-register the official xAI marketplace source on first run.
+/// Record that the retired built-in marketplace source has been handled.
 ///
-/// Gated by the caller (`init_process`); see
-/// `Config::resolve_official_marketplace_auto_register`. No-op once
-/// `official_marketplace_auto_installed` is set. Under a process-wide flock it
-/// adds the source (or just sets the flag if it's already present in config.toml
-/// or a JSON store). Best-effort: errors are logged and never block startup.
+/// No remote source is added. Existing user-configured sources are preserved.
+/// The sticky flag prevents older startup paths from attempting registration.
 pub fn ensure_official_marketplace_source(atelier_home: &std::path::Path) {
     let config_path = atelier_home.join("config.toml");
 
@@ -1322,60 +1321,11 @@ pub fn ensure_official_marketplace_source(atelier_home: &std::path::Path) {
         return;
     }
 
-    let raw = match crate::util::config::read_to_string_or_empty(&config_path) {
-        Ok(s) => s,
-        Err(e) => {
-            tracing::warn!(error = %e, "skipping official marketplace auto-register: cannot read config.toml");
-            return;
-        }
-    };
-    let parsed: toml::Value = match toml::from_str(&raw) {
-        Ok(v) => v,
-        Err(e) => {
-            tracing::warn!(error = %e, "skipping official marketplace auto-register: invalid config.toml");
-            return;
-        }
-    };
-
-    // "Already present" = official URL in config.toml sources OR a JSON store
-    // (settings.json / known_marketplaces.json) under atelier_home. Scoped to
-    // atelier_home only (not ~/.claude) to keep tests hermetic; a user with the URL
-    // solely in ~/.claude gets one duplicate entry that the UI dedupes by URL.
-    let toml_sources = atelier_plugin_marketplace::load_sources(&parsed);
-    let json_sources = atelier_plugin_marketplace::load_extra_sources_from_settings_in(
-        &toml_sources,
-        std::slice::from_ref(&atelier_home.to_path_buf()),
-    );
-    let already_present = toml_sources.iter().chain(json_sources.iter()).any(|s| {
-        matches!(&s.kind, atelier_plugin_marketplace::SourceKind::Git { url, .. }
-            if atelier_plugin_marketplace::is_official_source_url(url))
-    });
-
-    let write_result = if already_present {
-        // Already present: just set the flag.
-        set_official_marketplace_auto_installed(&config_path)
-    } else {
-        add_marketplace_source(
-            &config_path,
-            atelier_plugin_marketplace::OFFICIAL_SOURCE_NAME,
-            &crate::plugin::MarketplaceAddInput::GitUrl(
-                atelier_plugin_marketplace::OFFICIAL_SOURCE_GIT_URL.to_string(),
-            ),
-            true,
-        )
-    };
-
-    match write_result {
-        Ok(()) if !already_present => {
-            tracing::info!(
-                url = atelier_plugin_marketplace::OFFICIAL_SOURCE_GIT_URL,
-                "auto-registered official xAI marketplace source"
-            );
-        }
-        Ok(()) => {}
-        Err(e) => {
-            tracing::warn!(error = %e, "failed to auto-register official marketplace source");
-        }
+    if let Err(e) = set_official_marketplace_auto_installed(&config_path) {
+        tracing::warn!(
+            error = %e,
+            "failed to persist retired marketplace-source marker"
+        );
     }
 }
 
@@ -1471,13 +1421,13 @@ mod official_source_tests {
         assert!(
             !sources.iter().any(|s| matches!(&s.kind,
                 atelier_plugin_marketplace::SourceKind::Git { url, .. }
-                    if atelier_plugin_marketplace::is_official_source_url(url))),
+                    if atelier_plugin_marketplace::is_atelier_source_url(url))),
             "official source must not be re-added after removal"
         );
     }
 
     #[test]
-    fn first_run_creates_source_and_sets_flag() {
+    fn first_run_sets_flag_without_adding_remote_source() {
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path();
 
@@ -1487,16 +1437,10 @@ mod official_source_tests {
         assert!(config_path.exists(), "config.toml should be created");
 
         let sources = read_sources(&config_path);
-        assert_eq!(sources.len(), 1);
-        assert_eq!(
-            sources[0].name,
-            atelier_plugin_marketplace::OFFICIAL_SOURCE_NAME
+        assert!(
+            sources.is_empty(),
+            "startup must not inject a remote source"
         );
-        assert!(matches!(
-            &sources[0].kind,
-            atelier_plugin_marketplace::SourceKind::Git { url, .. }
-                if url == atelier_plugin_marketplace::OFFICIAL_SOURCE_GIT_URL
-        ));
         assert!(read_flag(&config_path));
     }
 
@@ -1523,16 +1467,30 @@ mod official_source_tests {
         let home = tmp.path();
         let config_path = home.join("config.toml");
 
-        ensure_official_marketplace_source(home);
-        assert_eq!(read_sources(&config_path).len(), 1);
-
-        // Simulate removal: drop the source block, keep the flag.
+        // Seed the legacy state from builds that injected the built-in source.
         std::fs::write(
             &config_path,
-            "[marketplace]\nofficial_marketplace_auto_installed = true\n",
+            format!(
+                "[marketplace]\nofficial_marketplace_auto_installed = true\n\n\
+                 [[marketplace.sources]]\nname = \"{}\"\ngit = \"{}\"\n",
+                atelier_plugin_marketplace::ATELIER_SOURCE_NAME,
+                atelier_plugin_marketplace::ATELIER_SOURCE_GIT_URL,
+            ),
         )
         .unwrap();
+        assert_eq!(read_sources(&config_path).len(), 1, "legacy fixture");
 
+        let content = std::fs::read_to_string(&config_path).unwrap();
+        let new_content = crate::plugin::remove_toml_marketplace_block(
+            &content,
+            atelier_plugin_marketplace::ATELIER_SOURCE_GIT_URL,
+        )
+        .expect("legacy built-in source should be removable");
+        std::fs::write(&config_path, &new_content).unwrap();
+        assert!(read_sources(&config_path).is_empty());
+        assert!(read_flag(&config_path), "removal must preserve the marker");
+
+        ensure_official_marketplace_source(home);
         ensure_official_marketplace_source(home);
 
         assert!(
@@ -1553,8 +1511,8 @@ mod official_source_tests {
             &config_path,
             format!(
                 "[[marketplace.sources]]\nname = \"{}\"\ngit = \"{}\"\n",
-                atelier_plugin_marketplace::OFFICIAL_SOURCE_NAME,
-                atelier_plugin_marketplace::OFFICIAL_SOURCE_GIT_URL,
+                atelier_plugin_marketplace::ATELIER_SOURCE_NAME,
+                atelier_plugin_marketplace::ATELIER_SOURCE_GIT_URL,
             ),
         )
         .unwrap();
@@ -1575,8 +1533,8 @@ mod official_source_tests {
         std::fs::write(
             plugins_dir.join("known_marketplaces.json"),
             format!(
-                r#"{{"xai-official":{{"source":{{"source":"git","url":"{}"}}}}}}"#,
-                atelier_plugin_marketplace::OFFICIAL_SOURCE_GIT_URL,
+                r#"{{"atelier-official":{{"source":{{"source":"git","url":"{}"}}}}}}"#,
+                atelier_plugin_marketplace::ATELIER_SOURCE_GIT_URL,
             ),
         )
         .unwrap();
@@ -1601,8 +1559,8 @@ mod official_source_tests {
         std::fs::write(
             home.join("settings.json"),
             format!(
-                r#"{{"extraKnownMarketplaces":{{"xai-official":{{"source":{{"source":"git","url":"{}"}}}}}}}}"#,
-                atelier_plugin_marketplace::OFFICIAL_SOURCE_GIT_URL,
+                r#"{{"extraKnownMarketplaces":{{"atelier-official":{{"source":{{"source":"git","url":"{}"}}}}}}}}"#,
+                atelier_plugin_marketplace::ATELIER_SOURCE_GIT_URL,
             ),
         )
         .unwrap();
@@ -1628,8 +1586,8 @@ mod official_source_tests {
             &config_path,
             format!(
                 "[[marketplace.sources]]\nname = \"{}\"\ngit = \"{}\"\nbranch = \"some-branch\"\n",
-                atelier_plugin_marketplace::OFFICIAL_SOURCE_NAME,
-                atelier_plugin_marketplace::OFFICIAL_SOURCE_GIT_URL,
+                atelier_plugin_marketplace::ATELIER_SOURCE_NAME,
+                atelier_plugin_marketplace::ATELIER_SOURCE_GIT_URL,
             ),
         )
         .unwrap();
@@ -1667,7 +1625,7 @@ mod official_source_tests {
         );
         assert!(after.contains("Local"), "existing source preserved");
         let sources = read_sources(&config_path);
-        assert_eq!(sources.len(), 2);
+        assert_eq!(sources.len(), 1);
         assert!(read_flag(&config_path));
     }
 }
@@ -1683,7 +1641,7 @@ mod conversion_tests {
             version: Some("1.0.0".into()),
             description: Some("demo".into()),
             category: Some("dev".into()),
-            author: Some("xai".into()),
+            author: Some("atelier".into()),
             tags: vec!["cli".into()],
             keywords: vec!["search".into(), "rank".into()],
             domains: vec!["example.com".into()],
@@ -1697,8 +1655,8 @@ mod conversion_tests {
             remote_ref: None,
             remote_sha: None,
             remote_subdir: Some("plugins/acme".into()),
-            components: Some(xai_hooks_plugins_types::PluginComponents {
-                skills: vec![xai_hooks_plugins_types::ComponentItem::new(
+            components: Some(atelier_hooks_plugins_types::PluginComponents {
+                skills: vec![atelier_hooks_plugins_types::ComponentItem::new(
                     "code-review",
                     Some("Review staged changes".to_string()),
                 )],

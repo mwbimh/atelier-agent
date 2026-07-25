@@ -12,10 +12,10 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 atelier-sampling-types = { path = "../atelier-sampling-types" }
 atelier-tools = { path = "../atelier-tools" }
-xai-tool-types.workspace = true
+atelier-tool-types.workspace = true
 # TODO(phase2): add these when resolve_subagent_spec() composition is implemented:
 # atelier-agent = { path = "../atelier-agent" }  # AgentDefinition lookup
-# xai-fast-worktree = { path = "../xai-fast-worktree" }  # worktree creation
+# atelier-fast-worktree = { path = "../atelier-fast-worktree" }  # worktree creation
 
 [dev-dependencies]
 tempfile = { workspace = true }

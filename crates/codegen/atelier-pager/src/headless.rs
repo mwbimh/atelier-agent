@@ -13,6 +13,7 @@ use clap::ValueEnum;
 use tokio_util::sync::CancellationToken;
 
 use agent_client_protocol as acp;
+use atelier_acp_runtime::{AcpAgentTx, AcpClientMessageBox, acp_send};
 use atelier_shell::agent::auth_method::AuthMethodKind;
 use atelier_shell::agent::config::Config as AgentConfig;
 use atelier_shell::extensions::task::{CancelSubagentRequest, KillTaskRequest};
@@ -20,7 +21,6 @@ use atelier_shell::sampling::types::{
     REASONING_EFFORT_META_KEY, parse_canonical_effort_token, reasoning_effort_meta_value,
 };
 use atelier_shell::util::config as cli_config;
-use xai_acp_lib::{AcpAgentTx, AcpClientMessageBox, acp_send};
 
 use crate::acp::model_state::{EffortTokenError, ModelState};
 use crate::acp::spawn::spawn_atelier_shell;
@@ -506,14 +506,12 @@ fn auto_respond_to_permissions(
 /// "Not signed in" error message, tailored to the session type.
 fn auth_required_message(interactive: bool) -> String {
     if interactive {
-        "Not signed in. Run `atelier login` to authenticate \
-         (or `atelier login --device-code` if no browser is available)."
+        "Provider authentication is missing. Configure an API credential or run \
+         `/provider login <provider>` in the TUI."
             .to_string()
     } else {
-        "Not signed in. To authenticate without a browser, run:\n  \
-         atelier login --device-code\n\n\
-         Alternatively, set the XAI_API_KEY environment variable \
-         or run `atelier login` on a machine with a browser."
+        "Not signed in. Configure Provider credentials with `/provider`, \
+         or complete `/provider login <provider>` on a machine with a browser."
             .to_string()
     }
 }
@@ -799,7 +797,7 @@ async fn apply_headless_model_and_effort(
     .map_err(|e| {
         if let Some(name) = model_name {
             anyhow::anyhow!(
-                "Couldn't set model '{}': {}. Run 'atelier models' to see available models.",
+                "Couldn't set model '{}': {}. Run 'ate models' to see available models.",
                 name,
                 e
             )
@@ -868,7 +866,7 @@ pub async fn run_single_turn(
 
     agent_config.resolve_runtime_fields(&atelier_shell::agent::config::RuntimeResolutionContext {
         raw_config: &raw_config,
-        remote_settings: None,
+        local_runtime_settings: None,
         cwd: Some(&cwd),
         is_headless: true,
         cli_subagents: None,
@@ -1559,7 +1557,7 @@ enum ExtEvent {
 }
 
 fn handle_ext_notification(
-    notif: &xai_acp_lib::AcpArgsBox<acp::ExtNotification>,
+    notif: &atelier_acp_runtime::AcpArgsBox<acp::ExtNotification>,
     format: OutputFormat,
 ) -> ExtEvent {
     let method = notif.request.method.as_ref();
@@ -1634,7 +1632,7 @@ fn handle_ext_notification(
 
     #[derive(serde::Deserialize)]
     #[serde(rename_all = "snake_case", tag = "sessionUpdate")]
-    enum XaiUpdate {
+    enum ExtensionUpdate {
         AutoCompactStarted {
             percentage: u8,
         },
@@ -1659,16 +1657,18 @@ fn handle_ext_notification(
         Other,
     }
     #[derive(serde::Deserialize)]
-    struct XaiNotif {
-        update: XaiUpdate,
+    struct ExtensionNotification {
+        update: ExtensionUpdate,
     }
 
-    let Ok(xai_notif) = serde_json::from_str::<XaiNotif>(notif.request.params.get()) else {
+    let Ok(extension_notification) =
+        serde_json::from_str::<ExtensionNotification>(notif.request.params.get())
+    else {
         return ExtEvent::None;
     };
 
-    match xai_notif.update {
-        XaiUpdate::AutoCompactStarted { percentage } => match format {
+    match extension_notification.update {
+        ExtensionUpdate::AutoCompactStarted { percentage } => match format {
             OutputFormat::StreamingJson => {
                 println!(
                     "{}",
@@ -1680,14 +1680,14 @@ fn handle_ext_notification(
             }
             OutputFormat::Json => {}
         },
-        XaiUpdate::AutoCompactCompleted {} => match format {
+        ExtensionUpdate::AutoCompactCompleted {} => match format {
             OutputFormat::StreamingJson => {
                 println!("{}", serde_json::json!({"type": "auto_compact_completed"}));
             }
             OutputFormat::Plain => eprintln!("Conversation compacted."),
             OutputFormat::Json => {}
         },
-        XaiUpdate::AutoCompactFailed { error } => match format {
+        ExtensionUpdate::AutoCompactFailed { error } => match format {
             OutputFormat::StreamingJson => {
                 println!(
                     "{}",
@@ -1703,14 +1703,14 @@ fn handle_ext_notification(
             }
             OutputFormat::Json => {}
         },
-        XaiUpdate::AutoCompactCancelled {} => match format {
+        ExtensionUpdate::AutoCompactCancelled {} => match format {
             OutputFormat::StreamingJson => {
                 println!("{}", serde_json::json!({"type": "auto_compact_cancelled"}));
             }
             OutputFormat::Plain => eprintln!("Auto-compact cancelled."),
             OutputFormat::Json => {}
         },
-        XaiUpdate::AutoContinueCompleted { total_tokens } => match format {
+        ExtensionUpdate::AutoContinueCompleted { total_tokens } => match format {
             OutputFormat::StreamingJson => {
                 println!(
                     "{}",
@@ -1720,7 +1720,7 @@ fn handle_ext_notification(
             OutputFormat::Plain => eprintln!("Resumed after compaction."),
             OutputFormat::Json => {}
         },
-        XaiUpdate::ImageCompressed { message } => match format {
+        ExtensionUpdate::ImageCompressed { message } => match format {
             OutputFormat::StreamingJson => {
                 println!(
                     "{}",
@@ -1730,13 +1730,13 @@ fn handle_ext_notification(
             OutputFormat::Plain => eprintln!("{message}"),
             OutputFormat::Json => {}
         },
-        XaiUpdate::SubagentSpawned { subagent_id } => {
+        ExtensionUpdate::SubagentSpawned { subagent_id } => {
             return ExtEvent::SubagentSpawned { subagent_id };
         }
-        XaiUpdate::SubagentFinished { subagent_id, .. } => {
+        ExtensionUpdate::SubagentFinished { subagent_id, .. } => {
             return ExtEvent::SubagentFinished { subagent_id };
         }
-        XaiUpdate::Other => {}
+        ExtensionUpdate::Other => {}
     }
     ExtEvent::None
 }
@@ -2000,14 +2000,14 @@ mod tests {
     fn make_ext_notif(
         method: &str,
         update: serde_json::Value,
-    ) -> xai_acp_lib::AcpArgsBox<acp::ExtNotification> {
+    ) -> atelier_acp_runtime::AcpArgsBox<acp::ExtNotification> {
         let payload = serde_json::json!({
             "sessionId": "sess-1",
             "update": update,
         });
         let raw = serde_json::value::to_raw_value(&payload).unwrap();
         let (tx, _rx) = tokio::sync::oneshot::channel();
-        xai_acp_lib::AcpArgs {
+        atelier_acp_runtime::AcpArgs {
             request: acp::ExtNotification::new(method, raw.into()),
             response_tx: tx,
         }
@@ -2114,7 +2114,7 @@ mod tests {
         });
         let raw = serde_json::value::to_raw_value(&payload).unwrap();
         let (tx, _rx) = tokio::sync::oneshot::channel();
-        let notif = xai_acp_lib::AcpArgs {
+        let notif = atelier_acp_runtime::AcpArgs {
             request: acp::ExtNotification::new("atelier/other", raw.into()),
             response_tx: tx,
         }

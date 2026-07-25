@@ -24,8 +24,8 @@ const MIN_DEVICE_CODE_EXPIRY_FALLBACK_SECS: i64 = 10 * 60;
 #[derive(Debug, Error)]
 pub enum DeviceCodeError {
     #[error(
-        "Device-code login is not available for this deployment. \
-         Try `atelier login` or set XAI_API_KEY instead."
+        "Device-code login is not available. \
+         Check Provider configuration or use another configured OAuth flow."
     )]
     NotEnabled,
     #[error(transparent)]
@@ -536,7 +536,7 @@ fn validate_verification_uri(uri: &str) -> anyhow::Result<()> {
 pub(crate) mod tests {
     use std::sync::Arc;
 
-    use super::{AuthManager, build_auth, validate_verification_uri};
+    use super::{AuthManager, DeviceCodeError, build_auth, validate_verification_uri};
     use crate::auth::{AtelierComConfig, AuthMode};
 
     #[test]
@@ -546,6 +546,14 @@ pub(crate) mod tests {
             "Server returned unsupported verification URI scheme",
             err.to_string()
         );
+    }
+
+    #[test]
+    fn unavailable_device_login_points_to_provider_configuration_or_oauth() {
+        let message = DeviceCodeError::NotEnabled.to_string();
+        assert!(message.contains("Provider configuration"));
+        assert!(message.contains("OAuth"));
+        assert!(!message.contains("XAI_API_KEY"));
     }
 
     fn auth_manager_with_atelier_home(

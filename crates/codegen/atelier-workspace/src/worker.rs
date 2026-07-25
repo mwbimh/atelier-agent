@@ -38,6 +38,50 @@ pub const MAX_WORKER_FRAME_BYTES: usize = 8 * 1024 * 1024;
 const DEFAULT_WORKER_CALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 const WORKER_HANDSHAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
+/// OS sandbox mode used to launch a workspace worker.
+///
+/// The mode is deliberately required at every spawn site so a read-only
+/// session cannot accidentally inherit workspace-write access from a worker
+/// default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkspaceWorkerSandboxMode {
+    ReadOnly,
+    WorkspaceWrite,
+}
+
+impl WorkspaceWorkerSandboxMode {
+    /// Convert a resolved Atelier sandbox profile into the worker's explicit
+    /// launch mode. Unsupported profiles fail closed.
+    pub fn from_profile_name(profile: &str) -> WorkspaceResult<Self> {
+        match profile {
+            "read-only" | "readonly" => Ok(Self::ReadOnly),
+            "workspace" | "devbox" => Ok(Self::WorkspaceWrite),
+            other => Err(WorkspaceError::HubError(format!(
+                "sandbox profile `{other}` cannot launch a workspace worker"
+            ))),
+        }
+    }
+
+    /// Resolve the already-applied process sandbox profile into the narrower
+    /// pair of modes supported by the Windows workspace worker.
+    pub fn configured() -> WorkspaceResult<Self> {
+        let profile = atelier_sandbox::configured_profile_name().ok_or_else(|| {
+            WorkspaceError::HubError(
+                "workspace worker sandbox mode is unavailable before sandbox configuration".into(),
+            )
+        })?;
+        Self::from_profile_name(profile)
+    }
+
+    #[cfg(windows)]
+    fn windows_mode(self) -> atelier_windows_sandbox::SandboxMode {
+        match self {
+            Self::ReadOnly => atelier_windows_sandbox::SandboxMode::ReadOnly,
+            Self::WorkspaceWrite => atelier_windows_sandbox::SandboxMode::WorkspaceWrite,
+        }
+    }
+}
+
 /// Methods accepted by a worker connection.
 pub fn is_worker_method(method: &str) -> bool {
     method.starts_with("workspace.") || method.starts_with("atelier.worker.")
@@ -206,7 +250,11 @@ pub struct WorkspaceWorkerClient {
 
 impl WorkspaceWorkerClient {
     /// Spawn a worker binary and complete the protocol handshake.
-    pub async fn spawn(root: PathBuf, worker_path: PathBuf) -> WorkspaceResult<Self> {
+    pub async fn spawn(
+        root: PathBuf,
+        worker_path: PathBuf,
+        sandbox_mode: WorkspaceWorkerSandboxMode,
+    ) -> WorkspaceResult<Self> {
         let root = canonical_root(&root).await?;
         let nonce = uuid::Uuid::new_v4().to_string();
         let (program, args) = worker_process_command(&root, &worker_path)?;
@@ -214,7 +262,7 @@ impl WorkspaceWorkerClient {
         #[cfg(windows)]
         let (child, stdin, stdout, stderr_task) = {
             let request = atelier_windows_sandbox::CommandRequest::new(
-                atelier_windows_sandbox::SandboxMode::WorkspaceWrite,
+                sandbox_mode.windows_mode(),
                 vec![root.clone()],
                 root.clone(),
                 program,
@@ -248,6 +296,7 @@ impl WorkspaceWorkerClient {
 
         #[cfg(not(windows))]
         let (child, stdin, stdout, stderr_task) = {
+            let _ = sandbox_mode;
             let mut command = Command::new(program);
             command
                 .args(args)
@@ -596,57 +645,19 @@ fn find_worker_binary(
     )))
 }
 
-fn same_executable(left: &Path, right: &Path) -> bool {
-    if left == right {
-        return true;
-    }
-    match (
-        dunce::canonicalize(left).ok(),
-        dunce::canonicalize(right).ok(),
-    ) {
-        (Some(left), Some(right)) => left == right,
-        _ => false,
-    }
-}
-
-fn worker_args_for_path(
-    worker_path: &Path,
-    current_exe: &Path,
-    root: &Path,
-) -> Vec<std::ffi::OsString> {
-    let mut args = Vec::new();
-    if same_executable(worker_path, current_exe) {
-        args.push(std::ffi::OsString::from("--internal-workspace-worker"));
-    }
-    args.push(std::ffi::OsString::from("--root"));
-    args.push(root.as_os_str().to_owned());
-    args
+fn worker_args_for_path(root: &Path) -> Vec<std::ffi::OsString> {
+    vec![
+        std::ffi::OsString::from("--internal-workspace-worker"),
+        std::ffi::OsString::from("--root"),
+        root.as_os_str().to_owned(),
+    ]
 }
 
 fn worker_process_command(
     root: &Path,
     worker_path: &Path,
 ) -> WorkspaceResult<(PathBuf, Vec<std::ffi::OsString>)> {
-    let current_exe = std::env::current_exe().map_err(|error| {
-        WorkspaceError::HubError(format!("resolve current executable: {error}"))
-    })?;
-    let worker_args = worker_args_for_path(worker_path, &current_exe, root);
-
-    #[cfg(windows)]
-    {
-        // The preview restricted token can launch the small command helper,
-        // but Windows fails DLL initialization for the full workspace worker
-        // before Rust reaches the NDJSON handshake (STATUS_DLL_INIT_FAILED).
-        // Keep the worker as a separate process and rely on its canonical-root
-        // confinement until the elevated Codex-style worker backend lands.
-        // Shell and Git commands continue to use the restricted-token runner.
-        return Ok((worker_path.to_path_buf(), worker_args));
-    }
-
-    #[cfg(not(windows))]
-    {
-        Ok((worker_path.to_path_buf(), worker_args))
-    }
+    Ok((worker_path.to_path_buf(), worker_args_for_path(root)))
 }
 
 /// Parse the command line for the workspace-worker sub-mode.
@@ -977,7 +988,7 @@ pub async fn run_worker(root: PathBuf) -> Result<(), WorkerProtocolError> {
 
     let handle = crate::WorkspaceHandle::new_minimal_confined(
         root.clone(),
-        crate::upload::environment::WorkspaceIdentity::default(),
+        crate::environment::WorkspaceIdentity::default(),
         true,
     )
     .map_err(WorkerProtocolError::Workspace)?;
@@ -1108,6 +1119,32 @@ mod tests {
         assert!(!is_worker_method("x.ai/remote"));
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn worker_sandbox_mode_maps_without_workspace_write_default() {
+        assert_eq!(
+            WorkspaceWorkerSandboxMode::ReadOnly.windows_mode(),
+            atelier_windows_sandbox::SandboxMode::ReadOnly
+        );
+        assert_eq!(
+            WorkspaceWorkerSandboxMode::WorkspaceWrite.windows_mode(),
+            atelier_windows_sandbox::SandboxMode::WorkspaceWrite
+        );
+    }
+
+    #[test]
+    fn worker_sandbox_mode_is_resolved_from_the_session_profile() {
+        assert_eq!(
+            WorkspaceWorkerSandboxMode::from_profile_name("read-only").unwrap(),
+            WorkspaceWorkerSandboxMode::ReadOnly
+        );
+        assert_eq!(
+            WorkspaceWorkerSandboxMode::from_profile_name("workspace").unwrap(),
+            WorkspaceWorkerSandboxMode::WorkspaceWrite
+        );
+        assert!(WorkspaceWorkerSandboxMode::from_profile_name("off").is_err());
+    }
+
     #[test]
     fn request_round_trip_preserves_binary_safe_call_shape() {
         let request = WorkerRequest::Call {
@@ -1204,22 +1241,14 @@ mod tests {
 
     #[test]
     fn embedded_worker_invocation_has_a_hidden_internal_marker() {
-        let args = worker_args_for_path(
-            Path::new(r"C:\bin\atelier.exe"),
-            Path::new(r"C:\bin\atelier.exe"),
-            Path::new(r"C:\workspace"),
-        );
+        let args = worker_args_for_path(Path::new(r"C:\workspace"));
         assert_eq!(args[0], "--internal-workspace-worker");
         assert_eq!(args[1], "--root");
     }
 
     #[test]
     fn pager_executable_uses_the_embedded_worker_mode() {
-        let args = worker_args_for_path(
-            Path::new(r"C:\bin\atelier-pager.exe"),
-            Path::new(r"C:\bin\atelier-pager.exe"),
-            Path::new(r"C:\workspace"),
-        );
+        let args = worker_args_for_path(Path::new(r"C:\workspace"));
         assert_eq!(args[0], "--internal-workspace-worker");
         assert_eq!(args[1], "--root");
     }
@@ -1241,8 +1270,7 @@ mod tests {
             r"C:\bin\atelier-0.1.220-alpha.4.exe",
             r"C:\bin\my-company-agent.exe",
         ] {
-            let path = Path::new(executable);
-            let args = worker_args_for_path(path, path, Path::new(r"C:\workspace"));
+            let args = worker_args_for_path(Path::new(r"C:\workspace"));
             assert_eq!(args[0], "--internal-workspace-worker", "{executable}");
         }
     }
@@ -1263,14 +1291,10 @@ mod tests {
     }
 
     #[test]
-    fn external_worker_invocation_keeps_the_public_worker_arguments() {
-        let args = worker_args_for_path(
-            Path::new(r"C:\bin\atelier-workspace-worker.exe"),
-            Path::new(r"C:\bin\atelier.exe"),
-            Path::new(r"C:\workspace"),
-        );
-        assert_eq!(args[0], "--root");
-        assert!(!args.iter().any(|arg| arg == "--internal-workspace-worker"));
+    fn configured_worker_path_always_uses_the_embedded_mode() {
+        let args = worker_args_for_path(Path::new(r"C:\workspace"));
+        assert_eq!(args[0], "--internal-workspace-worker");
+        assert_eq!(args[1], "--root");
     }
 
     #[test]

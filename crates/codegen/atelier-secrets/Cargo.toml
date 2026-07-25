@@ -3,7 +3,7 @@ license = "Apache-2.0"
 edition.workspace = true
 name = "atelier-secrets"
 version = "0.1.0"
-description = "Regex sanitizer for Atelier outbound data (Sentry / Mixpanel / product-event scrubbing)"
+description = "Regex sanitizer for Atelier local logs and diagnostic data"
 
 [dependencies]
 regex = { workspace = true }

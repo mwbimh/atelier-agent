@@ -1,6 +1,6 @@
 use super::*;
 use crate::extensions::notification::{
-    SessionNotification as XaiNotification, SessionUpdate as XaiSessionUpdate,
+    SessionNotification as ExtensionNotification, SessionUpdate as ExtensionSessionUpdate,
 };
 use crate::session::storage::SessionUpdate;
 use agent_client_protocol as acp;
@@ -37,9 +37,9 @@ fn agent_chunk(text: &str) -> SessionUpdate {
 }
 
 fn rewind_marker(target: usize) -> SessionUpdate {
-    SessionUpdate::Xai(Box::new(XaiNotification {
+    SessionUpdate::Extension(Box::new(ExtensionNotification {
         session_id: acp::SessionId::new("s1"),
-        update: XaiSessionUpdate::RewindMarker {
+        update: ExtensionSessionUpdate::RewindMarker {
             target_prompt_index: target,
             created_at: "2024-01-01T00:00:00Z".to_string(),
         },

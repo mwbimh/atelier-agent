@@ -16,7 +16,7 @@ struct AcpJsonRpcNotification<'a> {
     params: &'a acp::SessionNotification,
 }
 
-/// JSON-RPC wrapper for xAI extension notifications.
+/// JSON-RPC wrapper for Atelier extension notifications.
 #[derive(Debug, Serialize)]
 struct XaiJsonRpcNotification<'a> {
     method: &'static str,
@@ -24,7 +24,7 @@ struct XaiJsonRpcNotification<'a> {
 }
 
 const ACP_SESSION_UPDATE_METHOD: &str = "session/update";
-const XAI_SESSION_UPDATE_METHOD: &str = "_atelier/session/update";
+const ATELIER_SESSION_UPDATE_METHOD: &str = "_atelier/session/update";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExportedMessage {
@@ -51,11 +51,11 @@ impl ExportedMessage {
         Self { content, timestamp }
     }
 
-    pub fn from_xai_notification(
+    pub fn from_extension_notification(
         notification: &crate::extensions::notification::SessionNotification,
     ) -> Self {
         let wrapper = XaiJsonRpcNotification {
-            method: XAI_SESSION_UPDATE_METHOD,
+            method: ATELIER_SESSION_UPDATE_METHOD,
             params: notification,
         };
         let content = serde_json::to_string(&wrapper).unwrap_or_else(|_| "{}".to_string());
@@ -162,8 +162,8 @@ impl ExportedSession {
                 SessionUpdate::Acp(notification) => {
                     ExportedMessage::from_notification(notification)
                 }
-                SessionUpdate::Xai(notification) => {
-                    ExportedMessage::from_xai_notification(notification)
+                SessionUpdate::Extension(notification) => {
+                    ExportedMessage::from_extension_notification(notification)
                 }
             })
             .collect()

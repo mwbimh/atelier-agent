@@ -20,6 +20,7 @@ use reqwest::header::{
 };
 use serde::Serialize;
 use serde_json::{Map, Value};
+use std::sync::OnceLock;
 
 use atelier_sampling_types::error::{parse_error_bytes, try_parse_stream_error};
 use atelier_sampling_types::{
@@ -37,41 +38,70 @@ pub use atelier_sampling_types::ApiBackend;
 /// Process-level fallback for the `x-atelier-client-identifier` header.
 const DEFAULT_CLIENT_IDENTIFIER: &str = "atelier-shell";
 
-/// Product identifier baked into User-Agent strings.
-const AGENT_PRODUCT: &str = "atelier-shell";
 const ANTHROPIC_DEFAULT_MAX_TOKENS: u32 = 128_000;
 
-/// Per-request `x-atelier-*` headers. Optional fields are skipped when empty/`None`.
-struct AtelierRequestHeaders<'a> {
-    conv_id: &'a str,
-    req_id: &'a str,
-    model_id: &'a str,
-    session_id: &'a str,
-    turn_idx: Option<&'a str>,
-    agent_id: &'a str,
-    deployment_id: Option<&'a str>,
-    user_id: Option<&'a str>,
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct RequestAgentIdentity {
+    name: String,
+    version: Option<String>,
 }
 
-impl AtelierRequestHeaders<'_> {
-    fn apply(&self, builder: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
-        let mut b = builder
-            .header("x-atelier-conv-id", self.conv_id)
-            .header("x-atelier-req-id", self.req_id)
-            .header("x-atelier-model-override", self.model_id)
-            .header("x-atelier-session-id", self.session_id)
-            .header("x-atelier-agent-id", self.agent_id);
-        if let Some(idx) = self.turn_idx {
-            b = b.header("x-atelier-turn-idx", idx);
-        }
-        if let Some(id) = self.deployment_id.filter(|s| !s.is_empty()) {
-            b = b.header("x-atelier-deployment-id", id);
-        }
-        if let Some(id) = self.user_id.filter(|s| !s.is_empty()) {
-            b = b.header("x-atelier-user-id", id);
-        }
-        b
+static REQUEST_AGENT_IDENTITY: OnceLock<RequestAgentIdentity> = OnceLock::new();
+
+fn validate_request_agent_token(value: &str, label: &str) -> std::result::Result<(), String> {
+    let valid = !value.is_empty()
+        && value.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric()
+                || matches!(
+                    byte,
+                    b'!' | b'#'
+                        | b'$'
+                        | b'%'
+                        | b'&'
+                        | b'\''
+                        | b'*'
+                        | b'+'
+                        | b'-'
+                        | b'.'
+                        | b'^'
+                        | b'_'
+                        | b'`'
+                        | b'|'
+                        | b'~'
+                )
+        });
+    if valid {
+        Ok(())
+    } else {
+        Err(format!(
+            "request agent {label} must be a non-empty HTTP User-Agent token"
+        ))
     }
+}
+
+pub fn set_request_agent_identity(
+    name: String,
+    version: Option<String>,
+) -> std::result::Result<(), String> {
+    let name = name.trim().to_owned();
+    validate_request_agent_token(&name, "name")?;
+    let version = version
+        .map(|version| version.trim().to_owned())
+        .map(|version| {
+            validate_request_agent_token(&version, "version")?;
+            Ok::<String, String>(version)
+        })
+        .transpose()?;
+    REQUEST_AGENT_IDENTITY
+        .set(RequestAgentIdentity { name, version })
+        .map_err(|_| "request agent identity was already initialized".to_owned())
+}
+
+fn request_agent_identity() -> &'static RequestAgentIdentity {
+    REQUEST_AGENT_IDENTITY.get_or_init(|| RequestAgentIdentity {
+        name: "Atelier".to_owned(),
+        version: Some(agent_version()),
+    })
 }
 
 /// Parse the `Retry-After` response header as delta-seconds.
@@ -250,7 +280,7 @@ fn record_stream_request_failure(err: &reqwest::Error) {
     span.record("error", err.to_string().as_str());
 }
 
-fn extract_retry_after(headers: &reqwest::header::HeaderMap) -> Option<u64> {
+pub(crate) fn extract_retry_after(headers: &reqwest::header::HeaderMap) -> Option<u64> {
     headers
         .get(reqwest::header::RETRY_AFTER)
         .and_then(|v| v.to_str().ok())
@@ -258,7 +288,7 @@ fn extract_retry_after(headers: &reqwest::header::HeaderMap) -> Option<u64> {
         .map(|s| s.min(120))
 }
 
-fn extract_should_retry(headers: &reqwest::header::HeaderMap) -> Option<bool> {
+pub(crate) fn extract_should_retry(headers: &reqwest::header::HeaderMap) -> Option<bool> {
     headers
         .get("x-should-retry")
         .and_then(|v| v.to_str().ok())
@@ -273,7 +303,9 @@ fn extract_should_retry(headers: &reqwest::header::HeaderMap) -> Option<bool> {
         })
 }
 
-fn extract_model_metadata(headers: &reqwest::header::HeaderMap) -> Option<ResponseModelMetadata> {
+pub(crate) fn extract_model_metadata(
+    headers: &reqwest::header::HeaderMap,
+) -> Option<ResponseModelMetadata> {
     let context_window = headers
         .get("x-atelier-context-window")
         .and_then(|v| v.to_str().ok())
@@ -549,33 +581,20 @@ fn agent_version() -> String {
 /// constants. The session typically owns the canonical User-Agent
 /// rendering for process-wide HTTP clients; this helper is for
 /// per-session sampling clients that want to override it.
-pub fn user_agent_string_for(origin: &OriginClientInfo) -> String {
-    let agent_version = agent_version();
+pub fn request_agent_user_agent_string() -> String {
+    let identity = request_agent_identity();
     let platform = PlatformInfo::current();
-
-    if origin.product == AGENT_PRODUCT && origin.version.as_deref() == Some(agent_version.as_str())
-    {
-        return format!(
+    match identity.version.as_deref() {
+        Some(version) => format!(
             "{}/{} ({}; {})",
-            AGENT_PRODUCT, agent_version, platform.os, platform.arch
-        );
+            identity.name, version, platform.os, platform.arch
+        ),
+        None => format!("{} ({}; {})", identity.name, platform.os, platform.arch),
     }
+}
 
-    match origin.version.as_deref() {
-        Some(origin_version) => format!(
-            "{}/{} {}/{} ({}; {})",
-            origin.product,
-            origin_version,
-            AGENT_PRODUCT,
-            agent_version,
-            platform.os,
-            platform.arch
-        ),
-        None => format!(
-            "{} {}/{} ({}; {})",
-            origin.product, AGENT_PRODUCT, agent_version, platform.os, platform.arch
-        ),
-    }
+pub fn user_agent_string_for(_origin: &OriginClientInfo) -> String {
+    request_agent_user_agent_string()
 }
 
 // =============================================================================
@@ -675,10 +694,7 @@ impl SamplingClient {
         {
             let ua_string = match config.origin_client.as_ref() {
                 Some(origin) => user_agent_string_for(origin),
-                None => user_agent_string_for(&OriginClientInfo {
-                    product: AGENT_PRODUCT.to_string(),
-                    version: Some(agent_version()),
-                }),
+                None => request_agent_user_agent_string(),
             };
             if let Ok(v) = HeaderValue::from_str(&ua_string) {
                 headers.insert(USER_AGENT, v);
@@ -780,6 +796,13 @@ impl SamplingClient {
         self.http.post(url).headers(headers)
     }
 
+    /// Build a POST using the same auth, Provider headers, User-Agent and live
+    /// bearer resolver as ordinary inference requests. The caller is
+    /// responsible for validating that `url` is same-origin with `base_url`.
+    pub(crate) fn post_provider_url(&self, url: reqwest::Url) -> reqwest::RequestBuilder {
+        self.post(url)
+    }
+
     /// Bearer prefix for 401 attribution. Prefers live resolver, falls back to default_headers.
     fn current_sent_bearer_prefix(&self) -> Option<String> {
         self.bearer_resolver
@@ -832,7 +855,7 @@ impl SamplingClient {
     /// [`Self::extract_sent_bearer`]; the trait contract guarantees
     /// that callers downstream of this crate never see the full
     /// bearer.
-    fn record_401_attribution(&self, consumer: crate::attribution::SamplingConsumer) {
+    pub(crate) fn record_401_attribution(&self, consumer: crate::attribution::SamplingConsumer) {
         if let Some(cb) = self.attribution_callback.as_ref() {
             let sent_prefix = self.current_sent_bearer_prefix();
             cb.record_401(consumer, sent_prefix.as_deref());
@@ -873,13 +896,7 @@ impl SamplingClient {
     }
 
     /// Build request headers string for error messages (redacting sensitive values).
-    fn format_request_headers(
-        &self,
-        x_atelier_conv_id: &str,
-        x_atelier_req_id: &str,
-        model_id: &str,
-        include_accept: bool,
-    ) -> Vec<String> {
+    fn format_request_headers(&self, include_accept: bool) -> Vec<String> {
         let mut req_headers: Vec<String> = self
             .default_headers
             .iter()
@@ -888,9 +905,6 @@ impl SamplingClient {
             })
             .collect();
 
-        req_headers.push(Self::format_header("x-atelier-conv-id", x_atelier_conv_id));
-        req_headers.push(Self::format_header("x-atelier-req-id", x_atelier_req_id));
-        req_headers.push(Self::format_header("x-atelier-model-override", model_id));
         if include_accept {
             req_headers.push(Self::format_header("accept", "text/event-stream"));
         }
@@ -1034,8 +1048,6 @@ impl SamplingClient {
         request: ChatCompletionRequest,
     ) -> Result<ChatCompletionResponse> {
         let payload = self.apply_defaults(request)?;
-        let x_atelier_conv_id = &payload.x_atelier_conv_id.clone().unwrap_or_default();
-        let x_atelier_req_id = &payload.x_atelier_req_id.clone().unwrap_or_default();
         let model_id = payload.model.clone().unwrap_or_default();
 
         tracing::debug!(
@@ -1044,23 +1056,13 @@ impl SamplingClient {
             "Sending chat completion request"
         );
 
-        let atelier_headers = AtelierRequestHeaders {
-            conv_id: x_atelier_conv_id,
-            req_id: x_atelier_req_id,
-            model_id: &model_id,
-            session_id: payload.x_atelier_session_id.as_deref().unwrap_or_default(),
-            turn_idx: payload.x_atelier_turn_idx.as_deref(),
-            agent_id: payload.x_atelier_agent_id.as_deref().unwrap_or_default(),
-            deployment_id: payload.x_atelier_deployment_id.as_deref(),
-            user_id: payload.x_atelier_user_id.as_deref(),
-        };
         let mut request_body = serde_json::to_value(&payload).map_err(|e| {
             tracing::error!("Failed to serialize chat completion request: {}", e);
             SamplingError::Serialization(e)
         })?;
         apply_request_payload(&mut request_body, &self.defaults.request_payload);
-        let http_request = atelier_headers
-            .apply(self.post(self.endpoint("chat/completions")))
+        let http_request = self
+            .post(self.endpoint("chat/completions"))
             .json(&request_body);
 
         let response = http_request.send().await.map_err(|e| {
@@ -1092,8 +1094,6 @@ impl SamplingClient {
         Option<ResponseModelMetadata>,
     )> {
         let payload = self.apply_defaults(request)?;
-        let x_atelier_conv_id = &payload.x_atelier_conv_id.clone().unwrap_or_default();
-        let x_atelier_req_id = &payload.x_atelier_req_id.clone().unwrap_or_default();
         let model_id = payload.model.clone().unwrap_or_default();
 
         // Wrap the request with streaming fields and serialize once.
@@ -1107,16 +1107,6 @@ impl SamplingClient {
             },
         };
 
-        let atelier_headers = AtelierRequestHeaders {
-            conv_id: x_atelier_conv_id,
-            req_id: x_atelier_req_id,
-            model_id: &model_id,
-            session_id: payload.x_atelier_session_id.as_deref().unwrap_or_default(),
-            turn_idx: payload.x_atelier_turn_idx.as_deref(),
-            agent_id: payload.x_atelier_agent_id.as_deref().unwrap_or_default(),
-            deployment_id: payload.x_atelier_deployment_id.as_deref(),
-            user_id: payload.x_atelier_user_id.as_deref(),
-        };
         let mut request_body = serde_json::to_value(&streaming_request).map_err(|e| {
             tracing::error!(
                 "Failed to serialize streaming chat completion request: {}",
@@ -1126,8 +1116,8 @@ impl SamplingClient {
         })?;
         apply_request_payload(&mut request_body, &self.defaults.request_payload);
         request_body["stream"] = serde_json::json!(true);
-        let http_request = atelier_headers
-            .apply(self.post(self.endpoint("chat/completions")))
+        let http_request = self
+            .post(self.endpoint("chat/completions"))
             .header(ACCEPT, HeaderValue::from_static("text/event-stream"))
             .json(&request_body);
 
@@ -1169,8 +1159,7 @@ impl SamplingClient {
                 )));
             }
 
-            let req_headers =
-                self.format_request_headers(x_atelier_conv_id, x_atelier_req_id, &model_id, true);
+            let req_headers = self.format_request_headers(true);
             let resp_headers = Self::format_response_headers(&response);
             let bytes = response.bytes().await?;
             let server_message = parse_error_bytes(bytes.as_ref());
@@ -1317,9 +1306,6 @@ impl SamplingClient {
         mut request: CreateResponseWrapper,
     ) -> Result<rs::Response> {
         self.apply_response_defaults(&mut request)?;
-
-        let x_atelier_conv_id = request.x_atelier_conv_id.as_deref().unwrap_or_default();
-        let x_atelier_req_id = request.x_atelier_req_id.as_deref().unwrap_or_default();
         let model_id = request.inner.model.clone().unwrap_or_default();
 
         // The trace field is process-local: it is consumed by upstream
@@ -1330,16 +1316,6 @@ impl SamplingClient {
         tracing::debug!("create_response: {:?}", &request);
         tracing::debug!("endpoint: {:?}", self.endpoint("responses"));
 
-        let atelier_headers = AtelierRequestHeaders {
-            conv_id: x_atelier_conv_id,
-            req_id: x_atelier_req_id,
-            model_id: &model_id,
-            session_id: request.x_atelier_session_id.as_deref().unwrap_or_default(),
-            turn_idx: request.x_atelier_turn_idx.as_deref(),
-            agent_id: request.x_atelier_agent_id.as_deref().unwrap_or_default(),
-            deployment_id: request.x_atelier_deployment_id.as_deref(),
-            user_id: request.x_atelier_user_id.as_deref(),
-        };
         let mut request_body = serde_json::to_value(&request.inner).map_err(|e| {
             tracing::error!("Failed to serialize responses request: {}", e);
             SamplingError::Serialization(e)
@@ -1350,9 +1326,7 @@ impl SamplingClient {
         // old raw_output machinery.
         atelier_sampling_types::patch_reasoning_text_types(&mut request_body);
         apply_request_payload(&mut request_body, &self.defaults.request_payload);
-        let http_request = atelier_headers
-            .apply(self.post(self.endpoint("responses")))
-            .json(&request_body);
+        let http_request = self.post(self.endpoint("responses")).json(&request_body);
 
         let response = http_request.send().await.map_err(|e| {
             tracing::debug!("HTTP request failed: {}", e);
@@ -1375,8 +1349,7 @@ impl SamplingClient {
                 )));
             }
 
-            let req_headers =
-                self.format_request_headers(x_atelier_conv_id, x_atelier_req_id, &model_id, false);
+            let req_headers = self.format_request_headers(false);
             let server_message = parse_error_bytes(bytes.as_ref());
 
             let message = self.build_api_error_message(
@@ -1453,8 +1426,6 @@ impl SamplingClient {
         // Enable streaming
         request.inner.stream = Some(true);
 
-        let x_atelier_conv_id = request.x_atelier_conv_id.as_deref().unwrap_or_default();
-        let x_atelier_req_id = request.x_atelier_req_id.as_deref().unwrap_or_default();
         let model_id = request.inner.model.clone().unwrap_or_default();
 
         // Drop process-local trace data (see note in `create_response`).
@@ -1466,16 +1437,6 @@ impl SamplingClient {
             "Sending responses API stream request"
         );
 
-        let atelier_headers = AtelierRequestHeaders {
-            conv_id: x_atelier_conv_id,
-            req_id: x_atelier_req_id,
-            model_id: &model_id,
-            session_id: request.x_atelier_session_id.as_deref().unwrap_or_default(),
-            turn_idx: request.x_atelier_turn_idx.as_deref(),
-            agent_id: request.x_atelier_agent_id.as_deref().unwrap_or_default(),
-            deployment_id: request.x_atelier_deployment_id.as_deref(),
-            user_id: request.x_atelier_user_id.as_deref(),
-        };
         let extra_raw_tools = std::mem::take(&mut request.extra_raw_tools);
         let mut request_body = serde_json::to_value(&request.inner).map_err(|e| {
             tracing::error!("Failed to serialize responses request: {}", e);
@@ -1502,8 +1463,8 @@ impl SamplingClient {
             .defaults
             .doom_loop_recovery
             .map(crate::doom_loop::DoomLoopSignalCollector::new);
-        let mut http_request = atelier_headers
-            .apply(self.post(self.endpoint("responses")))
+        let mut http_request = self
+            .post(self.endpoint("responses"))
             .header(ACCEPT, HeaderValue::from_static("text/event-stream"));
         if doom_loop.is_some() {
             // Presence opts in; the server ignores the value.
@@ -1546,8 +1507,7 @@ impl SamplingClient {
             let model_metadata = extract_model_metadata(response.headers());
             let retry_after_secs = extract_retry_after(response.headers());
             let should_retry = extract_should_retry(response.headers());
-            let req_headers =
-                self.format_request_headers(x_atelier_conv_id, x_atelier_req_id, &model_id, true);
+            let req_headers = self.format_request_headers(true);
             let resp_headers = Self::format_response_headers(&response);
             let bytes = response.bytes().await?;
             let server_message = parse_error_bytes(bytes.as_ref());
@@ -1692,9 +1652,6 @@ impl SamplingClient {
         mut request: MessagesRequestWrapper,
     ) -> Result<messages::MessagesResponse> {
         self.apply_message_defaults(&mut request)?;
-
-        let x_atelier_conv_id = request.x_atelier_conv_id.as_deref().unwrap_or_default();
-        let x_atelier_req_id = request.x_atelier_req_id.as_deref().unwrap_or_default();
         let model_id = request.inner.model.clone();
 
         // Drop process-local trace data.
@@ -1703,18 +1660,8 @@ impl SamplingClient {
         tracing::debug!("create_message: {:?}", &request.inner);
         tracing::debug!("endpoint: {:?}", self.endpoint("messages"));
 
-        let atelier_headers = AtelierRequestHeaders {
-            conv_id: x_atelier_conv_id,
-            req_id: x_atelier_req_id,
-            model_id: &model_id,
-            session_id: request.x_atelier_session_id.as_deref().unwrap_or_default(),
-            turn_idx: request.x_atelier_turn_idx.as_deref(),
-            agent_id: request.x_atelier_agent_id.as_deref().unwrap_or_default(),
-            deployment_id: request.x_atelier_deployment_id.as_deref(),
-            user_id: request.x_atelier_user_id.as_deref(),
-        };
-        let http_request = atelier_headers
-            .apply(self.post(self.endpoint("messages")))
+        let http_request = self
+            .post(self.endpoint("messages"))
             .json(&self.request_body(&request.inner)?);
 
         let response = http_request.send().await.map_err(|e| {
@@ -1738,8 +1685,7 @@ impl SamplingClient {
                 )));
             }
 
-            let req_headers =
-                self.format_request_headers(x_atelier_conv_id, x_atelier_req_id, &model_id, false);
+            let req_headers = self.format_request_headers(false);
             let server_message = parse_error_bytes(bytes.as_ref());
 
             let message = self.build_api_error_message(
@@ -1806,8 +1752,6 @@ impl SamplingClient {
         // Enable streaming
         request.inner.stream = Some(true);
 
-        let x_atelier_conv_id = request.x_atelier_conv_id.as_deref().unwrap_or_default();
-        let x_atelier_req_id = request.x_atelier_req_id.as_deref().unwrap_or_default();
         let model_id = request.inner.model.clone();
 
         // Drop process-local trace data.
@@ -1819,19 +1763,9 @@ impl SamplingClient {
             "Sending Messages API stream request"
         );
 
-        let atelier_headers = AtelierRequestHeaders {
-            conv_id: x_atelier_conv_id,
-            req_id: x_atelier_req_id,
-            model_id: &model_id,
-            session_id: request.x_atelier_session_id.as_deref().unwrap_or_default(),
-            turn_idx: request.x_atelier_turn_idx.as_deref(),
-            agent_id: request.x_atelier_agent_id.as_deref().unwrap_or_default(),
-            deployment_id: request.x_atelier_deployment_id.as_deref(),
-            user_id: request.x_atelier_user_id.as_deref(),
-        };
         let request_body = self.request_body(&request.inner)?;
-        let http_request = atelier_headers
-            .apply(self.post(self.endpoint("messages")))
+        let http_request = self
+            .post(self.endpoint("messages"))
             .header(ACCEPT, HeaderValue::from_static("text/event-stream"))
             .json(&request_body);
 
@@ -1870,8 +1804,7 @@ impl SamplingClient {
             let model_metadata = extract_model_metadata(response.headers());
             let retry_after_secs = extract_retry_after(response.headers());
             let should_retry = extract_should_retry(response.headers());
-            let req_headers =
-                self.format_request_headers(x_atelier_conv_id, x_atelier_req_id, &model_id, true);
+            let req_headers = self.format_request_headers(true);
             let resp_headers = Self::format_response_headers(&response);
             let bytes = response.bytes().await?;
             let server_message = parse_error_bytes(bytes.as_ref());
@@ -2370,6 +2303,8 @@ mod tests {
             temperature: None,
             top_p: None,
             request_payload: Default::default(),
+            remote_compaction_endpoint: None,
+            image_generation_endpoint: None,
             api_backend: ApiBackend::ChatCompletions,
             auth_scheme: AuthScheme::Bearer,
             extra_headers: IndexMap::new(),
@@ -2627,6 +2562,19 @@ mod tests {
     }
 
     #[test]
+    fn request_agent_tokens_reject_header_injection_and_whitespace() {
+        for (value, label) in [
+            ("pi\r\nx-secret: leaked", "name"),
+            ("pi agent", "name"),
+            ("1.0\r\nx-secret: leaked", "version"),
+            ("", "version"),
+        ] {
+            let error = validate_request_agent_token(value, label).unwrap_err();
+            assert!(!error.contains("leaked"));
+        }
+    }
+
+    #[test]
     fn sampling_client_exposes_provider_base_url_for_local_diagnostics() {
         let client = SamplingClient::new(minimal_config()).expect("build");
         assert_eq!(client.base_url(), "https://example.test");
@@ -2660,37 +2608,25 @@ mod tests {
     }
 
     #[test]
-    fn user_agent_includes_origin_and_agent_product() {
+    fn user_agent_uses_the_configured_request_agent_identity() {
         let origin = OriginClientInfo {
             product: "my-client".to_string(),
             version: Some("1.2.3".to_string()),
         };
         let ua = user_agent_string_for(&origin);
-        assert!(ua.contains("my-client/1.2.3"));
-        assert!(ua.contains(AGENT_PRODUCT));
+        assert!(ua.starts_with(&format!("Atelier/{} (", atelier_version::VERSION)));
+        assert!(!ua.contains("my-client"));
     }
 
     #[test]
-    fn user_agent_omits_origin_version_when_absent() {
+    fn user_agent_does_not_depend_on_origin_version() {
         let origin = OriginClientInfo {
             product: "my-client".to_string(),
             version: None,
         };
         let ua = user_agent_string_for(&origin);
-        // No slash between product and the atelier-shell agent product.
-        assert!(ua.starts_with("my-client atelier-shell/"));
-    }
-
-    #[test]
-    fn user_agent_collapses_when_origin_matches_agent() {
-        let agent_version = atelier_version::VERSION.to_string();
-        let origin = OriginClientInfo {
-            product: AGENT_PRODUCT.to_string(),
-            version: Some(agent_version.clone()),
-        };
-        let ua = user_agent_string_for(&origin);
-        // Single product/version slot when the origin and agent match.
-        assert!(ua.starts_with(&format!("{}/{}", AGENT_PRODUCT, agent_version)));
+        assert!(ua.starts_with(&format!("Atelier/{} (", atelier_version::VERSION)));
+        assert!(!ua.contains("my-client"));
     }
 
     /// Counts callbacks for assertions in the tests below.

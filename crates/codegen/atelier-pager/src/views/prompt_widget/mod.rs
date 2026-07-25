@@ -19,13 +19,13 @@
 
 use std::path::Path;
 
+use atelier_ratatui_textarea::{ElementId, ElementKind, TextArea, TextAreaState, TextElement};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::StatefulWidgetRef;
-use xai_ratatui_textarea::{ElementId, ElementKind, TextArea, TextAreaState, TextElement};
 
 use crate::clipboard::{SystemClipboard, system_clipboard_get};
 use crate::input::key::key;
@@ -502,9 +502,9 @@ pub struct PromptWidget {
     /// Images removed during undo that can be restored on redo.
     image_undo_stash: Vec<PastedImage>,
     /// Image element currently hovered by mouse hit-testing.
-    hovered_image_element_id: Option<xai_ratatui_textarea::ElementId>,
+    hovered_image_element_id: Option<atelier_ratatui_textarea::ElementId>,
     /// Image shown immediately after insertion without moving the edit cursor.
-    post_insert_image_preview: Option<(xai_ratatui_textarea::ElementId, usize)>,
+    post_insert_image_preview: Option<(atelier_ratatui_textarea::ElementId, usize)>,
     /// Monotonic counter for image display numbering (1-based). Reset on
     /// prompt clear. Only increases within a single prompt lifetime.
     pub image_counter: usize,
@@ -2139,7 +2139,7 @@ impl PromptWidget {
     /// ALL mouse events (not just those in the prompt area) because TextArea
     /// tracks drag state internally and handles drag-beyond-edge.
     pub fn handle_mouse(&mut self, mouse: &crossterm::event::MouseEvent) -> PromptEvent {
-        use xai_ratatui_textarea::{MouseAction, TextElementEventKind};
+        use atelier_ratatui_textarea::{MouseAction, TextElementEventKind};
 
         self.post_insert_image_preview = None;
         let action = self
@@ -2504,7 +2504,7 @@ impl PromptWidget {
     /// An on-chip match of any kind wins (the chip under the cursor owns
     /// the position), so a cursor sitting on a non-image chip yields
     /// `None` even when an image chip ends at the cursor.
-    fn image_element_near_cursor(&self) -> Option<&xai_ratatui_textarea::TextElement> {
+    fn image_element_near_cursor(&self) -> Option<&atelier_ratatui_textarea::TextElement> {
         if let Some(elem) = self.textarea.element_at_cursor() {
             return (elem.kind == KIND_IMAGE).then_some(elem);
         }
@@ -2669,7 +2669,7 @@ impl PromptWidget {
     }
 
     /// Expose the underlying textarea for element access.
-    pub fn textarea(&self) -> &xai_ratatui_textarea::TextArea {
+    pub fn textarea(&self) -> &atelier_ratatui_textarea::TextArea {
         &self.textarea
     }
 
@@ -3470,7 +3470,7 @@ fn chip_placeholder_regex() -> &'static regex::Regex {
 fn strip_all_elements(
     text: &str,
     cursor: usize,
-    textarea: &xai_ratatui_textarea::TextArea,
+    textarea: &atelier_ratatui_textarea::TextArea,
 ) -> (String, usize) {
     let elements = textarea.elements();
     if elements.is_empty() {
@@ -3510,7 +3510,7 @@ fn strip_all_elements(
 fn map_clean_offset_to_raw(
     text: &str,
     clean_offset: usize,
-    elements: &[xai_ratatui_textarea::TextElement],
+    elements: &[atelier_ratatui_textarea::TextElement],
 ) -> usize {
     if elements.is_empty() {
         return clean_offset.min(text.len());

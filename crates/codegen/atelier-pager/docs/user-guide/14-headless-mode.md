@@ -523,8 +523,14 @@ Atelier stores data in `~/.atelier` (override with `ATELIER_HOME`; see [Environm
 | Path                     | Contents                              |
 | ------------------------ | ------------------------------------- |
 | `config.toml`            | User configuration                    |
-| `providers.toml`         | Providers, discovered models, model settings, and Roles |
-| `mcp_credentials.json`   | OAuth tokens for user-configured MCP servers |
+| `providers.toml`         | Provider API and OAuth connection registry |
+| `roles.toml`             | Fixed Role to Provider/model assignments |
+| `request-agents.toml`    | Selectable outbound request identities |
+| `models/default/`        | Common model defaults |
+| `models/providers/`      | Provider-specific model overrides and experimental endpoints |
+| `contexts/`              | Editable prompt presets |
+| `branding/logo.txt`      | TUI ASCII logo |
+| `credentials/oauth/mcp/` | OAuth tokens for user-configured MCP servers |
 | `sessions/`              | Session transcripts (SQLite)          |
 | `memory/`                | Cross-session memory store            |
 | `logs/`                  | Internal log files (for example `unified.jsonl`) |

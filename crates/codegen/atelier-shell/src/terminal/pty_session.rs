@@ -5,9 +5,9 @@ use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
 use std::sync::{Arc, LazyLock};
 
+use atelier_acp_runtime::AcpAgentGatewaySender as GatewaySender;
 use portable_pty::{CommandBuilder, MasterPty, PtySize, native_pty_system};
 use tokio::sync::{Mutex, mpsc};
-use xai_acp_lib::AcpAgentGatewaySender as GatewaySender;
 
 use crate::extensions::routing::{TargetClientId, send_routed_notification};
 use crate::terminal::{TerminalExtError, TerminalInfo, TerminalStatus};
@@ -632,7 +632,7 @@ mod tests {
     use std::time::Duration;
 
     use agent_client_protocol as acp;
-    use xai_acp_lib::acp_gateway;
+    use atelier_acp_runtime::acp_gateway;
 
     type RecordedNotifications = Rc<RefCell<Vec<(String, serde_json::Value)>>>;
 

@@ -4,7 +4,8 @@ use serde::Serialize;
 
 use super::envelope::{FacetMap, FacetValue, SessionKind};
 use super::row::UnifiedRow;
-use crate::remote::Conversation;
+#[cfg(test)]
+use crate::local_runtime::Conversation;
 use crate::session::merge::MergedSession;
 
 pub const KIND_FACET_KEY: &str = "kind";
@@ -45,6 +46,7 @@ impl NormalizedItem {
         }
     }
 
+    #[cfg(test)]
     pub fn from_conversation(c: &Conversation) -> Self {
         Self {
             kind: SessionKind::Chat,
@@ -426,7 +428,7 @@ mod tests {
             modify_time: Some("2026-06-01T00:00:00Z".into()),
             workspaces: workspaces
                 .iter()
-                .map(|w| crate::remote::conversations_client::Workspace {
+                .map(|w| crate::local_runtime::ConversationWorkspace {
                     workspace_id: (*w).into(),
                 })
                 .collect(),
@@ -451,7 +453,7 @@ mod tests {
         let reg = build_facet_registry();
         let conv = NormalizedItem::from_conversation(&Conversation {
             conversation_id: "c1".into(),
-            workspaces: vec![crate::remote::conversations_client::Workspace {
+            workspaces: vec![crate::local_runtime::ConversationWorkspace {
                 workspace_id: "ws_9f3a".into(),
             }],
             ..Conversation::default()

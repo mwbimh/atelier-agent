@@ -1450,7 +1450,7 @@ mod tests {
         source_repo: &Path,
         creation_mode: &str,
     ) -> (LockedTestEnv, PathBuf) {
-        use xai_fast_worktree::{WorktreeDb, WorktreeKind, WorktreeRecord, WorktreeStatus};
+        use atelier_fast_worktree::{WorktreeDb, WorktreeKind, WorktreeRecord, WorktreeStatus};
 
         // Canonicalize so macOS /var -> /private/var agrees between the stored
         // record path and the canonicalized lookup query.

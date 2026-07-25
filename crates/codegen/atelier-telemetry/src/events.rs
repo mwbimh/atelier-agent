@@ -1,10 +1,9 @@
-//! Telemetry event structs. Every struct needs a `telemetry_event!` binding.
+//! Local event payload structs. Every struct needs a `telemetry_event!` binding.
 //! `session_id` and `turn_number` are auto-injected by `log_event` (which
 //! lives in shell's integration layer).
 //!
-//! These structs were extracted from `atelier-shell` so they can be
-//! reused across binaries (TUI, sampler) without dragging the shell HTTP /
-//! Mixpanel client along. The `CompactionScope` helper that drives paired
+//! These structs are shared across binaries (TUI, sampler) without introducing
+//! a shell dependency. The `CompactionScope` helper that drives paired
 //! `compaction_triggered`/`compaction_completed` emission stays in shell --
 //! it calls `super::log_event` directly.
 
@@ -13,7 +12,7 @@ use serde::Serialize;
 use super::enums::PermissionMode;
 pub use super::enums::PrCreationSource;
 
-/// Binds a product event name to a struct. Implement via `telemetry_event!` below.
+/// Binds a stable local event name to a struct.
 pub trait TelemetryEvent: Serialize + Send + 'static {
     const NAME: &'static str;
 }
@@ -250,7 +249,7 @@ pub struct LoginPickerShown {
     pub trigger: String,
 }
 
-/// A login method was chosen from the picker. `method` is "xai" or "api_key";
+/// A login method was chosen from the picker. `method` is "provider" or "oauth";
 /// `mode` is "device", "loopback", or "api_key".
 #[derive(Serialize)]
 pub struct LoginMethodChosen {
@@ -258,7 +257,7 @@ pub struct LoginMethodChosen {
     pub mode: String,
 }
 
-/// A login flow completed successfully. `method` is "xai" or "api_key";
+/// A login flow completed successfully. `method` is "provider" or "oauth";
 /// `mode` is the resolved auth mode; `mid_session` is true for `/login`/401
 /// re-auth (as opposed to the startup/logout flow).
 #[derive(Serialize)]
@@ -313,7 +312,7 @@ pub struct PlanModeToggled {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// One contextual-hint impression or acceptance: per tip, how often it is
-/// shown vs. acted on (the `action` property drives the Mixpanel funnel).
+/// shown vs. acted on (the `action` property distinguishes the local states).
 #[derive(Serialize)]
 pub struct ContextualTip {
     pub tip: ContextualTipKind,
@@ -383,8 +382,7 @@ pub struct PermissionDecisionPayload {
     pub wait_ms: u64,
     pub permission_mode: PermissionMode,
     /// Decision provenance (`config`/`user_reject`/`user_abort`/…), from
-    /// shell's `permission_decision_source`. Additive analytics-visible field, added
-    /// for the external `tool_decision` event (design ‡ footnote).
+    /// shell's `permission_decision_source`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -446,7 +444,7 @@ impl CompactionScope {
         user_context_provided: bool,
     ) -> Self {
         let compaction_id = uuid::Uuid::new_v4().to_string();
-        let percentage = xai_token_estimation::usage_percentage_u8(tokens_used, context_window);
+        let percentage = atelier_token_estimation::usage_percentage_u8(tokens_used, context_window);
         crate::session_ctx::log_event(CompactionTriggered {
             trigger,
             tokens_used,
@@ -799,8 +797,7 @@ pub struct SessionHarness {
     pub agents_md_dir_names: Vec<String>,
     pub memory_enabled: bool,
     /// Whether the session cwd is inside a git repo (same value `SessionNew`
-    /// carries). Additive analytics-visible field, added for the external
-    /// `session_start` event (design ‡ footnote).
+    /// carries).
     pub is_git_repo: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub auto_update: Option<bool>,
@@ -841,12 +838,6 @@ pub struct PromptSubmitted {
     /// interjections).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub screen_mode: Option<String>,
-    /// Raw prompt text for the external stream's `OTEL_LOG_USER_PROMPTS`
-    /// gate **only**. `#[serde(skip)]`: never serialized to product events/Mixpanel;
-    /// dropped at external emit time unless the gate is on (then capped at
-    /// 60 KB and secret-scrubbed).
-    #[serde(skip)]
-    pub prompt_text: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -989,18 +980,8 @@ pub struct TurnCompleted {
 #[derive(Serialize)]
 pub struct ToolCallCompleted {
     pub tool_name: String,
-    pub outcome: xai_file_utils::events::types::ToolOutcome,
+    pub outcome: String,
     pub duration_ms: u64,
-    /// Primary file path of the call, for the external stream only
-    /// (`#[serde(skip)]`: never serialized to product events/Mixpanel). Always reduced to
-    /// `file_extension`; the full path rides the `OTEL_LOG_TOOL_DETAILS` gate.
-    #[serde(skip)]
-    pub file_path: Option<String>,
-    /// Tool parameters for the external stream's `OTEL_LOG_TOOL_DETAILS`
-    /// gate **only** (`#[serde(skip)]`; reduced to 4 KB / depth 2 / 20 items
-    /// at emit time).
-    #[serde(skip)]
-    pub parameters: Option<serde_json::Value>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1205,13 +1186,13 @@ pub struct DisplayRefreshProbe {
     pub terminal: TerminalTelemetry,
     /// `ok` | `skipped` | `error`
     pub outcome: String,
-    /// Refresh rate as `i64` so OTLP/analytics keep a numeric field.
+    /// Refresh rate represented as a signed integer for stable JSON output.
     pub hz: Option<i64>,
     /// Backend token, e.g. `macos_core_graphics`.
     pub source: String,
     /// Empty when ok; else stable skip/error reason (`ssh`, `wsl`, …).
     pub skip_reason: String,
-    /// Wall ms as `i64` so OTLP/analytics keep a numeric field (u64 serializes as string).
+    /// Wall time represented as a signed integer for stable JSON output.
     pub duration_ms: i64,
     pub auto_cadence_enabled: bool,
     /// True when derived auto ms is used on at least one motion clock.
@@ -1352,8 +1333,8 @@ pub struct RateLimitHit {
     pub attempts: u32,
 }
 
-/// Model-API failure at the turn level (non-rate-limit). Category/class only
-/// — no message text (external `api_error` event; also a product event).
+/// Model-API failure at the turn level (non-rate-limit). Category/class only;
+/// message text is deliberately excluded.
 #[derive(Serialize)]
 pub struct ApiError {
     /// Fixed classification (`auth`, `server_error`, `timeout`, …).
@@ -1365,49 +1346,10 @@ pub struct ApiError {
     pub duration_ms: Option<u64>,
 }
 
-/// Internal (our-code) error class for the external `internal_error` event.
-/// Error class only — no message, no location (user decision, RQ5).
+/// Internal error class. Error class only — no message or location.
 #[derive(Serialize)]
 pub struct InternalError {
     pub error_type: String,
-}
-
-// ---------------------------------------------------------------------------
-// External-OTEL stream meta-events (product-events only — adoption visibility;
-// never exported externally)
-// ---------------------------------------------------------------------------
-
-/// Emitted once per process (post-auth) when the external OTEL stream is
-/// configured. Endpoint reduced to `scheme://host[:port]` — we measure
-/// adoption without learning collector details.
-#[derive(Serialize)]
-pub struct ExternalOtelConfigured {
-    pub metrics_exporter: String,
-    pub logs_exporter: String,
-    pub protocol: String,
-    pub logs_endpoint_origin: String,
-    pub metrics_endpoint_origin: String,
-    pub prompts_gate: bool,
-    pub details_gate: bool,
-    /// Startup source of the master switch: `env` | `config`.
-    pub source: String,
-}
-
-/// Remote (fleet) policy applied to the external stream mid-run.
-#[derive(Serialize)]
-pub struct ExternalOtelRemotePolicyApplied {
-    /// `force_disable` | `gates_locked`.
-    pub action: String,
-}
-
-/// Export-health counters for the external stream, emitted on the internal
-/// pipeline at shutdown (never externally — avoid feedback loops).
-#[derive(Serialize)]
-pub struct ExternalOtelExportHealth {
-    pub records_dropped: u64,
-    pub metric_exports_dropped: u64,
-    pub export_failures: u64,
-    pub export_successes: u64,
 }
 
 // ---------------------------------------------------------------------------
@@ -1463,7 +1405,7 @@ pub struct CreditLimitUpsellClicked {
 // ---------------------------------------------------------------------------
 
 /// Emitted when a previously access-gated user re-authenticates and the gate
-/// is lifted — i.e. they subscribed (externally on atelier.invalid) and came back.
+/// is lifted.
 /// This is the actual conversion signal for SuperAtelier Heavy subscriptions
 /// attributed to Atelier: the user saw the gate in Atelier, went and
 /// paid, then returned with access.
@@ -1493,8 +1435,7 @@ pub enum ManualAuthReason {
     WrongTeam,
 }
 
-/// User-facing surface where the manual re-auth was triggered. Background
-/// recoveries (storage/telemetry uploads) do not emit this event.
+/// User-facing surface where the manual re-auth was triggered.
 #[derive(Serialize, Clone, Copy, PartialEq, Eq, Debug)]
 #[serde(rename_all = "snake_case")]
 pub enum ManualAuthSurface {
@@ -1516,8 +1457,8 @@ pub enum AuthTokenKind {
     None,
 }
 
-/// KPI: a user-facing 401 recovery (`Turn`/`Relay`) terminally failed, forcing a
-/// manual re-login. Product-events only (no external export).
+/// A user-facing 401 recovery (`Turn`/`Relay`) terminally failed, forcing a
+/// manual re-login.
 ///
 /// Alerting contract: the event lands under the Shell-origin name
 /// `atelier-shell-manual_auth` (the `manual_auth` binding gets the `atelier-shell-`
@@ -1637,12 +1578,6 @@ telemetry_event!(CreditLimitUpsellClicked, "credit_limit_upsell_clicked");
 telemetry_event!(SubscriptionActivated, "subscription_activated");
 telemetry_event!(ApiError, "api_error");
 telemetry_event!(InternalError, "internal_error");
-telemetry_event!(ExternalOtelConfigured, "external_otel_configured");
-telemetry_event!(
-    ExternalOtelRemotePolicyApplied,
-    "external_otel_remote_policy_applied"
-);
-telemetry_event!(ExternalOtelExportHealth, "external_otel_export_health");
 
 // Session lifecycle (structs in session_metrics)
 telemetry_event!(crate::session_metrics::SessionStarted, "session_started");
@@ -1654,22 +1589,6 @@ telemetry_event!(
 telemetry_event!(
     crate::session_metrics::DoomLoopRecovery,
     "doom_loop_recovery"
-);
-telemetry_event!(
-    crate::session_metrics::TraceUploadAttempted,
-    "trace_upload_attempted"
-);
-telemetry_event!(
-    crate::session_metrics::TraceUploadSucceeded,
-    "trace_upload_succeeded"
-);
-telemetry_event!(
-    crate::session_metrics::TraceUploadSkipped,
-    "trace_upload_skipped"
-);
-telemetry_event!(
-    crate::session_metrics::TraceUploadFailed,
-    "trace_upload_failed"
 );
 
 // Memory subsystem (structs in memory_telemetry)
@@ -1931,7 +1850,7 @@ mod tests {
     #[test]
     fn login_completed_serializes_all_fields() {
         let v = serde_json::to_value(LoginCompleted {
-            method: "xai".into(),
+            method: "oauth".into(),
             mode: "device".into(),
             duration_ms: 1234,
             mid_session: false,
@@ -1940,7 +1859,7 @@ mod tests {
         assert_eq!(
             v,
             serde_json::json!({
-                "method": "xai",
+                "method": "oauth",
                 "mode": "device",
                 "duration_ms": 1234,
                 "mid_session": false,

@@ -407,8 +407,6 @@ dependencies = [
  "memchr",
  "pin-project-lite",
  "tokio",
- "zstd",
- "zstd-safe",
 ]
 
 [[package]]
@@ -664,12 +662,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "atelier-acp-runtime"
+version = "0.1.0"
+dependencies = [
+ "agent-client-protocol",
+ "async-trait",
+ "derive_more 2.1.1",
+ "futures",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "atelier-agent"
 version = "0.1.0"
 dependencies = [
  "atelier-config",
  "atelier-hooks",
  "atelier-sampling-types",
+ "atelier-token-estimation",
+ "atelier-tool-types",
  "atelier-tools",
  "chrono",
  "dirs 6.0.0",
@@ -688,9 +702,16 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
- "xai-token-estimation",
- "xai-tool-types",
  "zeroize",
+]
+
+[[package]]
+name = "atelier-agent-lifecycle"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -711,12 +732,64 @@ name = "atelier-auth"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "http 1.4.0",
+ "http",
  "mockito",
  "reqwest 0.12.24",
- "reqwest-middleware 0.4.2",
+ "reqwest-middleware",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "atelier-chat-state"
+version = "0.1.0"
+dependencies = [
+ "atelier-compaction",
+ "atelier-sampling-types",
+ "atelier-token-estimation",
+ "indexmap",
+ "regex",
+ "serde",
+ "serde_json",
+ "strum 0.27.2",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
+name = "atelier-codebase-graph"
+version = "0.1.0"
+dependencies = [
+ "ahash",
+ "atelier-paths",
+ "clap",
+ "crossbeam",
+ "dashmap",
+ "dunce",
+ "git2",
+ "hashbrown 0.15.5",
+ "ignore",
+ "libc",
+ "mimalloc",
+ "nohash-hasher",
+ "num_cpus",
+ "once_cell",
+ "petgraph 0.6.5",
+ "rayon",
+ "rustc-hash",
+ "serde",
+ "serde_json",
+ "smallvec",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tree-sitter",
+ "tree-sitter-go",
+ "tree-sitter-javascript",
+ "tree-sitter-python",
+ "tree-sitter-rust",
+ "tree-sitter-typescript",
 ]
 
 [[package]]
@@ -725,6 +798,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "atelier-config",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -736,12 +810,12 @@ dependencies = [
 name = "atelier-config"
 version = "0.1.0"
 dependencies = [
+ "atelier-tty-utils",
  "atelier-version",
  "base64",
  "blake3",
  "core-foundation",
  "dunce",
- "prod-mc-cli-chat-proxy-types",
  "ring",
  "semver",
  "serde",
@@ -750,10 +824,10 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "toml",
+ "toml_edit 0.22.27",
  "tracing",
  "urlencoding",
  "which",
- "xai-tty-utils",
 ]
 
 [[package]]
@@ -772,11 +846,85 @@ dependencies = [
 ]
 
 [[package]]
+name = "atelier-crash-handler"
+version = "0.1.0"
+dependencies = [
+ "backtrace",
+ "libc",
+ "tempfile",
+ "tokio",
+ "windows-sys 0.59.0",
+]
+
+[[package]]
 name = "atelier-env"
 version = "0.1.0"
 dependencies = [
  "tracing",
  "url",
+]
+
+[[package]]
+name = "atelier-fast-worktree"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "atelier-gix-status",
+ "atelier-sqlite-journal",
+ "atelier-test-utils",
+ "atelier-tty-utils",
+ "bytes",
+ "clap",
+ "crossbeam",
+ "dashmap",
+ "dunce",
+ "gix",
+ "gix-status",
+ "globset",
+ "ignore",
+ "libc",
+ "nix 0.30.1",
+ "num_cpus",
+ "rapidhash",
+ "reflink-copy",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio-util",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "atelier-fsnotify"
+version = "0.1.0"
+dependencies = [
+ "atelier-tracing-macros",
+ "criterion",
+ "dunce",
+ "git2",
+ "globset",
+ "ignore",
+ "notify",
+ "notify-debouncer-full",
+ "serde",
+ "serial_test",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
+name = "atelier-gix-status"
+version = "0.1.0"
+dependencies = [
+ "atelier-test-utils",
+ "gix",
+ "libc",
+ "tempfile",
 ]
 
 [[package]]
@@ -799,6 +947,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "atelier-hooks-plugins-types"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "atelier-http"
 version = "0.1.0"
 dependencies = [
@@ -808,9 +964,37 @@ dependencies = [
  "atelier-version",
  "atelier-workspace",
  "reqwest 0.12.24",
- "reqwest-middleware 0.4.2",
+ "reqwest-middleware",
  "serde_json",
  "tracing",
+]
+
+[[package]]
+name = "atelier-hunk-tracker"
+version = "0.1.0"
+dependencies = [
+ "atelier-gix-status",
+ "atelier-test-utils",
+ "chrono",
+ "dunce",
+ "gix",
+ "rustc-hash",
+ "serde",
+ "serde_json",
+ "similar",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "atelier-interjection-core"
+version = "0.1.0"
+dependencies = [
+ "serde",
 ]
 
 [[package]]
@@ -821,6 +1005,7 @@ dependencies = [
  "anstyle-lossy",
  "anstyle-syntect",
  "atelier-markdown-core",
+ "atelier-ratatui-textarea",
  "criterion",
  "crossterm",
  "html-escape",
@@ -834,7 +1019,6 @@ dependencies = [
  "two-face",
  "unicode-width 0.2.0",
  "url",
- "xai-ratatui-textarea",
 ]
 
 [[package]]
@@ -851,13 +1035,18 @@ dependencies = [
  "agent-client-protocol",
  "async-trait",
  "atelier-config",
+ "atelier-runtime-events",
  "atelier-telemetry",
+ "atelier-tool-hub-sdk",
+ "atelier-tool-protocol",
+ "atelier-tool-runtime",
+ "atelier-tool-types",
  "atelier-tools",
  "atelier-version",
  "atelier-workspace-types",
  "axum",
  "futures",
- "http 1.4.0",
+ "http",
  "libc",
  "oauth2",
  "parking_lot",
@@ -875,11 +1064,6 @@ dependencies = [
  "url",
  "webbrowser",
  "which",
- "xai-computer-hub-sdk",
- "xai-file-utils",
- "xai-tool-protocol",
- "xai-tool-runtime",
- "xai-tool-types",
 ]
 
 [[package]]
@@ -892,6 +1076,7 @@ dependencies = [
  "atelier-auth",
  "atelier-config-types",
  "atelier-http",
+ "atelier-sqlite-journal",
  "atelier-telemetry",
  "atelier-tools",
  "atelier-version",
@@ -904,7 +1089,7 @@ dependencies = [
  "nix 0.30.1",
  "notify",
  "reqwest 0.12.24",
- "reqwest-middleware 0.4.2",
+ "reqwest-middleware",
  "rusqlite",
  "serde_json",
  "sqlite-vec",
@@ -913,13 +1098,13 @@ dependencies = [
  "tokio",
  "tracing",
  "windows 0.61.3",
- "xai-sqlite-journal",
 ]
 
 [[package]]
 name = "atelier-mermaid"
 version = "0.1.0"
 dependencies = [
+ "atelier-tty-utils",
  "fontdb",
  "image",
  "libc",
@@ -931,7 +1116,6 @@ dependencies = [
  "tracing",
  "wait-timeout",
  "which",
- "xai-tty-utils",
 ]
 
 [[package]]
@@ -949,20 +1133,29 @@ dependencies = [
  "agent-client-protocol",
  "ansi-to-tui",
  "anyhow",
+ "atelier-acp-runtime",
  "atelier-agent",
  "atelier-announcements",
  "atelier-config",
+ "atelier-crash-handler",
+ "atelier-fast-worktree",
+ "atelier-hooks-plugins-types",
  "atelier-markdown",
  "atelier-mermaid",
  "atelier-pager-pty-harness",
  "atelier-pager-render",
  "atelier-plugin-marketplace",
+ "atelier-prompt-queue",
  "atelier-provider",
+ "atelier-ratatui-inline",
+ "atelier-ratatui-textarea",
  "atelier-sandbox",
  "atelier-shell",
  "atelier-telemetry",
  "atelier-test-support",
+ "atelier-token-estimation",
  "atelier-tools",
+ "atelier-tty-utils",
  "atelier-version",
  "atelier-workspace",
  "backon",
@@ -1018,16 +1211,6 @@ dependencies = [
  "uuid",
  "wait-timeout",
  "windows-sys 0.59.0",
- "xai-acp-lib",
- "xai-crash-handler",
- "xai-fast-worktree",
- "xai-file-utils",
- "xai-hooks-plugins-types",
- "xai-prompt-queue",
- "xai-ratatui-inline",
- "xai-ratatui-textarea",
- "xai-token-estimation",
- "xai-tty-utils",
 ]
 
 [[package]]
@@ -1035,12 +1218,15 @@ name = "atelier-pager-bin"
 version = "0.1.220-alpha.4"
 dependencies = [
  "anyhow",
+ "atelier-acp-runtime",
  "atelier-config",
+ "atelier-crash-handler",
  "atelier-pager",
  "atelier-pager-minimal",
  "atelier-sandbox",
  "atelier-shell",
  "atelier-telemetry",
+ "atelier-tty-utils",
  "atelier-version",
  "atelier-windows-sandbox",
  "atelier-workspace",
@@ -1060,9 +1246,6 @@ dependencies = [
  "tokio-util",
  "tracing",
  "tracing-subscriber",
- "xai-acp-lib",
- "xai-crash-handler",
- "xai-tty-utils",
 ]
 
 [[package]]
@@ -1070,7 +1253,9 @@ name = "atelier-pager-minimal"
 version = "0.1.0"
 dependencies = [
  "atelier-pager",
+ "atelier-ratatui-inline",
  "atelier-shell",
+ "atelier-token-estimation",
  "atelier-version",
  "chrono",
  "crossterm",
@@ -1078,8 +1263,6 @@ dependencies = [
  "similar",
  "tracing",
  "uuid",
- "xai-ratatui-inline",
- "xai-token-estimation",
 ]
 
 [[package]]
@@ -1089,6 +1272,7 @@ dependencies = [
  "alacritty_terminal",
  "anyhow",
  "atelier-test-support",
+ "atelier-tty-utils",
  "base64",
  "clap",
  "dunce",
@@ -1104,7 +1288,6 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
- "xai-tty-utils",
 ]
 
 [[package]]
@@ -1117,9 +1300,12 @@ dependencies = [
  "atelier-config",
  "atelier-markdown",
  "atelier-paths",
+ "atelier-ratatui-inline",
+ "atelier-ratatui-textarea",
  "atelier-shared",
  "atelier-telemetry",
  "atelier-tools",
+ "atelier-tty-utils",
  "atelier-workspace",
  "base64",
  "crossterm",
@@ -1154,9 +1340,6 @@ dependencies = [
  "uuid",
  "vte 0.15.0",
  "windows-sys 0.59.0",
- "xai-ratatui-inline",
- "xai-ratatui-textarea",
- "xai-tty-utils",
 ]
 
 [[package]]
@@ -1175,6 +1358,8 @@ version = "0.1.0"
 dependencies = [
  "atelier-agent",
  "atelier-config",
+ "atelier-hooks-plugins-types",
+ "atelier-tty-utils",
  "chrono",
  "dirs 5.0.1",
  "dunce",
@@ -1186,8 +1371,26 @@ dependencies = [
  "thiserror 2.0.18",
  "toml",
  "tracing",
- "xai-hooks-plugins-types",
- "xai-tty-utils",
+]
+
+[[package]]
+name = "atelier-prompt-queue"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "atelier-proto-build"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "pbjson-build",
+ "prost-build",
+ "protoc-bin-vendored",
+ "tempfile",
+ "tonic-prost-build",
 ]
 
 [[package]]
@@ -1195,23 +1398,76 @@ name = "atelier-protocol"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "atelier-acp-runtime",
  "serde",
  "serde_json",
  "tokio",
- "xai-acp-lib",
 ]
 
 [[package]]
 name = "atelier-provider"
 version = "0.1.0"
 dependencies = [
+ "base64",
+ "rand 0.9.2",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tempfile",
  "thiserror 2.0.18",
  "toml",
  "url",
  "windows 0.61.3",
+]
+
+[[package]]
+name = "atelier-ratatui-inline"
+version = "0.1.0"
+dependencies = [
+ "ansi-width",
+ "anstyle-parse",
+ "anyhow",
+ "colored_json",
+ "criterion",
+ "crossterm",
+ "lipsum",
+ "ratatui",
+ "serde_json",
+ "termwiz",
+ "unicode-width 0.2.0",
+]
+
+[[package]]
+name = "atelier-ratatui-textarea"
+version = "0.1.0"
+dependencies = [
+ "arboard",
+ "chrono",
+ "crossterm",
+ "fuzzy-matcher",
+ "ignore",
+ "itertools 0.14.0",
+ "pretty_assertions",
+ "rand 0.9.2",
+ "ratatui",
+ "ratatui-core",
+ "textwrap",
+ "tracing",
+ "tui-scrollbar",
+ "unicode-segmentation",
+ "unicode-width 0.2.0",
+]
+
+[[package]]
+name = "atelier-runtime-events"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "serde",
+ "serde_json",
+ "strum 0.27.2",
+ "tempfile",
+ "tracing",
 ]
 
 [[package]]
@@ -1294,6 +1550,7 @@ dependencies = [
  "atelier-config-types",
  "atelier-models",
  "atelier-tools",
+ "atelier-tty-utils",
  "base64",
  "dirs 6.0.0",
  "dunce",
@@ -1301,7 +1558,6 @@ dependencies = [
  "libc",
  "objc2 0.6.3",
  "parking_lot",
- "prod-mc-cli-chat-proxy-types",
  "regex",
  "serde",
  "serde_json",
@@ -1311,7 +1567,6 @@ dependencies = [
  "urlencoding",
  "uuid",
  "wl-clipboard-rs",
- "xai-tty-utils",
 ]
 
 [[package]]
@@ -1323,30 +1578,51 @@ dependencies = [
  "arc-swap",
  "async-openai",
  "async-trait",
+ "atelier-acp-runtime",
  "atelier-agent",
+ "atelier-agent-lifecycle",
  "atelier-announcements",
  "atelier-auth",
+ "atelier-chat-state",
+ "atelier-codebase-graph",
  "atelier-compaction",
  "atelier-config",
  "atelier-config-types",
+ "atelier-fast-worktree",
+ "atelier-fsnotify",
  "atelier-hooks",
+ "atelier-hooks-plugins-types",
  "atelier-http",
+ "atelier-hunk-tracker",
+ "atelier-interjection-core",
  "atelier-mcp",
  "atelier-memory",
  "atelier-models",
  "atelier-paths",
  "atelier-plugin-marketplace",
+ "atelier-prompt-queue",
  "atelier-provider",
+ "atelier-runtime-events",
  "atelier-sampler",
  "atelier-sampling-types",
  "atelier-sandbox",
  "atelier-shared",
  "atelier-shell-base",
  "atelier-shell-session-support",
+ "atelier-sqlite-journal",
  "atelier-subagent-resolution",
+ "atelier-system-power",
  "atelier-telemetry",
  "atelier-test-support",
+ "atelier-test-utils",
+ "atelier-token-estimation",
+ "atelier-tool-hub-sdk",
+ "atelier-tool-protocol",
+ "atelier-tool-runtime",
+ "atelier-tool-types",
  "atelier-tools",
+ "atelier-tracing-macros",
+ "atelier-tty-utils",
  "atelier-version",
  "atelier-windows-sandbox",
  "atelier-workspace",
@@ -1367,7 +1643,6 @@ dependencies = [
  "fs2",
  "futures",
  "futures-util",
- "gcloud-storage",
  "gethostname",
  "git2",
  "glob",
@@ -1389,12 +1664,11 @@ dependencies = [
  "parking_lot",
  "portable-pty",
  "process-wrap",
- "prod-mc-cli-chat-proxy-types",
  "prost",
  "rand 0.9.2",
  "regex",
  "reqwest 0.12.24",
- "reqwest-middleware 0.4.2",
+ "reqwest-middleware",
  "ring",
  "rsa",
  "rusqlite",
@@ -1433,27 +1707,6 @@ dependencies = [
  "walkdir",
  "webbrowser",
  "windows 0.61.3",
- "xai-acp-lib",
- "xai-agent-lifecycle",
- "xai-chat-state",
- "xai-codebase-graph",
- "xai-computer-hub-sdk",
- "xai-fast-worktree",
- "xai-file-utils",
- "xai-fsnotify",
- "xai-hooks-plugins-types",
- "xai-hunk-tracker",
- "xai-interjection-core",
- "xai-prompt-queue",
- "xai-sqlite-journal",
- "xai-system-power",
- "xai-test-utils",
- "xai-token-estimation",
- "xai-tool-protocol",
- "xai-tool-runtime",
- "xai-tool-types",
- "xai-tracing-macros",
- "xai-tty-utils",
  "zstd",
 ]
 
@@ -1465,6 +1718,7 @@ dependencies = [
  "atelier-config",
  "atelier-env",
  "atelier-shared",
+ "atelier-tty-utils",
  "atelier-version",
  "chrono",
  "libc",
@@ -1479,7 +1733,6 @@ dependencies = [
  "tracing",
  "url",
  "windows 0.61.3",
- "xai-tty-utils",
 ]
 
 [[package]]
@@ -1500,7 +1753,17 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
- "xai-file-utils",
+]
+
+[[package]]
+name = "atelier-sqlite-journal"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "rusqlite",
+ "tempfile",
+ "tracing",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -1508,6 +1771,7 @@ name = "atelier-subagent-resolution"
 version = "0.1.0"
 dependencies = [
  "atelier-sampling-types",
+ "atelier-tool-types",
  "atelier-tools",
  "serde",
  "serde_json",
@@ -1515,7 +1779,14 @@ dependencies = [
  "thiserror 2.0.18",
  "toml",
  "tracing",
- "xai-tool-types",
+]
+
+[[package]]
+name = "atelier-system-power"
+version = "0.1.0"
+dependencies = [
+ "windows-sys 0.59.0",
+ "zbus",
 ]
 
 [[package]]
@@ -1523,19 +1794,12 @@ name = "atelier-telemetry"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "atelier-auth",
- "atelier-config",
- "atelier-env",
- "atelier-sampler",
  "atelier-secrets",
+ "atelier-token-estimation",
  "chrono",
- "dirs 5.0.1",
  "filetime",
  "git2",
  "mid",
- "obfstr",
- "parking_lot",
- "reqwest 0.12.24",
  "serde",
  "serde_json",
  "strum 0.27.2",
@@ -1545,11 +1809,7 @@ dependencies = [
  "tracing-appender",
  "tracing-chrome",
  "tracing-subscriber",
- "url",
  "uuid",
- "whoami",
- "xai-file-utils",
- "xai-token-estimation",
 ]
 
 [[package]]
@@ -1559,6 +1819,7 @@ dependencies = [
  "agent-client-protocol",
  "anyhow",
  "async-trait",
+ "atelier-acp-runtime",
  "axum",
  "clap",
  "futures-util",
@@ -1572,7 +1833,122 @@ dependencies = [
  "tokio-util",
  "tracing",
  "tracing-subscriber",
- "xai-acp-lib",
+]
+
+[[package]]
+name = "atelier-test-utils"
+version = "0.1.0"
+dependencies = [
+ "runfiles",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "atelier-token-estimation"
+version = "0.1.0"
+
+[[package]]
+name = "atelier-tool-hub-core"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "atelier-tool-protocol",
+ "atelier-tool-runtime",
+ "atelier-tool-types",
+ "chrono",
+ "dashmap",
+ "futures",
+ "schemars 1.0.4",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "atelier-tool-hub-mcp-adapter"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "atelier-tool-hub-sdk",
+ "atelier-tool-protocol",
+ "atelier-tool-runtime",
+ "atelier-tool-types",
+ "futures",
+ "prometheus",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "atelier-tool-hub-sdk"
+version = "0.1.0"
+dependencies = [
+ "arc-swap",
+ "async-trait",
+ "atelier-tool-hub-core",
+ "atelier-tool-protocol",
+ "atelier-tool-runtime",
+ "atelier-tool-types",
+ "axum",
+ "dashmap",
+ "fastrace",
+ "futures",
+ "http",
+ "indexmap",
+ "parking_lot",
+ "schemars 1.0.4",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-tungstenite 0.27.0",
+ "tokio-util",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+]
+
+[[package]]
+name = "atelier-tool-protocol"
+version = "0.1.0"
+dependencies = [
+ "atelier-tool-types",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "uuid",
+]
+
+[[package]]
+name = "atelier-tool-runtime"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "atelier-tool-protocol",
+ "atelier-tool-types",
+ "atelier-tools-api",
+ "futures",
+ "schemars 1.0.4",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
+name = "atelier-tool-types"
+version = "0.1.0"
+dependencies = [
+ "minijinja",
+ "schemars 1.0.4",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -1587,8 +1963,17 @@ dependencies = [
  "async-trait",
  "atelier-config",
  "atelier-env",
+ "atelier-interjection-core",
  "atelier-sandbox",
+ "atelier-test-utils",
+ "atelier-token-estimation",
+ "atelier-tool-hub-core",
+ "atelier-tool-hub-sdk",
+ "atelier-tool-protocol",
+ "atelier-tool-runtime",
+ "atelier-tool-types",
  "atelier-tools-api",
+ "atelier-tty-utils",
  "atelier-version",
  "atelier-windows-sandbox",
  "atelier-workspace-types",
@@ -1640,16 +2025,6 @@ dependencies = [
  "which",
  "windows 0.61.3",
  "wiremock",
- "xai-computer-hub-core",
- "xai-computer-hub-sdk",
- "xai-file-utils",
- "xai-interjection-core",
- "xai-test-utils",
- "xai-token-estimation",
- "xai-tool-protocol",
- "xai-tool-runtime",
- "xai-tool-types",
- "xai-tty-utils",
  "zip",
 ]
 
@@ -1657,13 +2032,39 @@ dependencies = [
 name = "atelier-tools-api"
 version = "0.1.220-alpha.4"
 dependencies = [
+ "atelier-proto-build",
+ "atelier-tool-protocol",
  "prost",
  "serde",
  "serde_json",
  "tonic",
  "tonic-prost",
- "xai-proto-build",
- "xai-tool-protocol",
+]
+
+[[package]]
+name = "atelier-tracing"
+version = "0.1.0"
+dependencies = [
+ "fastrace",
+ "log",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
+name = "atelier-tracing-macros"
+version = "0.1.0"
+
+[[package]]
+name = "atelier-tty-utils"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "nix 0.30.1",
+ "tokio",
+ "windows 0.61.3",
 ]
 
 [[package]]
@@ -1697,7 +2098,10 @@ name = "atelier-windows-sandbox"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64",
  "dunce",
+ "serde",
+ "serde_json",
  "tempfile",
  "thiserror 2.0.18",
  "windows-sys 0.61.2",
@@ -1712,18 +2116,33 @@ dependencies = [
  "arc-swap",
  "async-stream",
  "async-trait",
+ "atelier-acp-runtime",
  "atelier-agent",
  "atelier-auth",
+ "atelier-codebase-graph",
  "atelier-config",
  "atelier-config-types",
  "atelier-env",
+ "atelier-fast-worktree",
+ "atelier-fsnotify",
  "atelier-hooks",
+ "atelier-hunk-tracker",
  "atelier-mcp",
  "atelier-paths",
+ "atelier-runtime-events",
  "atelier-sandbox",
+ "atelier-sqlite-journal",
  "atelier-telemetry",
+ "atelier-test-utils",
+ "atelier-tool-hub-mcp-adapter",
+ "atelier-tool-hub-sdk",
+ "atelier-tool-protocol",
+ "atelier-tool-runtime",
+ "atelier-tool-types",
  "atelier-tools",
  "atelier-tools-api",
+ "atelier-tracing",
+ "atelier-tty-utils",
  "atelier-version",
  "atelier-windows-sandbox",
  "atelier-workspace-client",
@@ -1779,21 +2198,6 @@ dependencies = [
  "urlencoding",
  "uuid",
  "windows 0.61.3",
- "xai-acp-lib",
- "xai-codebase-graph",
- "xai-computer-hub-mcp-adapter",
- "xai-computer-hub-sdk",
- "xai-fast-worktree",
- "xai-file-utils",
- "xai-fsnotify",
- "xai-hunk-tracker",
- "xai-sqlite-journal",
- "xai-test-utils",
- "xai-tool-protocol",
- "xai-tool-runtime",
- "xai-tool-types",
- "xai-tracing",
- "xai-tty-utils",
  "zstd",
 ]
 
@@ -1801,6 +2205,10 @@ dependencies = [
 name = "atelier-workspace-client"
 version = "0.1.0"
 dependencies = [
+ "atelier-tool-hub-sdk",
+ "atelier-tool-protocol",
+ "atelier-tool-runtime",
+ "atelier-tool-types",
  "atelier-workspace-types",
  "schemars 1.0.4",
  "serde",
@@ -1808,10 +2216,6 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
- "xai-computer-hub-sdk",
- "xai-tool-protocol",
- "xai-tool-runtime",
- "xai-tool-types",
 ]
 
 [[package]]
@@ -1847,48 +2251,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 
 [[package]]
-name = "aws-config"
-version = "1.8.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "37cf2b6af2a95a20e266782b4f76f1a5e12bf412a9db2de9c1e9123b9d8c0ad8"
-dependencies = [
- "aws-credential-types",
- "aws-runtime",
- "aws-sdk-sso",
- "aws-sdk-ssooidc",
- "aws-sdk-sts",
- "aws-smithy-async",
- "aws-smithy-http",
- "aws-smithy-json",
- "aws-smithy-runtime",
- "aws-smithy-runtime-api",
- "aws-smithy-types",
- "aws-types",
- "bytes",
- "fastrand",
- "hex",
- "http 1.4.0",
- "ring",
- "time",
- "tokio",
- "tracing",
- "url",
- "zeroize",
-]
-
-[[package]]
-name = "aws-credential-types"
-version = "1.2.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "faf26925f4a5b59eb76722b63c2892b1d70d06fa053c72e4a100ec308c1d47bc"
-dependencies = [
- "aws-smithy-async",
- "aws-smithy-runtime-api",
- "aws-smithy-types",
- "zeroize",
-]
-
-[[package]]
 name = "aws-lc-rs"
 version = "1.16.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1912,360 +2274,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "aws-runtime"
-version = "1.5.12"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bfa006bb32360ed90ac51203feafb9d02e3d21046e1fd3a450a404b90ea73e5d"
-dependencies = [
- "aws-credential-types",
- "aws-sigv4",
- "aws-smithy-async",
- "aws-smithy-eventstream",
- "aws-smithy-http",
- "aws-smithy-runtime",
- "aws-smithy-runtime-api",
- "aws-smithy-types",
- "aws-types",
- "bytes",
- "fastrand",
- "http 0.2.12",
- "http-body 0.4.6",
- "percent-encoding",
- "pin-project-lite",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "aws-sdk-s3"
-version = "1.109.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3c6d81b75f8ff78882e70c5909804b44553d56136899fb4015a0a68ecc870e0e"
-dependencies = [
- "aws-credential-types",
- "aws-runtime",
- "aws-sigv4",
- "aws-smithy-async",
- "aws-smithy-checksums",
- "aws-smithy-eventstream",
- "aws-smithy-http",
- "aws-smithy-json",
- "aws-smithy-runtime",
- "aws-smithy-runtime-api",
- "aws-smithy-types",
- "aws-smithy-xml",
- "aws-types",
- "bytes",
- "fastrand",
- "hex",
- "hmac",
- "http 0.2.12",
- "http 1.4.0",
- "http-body 0.4.6",
- "lru 0.12.5",
- "percent-encoding",
- "regex-lite",
- "sha2 0.10.9",
- "tracing",
- "url",
-]
-
-[[package]]
-name = "aws-sdk-sso"
-version = "1.86.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4a0abbfab841446cce6e87af853a3ba2cc1bc9afcd3f3550dd556c43d434c86d"
-dependencies = [
- "aws-credential-types",
- "aws-runtime",
- "aws-smithy-async",
- "aws-smithy-http",
- "aws-smithy-json",
- "aws-smithy-runtime",
- "aws-smithy-runtime-api",
- "aws-smithy-types",
- "aws-types",
- "bytes",
- "fastrand",
- "http 0.2.12",
- "regex-lite",
- "tracing",
-]
-
-[[package]]
-name = "aws-sdk-ssooidc"
-version = "1.89.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "695dc67bb861ccb8426c9129b91c30e266a0e3d85650cafdf62fcca14c8fd338"
-dependencies = [
- "aws-credential-types",
- "aws-runtime",
- "aws-smithy-async",
- "aws-smithy-http",
- "aws-smithy-json",
- "aws-smithy-runtime",
- "aws-smithy-runtime-api",
- "aws-smithy-types",
- "aws-types",
- "bytes",
- "fastrand",
- "http 0.2.12",
- "regex-lite",
- "tracing",
-]
-
-[[package]]
-name = "aws-sdk-sts"
-version = "1.88.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d30990923f4f675523c51eb1c0dec9b752fb267b36a61e83cbc219c9d86da715"
-dependencies = [
- "aws-credential-types",
- "aws-runtime",
- "aws-smithy-async",
- "aws-smithy-http",
- "aws-smithy-json",
- "aws-smithy-query",
- "aws-smithy-runtime",
- "aws-smithy-runtime-api",
- "aws-smithy-types",
- "aws-smithy-xml",
- "aws-types",
- "fastrand",
- "http 0.2.12",
- "regex-lite",
- "tracing",
-]
-
-[[package]]
-name = "aws-sigv4"
-version = "1.3.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bffc03068fbb9c8dd5ce1c6fb240678a5cffb86fb2b7b1985c999c4b83c8df68"
-dependencies = [
- "aws-credential-types",
- "aws-smithy-eventstream",
- "aws-smithy-http",
- "aws-smithy-runtime-api",
- "aws-smithy-types",
- "bytes",
- "form_urlencoded",
- "hex",
- "hmac",
- "http 0.2.12",
- "http 1.4.0",
- "percent-encoding",
- "sha2 0.10.9",
- "time",
- "tracing",
-]
-
-[[package]]
-name = "aws-smithy-async"
-version = "1.2.14"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2ffcaf626bdda484571968400c326a244598634dc75fd451325a54ad1a59acfc"
-dependencies = [
- "futures-util",
- "pin-project-lite",
- "tokio",
-]
-
-[[package]]
-name = "aws-smithy-checksums"
-version = "0.63.13"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "23374b9170cbbcc6f5df8dc5ebb9b6c5c28a3c8f599f0e8b8b10eb6f4a5c6e74"
-dependencies = [
- "aws-smithy-http",
- "aws-smithy-types",
- "bytes",
- "crc-fast",
- "hex",
- "http 0.2.12",
- "http-body 0.4.6",
- "md-5 0.10.6",
- "pin-project-lite",
- "sha1",
- "sha2 0.10.9",
- "tracing",
-]
-
-[[package]]
-name = "aws-smithy-eventstream"
-version = "0.60.18"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "35b9c7354a3b13c66f60fe4616d6d1969c9fd36b1b5333a5dfb3ee716b33c588"
-dependencies = [
- "aws-smithy-types",
- "bytes",
- "crc32fast",
-]
-
-[[package]]
-name = "aws-smithy-http"
-version = "0.62.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "826141069295752372f8203c17f28e30c464d22899a43a0c9fd9c458d469c88b"
-dependencies = [
- "aws-smithy-eventstream",
- "aws-smithy-runtime-api",
- "aws-smithy-types",
- "bytes",
- "bytes-utils",
- "futures-core",
- "futures-util",
- "http 0.2.12",
- "http 1.4.0",
- "http-body 0.4.6",
- "percent-encoding",
- "pin-project-lite",
- "pin-utils",
- "tracing",
-]
-
-[[package]]
-name = "aws-smithy-http-client"
-version = "1.1.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "12fb0abf49ff0cab20fd31ac1215ed7ce0ea92286ba09e2854b42ba5cabe7525"
-dependencies = [
- "aws-smithy-async",
- "aws-smithy-runtime-api",
- "aws-smithy-types",
- "h2",
- "http 1.4.0",
- "hyper",
- "hyper-rustls",
- "hyper-util",
- "pin-project-lite",
- "rustls",
- "rustls-native-certs",
- "rustls-pki-types",
- "tokio",
- "tokio-rustls",
- "tower",
- "tracing",
-]
-
-[[package]]
-name = "aws-smithy-json"
-version = "0.61.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cff418fc8ec5cadf8173b10125f05c2e7e1d46771406187b2c878557d4503390"
-dependencies = [
- "aws-smithy-types",
-]
-
-[[package]]
-name = "aws-smithy-observability"
-version = "0.1.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2d1881b1ea6d313f9890710d65c158bdab6fb08c91ea825f74c1c8c357baf4cc"
-dependencies = [
- "aws-smithy-runtime-api",
-]
-
-[[package]]
-name = "aws-smithy-query"
-version = "0.60.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d28a63441360c477465f80c7abac3b9c4d075ca638f982e605b7dc2a2c7156c9"
-dependencies = [
- "aws-smithy-types",
- "urlencoding",
-]
-
-[[package]]
-name = "aws-smithy-runtime"
-version = "1.9.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "40ab99739082da5347660c556689256438defae3bcefd66c52b095905730e404"
-dependencies = [
- "aws-smithy-async",
- "aws-smithy-http",
- "aws-smithy-observability",
- "aws-smithy-runtime-api",
- "aws-smithy-types",
- "bytes",
- "fastrand",
- "http 0.2.12",
- "http 1.4.0",
- "http-body 0.4.6",
- "http-body 1.0.1",
- "pin-project-lite",
- "pin-utils",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "aws-smithy-runtime-api"
-version = "1.11.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "49952c52f7eebb72ce2a754d3866cc0f87b97d2a46146b79f80f3a93fb2b3716"
-dependencies = [
- "aws-smithy-async",
- "aws-smithy-types",
- "bytes",
- "http 0.2.12",
- "http 1.4.0",
- "pin-project-lite",
- "tokio",
- "tracing",
- "zeroize",
-]
-
-[[package]]
-name = "aws-smithy-types"
-version = "1.4.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3b3a26048eeab0ddeba4b4f9d51654c79af8c3b32357dc5f336cee85ab331c33"
-dependencies = [
- "base64-simd",
- "bytes",
- "bytes-utils",
- "futures-core",
- "http 0.2.12",
- "http 1.4.0",
- "http-body 0.4.6",
- "http-body 1.0.1",
- "http-body-util",
- "itoa",
- "num-integer",
- "pin-project-lite",
- "pin-utils",
- "ryu",
- "serde",
- "time",
- "tokio",
- "tokio-util",
-]
-
-[[package]]
-name = "aws-smithy-xml"
-version = "0.60.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e9c34127e8c624bc2999f3b657e749c1393bedc9cd97b92a804db8ced4d2e163"
-dependencies = [
- "xmlparser",
-]
-
-[[package]]
-name = "aws-types"
-version = "1.3.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e2fd329bf0e901ff3f60425691410c69094dc2a1f34b331f37bfc4e9ac1565a1"
-dependencies = [
- "aws-credential-types",
- "aws-smithy-async",
- "aws-smithy-runtime-api",
- "aws-smithy-types",
- "rustc_version",
- "tracing",
-]
-
-[[package]]
 name = "axum"
 version = "0.8.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2277,8 +2285,8 @@ dependencies = [
  "bytes",
  "form_urlencoded",
  "futures-util",
- "http 1.4.0",
- "http-body 1.0.1",
+ "http",
+ "http-body",
  "http-body-util",
  "hyper",
  "hyper-util",
@@ -2311,8 +2319,8 @@ checksum = "59446ce19cd142f8833f856eb31f3eb097812d1479ab224f54d72428ca21ea22"
 dependencies = [
  "bytes",
  "futures-core",
- "http 1.4.0",
- "http-body 1.0.1",
+ "http",
+ "http-body",
  "http-body-util",
  "mime",
  "pin-project-lite",
@@ -2384,16 +2392,6 @@ name = "base64"
 version = "0.22.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
-
-[[package]]
-name = "base64-simd"
-version = "0.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "339abbe78e73178762e23bea9dfd08e697eb3f3301cd4be981c0f78ba5859195"
-dependencies = [
- "outref",
- "vsimd",
-]
 
 [[package]]
 name = "base64ct"
@@ -2659,16 +2657,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1e748733b7cbc798e1434b6ac524f0c1ff2ab456fe201501e6497c8417a4fc33"
 dependencies = [
  "serde",
-]
-
-[[package]]
-name = "bytes-utils"
-version = "0.1.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7dafe3a8757b027e2be6e4e5601ed563c55989fcf1546e933c66c8eb3a058d35"
-dependencies = [
- "bytes",
- "either",
 ]
 
 [[package]]
@@ -3069,18 +3057,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "const-hex"
-version = "1.18.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "531185e432bb31db1ecda541e9e7ab21468d4d844ad7505e0546a49b4945d49b"
-dependencies = [
- "cfg-if",
- "cpufeatures 0.2.17",
- "proptest",
- "serde_core",
-]
-
-[[package]]
 name = "const-oid"
 version = "0.9.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3215,33 +3191,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8b2a41393f66f16b0823bb79094d54ac5fbd34ab292ddafb9a0456ac9f87d201"
 dependencies = [
  "libc",
-]
-
-[[package]]
-name = "crc"
-version = "3.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9710d3b3739c2e349eb44fe848ad0b7c8cb1e42bd87ee49371df2f7acaf3e675"
-dependencies = [
- "crc-catalog",
-]
-
-[[package]]
-name = "crc-catalog"
-version = "2.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "19d374276b40fb8bbdee95aef7c7fa6b5316ec764510eb64b8dd0e2ed0d7e7f5"
-
-[[package]]
-name = "crc-fast"
-version = "1.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2fd92aca2c6001b1bf5ba0ff84ee74ec8501b52bbef0cac80bf25a6c1d87a83d"
-dependencies = [
- "crc",
- "digest 0.10.7",
- "rustversion",
- "spin 0.10.0",
 ]
 
 [[package]]
@@ -3679,7 +3628,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ececcb659e7ba858fb4f10388c250a7252eb0a27373f1a72b8748afdd248e587"
 dependencies = [
  "powerfmt",
- "serde_core",
 ]
 
 [[package]]
@@ -4323,41 +4271,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "fastrace-opentelemetry"
-version = "0.18.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "67d87b05a82ea59d6d2a11066f4e0cc1e169ce50bc8c276279249ba374936d91"
-dependencies = [
- "fastrace",
- "log",
- "opentelemetry",
- "opentelemetry_sdk",
- "pollster",
-]
-
-[[package]]
-name = "fastrace-reqwest"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c4705b6c98308ef10f178dadc516a460ca9191c0e1c6e07c73104c9679e82d4e"
-dependencies = [
- "fastrace",
- "reqwest 0.12.24",
-]
-
-[[package]]
-name = "fastrace-tonic"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9bfe91596cd82e4b4fbd390f0e789fe3cf327b635fa713347f1509db97aa482c"
-dependencies = [
- "fastrace",
- "http 1.4.0",
- "tower-layer",
- "tower-service",
-]
-
-[[package]]
 name = "fastrand"
 version = "2.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4735,76 +4648,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c31b6d751ae2c7f11320402d34e41349dd1016f8d5d45e48c4312bc8625af50c"
 dependencies = [
  "byteorder",
-]
-
-[[package]]
-name = "gcloud-auth"
-version = "1.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b43924e3df02cb3b846ca66a7ee58e8c13eb2556d0308c71f6154083f6980365"
-dependencies = [
- "async-trait",
- "base64",
- "gcloud-metadata",
- "hex",
- "hmac",
- "home",
- "jsonwebtoken",
- "path-clean",
- "percent-encoding",
- "reqwest 0.13.4",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "thiserror 2.0.18",
- "time",
- "token-source",
- "tokio",
- "tracing",
- "url",
- "urlencoding",
-]
-
-[[package]]
-name = "gcloud-metadata"
-version = "1.0.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bd3152612316be627be52fe9ca72331eb48425059b3a6a700e7adde223e061d5"
-dependencies = [
- "reqwest 0.13.4",
- "thiserror 2.0.18",
- "tokio",
-]
-
-[[package]]
-name = "gcloud-storage"
-version = "1.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e17f9662a6966402de91daf0edb5accaae05c87f1a85479e57b95d2af7284b9f"
-dependencies = [
- "anyhow",
- "base64",
- "bytes",
- "futures-util",
- "gcloud-auth",
- "gcloud-metadata",
- "hex",
- "once_cell",
- "percent-encoding",
- "pkcs8",
- "regex",
- "reqwest 0.13.4",
- "reqwest-middleware 0.5.1",
- "ring",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "thiserror 2.0.18",
- "time",
- "token-source",
- "tokio",
- "tracing",
- "url",
 ]
 
 [[package]]
@@ -5841,7 +5684,7 @@ dependencies = [
  "fnv",
  "futures-core",
  "futures-sink",
- "http 1.4.0",
+ "http",
  "indexmap",
  "slab",
  "tokio",
@@ -5928,16 +5771,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "69374b3668dd45aeb3d3145cda68f2c7b4f223aaa2511e67d076f1c7d741388d"
 dependencies = [
  "hayro-ccitt",
-]
-
-[[package]]
-name = "hdrhistogram"
-version = "7.5.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "765c9198f173dd59ce26ff9f95ef0aafd0a0fe01fb9d72841bc5066a4c06511d"
-dependencies = [
- "byteorder",
- "num-traits",
 ]
 
 [[package]]
@@ -6045,17 +5878,6 @@ dependencies = [
 
 [[package]]
 name = "http"
-version = "0.2.12"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "601cbb57e577e2f5ef5be8e7b83f0f63994f25aa94d673e54a92d5c516d101f1"
-dependencies = [
- "bytes",
- "fnv",
- "itoa",
-]
-
-[[package]]
-name = "http"
 version = "1.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e3ba2a386d7f85a81f119ad7498ebe444d2e22c2af0b86b069416ace48b3311a"
@@ -6066,23 +5888,12 @@ dependencies = [
 
 [[package]]
 name = "http-body"
-version = "0.4.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7ceab25649e9960c0311ea418d17bee82c0dcec1bd053b5f9a66e265a693bed2"
-dependencies = [
- "bytes",
- "http 0.2.12",
- "pin-project-lite",
-]
-
-[[package]]
-name = "http-body"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1efedce1fb8e6913f23e0c92de8e62cd5b772a67e7b3946df930a62566c93184"
 dependencies = [
  "bytes",
- "http 1.4.0",
+ "http",
 ]
 
 [[package]]
@@ -6093,8 +5904,8 @@ checksum = "b021d93e26becf5dc7e1b75b1bed1fd93124b374ceb73f43d4d4eafec896a64a"
 dependencies = [
  "bytes",
  "futures-core",
- "http 1.4.0",
- "http-body 1.0.1",
+ "http",
+ "http-body",
  "pin-project-lite",
 ]
 
@@ -6146,8 +5957,8 @@ dependencies = [
  "futures-channel",
  "futures-core",
  "h2",
- "http 1.4.0",
- "http-body 1.0.1",
+ "http",
+ "http-body",
  "httparse",
  "httpdate",
  "itoa",
@@ -6164,7 +5975,7 @@ version = "0.27.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e3c93eb611681b207e1fe55d5a71ecf91572ec8a6705cdb6857f7d8d5242cf58"
 dependencies = [
- "http 1.4.0",
+ "http",
  "hyper",
  "hyper-util",
  "rustls",
@@ -6199,8 +6010,8 @@ dependencies = [
  "bytes",
  "futures-channel",
  "futures-util",
- "http 1.4.0",
- "http-body 1.0.1",
+ "http",
+ "http-body",
  "hyper",
  "ipnet",
  "libc",
@@ -6704,7 +6515,6 @@ version = "10.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0529410abe238729a60b108898784df8984c87f6054c9c4fcacc47e4803c1ce1"
 dependencies = [
- "aws-lc-rs",
  "base64",
  "ed25519-dalek",
  "getrandom 0.2.16",
@@ -6899,7 +6709,6 @@ checksum = "416f7e718bdb06000964960ffa43b4335ad4012ae8b99060261aa4a8088d5ccb"
 dependencies = [
  "bitflags 2.13.0",
  "libc",
- "redox_syscall",
 ]
 
 [[package]]
@@ -7139,16 +6948,6 @@ dependencies = [
 
 [[package]]
 name = "md-5"
-version = "0.10.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d89e7ee0cfbedfc4da3340218492196241d89eefb6dab27de5df917a6d2e78cf"
-dependencies = [
- "cfg-if",
- "digest 0.10.7",
-]
-
-[[package]]
-name = "md-5"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "69b6441f590336821bb897fb28fc622898ccceb1d6cea3fde5ea86b090c4de98"
@@ -7304,8 +7103,8 @@ dependencies = [
  "bytes",
  "colored",
  "futures-util",
- "http 1.4.0",
- "http-body 1.0.1",
+ "http",
+ "http-body",
  "http-body-util",
  "hyper",
  "hyper-util",
@@ -7358,7 +7157,7 @@ dependencies = [
  "bytes",
  "encoding_rs",
  "futures-util",
- "http 1.4.0",
+ "http",
  "httparse",
  "memchr",
  "mime",
@@ -7758,7 +7557,7 @@ dependencies = [
  "base64",
  "chrono",
  "getrandom 0.2.16",
- "http 1.4.0",
+ "http",
  "rand 0.8.5",
  "reqwest 0.12.24",
  "serde",
@@ -7955,85 +7754,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d05e27ee213611ffe7d6348b942e8f942b37114c00cc03cec254295a4a17852e"
 
 [[package]]
-name = "opentelemetry"
-version = "0.32.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b0142c63252a9e054e68a4c61a5778f7b14f576274d593f8ce883d191a099682"
-dependencies = [
- "futures-core",
- "futures-sink",
- "js-sys",
- "pin-project-lite",
- "thiserror 2.0.18",
- "tracing",
-]
-
-[[package]]
-name = "opentelemetry-http"
-version = "0.32.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5683015d09e2df236ef005b17f6f196f0d5f6313c4fa43a7b6a53b52776e4331"
-dependencies = [
- "async-trait",
- "bytes",
- "http 1.4.0",
- "opentelemetry",
- "reqwest 0.13.4",
-]
-
-[[package]]
-name = "opentelemetry-otlp"
-version = "0.32.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9966929966d17620d7c316c643ba62631826e10021409357772d5eea84f62c35"
-dependencies = [
- "http 1.4.0",
- "opentelemetry",
- "opentelemetry-http",
- "opentelemetry-proto",
- "opentelemetry_sdk",
- "prost",
- "reqwest 0.13.4",
- "thiserror 2.0.18",
- "tokio",
- "tonic",
- "tonic-types",
-]
-
-[[package]]
-name = "opentelemetry-proto"
-version = "0.32.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "56d658ba1faf63f7b9c492cfbe6e0ec365440a16132d3270c1065f7b33f1b638"
-dependencies = [
- "base64",
- "const-hex",
- "opentelemetry",
- "opentelemetry_sdk",
- "prost",
- "serde",
- "tonic",
- "tonic-prost",
-]
-
-[[package]]
-name = "opentelemetry_sdk"
-version = "0.32.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9b59f80e1ac4d5ff7a2db8fb6c80badb7f0f3f858211fba08dd9aaec750894f9"
-dependencies = [
- "futures-channel",
- "futures-executor",
- "futures-util",
- "opentelemetry",
- "percent-encoding",
- "portable-atomic",
- "rand 0.9.2",
- "thiserror 2.0.18",
- "tokio",
-]
-
-[[package]]
 name = "optfield"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8155,12 +7875,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b867cad97c0791bbd3aaa6472142568c6c9e8f71937e98379f584cfb0cf35bec"
 
 [[package]]
-name = "path-clean"
-version = "1.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "17359afc20d7ab31fdb42bb844c8b3bb1dabd7dcf7e68428492da7f16966fcef"
-
-[[package]]
 name = "pbjson-build"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8198,7 +7912,7 @@ dependencies = [
  "jpeg-decoder",
  "libc",
  "log",
- "md-5 0.11.0",
+ "md-5",
  "memchr",
  "nom 8.0.0",
  "phf 0.13.1",
@@ -8615,12 +8329,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "pollster"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2f3a9f18d041e6d0e102a0a46750538147e5e8992d3b4873aaafee2520b00ce3"
-
-[[package]]
 name = "polycool"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8800,16 +8508,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "prod-mc-cli-chat-proxy-types"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "serde",
- "serde_json",
- "toml",
-]
-
-[[package]]
 name = "prodash"
 version = "31.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8833,21 +8531,6 @@ dependencies = [
  "procfs",
  "protobuf",
  "thiserror 2.0.18",
-]
-
-[[package]]
-name = "proptest"
-version = "1.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "37566cb3fdacef14c0737f9546df7cfeadbfbc9fef10991038bf5015d0c80532"
-dependencies = [
- "bitflags 2.13.0",
- "num-traits",
- "rand 0.9.2",
- "rand_chacha 0.9.0",
- "rand_xorshift",
- "regex-syntax",
- "unarray",
 ]
 
 [[package]]
@@ -9238,15 +8921,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c8d0fd677905edcbeedbf2edb6494d676f0e98d54d5cf9bda0b061cb8fb8aba"
 
 [[package]]
-name = "rand_xorshift"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "513962919efc330f829edb2535844d1b912b0fbe2ca165d613e4e8788bb05a5a"
-dependencies = [
- "rand_core 0.9.3",
-]
-
-[[package]]
 name = "rapidhash"
 version = "4.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9427,12 +9101,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "regex-lite"
-version = "0.1.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8d942b98df5e658f56f20d592c7f868833fe38115e65c33003d8cd224b0155da"
-
-[[package]]
 name = "regex-syntax"
 version = "0.8.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9461,8 +9129,8 @@ dependencies = [
  "futures-core",
  "futures-util",
  "h2",
- "http 1.4.0",
- "http-body 1.0.1",
+ "http",
+ "http-body",
  "http-body-util",
  "hyper",
  "hyper-rustls",
@@ -9502,20 +9170,17 @@ checksum = "219c5811de6525e5416c7d5d53bb656d3afdbc6c5af816e0802bcfa42dbdc1c3"
 dependencies = [
  "base64",
  "bytes",
- "encoding_rs",
  "futures-channel",
  "futures-core",
  "futures-util",
- "http 1.4.0",
- "http-body 1.0.1",
+ "http",
+ "http-body",
  "http-body-util",
  "hyper",
  "hyper-rustls",
  "hyper-util",
  "js-sys",
  "log",
- "mime",
- "mime_guess",
  "percent-encoding",
  "pin-project-lite",
  "quinn",
@@ -9563,25 +9228,10 @@ checksum = "57f17d28a6e6acfe1733fe24bcd30774d13bffa4b8a22535b4c8c98423088d4e"
 dependencies = [
  "anyhow",
  "async-trait",
- "http 1.4.0",
+ "http",
  "reqwest 0.12.24",
  "serde",
  "thiserror 1.0.69",
- "tower-service",
-]
-
-[[package]]
-name = "reqwest-middleware"
-version = "0.5.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "199dda04a536b532d0cc04d7979e39b1c763ea749bf91507017069c00b96056f"
-dependencies = [
- "anyhow",
- "async-trait",
- "http 1.4.0",
- "reqwest 0.13.4",
- "serde",
- "thiserror 2.0.18",
  "tower-service",
 ]
 
@@ -9642,7 +9292,7 @@ dependencies = [
  "base64",
  "chrono",
  "futures",
- "http 1.4.0",
+ "http",
  "oauth2",
  "pastey",
  "pin-project-lite",
@@ -10732,7 +10382,7 @@ checksum = "eb4dc4d33c68ec1f27d386b5610a351922656e1fdf5c05bbaad930cd1519479a"
 dependencies = [
  "bytes",
  "futures-util",
- "http-body 1.0.1",
+ "http-body",
  "http-body-util",
  "pin-project-lite",
 ]
@@ -11406,15 +11056,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "token-source"
-version = "1.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "75746ae15bef509f21039a652383104424208fdae172a964a8930858b9a78412"
-dependencies = [
- "async-trait",
-]
-
-[[package]]
 name = "tokio"
 version = "1.52.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -11610,15 +11251,14 @@ dependencies = [
  "bytes",
  "flate2",
  "h2",
- "http 1.4.0",
- "http-body 1.0.1",
+ "http",
+ "http-body",
  "http-body-util",
  "hyper",
  "hyper-timeout",
  "hyper-util",
  "percent-encoding",
  "pin-project",
- "rustls-native-certs",
  "socket2",
  "sync_wrapper",
  "tokio",
@@ -11671,17 +11311,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tonic-types"
-version = "0.14.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2a875a902255423d34c1f20838ab374126db8eb41625b7947a1d54113b0b7399"
-dependencies = [
- "prost",
- "prost-types",
- "tonic",
-]
-
-[[package]]
 name = "tower"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -11689,7 +11318,6 @@ checksum = "d039ad9159c98b70ecfd540b2573b97f7f52c3e8d9f8ad57a24b916a536975f9"
 dependencies = [
  "futures-core",
  "futures-util",
- "hdrhistogram",
  "indexmap",
  "pin-project-lite",
  "slab",
@@ -11710,14 +11338,13 @@ dependencies = [
  "bitflags 2.13.0",
  "bytes",
  "futures-util",
- "http 1.4.0",
- "http-body 1.0.1",
+ "http",
+ "http-body",
  "iri-string",
  "pin-project-lite",
  "tower",
  "tower-layer",
  "tower-service",
- "tracing",
 ]
 
 [[package]]
@@ -11797,22 +11424,6 @@ dependencies = [
  "log",
  "once_cell",
  "tracing-core",
-]
-
-[[package]]
-name = "tracing-opentelemetry"
-version = "0.33.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "adbc64cba7137545b8044cb1fe9814f7aacf3c6b5f9b45be8bb5db538befdb26"
-dependencies = [
- "js-sys",
- "opentelemetry",
- "smallvec",
- "tracing",
- "tracing-core",
- "tracing-log",
- "tracing-subscriber",
- "web-time",
 ]
 
 [[package]]
@@ -11993,7 +11604,7 @@ checksum = "eadc29d668c91fcc564941132e17b28a7ceb2f3ebf0b9dae3e03fd7a6748eb0d"
 dependencies = [
  "bytes",
  "data-encoding",
- "http 1.4.0",
+ "http",
  "httparse",
  "log",
  "rand 0.9.2",
@@ -12012,7 +11623,7 @@ checksum = "8628dcc84e5a09eb3d8423d6cb682965dea9133204e8fb3efee74c2a0c259442"
 dependencies = [
  "bytes",
  "data-encoding",
- "http 1.4.0",
+ "http",
  "httparse",
  "log",
  "rand 0.9.2",
@@ -12101,12 +11712,6 @@ dependencies = [
  "tempfile",
  "windows-sys 0.61.2",
 ]
-
-[[package]]
-name = "unarray"
-version = "0.1.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eaea85b334db583fe3274d12b4cd1880032beab409c0d774be044d4480ab9a94"
 
 [[package]]
 name = "unicase"
@@ -12462,12 +12067,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "wasite"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b8dad83b4f25e74f184f64c43b150b91efe7647395b42289f38e50566d82855b"
-
-[[package]]
 name = "wasm-bindgen"
 version = "0.2.114"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -12818,17 +12417,6 @@ dependencies = [
  "env_home",
  "rustix 1.1.4",
  "winsafe",
-]
-
-[[package]]
-name = "whoami"
-version = "1.6.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5d4a4db5077702ca3015d3d02d74974948aba2ad9e12ab7df718ee64ccd7e97d"
-dependencies = [
- "libredox",
- "wasite",
- "web-sys",
 ]
 
 [[package]]
@@ -13431,7 +13019,7 @@ dependencies = [
  "base64",
  "deadpool",
  "futures",
- "http 1.4.0",
+ "http",
  "http-body-util",
  "hyper",
  "hyper-util",
@@ -13618,488 +13206,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "xai-acp-lib"
-version = "0.1.0"
-dependencies = [
- "agent-client-protocol",
- "async-trait",
- "derive_more 2.1.1",
- "futures",
- "serde",
- "serde_json",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "xai-agent-lifecycle"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "xai-chat-state"
-version = "0.1.0"
-dependencies = [
- "atelier-compaction",
- "atelier-sampling-types",
- "indexmap",
- "regex",
- "serde",
- "serde_json",
- "strum 0.27.2",
- "tokio",
- "tokio-util",
- "tracing",
- "xai-token-estimation",
-]
-
-[[package]]
-name = "xai-circuit-breaker"
-version = "0.1.0"
-dependencies = [
- "log",
-]
-
-[[package]]
-name = "xai-codebase-graph"
-version = "0.1.0"
-dependencies = [
- "ahash",
- "atelier-paths",
- "clap",
- "crossbeam",
- "dashmap",
- "dunce",
- "git2",
- "hashbrown 0.15.5",
- "ignore",
- "libc",
- "mimalloc",
- "nohash-hasher",
- "num_cpus",
- "once_cell",
- "petgraph 0.6.5",
- "rayon",
- "rustc-hash",
- "serde",
- "serde_json",
- "smallvec",
- "tempfile",
- "tokio",
- "tracing",
- "tree-sitter",
- "tree-sitter-go",
- "tree-sitter-javascript",
- "tree-sitter-python",
- "tree-sitter-rust",
- "tree-sitter-typescript",
-]
-
-[[package]]
-name = "xai-computer-hub-core"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "chrono",
- "dashmap",
- "futures",
- "schemars 1.0.4",
- "serde",
- "serde_json",
- "tokio",
- "tracing",
- "xai-tool-protocol",
- "xai-tool-runtime",
- "xai-tool-types",
-]
-
-[[package]]
-name = "xai-computer-hub-mcp-adapter"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "futures",
- "prometheus",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "xai-computer-hub-sdk",
- "xai-tool-protocol",
- "xai-tool-runtime",
- "xai-tool-types",
-]
-
-[[package]]
-name = "xai-computer-hub-sdk"
-version = "0.1.0"
-dependencies = [
- "arc-swap",
- "async-trait",
- "axum",
- "base64",
- "chrono",
- "dashmap",
- "fastrace",
- "fastrace-opentelemetry",
- "futures",
- "http 1.4.0",
- "indexmap",
- "opentelemetry",
- "opentelemetry-proto",
- "opentelemetry_sdk",
- "parking_lot",
- "prometheus",
- "prost",
- "reqwest 0.12.24",
- "schemars 1.0.4",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tokio",
- "tokio-tungstenite 0.27.0",
- "tokio-util",
- "tracing",
- "tracing-subscriber",
- "url",
- "xai-computer-hub-core",
- "xai-tool-protocol",
- "xai-tool-runtime",
- "xai-tool-types",
- "xai-tracing",
-]
-
-[[package]]
-name = "xai-crash-handler"
-version = "0.1.0"
-dependencies = [
- "backtrace",
- "libc",
- "tempfile",
- "tokio",
- "windows-sys 0.59.0",
-]
-
-[[package]]
-name = "xai-fast-worktree"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "bytes",
- "clap",
- "crossbeam",
- "dashmap",
- "dunce",
- "gix",
- "gix-status",
- "globset",
- "ignore",
- "libc",
- "nix 0.30.1",
- "num_cpus",
- "rapidhash",
- "reflink-copy",
- "rusqlite",
- "serde",
- "serde_json",
- "tempfile",
- "tokio-util",
- "tracing",
- "tracing-subscriber",
- "xai-gix-status",
- "xai-sqlite-journal",
- "xai-test-utils",
- "xai-tty-utils",
-]
-
-[[package]]
-name = "xai-file-utils"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-compression",
- "atelier-auth",
- "atelier-version",
- "aws-config",
- "aws-sdk-s3",
- "aws-smithy-http-client",
- "axum",
- "base64",
- "chrono",
- "dirs 5.0.1",
- "dunce",
- "filetime",
- "futures",
- "gcloud-storage",
- "indexmap",
- "opentelemetry",
- "opentelemetry_sdk",
- "prod-mc-cli-chat-proxy-types",
- "reflink-copy",
- "reqwest 0.12.24",
- "reqwest-middleware 0.4.2",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "strum 0.27.2",
- "tempfile",
- "tokio",
- "tokio-stream",
- "tokio-util",
- "tracing",
- "tracing-opentelemetry",
- "tracing-subscriber",
- "url",
- "xai-circuit-breaker",
- "xai-test-utils",
- "zstd",
-]
-
-[[package]]
-name = "xai-fsnotify"
-version = "0.1.0"
-dependencies = [
- "criterion",
- "dunce",
- "git2",
- "globset",
- "ignore",
- "notify",
- "notify-debouncer-full",
- "serde",
- "serial_test",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "tokio-util",
- "tracing",
- "xai-tracing-macros",
-]
-
-[[package]]
-name = "xai-gix-status"
-version = "0.1.0"
-dependencies = [
- "gix",
- "libc",
- "tempfile",
- "xai-test-utils",
-]
-
-[[package]]
-name = "xai-hooks-plugins-types"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "xai-hunk-tracker"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "dunce",
- "gix",
- "rustc-hash",
- "serde",
- "serde_json",
- "similar",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "tokio-util",
- "tracing",
- "uuid",
- "xai-gix-status",
- "xai-test-utils",
-]
-
-[[package]]
-name = "xai-interjection-core"
-version = "0.1.0"
-dependencies = [
- "serde",
-]
-
-[[package]]
-name = "xai-prompt-queue"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "xai-proto-build"
-version = "0.0.0"
-dependencies = [
- "anyhow",
- "pbjson-build",
- "prost-build",
- "protoc-bin-vendored",
- "tempfile",
- "tonic-prost-build",
-]
-
-[[package]]
-name = "xai-ratatui-inline"
-version = "0.1.0"
-dependencies = [
- "ansi-width",
- "anstyle-parse",
- "anyhow",
- "colored_json",
- "criterion",
- "crossterm",
- "lipsum",
- "ratatui",
- "serde_json",
- "termwiz",
- "unicode-width 0.2.0",
-]
-
-[[package]]
-name = "xai-ratatui-textarea"
-version = "0.1.0"
-dependencies = [
- "arboard",
- "chrono",
- "crossterm",
- "fuzzy-matcher",
- "ignore",
- "itertools 0.14.0",
- "pretty_assertions",
- "rand 0.9.2",
- "ratatui",
- "ratatui-core",
- "textwrap",
- "tracing",
- "tui-scrollbar",
- "unicode-segmentation",
- "unicode-width 0.2.0",
-]
-
-[[package]]
-name = "xai-sqlite-journal"
-version = "0.1.0"
-dependencies = [
- "libc",
- "rusqlite",
- "tempfile",
- "tracing",
- "windows-sys 0.59.0",
-]
-
-[[package]]
-name = "xai-system-power"
-version = "0.1.0"
-dependencies = [
- "windows-sys 0.59.0",
- "zbus",
-]
-
-[[package]]
-name = "xai-test-utils"
-version = "0.1.0"
-dependencies = [
- "runfiles",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "xai-token-estimation"
-version = "0.1.0"
-
-[[package]]
-name = "xai-tool-protocol"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "uuid",
- "xai-tool-types",
-]
-
-[[package]]
-name = "xai-tool-runtime"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "atelier-tools-api",
- "futures",
- "schemars 1.0.4",
- "serde",
- "serde_json",
- "tokio",
- "tokio-util",
- "xai-tool-protocol",
- "xai-tool-types",
-]
-
-[[package]]
-name = "xai-tool-types"
-version = "0.1.0"
-dependencies = [
- "minijinja",
- "schemars 1.0.4",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "xai-tracing"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "bytes",
- "fastrace",
- "fastrace-opentelemetry",
- "fastrace-reqwest",
- "fastrace-tonic",
- "http 1.4.0",
- "http-body-util",
- "log",
- "opentelemetry",
- "opentelemetry-http",
- "opentelemetry-otlp",
- "opentelemetry_sdk",
- "reqwest 0.12.24",
- "reqwest-middleware 0.4.2",
- "tokio",
- "tonic",
- "tower",
- "tower-http",
- "tracing",
- "tracing-opentelemetry",
- "tracing-subscriber",
- "uuid",
- "wiremock",
-]
-
-[[package]]
-name = "xai-tracing-macros"
-version = "0.1.0"
-
-[[package]]
-name = "xai-tty-utils"
-version = "0.1.0"
-dependencies = [
- "libc",
- "nix 0.30.1",
- "tokio",
- "windows 0.61.3",
-]
-
-[[package]]
 name = "xattr"
 version = "1.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -14118,12 +13224,6 @@ dependencies = [
  "log",
  "markup5ever 0.38.0",
 ]
-
-[[package]]
-name = "xmlparser"
-version = "0.13.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "66fee0b777b0f5ac1c69bb06d361268faafa61cd4682ae064a171c16c433e9e4"
 
 [[package]]
 name = "xmlwriter"

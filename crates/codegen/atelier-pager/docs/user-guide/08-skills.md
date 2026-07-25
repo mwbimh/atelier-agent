@@ -161,7 +161,7 @@ Running a skill loads its instructions into the conversation and directs the mod
 /commit fix the build
 ```
 
-To browse your skills, type `/` to open the slash-command menu. Atelier lists every built-in command and skill and filters them as you type. To list skills from the command line instead, run `atelier inspect` (see [Viewing Skill Details](#viewing-skill-details)).
+To browse your skills, type `/` to open the slash-command menu. Atelier lists every built-in command and skill and filters them as you type. To list skills from the command line instead, run `ate inspect` (see [Viewing Skill Details](#viewing-skill-details)).
 
 ### Qualified Names
 
@@ -182,11 +182,11 @@ For example, if a skill's description says "Use when the user wants to commit ch
 
 ## Viewing Skill Details
 
-Run `atelier inspect` to see every skill Atelier discovers, along with the rest of your configuration:
+Run `ate inspect` to see every skill Atelier discovers, along with the rest of your configuration:
 
 ```bash
-atelier inspect          # Human-readable summary
-atelier inspect --json   # Machine-readable report
+ate inspect          # Human-readable summary
+ate inspect --json   # Machine-readable report
 ```
 
 In the human-readable output, the Skills section lists each skill's name and
@@ -202,9 +202,9 @@ The `--json` report includes the full detail for each skill: its `name`, `descri
 
 ## Bundled and Plugin Skills
 
-Atelier ships with built-in skills and extracts them to `~/.atelier/skills/` on startup -- among them `/create-skill`, `/help`, and `/check-work`. Bundled skills behave like user skills, and a same-named skill in a higher-priority location (local or repo) overrides the bundled copy; `atelier inspect` labels the extracted copies `bundled` so they stay distinguishable from skills you authored yourself. (A plugin skill of the same name does not override it; it stays available under its qualified `plugin:name` form.)
+Atelier ships with built-in skills and extracts them to `~/.atelier/skills/` on startup -- among them `/create-skill`, `/help`, and `/check-work`. Bundled skills behave like user skills, and a same-named skill in a higher-priority location (local or repo) overrides the bundled copy; `ate inspect` labels the extracted copies `bundled` so they stay distinguishable from skills you authored yourself. (A plugin skill of the same name does not override it; it stays available under its qualified `plugin:name` form.)
 
-Skills can also come from plugins. When you install a plugin that includes skills, they appear alongside your user and project skills. `atelier inspect` labels each plugin-provided skill with its source as `plugin: <name>`.
+Skills can also come from plugins. When you install a plugin that includes skills, they appear alongside your user and project skills. `ate inspect` labels each plugin-provided skill with its source as `plugin: <name>`.
 
 See the [Plugins guide](09-plugins.md) for more on installing plugins that provide skills.
 

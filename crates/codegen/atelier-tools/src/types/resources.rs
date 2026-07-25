@@ -204,9 +204,9 @@ impl Resources {
     }
     /// Get a shared reference to a stored value, or return
     /// a `custom("missing_resource", ...)` error with the type name if absent.
-    pub fn require<T: Send + Sync + 'static>(&self) -> Result<&T, xai_tool_runtime::ToolError> {
+    pub fn require<T: Send + Sync + 'static>(&self) -> Result<&T, atelier_tool_runtime::ToolError> {
         self.get::<T>().ok_or_else(|| {
-            xai_tool_runtime::ToolError::custom(
+            atelier_tool_runtime::ToolError::custom(
                 "missing_resource",
                 format!("missing required resource: {}", std::any::type_name::<T>()),
             )
@@ -438,10 +438,10 @@ pub(crate) fn resolve_plan_file_path(res: &Resources) -> (Option<PathBuf>, Strin
 /// Like [`resolve_plan_file_path`] but errors when no absolute target resolves.
 pub(crate) fn require_plan_file_path(
     res: &Resources,
-) -> Result<(PathBuf, String), xai_tool_runtime::ToolError> {
+) -> Result<(PathBuf, String), atelier_tool_runtime::ToolError> {
     let (target, display) = resolve_plan_file_path(res);
     let target = target.ok_or_else(|| {
-        xai_tool_runtime::ToolError::custom(
+        atelier_tool_runtime::ToolError::custom(
             "missing_resource",
             "missing required resource: PlanFilePath or an absolute Cwd",
         )
@@ -548,12 +548,12 @@ fn sanitize_model_path_arg(input: &str) -> &str {
 pub fn display_cwd_or_cwd(cwd: &std::path::Path, display_cwd: Option<&std::path::Path>) -> PathBuf {
     display_cwd.unwrap_or(cwd).to_path_buf()
 }
-/// Newtype wrapper for `Arc<dyn xai_tool_runtime::ToolDispatch>` so it can
+/// Newtype wrapper for `Arc<dyn atelier_tool_runtime::ToolDispatch>` so it can
 /// be stored in `ToolCallContext::extensions`. Used by `use_tool` and the
 /// external MCP-call tool, which dispatch to target tools without going
 /// through the outer `ToolBridge` (which would deadlock).
 #[derive(Clone)]
-pub struct InnerDispatch(pub std::sync::Arc<dyn xai_tool_runtime::ToolDispatch>);
+pub struct InnerDispatch(pub std::sync::Arc<dyn atelier_tool_runtime::ToolDispatch>);
 #[derive(Debug, Clone)]
 pub struct ManagedGatewayToolSource {
     pub connector_id: String,
@@ -581,7 +581,7 @@ pub trait ManagedGatewayToolCaller: Send + Sync {
         call_id: &str,
         arguments: serde_json::Value,
         caller: &str,
-    ) -> Result<ManagedGatewayToolCallResponse, xai_tool_runtime::ToolError>;
+    ) -> Result<ManagedGatewayToolCallResponse, atelier_tool_runtime::ToolError>;
 }
 #[derive(Clone)]
 pub struct ManagedGatewayToolClient(pub Arc<dyn ManagedGatewayToolCaller>);

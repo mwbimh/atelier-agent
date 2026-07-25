@@ -24,12 +24,14 @@ pub mod effort_levels;
 pub mod exit;
 pub mod expand;
 pub mod export;
+pub mod fast_mode;
 pub mod find;
 pub mod fork;
 pub mod gboom;
 pub mod help;
 pub mod history;
 pub mod home;
+pub mod imagine;
 pub mod import_claude;
 pub mod jump;
 pub mod loop_cmd;
@@ -94,6 +96,7 @@ pub fn builtin_commands() -> Vec<Arc<dyn SlashCommand>> {
         Arc::new(screen_mode_switch::ScreenModeSwitchCommand::fullscreen()),
         Arc::new(model::ModelCommand),
         Arc::new(effort::EffortCommand),
+        Arc::new(fast_mode::FastModeCommand),
         Arc::new(always_approve::AlwaysApproveCommand),
         Arc::new(auto::AutoCommand),
         Arc::new(multiline::MultilineCommand),
@@ -128,6 +131,7 @@ pub fn builtin_commands() -> Vec<Arc<dyn SlashCommand>> {
         Arc::new(stop::StopCommand),
         Arc::new(recap::RecapCommand),
         Arc::new(terminal_setup::TerminalSetupCommand),
+        Arc::new(imagine::ImagineCommand),
         Arc::new(loop_cmd::LoopCommand),
         Arc::new(timestamps::TimestampsCommand),
         Arc::new(timeline::TimelineCommand),
@@ -201,6 +205,8 @@ mod tests {
         assert!(reg.get("new").is_some());
         assert!(reg.get("compact").is_some());
         assert!(reg.get("model").is_some());
+        assert!(reg.get("effort").is_some());
+        assert!(reg.get("fast-mode").is_some());
         assert!(reg.get("roles").is_some());
         assert!(reg.get("status").is_some());
         assert!(reg.get("request").is_some());
@@ -215,8 +221,9 @@ mod tests {
         assert!(reg.get("attach").is_some());
         assert!(reg.get("fg").is_some());
         assert!(reg.get("stop").is_some());
-        assert!(reg.get("model-config").is_some());
-        assert!(reg.get("models").is_some());
+        assert!(reg.get("wire-api").is_some());
+        assert!(reg.get("model-config").is_none());
+        assert!(reg.get("models").is_none());
         reg.set_available_tools(std::collections::HashSet::from([
             "scheduler_create".to_string()
         ]));
@@ -226,6 +233,24 @@ mod tests {
             "/vim-mode should be registered"
         );
         assert!(reg.get("find").is_some(), "/find should be registered");
+    }
+
+    #[test]
+    fn imagine_availability_tracks_advertised_image_gen_tool() {
+        let mut reg = CommandRegistry::new(builtin_commands());
+        assert!(
+            reg.get("imagine").is_none(),
+            "/imagine must fail closed before the agent toolset is known"
+        );
+
+        reg.set_available_tools(std::collections::HashSet::new());
+        assert!(reg.get("imagine").is_none());
+
+        reg.set_available_tools(std::collections::HashSet::from(["image_gen".to_string()]));
+        assert!(reg.get("imagine").is_some());
+
+        reg.set_available_tools(std::collections::HashSet::new());
+        assert!(reg.get("imagine").is_none());
     }
 
     #[test]
@@ -387,8 +412,7 @@ mod tests {
             other => panic!("expected QueueCommand, got {other:?}"),
         }
     }
-    /// Bare `/model <name>` → `SetDefaultModel` (switch + persist).
-    /// `/model <name> <effort>` → `SwitchModel` (session-scoped).
+    /// Bare `/model <name>` switches only the current session.
     #[test]
     fn model_resolves_by_display_name() {
         let models = sample_models();
@@ -396,10 +420,11 @@ mod tests {
         let cmd = model::ModelCommand;
         let result = cmd.run(&mut ctx, "Atelier 4.5");
         match result {
-            CommandResult::Action(Action::SetDefaultModel(id)) => {
-                assert_eq!(id.0.as_ref(), "atelier-4.5");
+            CommandResult::Action(Action::SwitchModel { model_id, effort }) => {
+                assert_eq!(model_id.0.as_ref(), "atelier-4.5");
+                assert_eq!(effort, None);
             }
-            other => panic!("expected Action(SetDefaultModel), got {other:?}"),
+            other => panic!("expected Action(SwitchModel), got {other:?}"),
         }
     }
     #[test]
@@ -409,10 +434,11 @@ mod tests {
         let cmd = model::ModelCommand;
         let result = cmd.run(&mut ctx, "atelier-4.3");
         match result {
-            CommandResult::Action(Action::SetDefaultModel(id)) => {
-                assert_eq!(id.0.as_ref(), "atelier-4.3");
+            CommandResult::Action(Action::SwitchModel { model_id, effort }) => {
+                assert_eq!(model_id.0.as_ref(), "atelier-4.3");
+                assert_eq!(effort, None);
             }
-            other => panic!("expected Action(SetDefaultModel), got {other:?}"),
+            other => panic!("expected Action(SwitchModel), got {other:?}"),
         }
     }
     #[test]
@@ -422,10 +448,11 @@ mod tests {
         let cmd = model::ModelCommand;
         let result = cmd.run(&mut ctx, "atelier 4.5");
         match result {
-            CommandResult::Action(Action::SetDefaultModel(id)) => {
-                assert_eq!(id.0.as_ref(), "atelier-4.5");
+            CommandResult::Action(Action::SwitchModel { model_id, effort }) => {
+                assert_eq!(model_id.0.as_ref(), "atelier-4.5");
+                assert_eq!(effort, None);
             }
-            other => panic!("expected Action(SetDefaultModel), got {other:?}"),
+            other => panic!("expected Action(SwitchModel), got {other:?}"),
         }
     }
     #[test]

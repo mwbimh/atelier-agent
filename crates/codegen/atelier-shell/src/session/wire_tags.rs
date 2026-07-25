@@ -10,7 +10,7 @@ use std::sync::LazyLock;
 use agent_client_protocol as acp;
 use atelier_tools::types::TaskSnapshot;
 
-use crate::extensions::notification::SessionUpdate as XaiSessionUpdate;
+use crate::extensions::notification::SessionUpdate as ExtensionSessionUpdate;
 
 /// Serialize an internally-tagged session-update value and return the
 /// `sessionUpdate` discriminant serde itself emits for that variant.
@@ -42,7 +42,7 @@ pub(crate) static AVAILABLE_COMMANDS_UPDATE: LazyLock<String> = LazyLock::new(||
 /// xAI `SessionUpdate::RewindMarker` discriminant. Appears verbatim in compact
 /// JSON, so it doubles as a cheap substring pre-filter.
 pub(crate) static REWIND_MARKER: LazyLock<String> = LazyLock::new(|| {
-    tagged_discriminant(&XaiSessionUpdate::RewindMarker {
+    tagged_discriminant(&ExtensionSessionUpdate::RewindMarker {
         target_prompt_index: 0,
         created_at: String::new(),
     })
@@ -50,7 +50,7 @@ pub(crate) static REWIND_MARKER: LazyLock<String> = LazyLock::new(|| {
 
 /// xAI `SessionUpdate::TaskBackgrounded` discriminant.
 pub(crate) static TASK_BACKGROUNDED: LazyLock<String> = LazyLock::new(|| {
-    tagged_discriminant(&XaiSessionUpdate::TaskBackgrounded {
+    tagged_discriminant(&ExtensionSessionUpdate::TaskBackgrounded {
         tool_call_id: String::new(),
         task_id: String::new(),
         command: String::new(),
@@ -63,7 +63,7 @@ pub(crate) static TASK_BACKGROUNDED: LazyLock<String> = LazyLock::new(|| {
 
 /// xAI `SessionUpdate::TaskCompleted` discriminant.
 pub(crate) static TASK_COMPLETED: LazyLock<String> = LazyLock::new(|| {
-    tagged_discriminant(&XaiSessionUpdate::TaskCompleted {
+    tagged_discriminant(&ExtensionSessionUpdate::TaskCompleted {
         task_snapshot: TaskSnapshot {
             task_id: String::new(),
             command: String::new(),

@@ -64,17 +64,17 @@ impl MemoryConfig {
     /// 2. CLI flag `--experimental-memory` (enables, but overridden by --no-memory)
     /// 3. `ATELIER_MEMORY` env var: `1`/`true` enables, `0`/`false` force-disables
     /// 4. Config file `[memory]` / `[compaction]` sections
-    /// 5. Remote settings from `/v1/settings`
+    /// 5. Optional process-local runtime overrides
     ///
-    /// Remote settings only override fields when the corresponding local
+    /// Runtime overrides only apply when the corresponding local
     /// config section is absent. Section-level granularity: if `[memory.search]`
-    /// exists in TOML, all search fields come from TOML; if absent, remote
+    /// exists in TOML, all search fields come from TOML; if absent, runtime
     /// search settings apply.
     pub fn resolve(
         experimental_memory: bool,
         no_memory: bool,
         config: &toml::Value,
-        remote: Option<&crate::util::config::RemoteSettings>,
+        remote: Option<&crate::util::config::LocalRuntimeSettings>,
     ) -> Self {
         let mut result: Self = config
             .get("memory")
@@ -503,7 +503,7 @@ impl ManagedMcpsConfig {
     /// Priority: env var > TOML > remote > default (enabled interactive, disabled headless).
     pub fn resolve(
         config: &toml::Value,
-        remote: Option<&crate::util::config::RemoteSettings>,
+        remote: Option<&crate::util::config::LocalRuntimeSettings>,
         is_headless: bool,
     ) -> Self {
         let mut result: Self = config
@@ -612,7 +612,7 @@ impl ModelOverrideConfig {
         cli_web_search_model: Option<&str>,
         cli_session_summary_model: Option<&str>,
         config: &toml::Value,
-        remote: Option<&crate::util::config::RemoteSettings>,
+        remote: Option<&crate::util::config::LocalRuntimeSettings>,
     ) -> Self {
         let models_table = config.get("models");
         let parsed_models: crate::agent::config::ModelsConfig = models_table
@@ -796,7 +796,7 @@ impl StorageMode {
     /// data path, so all of those inputs are deliberately ignored.
     pub fn resolve(
         _cli_override: Option<&str>,
-        _remote: Option<&crate::util::config::RemoteSettings>,
+        _remote: Option<&crate::util::config::LocalRuntimeSettings>,
     ) -> Self {
         Self::Local
     }
@@ -1054,13 +1054,6 @@ fn apply_requirements_inner(
     pin_feature!(write_file);
     pin_feature!(voice_mode);
     pin_requirement_only!(remote_fetch);
-    if let Some(val) = req_bool(req, "telemetry", "trace_upload") {
-        config.requirements.trace_upload.pin(val, source.clone());
-        if config.telemetry.trace_upload != Some(val) {
-            config.telemetry.trace_upload = Some(val);
-            push("telemetry.trace_upload", format!("{val}"));
-        }
-    }
     enforce_opt!("cli", "auto_update", config.cli.auto_update);
     enforce_opt!("cli", "use_leader", config.cli.use_leader);
     enforce_opt!("cli", "show_tips", config.cli.show_tips);
@@ -1106,12 +1099,6 @@ fn apply_requirements_inner(
     enforce_str!("models", "web_search", config.models.web_search);
     enforce_str!("cli", "channel", config.cli.channel);
     enforce_str!("cli", "minimum_version", config.cli.minimum_version);
-    if let Some(val) = req_str(req, "endpoints", "xai_api_base_url")
-        && config.endpoints.xai_api_base_url != val
-    {
-        config.endpoints.xai_api_base_url = val.to_owned();
-        push("endpoints.xai_api_base_url", val.to_owned());
-    }
     if let Some(val) = req_str(req, "endpoints", "cli_chat_proxy_base_url")
         && config.endpoints.cli_chat_proxy_base_url.as_deref() != Some(val)
     {
@@ -1150,62 +1137,8 @@ fn apply_requirements_inner(
     }
     enforce_str!(
         "endpoints",
-        "trace_upload_url",
-        config.endpoints.trace_upload_url
-    );
-    enforce_str!(
-        "endpoints",
-        "feedback_base_url",
-        config.endpoints.feedback_base_url
-    );
-    enforce_str!(
-        "endpoints",
         "deployment_key",
         config.endpoints.deployment_key,
-        redacted
-    );
-    enforce_str!("telemetry", "events_url", config.telemetry.events_url);
-    enforce_str!(
-        "telemetry",
-        "events_api_key",
-        config.telemetry.events_api_key,
-        redacted
-    );
-    enforce_val!(
-        "telemetry",
-        "mixpanel_enabled",
-        config.telemetry.mixpanel_enabled
-    );
-    enforce_str!(
-        "telemetry",
-        "mixpanel_token",
-        config.telemetry.mixpanel_token,
-        redacted
-    );
-    enforce_str!(
-        "endpoints",
-        "trace_upload_bucket",
-        config.endpoints.trace_upload_bucket
-    );
-    enforce_str!(
-        "endpoints",
-        "trace_upload_region",
-        config.endpoints.trace_upload_region
-    );
-    enforce_str!(
-        "endpoints",
-        "trace_upload_credentials_file",
-        config.endpoints.trace_upload_credentials_file
-    );
-    enforce_str!(
-        "endpoints",
-        "trace_upload_endpoint_url",
-        config.endpoints.trace_upload_endpoint_url
-    );
-    enforce_str!(
-        "endpoints",
-        "trace_upload_credentials",
-        config.endpoints.trace_upload_credentials,
         redacted
     );
     if let Some(val) = req.get("features").and_then(|f| f.get("codebase_indexing")) {

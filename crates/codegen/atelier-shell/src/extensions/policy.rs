@@ -633,7 +633,7 @@ impl MvpAgent {
         gates: PolicyGates,
     ) -> Result<PolicyDecision, acp::Error> {
         let decision = self.runtime_policy_decision(operation, role, provider, tool, path, gates);
-        let safe_path = path.map(xai_acp_lib::redact_text);
+        let safe_path = path.map(atelier_acp_runtime::redact_text);
         let details = serde_json::json!({
             "operation": operation.as_str(),
             "role": role,
@@ -779,7 +779,7 @@ fn policy_error(operation: PolicyOperation, reason: &str) -> acp::Error {
     acp::Error::invalid_params().data(format!(
         "policy denied {}: {}",
         operation.as_str(),
-        xai_acp_lib::redact_text(reason)
+        atelier_acp_runtime::redact_text(reason)
     ))
 }
 

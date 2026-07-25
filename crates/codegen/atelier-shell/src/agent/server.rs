@@ -34,7 +34,7 @@ use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 use tracing::{info, warn};
 
 use agent_client_protocol as acp;
-use xai_acp_lib::{
+use atelier_acp_runtime::{
     AcpAgentGatewayReceiver as GatewayReceiver, AcpAgentGatewaySender as GatewaySender,
     AcpClientMessage, LineBufferedRead,
 };
@@ -362,11 +362,7 @@ fn setup_acp_connection(
     let (conn, handle_io) = acp::AgentSideConnection::new(agent, outgoing, incoming, |fut| {
         tokio::task::spawn_local(fut);
     });
-    tokio::task::spawn_local(
-        GatewayReceiver::new(conn_gw_rx, conn)
-            .with_on_meta(xai_file_utils::trace_context::span_from_meta_traceparent)
-            .run(),
-    );
+    tokio::task::spawn_local(GatewayReceiver::new(conn_gw_rx, conn).run());
 
     // Task: Forward WS messages → agent (incoming ACP bytes)
     tokio::task::spawn_local(async move {

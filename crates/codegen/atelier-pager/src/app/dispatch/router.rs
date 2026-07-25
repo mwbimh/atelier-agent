@@ -72,18 +72,17 @@ use super::session::load::{
 };
 use super::session::modal::dispatch_rename_session;
 use super::settings::setters::{
-    clear_default_model, clear_fork_secondary_model, preview_auto_dark_theme,
-    preview_auto_light_theme, preview_theme, set_ask_user_question_timeout_enabled,
-    set_auto_dark_theme, set_auto_light_theme, set_collapsed_edit_blocks, set_compact_mode,
-    set_contextual_hint_image_input, set_contextual_hint_plan_mode, set_contextual_hint_send_now,
-    set_contextual_hint_small_screen, set_contextual_hint_undo, set_contextual_hint_word_select,
-    set_default_model, set_default_selected_permission, set_display_refresh_auto_cadence,
-    set_fork_secondary_model, set_group_tool_verbs, set_hunk_tracker_mode, set_invert_scroll,
-    set_keep_text_selection, set_max_thoughts_width, set_multiline_mode, set_prompt_suggestions,
-    set_remember_tool_approvals, set_render_mermaid, set_respect_manual_folds, set_screen_mode,
-    set_scroll_lines, set_scroll_mode, set_scroll_speed, set_show_thinking_blocks, set_show_tips,
-    set_simple_mode, set_theme, set_timeline, set_timestamps, set_vim_mode, set_voice_capture_mode,
-    set_voice_stt_language,
+    clear_fork_secondary_model, preview_auto_dark_theme, preview_auto_light_theme, preview_theme,
+    set_ask_user_question_timeout_enabled, set_auto_dark_theme, set_auto_light_theme,
+    set_collapsed_edit_blocks, set_compact_mode, set_contextual_hint_image_input,
+    set_contextual_hint_plan_mode, set_contextual_hint_send_now, set_contextual_hint_small_screen,
+    set_contextual_hint_undo, set_contextual_hint_word_select, set_default_selected_permission,
+    set_display_refresh_auto_cadence, set_fork_secondary_model, set_group_tool_verbs,
+    set_hunk_tracker_mode, set_invert_scroll, set_keep_text_selection, set_max_thoughts_width,
+    set_multiline_mode, set_prompt_suggestions, set_remember_tool_approvals, set_render_mermaid,
+    set_respect_manual_folds, set_screen_mode, set_scroll_lines, set_scroll_mode, set_scroll_speed,
+    set_show_thinking_blocks, set_show_tips, set_simple_mode, set_theme, set_timeline,
+    set_timestamps, set_vim_mode, set_voice_capture_mode, set_voice_stt_language,
 };
 use super::settings::ui::{
     dispatch_confirm_reset_setting, dispatch_open_command_palette, dispatch_open_howto_guides,
@@ -905,8 +904,6 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
         Action::SetTheme(v) => set_theme(app, v),
         Action::SetAutoDarkTheme(v) => set_auto_dark_theme(app, v),
         Action::SetAutoLightTheme(v) => set_auto_light_theme(app, v),
-        Action::SetDefaultModel(v) => set_default_model(app, v),
-        Action::ClearDefaultModel => clear_default_model(app),
         Action::SetForkSecondaryModel(v) => set_fork_secondary_model(app, v),
         Action::ClearForkSecondaryModel => clear_fork_secondary_model(app),
         Action::SetMaxThoughtsWidth(v) => set_max_thoughts_width(app, v),
@@ -1413,9 +1410,9 @@ fn dispatch_refresh_provider_models(app: &mut AppView, provider_id: String) -> V
 pub(super) fn dispatch_action_result(
     app: &mut AppView,
     agent_id: crate::app::agent::AgentId,
-    result: Result<xai_hooks_plugins_types::ActionOutcome, String>,
+    result: Result<atelier_hooks_plugins_types::ActionOutcome, String>,
 ) -> Vec<Effect> {
-    use xai_hooks_plugins_types::OutcomeStatus;
+    use atelier_hooks_plugins_types::OutcomeStatus;
     let Some(agent) = app.agents.get_mut(&agent_id) else {
         return vec![];
     };
@@ -1435,7 +1432,7 @@ pub(super) fn dispatch_action_result(
                     && modal.result_notice.is_none()
                 {
                     let entry_index = match modal.last_plugins_action {
-                        Some(xai_hooks_plugins_types::PluginsAction::Uninstall { .. }) => None,
+                        Some(atelier_hooks_plugins_types::PluginsAction::Uninstall { .. }) => None,
                         _ => modal.pending_entry_index,
                     };
                     modal.result_notice =
@@ -1451,7 +1448,7 @@ pub(super) fn dispatch_action_result(
                         effects.push(Effect::PluginsAction {
                             agent_id,
                             session_id,
-                            action: xai_hooks_plugins_types::PluginsAction::Reload,
+                            action: atelier_hooks_plugins_types::PluginsAction::Reload,
                         });
                     } else if agent.extensions_modal.is_some() {
                         effects.push(Effect::FetchHooksList {
@@ -1479,7 +1476,7 @@ pub(super) fn dispatch_action_result(
                 if let Some(ref mut modal) = agent.extensions_modal {
                     let confirmed_action = modal.last_plugins_action.as_ref().map(|a| {
                         let mut action = a.clone();
-                        if let xai_hooks_plugins_types::PluginsAction::Uninstall {
+                        if let atelier_hooks_plugins_types::PluginsAction::Uninstall {
                             ref mut confirmed,
                             ..
                         } = action

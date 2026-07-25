@@ -399,6 +399,9 @@ pub(crate) fn flatten_transcript_for_classifier(
                     }
                 }
             }
+            // Provider-owned opaque state is intentionally excluded from the
+            // human-readable laziness-classifier transcript.
+            ConversationItem::Compaction(_) => {}
         }
     }
     out

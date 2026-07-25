@@ -15,9 +15,9 @@ use super::commands::{
 use super::handle::SessionHandle;
 use super::notifications::NotificationSender;
 use crate::agent::update_chunk_merge::{BufferingSettings, ReplayBuffer};
-use crate::extensions::notification::SessionUpdate as XaiSessionUpdate;
+use crate::extensions::notification::SessionUpdate as ExtensionSessionUpdate;
 use crate::extensions::notification::{
-    RetryState, SessionNotification as XaiSessionNotification, is_reauthable_failure,
+    RetryState, SessionNotification as ExtensionSessionNotification, is_reauthable_failure,
 };
 use crate::sampling::error::map_sampling_err_to_acp;
 use crate::sampling::types::{ChatRequestMessage, ToolCallResponse, ToolDefinition};
@@ -54,6 +54,7 @@ use crate::terminal::{DEFAULT_TIMEOUT, TerminalRunRequest};
 use crate::tools::ToolContext;
 use agent_client_protocol as acp;
 use agent_client_protocol::ContentBlock;
+use atelier_acp_runtime::AcpAgentGatewaySender as GatewaySender;
 use atelier_agent::AgentDefinition;
 use atelier_agent::prompt::agents_md::LEGACY_AGENTS_MD_REMINDER_PREFIX;
 use atelier_agent::prompt::skills::SkillsConfig;
@@ -82,8 +83,7 @@ use std::sync::OnceLock;
 use tokio::sync::{Mutex as TokioMutex, mpsc, oneshot};
 use tokio::time::{Duration, sleep};
 use tokio_retry::strategy::ExponentialBackoff;
-use xai_acp_lib::AcpAgentGatewaySender as GatewaySender;
-const SESSION_LOG: &str = "xai_session";
+const SESSION_LOG: &str = "atelier_session";
 #[path = "compaction.rs"]
 mod compaction;
 #[path = "compaction_segments.rs"]
@@ -185,8 +185,6 @@ pub(crate) struct InputItem {
     pub(crate) prompt_id: String,
     pub(crate) prompt_blocks: Vec<ContentBlock>,
     pub(crate) prompt_mode: PromptMode,
-    pub(crate) trace_gcs_config: Option<crate::session::repo_changes::TraceExportConfig>,
-    pub(crate) artifact_tracker: Option<crate::upload::manifest::ArtifactTracker>,
     /// Optional client identifier from the prompt request meta (overrides session-level one)
     pub(crate) client_identifier: Option<String>,
     /// See [`SessionCommand::Prompt::screen_mode`]. Telemetry-only.
@@ -449,7 +447,7 @@ pub(crate) struct SessionActor {
     /// Actor-based chat state handle — manages conversation, tokens, timing, and persistence.
     /// Also stores credentials (api_key, optional extra access key,
     /// client_version) opaquely.
-    pub(crate) chat_state_handle: xai_chat_state::ChatStateHandle,
+    pub(crate) chat_state_handle: atelier_chat_state::ChatStateHandle,
     /// Current running prompt/turn id, shared with SessionHandle.
     pub(crate) current_prompt_id: std::sync::Arc<std::sync::Mutex<Option<String>>>,
     /// Open blocking reverse-requests (permission / question / plan-approval),
@@ -457,7 +455,7 @@ pub(crate) struct SessionActor {
     /// read it synchronously to surface `NeedsInput`. Mutated by
     /// `PendingInteractionGuard` at each reverse-request site. Never persisted.
     pub(crate) pending_interactions: crate::session::pending_interaction::PendingInteractions,
-    /// Gates product analytics, not trace uploads. Resolved at spawn as
+    /// Gates local session metrics, not local trace artifact writes. Resolved at spawn as
     /// `is_telemetry_enabled() && !is_zdr()` — ZDR teams always have this false.
     pub(crate) telemetry_enabled: bool,
     pub(crate) supports_backend_search: std::cell::Cell<bool>,
@@ -465,6 +463,12 @@ pub(crate) struct SessionActor {
     /// ChatState because role configuration is runtime control-plane state,
     /// not conversation history.
     pub(crate) role_request_payload: std::cell::RefCell<serde_json::Map<String, serde_json::Value>>,
+    /// Provider/model-exact transport route for the active model. Kept out of
+    /// ChatState and ordinary request payloads; model switches replace it
+    /// atomically with the rest of the sampling route.
+    pub(crate) remote_compaction_endpoint: std::cell::RefCell<Option<String>>,
+    /// Provider/model-exact image generation route for the active model.
+    pub(crate) image_generation_endpoint: std::cell::RefCell<Option<String>>,
     pub(crate) compactions_remaining:
         std::cell::Cell<Option<atelier_sampling_types::CompactionsRemaining>>,
     pub(crate) compaction_at_tokens:
@@ -530,8 +534,6 @@ pub(crate) struct SessionActor {
     pub(crate) origin_client: Option<crate::http::OriginClientInfo>,
     /// Feedback manager for signal tracking and feedback request heuristics
     pub(crate) feedback_manager: Arc<FeedbackManager>,
-    pub(crate) upload_queue:
-        std::sync::Arc<std::sync::OnceLock<xai_file_utils::queue::UploadQueue>>,
     /// Cancellation token for the feedback sync loop (None if no feedback client)
     pub(crate) sync_loop_cancel: Option<tokio_util::sync::CancellationToken>,
     /// The fully-built Agent: owns the ToolBridge, system prompt, policies,
@@ -745,7 +747,7 @@ pub(crate) struct SessionActor {
     /// Background-computed user-message prefix, injected before the first prompt.
     pub(crate) deferred_prefix: TaskSlot<String>,
     /// Extensions to notify at turn and session lifecycle edges. Built once by `session_extension_registry` at actor construction and frozen after.
-    pub(crate) extension_registry: xai_agent_lifecycle::LocalExtensionRegistry,
+    pub(crate) extension_registry: atelier_agent_lifecycle::LocalExtensionRegistry,
     /// Local calendar date last surfaced to the model — either stamped into the
     /// `<user_info>` prefix (at session start, compaction, or resume) or
     /// announced via a date-rollover `<system-reminder>`. Drives
@@ -790,7 +792,7 @@ pub(crate) struct SessionActor {
     pub(crate) events: crate::session::events::EventTracker,
     /// Optional hub-side session event emitter (always constructed without a
     /// harness client in the agent; methods no-op with `None` transport).
-    pub(crate) observability_bridge: xai_computer_hub_sdk::ObservabilityBridge,
+    pub(crate) observability_bridge: atelier_tool_hub_sdk::ObservabilityBridge,
     /// Turn number captured at the start of each turn (before prompt index
     /// increment).  Used by `ToolCallStarted` bridge emissions so they
     /// report the same turn number as `TurnStarted` / `TurnEnded`.
@@ -885,10 +887,6 @@ pub(crate) struct SessionActor {
     /// goal totals via [`Self::goal_tokens`].
     pub(crate) subagent_token_records: parking_lot::Mutex<HashMap<String, SubagentTokenRecord>>,
     pub(crate) workspace_ops: atelier_workspace::WorkspaceOps,
-    /// Template for building trace configs on synthetic auto-wake turns.
-    /// Captured from the first real user prompt's trace config so synthetic
-    /// turns can upload artifacts using the same bucket/method.
-    pub(crate) trace_config_template: std::cell::RefCell<Option<TraceConfigTemplate>>,
     /// Layer-3 LazinessDetector: monotonic counter bumped whenever a
     /// fresh (non-synthetic) user prompt arrives at the actor.
     /// `maybe_fire_laziness_check` snapshots the value at start and
@@ -925,16 +923,6 @@ pub(crate) struct SessionActor {
     /// guarantee for writes under `PIPE_BUF` (JSONL lines fit).
     pub(crate) laziness_debug_log: Option<std::sync::Arc<std::path::Path>>,
 }
-/// Template for building trace configs on synthetic auto-wake turns.
-///
-/// Captured from the first real user prompt's `TraceExportConfig` so
-/// synthetic turns can upload artifacts to the same GCS bucket using
-/// the same upload method (direct / proxy).
-#[derive(Clone)]
-pub(crate) struct TraceConfigTemplate {
-    pub(crate) bucket_url: Option<String>,
-    pub(crate) upload_method: crate::session::repo_changes::UploadMethod,
-}
 impl SessionActor {
     /// Get the signals handle for tracking session events.
     fn signals_handle(&self) -> SessionSignalsHandle {
@@ -970,7 +958,7 @@ impl SessionActor {
     /// Fire-and-forget — failures are logged but do not interrupt the turn.
     async fn send_before_turn_event(
         &self,
-        payload: xai_tool_protocol::turn_hook::BeforeTurnPayload,
+        payload: atelier_tool_protocol::turn_hook::BeforeTurnPayload,
     ) {
         self.workspace_ops
             .on_before_turn(&self.session_id_string(), &payload)
@@ -978,7 +966,10 @@ impl SessionActor {
     }
     /// Send an after-turn hook via the local workspace channel.
     /// Fire-and-forget — failures are logged but do not interrupt the turn.
-    async fn send_after_turn_event(&self, payload: xai_tool_protocol::turn_hook::AfterTurnPayload) {
+    async fn send_after_turn_event(
+        &self,
+        payload: atelier_tool_protocol::turn_hook::AfterTurnPayload,
+    ) {
         self.workspace_ops
             .on_after_turn(&self.session_id_string(), &payload)
             .await;
@@ -1061,7 +1052,7 @@ impl SessionActor {
     }
     /// Send a feedback request notification to the client.
     async fn send_feedback_notification(&self, request: crate::session::feedback::FeedbackRequest) {
-        self.send_xai_notification(XaiSessionUpdate::FeedbackRequest(request.into()))
+        self.send_extension_notification(ExtensionSessionUpdate::FeedbackRequest(request.into()))
             .await;
     }
 }
@@ -1220,23 +1211,23 @@ mod managed_gateway_descriptor_tests {
             "fixture"
         }
     }
-    impl xai_tool_runtime::Tool for FixtureMcpTool {
+    impl atelier_tool_runtime::Tool for FixtureMcpTool {
         type Args = serde_json::Value;
         type Output = ToolOutput;
-        fn id(&self) -> xai_tool_protocol::ToolId {
-            xai_tool_protocol::ToolId::new("server__tool").expect("valid")
+        fn id(&self) -> atelier_tool_protocol::ToolId {
+            atelier_tool_protocol::ToolId::new("server__tool").expect("valid")
         }
         fn description(
             &self,
-            _ctx: &::xai_tool_runtime::ListToolsContext,
-        ) -> xai_tool_types::ToolDescription {
-            xai_tool_types::ToolDescription::new("server__tool", "fixture")
+            _ctx: &::atelier_tool_runtime::ListToolsContext,
+        ) -> atelier_tool_types::ToolDescription {
+            atelier_tool_types::ToolDescription::new("server__tool", "fixture")
         }
         async fn run(
             &self,
-            _ctx: xai_tool_runtime::ToolCallContext,
+            _ctx: atelier_tool_runtime::ToolCallContext,
             _args: serde_json::Value,
-        ) -> Result<ToolOutput, xai_tool_runtime::ToolError> {
+        ) -> Result<ToolOutput, atelier_tool_runtime::ToolError> {
             Ok(ToolOutput::MCP(MCPOutput::okay_output(
                 "server__tool".to_string(),
                 "server".to_string(),
@@ -1703,23 +1694,23 @@ mod managed_gateway_tool_tests {
             "fixture"
         }
     }
-    impl xai_tool_runtime::Tool for FixtureMcpTool {
+    impl atelier_tool_runtime::Tool for FixtureMcpTool {
         type Args = serde_json::Value;
         type Output = ToolOutput;
-        fn id(&self) -> xai_tool_protocol::ToolId {
-            xai_tool_protocol::ToolId::new("server__tool").expect("valid")
+        fn id(&self) -> atelier_tool_protocol::ToolId {
+            atelier_tool_protocol::ToolId::new("server__tool").expect("valid")
         }
         fn description(
             &self,
-            _ctx: &::xai_tool_runtime::ListToolsContext,
-        ) -> xai_tool_types::ToolDescription {
-            xai_tool_types::ToolDescription::new("server__tool", "fixture")
+            _ctx: &::atelier_tool_runtime::ListToolsContext,
+        ) -> atelier_tool_types::ToolDescription {
+            atelier_tool_types::ToolDescription::new("server__tool", "fixture")
         }
         async fn run(
             &self,
-            _ctx: xai_tool_runtime::ToolCallContext,
+            _ctx: atelier_tool_runtime::ToolCallContext,
             _args: serde_json::Value,
-        ) -> Result<ToolOutput, xai_tool_runtime::ToolError> {
+        ) -> Result<ToolOutput, atelier_tool_runtime::ToolError> {
             Ok(ToolOutput::MCP(MCPOutput::okay_output(
                 "server__tool".to_string(),
                 "server".to_string(),

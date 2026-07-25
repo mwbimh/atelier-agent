@@ -1,10 +1,8 @@
-//! Telemetry engine for Atelier sessions: product events + Mixpanel emission +
-//! Sentry error reporting + OpenTelemetry tracing + structured unified log.
+//! Local observability for Atelier sessions.
 //!
-//! Extracted from `xai-file-utils` per review feedback so telemetry has
-//! its own ownership boundary (see CODEOWNERS) and so downstream consumers
-//! that only want event tracking + inference metrics no longer pull in
-//! Mixpanel/HTTP/identity dependencies.
+//! This crate owns local JSONL/debug logs, tracing layers, profiling and
+//! in-process event compatibility. It deliberately contains no remote sink,
+//! crash reporter, exporter or upload client.
 
 mod appender;
 pub mod client;
@@ -13,26 +11,20 @@ pub mod context;
 pub mod debug_log;
 pub mod enums;
 pub mod events;
-pub mod external;
+mod home;
 pub mod hooks_log;
-pub mod http;
 pub mod id;
 pub mod instrumentation;
 pub mod memory_log;
 pub mod memory_telemetry;
-pub mod otel_layer;
 pub mod prompt_timing;
 pub(crate) mod redact_common;
 pub mod sampling_log;
-pub mod sentry;
 pub mod session_ctx;
 pub mod session_metrics;
 pub mod unified_log;
 
-pub use client::{
-    Metadata, TelemetryClient, UserContext, init, init_if_needed, is_enabled,
-    is_session_metrics_enabled,
-};
+pub use client::{is_enabled, is_session_metrics_enabled};
 pub use events::TelemetryEvent;
 pub use session_ctx::{
     EmitterOrigin, TelemetryCtx, emit_event, emit_event_with_origin, log_event, log_session_event,

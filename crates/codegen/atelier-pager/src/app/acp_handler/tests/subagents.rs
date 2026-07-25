@@ -810,7 +810,7 @@
         let raw =
             serde_json::value::to_raw_value(&serde_json::json!({"unexpected": true})).unwrap();
         let request = acp::ExtNotification::new("atelier/session/update", raw.into());
-        let msg = AcpClientMessage::ExtNotification(xai_acp_lib::AcpArgs {
+        let msg = AcpClientMessage::ExtNotification(atelier_acp_runtime::AcpArgs {
             request,
             response_tx: tx,
         });
@@ -829,7 +829,7 @@
 
     #[test]
     fn ext_session_notification_for_inactive_agent_updates_its_context_used() {
-        // AutoCompactCompleted on the xAI ext path resets the context bar
+        // AutoCompactCompleted on the extension path resets the context bar
         // numerator via refresh_context_used. That side effect must run on
         // the matched agent regardless of which view is currently active.
         let mut app = make_app_with_agent("sess-A");
@@ -845,7 +845,7 @@
         let affected = handle(
             make_ext_session_notification(
                 "sess-A",
-                XaiSessionUpdate::AutoCompactCompleted {
+                ExtensionSessionUpdate::AutoCompactCompleted {
                     tokens_before: Some(90_000),
                     tokens_after: 25_000,
                     elapsed_ms: Some(300),

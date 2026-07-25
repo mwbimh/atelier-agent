@@ -5,8 +5,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
+use atelier_sqlite_journal::JournalMode;
 use rusqlite::{Connection, OpenFlags};
-use xai_sqlite_journal::JournalMode;
 
 #[cfg(unix)]
 mod unix;
