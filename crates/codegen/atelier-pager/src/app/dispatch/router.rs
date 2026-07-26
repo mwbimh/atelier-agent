@@ -914,6 +914,8 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
         Action::PreviewAutoLightTheme(v) => preview_auto_light_theme(app, v),
         Action::OpenSettings => dispatch_open_settings(app),
         Action::OpenSlashArgPicker { command } => dispatch_open_slash_arg_picker(app, command),
+        Action::OpenProviderWizard => dispatch_open_provider_wizard(app),
+        Action::SubmitProviderWizard(config) => dispatch_submit_provider_wizard(app, config),
         Action::OpenSlashCommandInput { command } => {
             dispatch_open_slash_command_input(app, command)
         }
@@ -1290,18 +1292,18 @@ fn dispatch_open_slash_arg_picker(app: &mut AppView, command_name: String) -> Ve
                 model_recovery_has_configured_provider(provider_command.as_ref(), &ctx);
             let mut recovery_items = provider_command.suggest_args(&ctx, "").unwrap_or_default();
             recovery_items.retain(|item| {
-                item.insert_text == "add "
+                item.insert_text == "add"
                     || (has_configured_provider && item.insert_text == "refresh ")
             });
             recovery_items.sort_by_key(|item| match item.insert_text.as_str() {
                 "refresh " => 0,
-                "add " => 1,
+                "add" => 1,
                 _ => 2,
             });
             for item in &mut recovery_items {
                 item.description = match item.insert_text.as_str() {
                     "refresh " => "Fetch models from a configured Provider".into(),
-                    "add " => "Configure a Provider, then fetch its models".into(),
+                    "add" => "Configure a Provider, then fetch its models".into(),
                     _ => item.description.clone(),
                 };
             }
@@ -1380,6 +1382,63 @@ pub(super) fn override_model_recovery_provider_presence(
         previous
     });
     ModelRecoveryProviderPresenceGuard(previous)
+}
+
+fn dispatch_open_provider_wizard(app: &mut AppView) -> Vec<Effect> {
+    let ActiveView::Agent(id) = app.active_view else {
+        return vec![];
+    };
+    let Some(agent) = app.agents.get_mut(&id) else {
+        return vec![];
+    };
+    let existing_provider_ids = atelier_provider::ProviderRegistry::load_or_create(
+        atelier_config::atelier_home().join("providers.toml"),
+    )
+    .ok()
+    .map(|registry| {
+        registry
+            .providers()
+            .map(|provider| provider.id.clone())
+            .collect::<Vec<_>>()
+    })
+    .unwrap_or_default();
+    agent.active_modal = Some(crate::views::modal::ActiveModal::ProviderWizard {
+        state: Box::new(
+            crate::views::provider_wizard::ProviderWizardState::with_existing_provider_ids(
+                existing_provider_ids,
+            ),
+        ),
+    });
+    vec![]
+}
+
+fn dispatch_submit_provider_wizard(
+    app: &mut AppView,
+    config: Box<atelier_provider::ProviderConfig>,
+) -> Vec<Effect> {
+    let agent_id = match app.active_view {
+        ActiveView::Agent(id) if app.agents.contains_key(&id) => Some(id),
+        _ => None,
+    };
+    let replaces_existing = agent_id
+        .and_then(|agent_id| app.agents.get(&agent_id))
+        .and_then(|agent| agent.active_modal.as_ref())
+        .is_some_and(|modal| {
+            matches!(
+                modal,
+                crate::views::modal::ActiveModal::ProviderWizard { state }
+                    if state.replaces_existing_provider()
+            )
+        });
+    vec![Effect::RuntimeExtension {
+        agent_id,
+        method: if replaces_existing {
+            "_atelier/provider/update".into()
+        } else {
+            "_atelier/provider/create".into()
+        },
+        params: serde_json::json!({ "provider": config }),
+    }]
 }
 
 fn dispatch_open_slash_command_input(app: &mut AppView, command_name: String) -> Vec<Effect> {

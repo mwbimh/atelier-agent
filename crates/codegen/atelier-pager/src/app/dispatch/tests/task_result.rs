@@ -144,6 +144,350 @@ fn detach_rejection_does_not_render_success() {
 }
 
 #[test]
+fn provider_wizard_submit_uses_connection_only_provider_config() {
+    let mut app = test_app_with_agent();
+    let agent_id = AgentId(0);
+    dispatch(Action::OpenProviderWizard, &mut app);
+    let config = atelier_provider::ProviderConfig {
+        id: "allm".into(),
+        display_name: "AllM".into(),
+        base_url: url::Url::parse("https://api.example.test/v1").unwrap(),
+        credential: atelier_provider::CredentialRef::Environment {
+            variable: "ALLM_API_KEY".into(),
+        },
+        auth: atelier_provider::ProviderAuth::Bearer,
+        discovery: atelier_provider::ProviderDiscovery::OpenAiModels {
+            path: "models".into(),
+        },
+        extra_headers: Default::default(),
+        enabled: true,
+    };
+
+    let effects = dispatch(Action::SubmitProviderWizard(Box::new(config)), &mut app);
+
+    let [
+        Effect::RuntimeExtension {
+            agent_id: Some(effect_agent_id),
+            method,
+            params,
+        },
+    ] = effects.as_slice()
+    else {
+        panic!("wizard submit must create the Provider through the runtime");
+    };
+    assert_eq!(*effect_agent_id, agent_id);
+    assert_eq!(method, "_atelier/provider/create");
+    assert_eq!(params["provider"]["auth"]["type"], "bearer");
+    assert!(params["provider"].get("protocol").is_none());
+}
+
+#[test]
+fn provider_wizard_replaces_an_existing_provider_only_after_confirmation() {
+    let mut app = test_app_with_agent();
+    let agent_id = AgentId(0);
+    let mut state =
+        crate::views::provider_wizard::ProviderWizardState::with_existing_provider_ids([
+            "allm".to_owned()
+        ]);
+    for character in "allm".chars() {
+        let _ = crate::views::provider_wizard::handle_provider_wizard_key(
+            &mut state,
+            &crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char(character),
+                crossterm::event::KeyModifiers::NONE,
+            ),
+        );
+    }
+    let _ = crate::views::provider_wizard::handle_provider_wizard_key(
+        &mut state,
+        &crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Enter,
+            crossterm::event::KeyModifiers::NONE,
+        ),
+    );
+    let _ = crate::views::provider_wizard::handle_provider_wizard_key(
+        &mut state,
+        &crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Down,
+            crossterm::event::KeyModifiers::NONE,
+        ),
+    );
+    let _ = crate::views::provider_wizard::handle_provider_wizard_key(
+        &mut state,
+        &crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Enter,
+            crossterm::event::KeyModifiers::NONE,
+        ),
+    );
+    app.agents.get_mut(&agent_id).unwrap().active_modal =
+        Some(crate::views::modal::ActiveModal::ProviderWizard {
+            state: Box::new(state),
+        });
+    let config = atelier_provider::ProviderConfig {
+        id: "allm".into(),
+        display_name: "AllM replacement".into(),
+        base_url: url::Url::parse("https://api.example.test/v2").unwrap(),
+        credential: atelier_provider::CredentialRef::None,
+        auth: atelier_provider::ProviderAuth::None,
+        discovery: atelier_provider::ProviderDiscovery::Disabled,
+        extra_headers: Default::default(),
+        enabled: true,
+    };
+
+    let effects = dispatch(Action::SubmitProviderWizard(Box::new(config)), &mut app);
+    assert!(matches!(
+        effects.as_slice(),
+        [Effect::RuntimeExtension { method, .. }] if method == "_atelier/provider/update"
+    ));
+}
+
+#[test]
+fn provider_wizard_chains_create_test_and_discovery() {
+    let mut app = test_app_with_agent();
+    let agent_id = AgentId(0);
+    dispatch(Action::OpenProviderWizard, &mut app);
+    let Some(crate::views::modal::ActiveModal::ProviderWizard { state }) =
+        app.agents.get_mut(&agent_id).unwrap().active_modal.as_mut()
+    else {
+        panic!("provider wizard must be open");
+    };
+    state.provider_id = "allm".into();
+
+    let effects = dispatch(
+        Action::TaskComplete(TaskResult::RuntimeExtensionComplete {
+            agent_id: Some(agent_id),
+            method: "_atelier/provider/create".into(),
+            response: "{}".into(),
+        }),
+        &mut app,
+    );
+    assert!(matches!(
+        effects.as_slice(),
+        [Effect::RuntimeExtension { method, params, .. }]
+            if method == "_atelier/provider/test" && params["providerId"] == "allm"
+    ));
+
+    let effects = dispatch(
+        Action::TaskComplete(TaskResult::RuntimeExtensionComplete {
+            agent_id: Some(agent_id),
+            method: "_atelier/provider/test".into(),
+            response: "{}".into(),
+        }),
+        &mut app,
+    );
+    assert!(matches!(
+        effects.as_slice(),
+        [Effect::RefreshProviderModels { provider_id, .. }] if provider_id == "allm"
+    ));
+}
+
+#[test]
+fn provider_wizard_completes_oauth_before_testing_the_connection() {
+    let mut app = test_app_with_agent();
+    let agent_id = AgentId(0);
+    dispatch(Action::OpenProviderWizard, &mut app);
+    let Some(crate::views::modal::ActiveModal::ProviderWizard { state }) =
+        app.agents.get_mut(&agent_id).unwrap().active_modal.as_mut()
+    else {
+        panic!("provider wizard must be open");
+    };
+    state.provider_id = "allm".into();
+    state.step = crate::views::provider_wizard::ProviderWizardStep::Credential;
+    state.selected = 2;
+    let _ = crate::views::provider_wizard::handle_provider_wizard_key(
+        state,
+        &crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Enter,
+            crossterm::event::KeyModifiers::NONE,
+        ),
+    );
+
+    let effects = dispatch(
+        Action::TaskComplete(TaskResult::RuntimeExtensionComplete {
+            agent_id: Some(agent_id),
+            method: "_atelier/provider/create".into(),
+            response: "{}".into(),
+        }),
+        &mut app,
+    );
+    assert!(matches!(
+        effects.as_slice(),
+        [Effect::RuntimeExtension { method, params, .. }]
+            if method == "_atelier/provider/oauth_begin"
+                && params["providerId"] == "allm"
+                && params["flow"] == "authorization-code"
+    ));
+
+    let effects = dispatch(
+        Action::TaskComplete(TaskResult::RuntimeExtensionComplete {
+            agent_id: Some(agent_id),
+            method: "_atelier/provider/oauth_complete".into(),
+            response: "{}".into(),
+        }),
+        &mut app,
+    );
+    assert!(matches!(
+        effects.as_slice(),
+        [Effect::RuntimeExtension { method, params, .. }]
+            if method == "_atelier/provider/test" && params["providerId"] == "allm"
+    ));
+}
+
+#[test]
+fn provider_wizard_retries_with_update_after_create_was_persisted() {
+    let mut app = test_app_with_agent();
+    let agent_id = AgentId(0);
+    dispatch(Action::OpenProviderWizard, &mut app);
+    let Some(crate::views::modal::ActiveModal::ProviderWizard { state }) =
+        app.agents.get_mut(&agent_id).unwrap().active_modal.as_mut()
+    else {
+        panic!("provider wizard must be open");
+    };
+    state.provider_id = "allm".into();
+
+    dispatch(
+        Action::TaskComplete(TaskResult::RuntimeExtensionComplete {
+            agent_id: Some(agent_id),
+            method: "_atelier/provider/create".into(),
+            response: "{}".into(),
+        }),
+        &mut app,
+    );
+    dispatch(
+        Action::TaskComplete(TaskResult::RuntimeExtensionFailed {
+            agent_id: Some(agent_id),
+            method: "_atelier/provider/test".into(),
+            error: "HTTP 401 Unauthorized".into(),
+        }),
+        &mut app,
+    );
+
+    let config = atelier_provider::ProviderConfig {
+        id: "allm".into(),
+        display_name: "AllM".into(),
+        base_url: url::Url::parse("https://api.example.test/v2").unwrap(),
+        credential: atelier_provider::CredentialRef::None,
+        auth: atelier_provider::ProviderAuth::None,
+        discovery: atelier_provider::ProviderDiscovery::Disabled,
+        extra_headers: Default::default(),
+        enabled: true,
+    };
+    let effects = dispatch(Action::SubmitProviderWizard(Box::new(config)), &mut app);
+    assert!(matches!(
+        effects.as_slice(),
+        [Effect::RuntimeExtension { method, .. }] if method == "_atelier/provider/update"
+    ));
+}
+
+#[test]
+fn provider_wizard_preserves_state_when_connection_test_fails() {
+    let mut app = test_app_with_agent();
+    let agent_id = AgentId(0);
+    dispatch(Action::OpenProviderWizard, &mut app);
+    let Some(crate::views::modal::ActiveModal::ProviderWizard { state }) =
+        app.agents.get_mut(&agent_id).unwrap().active_modal.as_mut()
+    else {
+        panic!("provider wizard must be open");
+    };
+    state.provider_id = "allm".into();
+
+    let effects = dispatch(
+        Action::TaskComplete(TaskResult::RuntimeExtensionFailed {
+            agent_id: Some(agent_id),
+            method: "_atelier/provider/test".into(),
+            error: "HTTP 401 Unauthorized".into(),
+        }),
+        &mut app,
+    );
+
+    assert!(effects.is_empty());
+    let Some(crate::views::modal::ActiveModal::ProviderWizard { state }) =
+        app.agents[&agent_id].active_modal.as_ref()
+    else {
+        panic!("failed test must keep the wizard open");
+    };
+    assert_eq!(state.provider_id, "allm");
+    assert_eq!(
+        state.step,
+        crate::views::provider_wizard::ProviderWizardStep::Summary
+    );
+    assert_eq!(state.error.as_deref(), Some("HTTP 401 Unauthorized"));
+}
+
+#[test]
+fn provider_wizard_opens_model_picker_after_discovery_succeeds() {
+    let mut app = test_app_with_agent();
+    let agent_id = AgentId(0);
+    dispatch(Action::OpenProviderWizard, &mut app);
+    let Some(crate::views::modal::ActiveModal::ProviderWizard { state }) =
+        app.agents.get_mut(&agent_id).unwrap().active_modal.as_mut()
+    else {
+        panic!("provider wizard must be open");
+    };
+    state.provider_id = "allm".into();
+    let model_id = acp::ModelId::new("allm/discovered-model");
+    let mut available = IndexMap::new();
+    available.insert(
+        model_id.clone(),
+        acp::ModelInfo::new(model_id, "Discovered Model"),
+    );
+    app.models.update_catalog(available, None);
+
+    let effects = dispatch(
+        Action::TaskComplete(TaskResult::ProviderModelsRefreshed {
+            agent_id: Some(agent_id),
+            provider_id: "allm".into(),
+            result: Ok("refreshed 2 models from the provider".into()),
+        }),
+        &mut app,
+    );
+
+    assert!(effects.is_empty());
+    assert!(matches!(
+        app.agents[&agent_id].active_modal.as_ref(),
+        Some(crate::views::modal::ActiveModal::ArgPicker { command, .. }) if command == "model"
+    ));
+}
+
+#[test]
+fn provider_wizard_preserves_state_when_discovery_fails() {
+    let mut app = test_app_with_agent();
+    let agent_id = AgentId(0);
+    dispatch(Action::OpenProviderWizard, &mut app);
+    let Some(crate::views::modal::ActiveModal::ProviderWizard { state }) =
+        app.agents.get_mut(&agent_id).unwrap().active_modal.as_mut()
+    else {
+        panic!("provider wizard must be open");
+    };
+    state.provider_id = "allm".into();
+
+    let effects = dispatch(
+        Action::TaskComplete(TaskResult::ProviderModelsRefreshed {
+            agent_id: Some(agent_id),
+            provider_id: "allm".into(),
+            result: Err("model discovery returned HTTP 500".into()),
+        }),
+        &mut app,
+    );
+
+    assert!(effects.is_empty());
+    let Some(crate::views::modal::ActiveModal::ProviderWizard { state }) =
+        app.agents[&agent_id].active_modal.as_ref()
+    else {
+        panic!("failed discovery must keep the wizard open");
+    };
+    assert_eq!(state.provider_id, "allm");
+    assert_eq!(
+        state.step,
+        crate::views::provider_wizard::ProviderWizardStep::Summary
+    );
+    assert_eq!(
+        state.error.as_deref(),
+        Some("model discovery returned HTTP 500")
+    );
+}
+
+#[test]
 fn provider_models_refresh_result_without_active_agent_is_safe() {
     let mut app = test_app();
 

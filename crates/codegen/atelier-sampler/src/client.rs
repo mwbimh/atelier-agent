@@ -669,7 +669,7 @@ impl SamplingClient {
         let mut headers = HeaderMap::new();
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
         if let Some(ref api_key) = config.api_key {
-            match config.auth_scheme {
+            match &config.auth_scheme {
                 AuthScheme::XApiKey => {
                     let header_value = HeaderValue::from_str(api_key).map_err(|_| {
                         tracing::debug!(
@@ -695,6 +695,16 @@ impl SamplingClient {
                     })?;
                     headers.insert(AUTHORIZATION, header_value);
                 }
+                AuthScheme::Header(name) => {
+                    let name = HeaderName::from_bytes(name.as_bytes()).map_err(|_| {
+                        SamplingError::Auth("Invalid custom credential header name".to_string())
+                    })?;
+                    let value = HeaderValue::from_str(api_key).map_err(|_| {
+                        SamplingError::Auth("Invalid custom credential header value".to_string())
+                    })?;
+                    headers.insert(name, value);
+                }
+                AuthScheme::None => {}
             }
         }
 
@@ -822,7 +832,7 @@ impl SamplingClient {
         if let Some(resolver) = &self.bearer_resolver
             && let Some(fresh) = resolver.current_bearer()
         {
-            match self.defaults.auth_scheme {
+            match &self.defaults.auth_scheme {
                 AuthScheme::XApiKey => {
                     headers.remove(AUTHORIZATION);
                     if let Ok(v) = HeaderValue::from_str(&fresh) {
@@ -835,6 +845,15 @@ impl SamplingClient {
                         headers.insert(AUTHORIZATION, v);
                     }
                 }
+                AuthScheme::Header(name) => {
+                    if let (Ok(name), Ok(value)) = (
+                        HeaderName::from_bytes(name.as_bytes()),
+                        HeaderValue::from_str(&fresh),
+                    ) {
+                        headers.insert(name, value);
+                    }
+                }
+                AuthScheme::None => {}
             }
         }
         tracing::info!(
@@ -876,7 +895,7 @@ impl SamplingClient {
     /// Extract the bearer from `default_headers`, truncated to prefix length.
     /// Reads `x-api-key` (Anthropic Messages API) or `Authorization` (OpenAI-completions).
     fn extract_sent_bearer(&self) -> Option<String> {
-        let raw = match self.defaults.auth_scheme {
+        let raw = match &self.defaults.auth_scheme {
             AuthScheme::XApiKey => self
                 .default_headers
                 .get(HeaderName::from_static("x-api-key"))
@@ -888,6 +907,12 @@ impl SamplingClient {
                 .and_then(|v| v.to_str().ok())
                 .and_then(|s| s.strip_prefix("Bearer "))
                 .map(|s| s.to_string()),
+            AuthScheme::Header(name) => HeaderName::from_bytes(name.as_bytes())
+                .ok()
+                .and_then(|name| self.default_headers.get(name))
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_owned),
+            AuthScheme::None => None,
         };
         raw.map(|mut s| {
             // Truncate in-place so we never materialize a heap-resident
@@ -925,7 +950,8 @@ impl SamplingClient {
         let auth_type = match (&self.defaults.auth_scheme, has_auth) {
             (AuthScheme::XApiKey, true) => "x-api-key",
             (AuthScheme::Bearer, true) => "bearer",
-            (_, false) => "none",
+            (AuthScheme::Header(_), true) => "custom-header",
+            (_, false) | (AuthScheme::None, true) => "none",
         };
         crate::sampling_log::AuthInfo {
             auth_type,
@@ -1995,7 +2021,7 @@ impl SamplingClient {
 
     /// Build the exact JSON body used by the streaming backend without
     /// sending it. Runtime inspectors and pre-egress policy use this method so
-    /// their view cannot drift from Provider protocol conversion or opaque
+    /// their view cannot drift from exact-model Wire API conversion or opaque
     /// Role payload merging.
     pub fn preview_streaming_request_body(
         &self,
@@ -2585,6 +2611,48 @@ mod tests {
     }
 
     #[test]
+    fn custom_provider_auth_header_is_independent_of_wire_api() {
+        for api_backend in [
+            ApiBackend::ChatCompletions,
+            ApiBackend::Responses,
+            ApiBackend::Messages,
+        ] {
+            let cfg = SamplerConfig {
+                api_key: Some("custom-key-abc123".to_string()),
+                api_backend,
+                auth_scheme: AuthScheme::Header("x-company-key".into()),
+                ..minimal_config()
+            };
+            let client = SamplingClient::new(cfg).expect("client should build");
+            assert_eq!(
+                client
+                    .default_headers
+                    .get(HeaderName::from_static("x-company-key"))
+                    .and_then(|value| value.to_str().ok()),
+                Some("custom-key-abc123")
+            );
+            assert!(client.default_headers.get(AUTHORIZATION).is_none());
+        }
+    }
+
+    #[test]
+    fn no_auth_policy_does_not_inject_a_credential_header() {
+        let cfg = SamplerConfig {
+            api_key: Some("ignored-by-none-policy".to_string()),
+            auth_scheme: AuthScheme::None,
+            ..minimal_config()
+        };
+        let client = SamplingClient::new(cfg).expect("client should build");
+        assert!(client.default_headers.get(AUTHORIZATION).is_none());
+        assert!(
+            client
+                .default_headers
+                .get(HeaderName::from_static("x-api-key"))
+                .is_none()
+        );
+    }
+
+    #[test]
     fn sampling_auth_info_never_exposes_credential_prefix() {
         let cfg = SamplerConfig {
             api_key: Some("secret-token-that-must-never-appear-in-logs".to_string()),
@@ -2604,7 +2672,11 @@ mod tests {
     #[test]
     fn invalid_api_key_is_never_written_to_tracing_events() {
         let secret = "credential-canary-must-not-be-logged\r\n";
-        for auth_scheme in [AuthScheme::Bearer, AuthScheme::XApiKey] {
+        for auth_scheme in [
+            AuthScheme::Bearer,
+            AuthScheme::XApiKey,
+            AuthScheme::Header("x-company-key".into()),
+        ] {
             let subscriber = CapturingSubscriber::default();
             let output = subscriber.output.clone();
             let cfg = SamplerConfig {
@@ -2831,6 +2903,48 @@ mod tests {
                 .and_then(|v| v.to_str().ok()),
             Some("Bearer fresh-bearer"),
         );
+    }
+
+    #[test]
+    fn live_credential_resolver_uses_the_configured_custom_header() {
+        let cfg = SamplerConfig {
+            api_key: Some("stale-company-key".to_string()),
+            auth_scheme: AuthScheme::Header("x-company-key".into()),
+            bearer_resolver: Some(std::sync::Arc::new(StaticBearerResolver(
+                "fresh-company-key",
+            ))),
+            ..minimal_config()
+        };
+        let client = SamplingClient::new(cfg).expect("client should build");
+        let request = client
+            .post("https://example.test/v1/responses")
+            .build()
+            .expect("request should build");
+        assert_eq!(
+            request
+                .headers()
+                .get("x-company-key")
+                .and_then(|value| value.to_str().ok()),
+            Some("fresh-company-key")
+        );
+        assert!(request.headers().get(AUTHORIZATION).is_none());
+    }
+
+    #[test]
+    fn no_auth_policy_ignores_a_live_credential_resolver() {
+        let cfg = SamplerConfig {
+            api_key: Some("stale-key".to_string()),
+            auth_scheme: AuthScheme::None,
+            bearer_resolver: Some(std::sync::Arc::new(StaticBearerResolver("fresh-key"))),
+            ..minimal_config()
+        };
+        let client = SamplingClient::new(cfg).expect("client should build");
+        let request = client
+            .post("https://example.test/v1/responses")
+            .build()
+            .expect("request should build");
+        assert!(request.headers().get(AUTHORIZATION).is_none());
+        assert!(request.headers().get("x-api-key").is_none());
     }
 
     #[test]

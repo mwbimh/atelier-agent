@@ -62,11 +62,11 @@ fn dashboard_bare_runtime_configuration_commands_keep_interactive_drafts() {
 fn dashboard_complete_runtime_commands_dispatch_the_expected_control_effects() {
     let runtime_cases = [
         (
-            "/provider add allm chat https://example.test/v1 none",
+            "/provider add allm https://example.test/v1 none none",
             "_atelier/provider/create",
         ),
         (
-            "/provider edit allm chat https://example.test/v1 none",
+            "/provider edit allm https://example.test/v1 none none",
             "_atelier/provider/update",
         ),
         ("/provider test allm", "_atelier/provider/test"),

@@ -3,9 +3,8 @@
 Atelier does not have a product account, browser login, or hosted default
 model. Model access is configured per Provider. A Provider defines:
 
-- the API protocol;
 - the base URL;
-- how credentials are resolved;
+- how credentials are resolved and injected;
 - how the model catalog is discovered.
 
 Provider configuration is local and stored under `$ATELIER_HOME` (default:
@@ -20,24 +19,25 @@ Start Atelier and enter:
 ```
 
 The command picker exposes Provider list, add, edit, enable, disable, test,
-refresh, login, logout, and delete operations. `/provider add` and
-`/provider edit <id>` continue through staged pickers for protocol, base URL,
-credential type, and OAuth flow. Provider IDs, custom URLs, OAuth client IDs,
-and endpoints remain editable text fields.
+refresh, login, logout, and delete operations. Submitting `/provider add`
+opens a multi-step connection wizard for Provider identity, base URL,
+credential injection, credential source, discovery, review, test, and model
+refresh. Wire API selection is not a Provider setting; it belongs to each
+exact Provider/model pair.
 
-The complete command form is:
+The complete advanced command form is:
 
 ```text
-/provider add <id> <protocol> <base-url> [credential]
+/provider add <id> <base-url> <auth> [credential]
 ```
 
-Supported protocols:
+Supported Provider authentication policies:
 
-| Value | Wire protocol |
+| Value | Behavior |
 |---|---|
-| `chat` | OpenAI Chat Completions |
-| `responses` | OpenAI Responses |
-| `anthropic` | Anthropic Messages |
+| `bearer` | Send `Authorization: Bearer <credential>` |
+| `header:NAME` | Send the credential in header `NAME` |
+| `none` | Do not inject a credential |
 
 Supported credential specifications:
 
@@ -56,7 +56,7 @@ export ALLM_API_KEY="..."
 ```
 
 ```text
-/provider add allm chat https://api.example.com/v1 env:ALLM_API_KEY
+/provider add allm https://api.example.com/v1 bearer env:ALLM_API_KEY
 /provider test allm
 /provider refresh allm
 ```
@@ -66,14 +66,14 @@ with its OAuth client metadata, then start a configured flow with
 `/provider login`:
 
 ```text
-/provider add company responses https://api.example.com/v1 oauth authorization-code desktop-client https://login.example.com/authorize https://login.example.com/token openid,profile,offline_access
+/provider add company https://api.example.com/v1 bearer oauth authorization-code desktop-client https://login.example.com/authorize https://login.example.com/token openid,profile,offline_access
 /provider login company authorization-code
 ```
 
 Device authorization uses the device endpoint in the corresponding position:
 
 ```text
-/provider add company-device chat https://api.example.com/v1 oauth device-code desktop-client https://login.example.com/device https://login.example.com/token openid,profile
+/provider add company-device https://api.example.com/v1 bearer oauth device-code desktop-client https://login.example.com/device https://login.example.com/token openid,profile
 /provider login company-device device-code
 ```
 
@@ -94,16 +94,22 @@ headers.
 
 ## Provider Management
 
-Every operation supports a complete slash command:
+Run bare `/provider add` for the guided flow. It validates each field, supports
+Shift+Tab to go back and Esc to cancel, and requires explicit confirmation
+before replacing an existing Provider. After save it tests the connection,
+refreshes discovery, and opens `/model`; it never selects a model automatically.
+
+Advanced users can also use complete one-line commands. `<auth>` is `bearer`,
+`header:<http-header-name>`, or `none`:
 
 ```text
 /provider list
-/provider add <id> <protocol> <base-url> [env:NAME|cmd:PROGRAM|none]
-/provider add <id> <protocol> <base-url> oauth authorization-code <client-id> <authorization-endpoint> <token-endpoint> [scope1,scope2]
-/provider add <id> <protocol> <base-url> oauth device-code <client-id> <device-authorization-endpoint> <token-endpoint> [scope1,scope2]
-/provider edit <id> <protocol> <base-url> [env:NAME|cmd:PROGRAM|none]
-/provider edit <id> <protocol> <base-url> oauth authorization-code <client-id> <authorization-endpoint> <token-endpoint> [scope1,scope2]
-/provider edit <id> <protocol> <base-url> oauth device-code <client-id> <device-authorization-endpoint> <token-endpoint> [scope1,scope2]
+/provider add <id> <base-url> <auth> [env:NAME|cmd:PROGRAM|none]
+/provider add <id> <base-url> <auth> oauth authorization-code <client-id> <authorization-endpoint> <token-endpoint> [scope1,scope2]
+/provider add <id> <base-url> <auth> oauth device-code <client-id> <device-authorization-endpoint> <token-endpoint> [scope1,scope2]
+/provider edit <id> <base-url> <auth> [env:NAME|cmd:PROGRAM|none]
+/provider edit <id> <base-url> <auth> oauth authorization-code <client-id> <authorization-endpoint> <token-endpoint> [scope1,scope2]
+/provider edit <id> <base-url> <auth> oauth device-code <client-id> <device-authorization-endpoint> <token-endpoint> [scope1,scope2]
 /provider enable <id>
 /provider disable <id>
 /provider test <id>
@@ -113,9 +119,9 @@ Every operation supports a complete slash command:
 /provider delete <id>
 ```
 
-`edit` updates the protocol, base URL, and credential while preserving the
-Provider's existing display name, discovery settings, extra headers, and
-enabled state.
+`edit` updates the base URL, authentication policy, and credential while
+preserving the Provider's existing display name, discovery settings, extra
+headers, and enabled state.
 
 `test` verifies that the configured Provider can be reached with its configured
 credential. `refresh` performs model discovery and updates that Provider's
@@ -218,8 +224,8 @@ Run:
 /provider refresh allm
 ```
 
-Then inspect local logs under `$ATELIER_HOME/logs/`. Confirm that the base URL
-and `/models` response are compatible with the selected protocol.
+Then inspect local logs under `$ATELIER_HOME/logs/`. Confirm that the Provider
+base URL and configured discovery path return a compatible model catalog.
 
 ### Provider works but a session cannot start
 

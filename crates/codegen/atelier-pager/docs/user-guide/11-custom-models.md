@@ -17,7 +17,7 @@ ate
 ```
 
 ```text
-/provider add allm chat https://api.example.com/v1 env:ALLM_API_KEY
+/provider add allm https://api.example.com/v1 bearer env:ALLM_API_KEY
 /provider test allm
 /provider refresh allm
 ```
@@ -48,8 +48,8 @@ selection instead of typing the complete commands.
 
 ```text
 /provider list
-/provider add <id> <protocol> <base-url> [credential]
-/provider edit <id> <protocol> <base-url> [credential]
+/provider add <id> <base-url> <auth> [credential]
+/provider edit <id> <base-url> <auth> [credential]
 /provider enable <id>
 /provider disable <id>
 /provider test <id>
@@ -57,27 +57,28 @@ selection instead of typing the complete commands.
 /provider delete <id>
 ```
 
-Protocols are `chat`, `responses`, and `anthropic`. Credentials are
-`env:NAME`, `cmd:PROGRAM`, `none`, or an OAuth method. The bare `/provider`,
-`/provider add`, and `/provider edit <id>` forms expose staged interactive
-pickers while the complete command forms remain copyable and scriptable.
+Provider authentication policies are `bearer`, `header:NAME`, and `none`.
+Credentials are `env:NAME`, `cmd:PROGRAM`, `none`, or an OAuth method.
+Submitting `/provider add` opens the full connection wizard, while complete
+command forms remain copyable and scriptable. Wire API is configured on the
+exact Provider/model pair, not on the Provider connection.
 
 Examples:
 
 ```text
-/provider add openai responses https://api.openai.com/v1 env:OPENAI_API_KEY
-/provider add anthropic anthropic https://api.anthropic.com env:ANTHROPIC_API_KEY
-/provider add local chat http://127.0.0.1:11434/v1 none
+/provider add openai https://api.openai.com/v1 bearer env:OPENAI_API_KEY
+/provider add anthropic https://api.anthropic.com/v1 header:x-api-key env:ANTHROPIC_API_KEY
+/provider add local http://127.0.0.1:11434/v1 none none
 ```
 
 OAuth Providers include client metadata in the Provider command and use
 `/provider login` only to start a configured flow:
 
 ```text
-/provider add company responses https://api.example.com/v1 oauth authorization-code desktop-client https://login.example.com/authorize https://login.example.com/token openid,profile
+/provider add company https://api.example.com/v1 bearer oauth authorization-code desktop-client https://login.example.com/authorize https://login.example.com/token openid,profile
 /provider login company authorization-code
 
-/provider add company-device chat https://api.example.com/v1 oauth device-code desktop-client https://login.example.com/device https://login.example.com/token openid,profile
+/provider add company-device https://api.example.com/v1 bearer oauth device-code desktop-client https://login.example.com/device https://login.example.com/token openid,profile
 /provider login company-device device-code
 ```
 
@@ -147,9 +148,9 @@ Examples:
 /roles test compact
 ```
 
-`effort` may be `none`, `low`, `medium`, `high`, or `xhigh`. `fast_mode` is
-`true` or `false`. Provider adapters omit unsupported fields unless strict
-validation is enabled.
+`effort` may be `none`, `low`, `medium`, `high`, `xhigh`, or `max`, but only
+when that exact model advertises the value. `fast_mode` is `true` or `false`.
+Provider adapters omit unsupported fields unless strict validation is enabled.
 
 Role payloads must be JSON objects and cannot contain credential-like keys.
 Keep secrets in the Provider credential reference.
@@ -165,8 +166,9 @@ apply independently of Role configuration.
 
 ## Wire API Configuration
 
-Provider protocol and per-model Wire API are separate controls. Inspect or
-override model-specific behavior with:
+Wire API is configured only for an exact Provider/model pair; there is no
+Provider-level protocol or fallback. Inspect or override model-specific behavior
+with:
 
 ```text
 /wire-api

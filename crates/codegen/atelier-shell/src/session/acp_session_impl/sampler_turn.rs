@@ -165,18 +165,18 @@ impl SessionActor {
             && cached_id == model_id
             && facts.byok != ModelByok::Unknown
         {
-            return *facts;
+            return facts.clone();
         }
         let fresh = crate::agent::config::resolve_model_auth_facts(model_id);
         if fresh.byok == ModelByok::Unknown {
             if let Some((cached_id, facts)) = self.model_auth_facts.borrow().as_ref()
                 && cached_id == model_id
             {
-                return *facts;
+                return facts.clone();
             }
             return fresh;
         }
-        *self.model_auth_facts.borrow_mut() = Some((model_id.to_string(), fresh));
+        *self.model_auth_facts.borrow_mut() = Some((model_id.to_string(), fresh.clone()));
         fresh
     }
     /// Gate inputs for `model_id` routed to `base_url`. See

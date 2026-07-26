@@ -1379,7 +1379,7 @@ async fn provider_catalog_reconcile_forces_same_model_sampler_refresh_without_ro
 async fn provider_catalog_reload_refreshes_live_session_from_the_new_registry_snapshot() {
     use atelier_provider::{
         CredentialRef, ModelDescriptor, ModelKey, ModelSource, ProviderConfig, ProviderDiscovery,
-        ProviderModelOverride, ProviderProtocol, ProviderRegistry, WireApi,
+        ProviderModelOverride, ProviderAuth, ProviderRegistry, WireApi,
     };
     use atelier_sampling_types::ApiBackend;
     use atelier_test_support::EnvGuard;
@@ -1393,7 +1393,7 @@ async fn provider_catalog_reload_refreshes_live_session_from_the_new_registry_sn
         .upsert_provider(ProviderConfig {
             id: "provider".into(),
             display_name: "Provider".into(),
-            protocol: ProviderProtocol::OpenAiChatCompletions,
+            auth: ProviderAuth::Bearer,
             base_url: url::Url::parse("https://provider.example/v1").unwrap(),
             credential: CredentialRef::None,
             discovery: ProviderDiscovery::Static,

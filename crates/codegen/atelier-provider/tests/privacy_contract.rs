@@ -1,5 +1,5 @@
 use atelier_provider::{
-    CredentialRef, ProviderConfig, ProviderDiscovery, ProviderProtocol, ProviderRegistry,
+    CredentialRef, ProviderAuth, ProviderConfig, ProviderDiscovery, ProviderRegistry,
     ProviderSnapshot,
 };
 use std::collections::BTreeMap;
@@ -19,7 +19,7 @@ fn provider_with_headers() -> ProviderConfig {
     ProviderConfig {
         id: "proxy".into(),
         display_name: "Proxy".into(),
-        protocol: ProviderProtocol::OpenAiResponses,
+        auth: ProviderAuth::Bearer,
         base_url: Url::parse("https://models.example.test/v1").unwrap(),
         credential: CredentialRef::None,
         discovery: ProviderDiscovery::Static,
@@ -130,6 +130,50 @@ fn provider_validation_rejects_credential_headers_with_a_clear_error() {
 }
 
 #[test]
+fn provider_validation_rejects_invalid_custom_auth_header_names() {
+    for header_name in ["bad header", "bad:header", "ümlaut"] {
+        let mut provider = provider_with_headers();
+        provider.extra_headers.clear();
+        provider.auth = ProviderAuth::Header {
+            name: header_name.to_owned(),
+        };
+
+        let error = provider.validate().unwrap_err().to_string();
+        assert!(
+            error.to_ascii_lowercase().contains("header name"),
+            "error did not identify the invalid header name: {error}"
+        );
+        assert!(!error.contains("header-secret"));
+    }
+}
+
+#[test]
+fn provider_validation_rejects_user_agent_as_the_custom_auth_header() {
+    let mut provider = provider_with_headers();
+    provider.extra_headers.clear();
+    provider.auth = ProviderAuth::Header {
+        name: "User-Agent".into(),
+    };
+
+    let error = provider.validate().unwrap_err().to_string();
+    assert!(error.to_ascii_lowercase().contains("user-agent"), "{error}");
+}
+
+#[test]
+fn provider_validation_rejects_credentials_without_an_auth_policy() {
+    let mut provider = provider_with_headers();
+    provider.extra_headers.clear();
+    provider.auth = ProviderAuth::None;
+    provider.credential = atelier_provider::CredentialRef::Environment {
+        variable: "PROXY_API_KEY".into(),
+    };
+
+    let error = provider.validate().unwrap_err().to_string();
+    assert!(error.contains("requires a Provider auth policy"), "{error}");
+    assert!(!error.contains("PROXY_API_KEY"));
+}
+
+#[test]
 fn provider_validation_rejects_user_agent_overrides() {
     for header_name in ["User-Agent", "user-agent", "USER_AGENT"] {
         let mut provider = provider_with_headers();
@@ -158,11 +202,11 @@ fn registry_rejects_persisted_credential_headers_before_loading_them() {
     std::fs::write(
         &path,
         r#"
-schema_version = 2
+schema_version = 3
 
 [providers.proxy]
 display_name = "Proxy"
-protocol = "open_ai_responses"
+auth = { type = "bearer" }
 base_url = "https://models.example.test/v1"
 credential = { type = "none" }
 discovery = { type = "static" }

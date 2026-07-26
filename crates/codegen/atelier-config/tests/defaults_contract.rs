@@ -45,6 +45,9 @@ fn first_run_writes_the_split_atelier_config_tree() {
         "context = \"default\"\nrequest_agent = \"atelier\"\n"
     );
 
+    let providers = std::fs::read_to_string(home.path().join("providers.toml")).unwrap();
+    assert_eq!(providers, "schema_version = 3\n\n[providers]\n");
+
     let roles = std::fs::read_to_string(home.path().join("roles.toml")).unwrap();
     assert_eq!(roles, "schema_version = 1\n\n[roles]\n");
     assert!(!roles.contains("deepseek-v4-flash"));

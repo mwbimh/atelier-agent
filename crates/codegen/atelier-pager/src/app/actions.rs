@@ -557,6 +557,10 @@ pub enum Action {
     OpenSlashArgPicker {
         command: String,
     },
+    /// Open the multi-step Provider connection wizard.
+    OpenProviderWizard,
+    /// Submit a validated Provider connection from the wizard.
+    SubmitProviderWizard(Box<atelier_provider::ProviderConfig>),
     /// Put a free-form slash command entry in the composer without executing
     /// it. Used by entry-point commands such as bare `/btw`.
     OpenSlashCommandInput {

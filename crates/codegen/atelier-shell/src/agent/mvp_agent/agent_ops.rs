@@ -3190,7 +3190,7 @@ mod role_sampling_tests {
     use super::{MvpAgent, load_configured_role};
     use atelier_provider::{
         CredentialRef, ModelCapabilities, ModelDescriptor, ModelKey, ModelSource, ProviderConfig,
-        ProviderDiscovery, ProviderProtocol, ProviderRegistry, RoleConfig, RoleId,
+        ProviderDiscovery, ProviderAuth, ProviderRegistry, RoleConfig, RoleId,
     };
     use serde_json::json;
     use std::collections::BTreeMap;

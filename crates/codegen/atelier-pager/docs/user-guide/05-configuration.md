@@ -70,10 +70,10 @@ respect_gitignore = false              # default: false; set true to make every 
 ```
 
 Provider connections are stored in `$ATELIER_HOME/providers.toml`. That file is
-connection-only: it may contain endpoints, protocols, discovery, credential
-references, and safe extra headers, but no model, Role, or runtime-selection
-tables. Fixed Role assignments live in `roles.toml` and are written only after
-the user configures them. Exact model-ID metadata lives under `models/default/`;
+connection-only: it may contain endpoints, authentication, discovery, credential
+references, and safe extra headers, but no model, Wire API, Role, or
+runtime-selection tables. Fixed Role assignments live in `roles.toml` and are
+written only after the user configures them. Exact model-ID metadata lives under `models/default/`;
 family wildcards such as `gpt-5*` or `claude-*` are rejected. Provider-specific
 model and experimental endpoint settings live under
 `models/providers/<provider>/`, while discovery results live under
@@ -250,7 +250,7 @@ Provider credentials are explicit references such as `env:NAME`,
 `cmd:PROGRAM`, or `none`. Configure them through the TUI:
 
 ```text
-/provider add allm chat https://api.example.com/v1 env:ALLM_API_KEY
+/provider add allm https://api.example.com/v1 bearer env:ALLM_API_KEY
 /provider test allm
 /provider refresh allm
 /model
@@ -688,7 +688,7 @@ Provider credentials use the environment variable named in the Provider's
 `env:NAME` reference. Atelier does not define a global model API-key variable.
 
 ```text
-/provider add allm chat https://api.example.com/v1 env:ALLM_API_KEY
+/provider add allm https://api.example.com/v1 bearer env:ALLM_API_KEY
 ```
 
 In that example, only `ALLM_API_KEY` is read for Provider `allm`.

@@ -7,7 +7,7 @@ use super::cta::{
     handle_plugin_cta_catalog_loaded, handle_plugin_cta_debounce_expired,
     handle_plugin_cta_mcps_loaded,
 };
-use super::ctx::{find_agent_by_session_id, get_active_agent_mut};
+use super::ctx::find_agent_by_session_id;
 use super::notes::{handle_btw_response, handle_memory_note_saved};
 use super::prompt::{
     defer_to_open_reload_window, handle_compact_complete, handle_prompt_response,
@@ -1121,6 +1121,26 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             method,
             error,
         } => {
+            if matches!(
+                method.as_str(),
+                "_atelier/provider/create"
+                    | "atelier/provider/create"
+                    | "_atelier/provider/update"
+                    | "atelier/provider/update"
+                    | "_atelier/provider/test"
+                    | "atelier/provider/test"
+                    | "_atelier/provider/oauth_begin"
+                    | "atelier/provider/oauth_begin"
+                    | "_atelier/provider/oauth_complete"
+                    | "atelier/provider/oauth_complete"
+            ) && let Some(agent_id) = agent_id
+                && let Some(agent) = app.agents.get_mut(&agent_id)
+                && let Some(crate::views::modal::ActiveModal::ProviderWizard { state }) =
+                    agent.active_modal.as_mut()
+            {
+                state.fail(error);
+                return vec![];
+            }
             let toast = format!("{method} failed: {error}");
             if let Some(agent_id) = agent_id
                 && let Some(agent) = app.agents.get_mut(&agent_id)
@@ -1146,6 +1166,52 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             let attach_replay = is_task_attach
                 .then(|| format_runtime_task_attach_response(&response))
                 .flatten();
+            if matches!(
+                method.as_str(),
+                "_atelier/provider/create"
+                    | "atelier/provider/create"
+                    | "_atelier/provider/update"
+                    | "atelier/provider/update"
+            ) && let Some(agent_id) = agent_id
+                && let Some(agent) = app.agents.get_mut(&agent_id)
+                && let Some(crate::views::modal::ActiveModal::ProviderWizard { state }) =
+                    agent.active_modal.as_mut()
+            {
+                state.mark_persisted();
+                let provider_id = state.provider_id.clone();
+                if let Some(flow) = state.oauth_flow_name() {
+                    state.set_status("Starting Provider OAuth login…");
+                    return vec![Effect::RuntimeExtension {
+                        agent_id: Some(agent_id),
+                        method: "_atelier/provider/oauth_begin".into(),
+                        params: serde_json::json!({
+                            "providerId": provider_id,
+                            "flow": flow,
+                        }),
+                    }];
+                }
+                state.set_status("Testing Provider connection…");
+                return vec![Effect::RuntimeExtension {
+                    agent_id: Some(agent_id),
+                    method: "_atelier/provider/test".into(),
+                    params: serde_json::json!({ "providerId": provider_id }),
+                }];
+            }
+            if matches!(
+                method.as_str(),
+                "_atelier/provider/test" | "atelier/provider/test"
+            ) && let Some(agent_id) = agent_id
+                && let Some(agent) = app.agents.get_mut(&agent_id)
+                && let Some(crate::views::modal::ActiveModal::ProviderWizard { state }) =
+                    agent.active_modal.as_mut()
+            {
+                let provider_id = state.provider_id.clone();
+                state.set_status("Discovering Provider models…");
+                return vec![Effect::RefreshProviderModels {
+                    agent_id: Some(agent_id),
+                    provider_id,
+                }];
+            }
             if method == "_atelier/provider/oauth_begin" || method == "atelier/provider/oauth_begin"
             {
                 let Some(result) = result else {
@@ -1160,6 +1226,11 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
                     agent
                         .scrollback
                         .push_block(RenderBlock::system(rendered.clone()));
+                    if let Some(crate::views::modal::ActiveModal::ProviderWizard { state }) =
+                        agent.active_modal.as_mut()
+                    {
+                        state.set_status("Completing Provider OAuth login…");
+                    }
                 } else if !show_dashboard_runtime_output(app, &rendered) {
                     app.show_toast(&rendered);
                 }
@@ -1167,6 +1238,22 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
                     agent_id,
                     method: "_atelier/provider/oauth_complete".into(),
                     params: serde_json::json!({ "loginId": login_id }),
+                }];
+            }
+            if matches!(
+                method.as_str(),
+                "_atelier/provider/oauth_complete" | "atelier/provider/oauth_complete"
+            ) && let Some(agent_id) = agent_id
+                && let Some(agent) = app.agents.get_mut(&agent_id)
+                && let Some(crate::views::modal::ActiveModal::ProviderWizard { state }) =
+                    agent.active_modal.as_mut()
+            {
+                let provider_id = state.provider_id.clone();
+                state.set_status("Testing Provider connection…");
+                return vec![Effect::RuntimeExtension {
+                    agent_id: Some(agent_id),
+                    method: "_atelier/provider/test".into(),
+                    params: serde_json::json!({ "providerId": provider_id }),
                 }];
             }
             if method == "_atelier/task/list" || method == "atelier/task/list" {
@@ -1313,6 +1400,47 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             provider_id,
             result,
         } => {
+            if let Some(agent_id) = agent_id {
+                let wizard_active = app
+                    .agents
+                    .get(&agent_id)
+                    .and_then(|agent| agent.active_modal.as_ref())
+                    .is_some_and(|modal| {
+                        matches!(
+                            modal,
+                            crate::views::modal::ActiveModal::ProviderWizard { state }
+                                if state.provider_id == provider_id
+                        )
+                    });
+                if wizard_active {
+                    match result {
+                        Ok(message) => {
+                            if let Some(agent) = app.agents.get_mut(&agent_id) {
+                                agent.active_modal = None;
+                                agent.scrollback.push_block(RenderBlock::system(format!(
+                                    "Provider {provider_id}: {message}"
+                                )));
+                            }
+                            return dispatch(
+                                Action::OpenSlashArgPicker {
+                                    command: "model".into(),
+                                },
+                                app,
+                            );
+                        }
+                        Err(error) => {
+                            if let Some(agent) = app.agents.get_mut(&agent_id)
+                                && let Some(crate::views::modal::ActiveModal::ProviderWizard {
+                                    state,
+                                }) = agent.active_modal.as_mut()
+                            {
+                                state.fail(error);
+                            }
+                            return vec![];
+                        }
+                    }
+                }
+            }
             let message = match result {
                 Ok(message) => format!("Provider {provider_id}: {message}"),
                 Err(error) => format!("Provider {provider_id}: {error}"),

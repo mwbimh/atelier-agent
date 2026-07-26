@@ -23,7 +23,7 @@ use url::Url;
 #[cfg(windows)]
 mod windows_credentials;
 
-const CURRENT_SCHEMA_VERSION: u32 = 2;
+const CURRENT_SCHEMA_VERSION: u32 = 3;
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct SecretString(String);
@@ -193,20 +193,20 @@ pub enum ProviderError {
     Encoding(#[from] toml::ser::Error),
 }
 
+/// How a Provider credential is injected into HTTP requests.
+///
+/// Authentication belongs to the Provider connection. It is deliberately
+/// independent from [`WireApi`]: a proxy can expose any model wire format while
+/// still requiring either Bearer authentication or a custom credential header.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum ProviderProtocol {
-    OpenAiResponses,
-    OpenAiChatCompletions,
-    AnthropicMessages,
+#[serde(rename_all = "snake_case", tag = "type")]
+pub enum ProviderAuth {
+    None,
+    Bearer,
+    Header { name: String },
 }
 
-/// Wire protocol used for one model request.
-///
-/// Provider configuration predates model-level routing and still stores a
-/// `ProviderProtocol`. New model configuration uses this smaller transport
-/// enum so a single provider can serve different models through different
-/// compatible endpoints.
+/// Wire protocol used for one exact Provider/model request.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum WireApi {
@@ -216,14 +216,6 @@ pub enum WireApi {
 }
 
 impl WireApi {
-    pub fn from_provider_protocol(protocol: &ProviderProtocol) -> Self {
-        match protocol {
-            ProviderProtocol::OpenAiResponses => Self::Responses,
-            ProviderProtocol::OpenAiChatCompletions => Self::ChatCompletions,
-            ProviderProtocol::AnthropicMessages => Self::Messages,
-        }
-    }
-
     pub const fn endpoint_suffix(self) -> &'static str {
         match self {
             Self::ChatCompletions => "chat/completions",
@@ -588,10 +580,10 @@ pub enum ProviderDiscovery {
 pub struct ProviderConfig {
     pub id: String,
     pub display_name: String,
-    pub protocol: ProviderProtocol,
     pub base_url: Url,
     #[serde(default)]
     pub credential: CredentialRef,
+    pub auth: ProviderAuth,
     #[serde(default)]
     pub discovery: ProviderDiscovery,
     #[serde(default)]
@@ -606,9 +598,9 @@ const REDACTED: &str = "REDACTED";
 struct ProviderConfigWire<'a> {
     id: &'a str,
     display_name: &'a str,
-    protocol: &'a ProviderProtocol,
     base_url: &'a Url,
     credential: &'a CredentialRef,
+    auth: &'a ProviderAuth,
     discovery: &'a ProviderDiscovery,
     extra_headers: BTreeMap<String, String>,
     enabled: bool,
@@ -634,9 +626,9 @@ impl Serialize for ProviderConfig {
         ProviderConfigWire {
             id: &self.id,
             display_name: &self.display_name,
-            protocol: &self.protocol,
             base_url: &self.base_url,
             credential: &self.credential,
+            auth: &self.auth,
             discovery: &self.discovery,
             extra_headers,
             enabled: self.enabled,
@@ -663,9 +655,9 @@ impl fmt::Debug for ProviderConfig {
             .debug_struct("ProviderConfig")
             .field("id", &self.id)
             .field("display_name", &self.display_name)
-            .field("protocol", &self.protocol)
             .field("base_url", &self.base_url)
             .field("credential", &self.credential)
+            .field("auth", &self.auth)
             .field("discovery", &self.discovery)
             .field("extra_headers", &RedactedHeaders(&self.extra_headers))
             .field("enabled", &self.enabled)
@@ -699,6 +691,30 @@ fn is_sensitive_header_name(name: &str) -> bool {
         || normalized.contains("credential")
 }
 
+fn is_valid_http_header_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric()
+                || matches!(
+                    byte,
+                    b'!' | b'#'
+                        | b'$'
+                        | b'%'
+                        | b'&'
+                        | b'\''
+                        | b'*'
+                        | b'+'
+                        | b'-'
+                        | b'.'
+                        | b'^'
+                        | b'_'
+                        | b'`'
+                        | b'|'
+                        | b'~'
+                )
+        })
+}
+
 fn is_reserved_transport_header_name(name: &str) -> bool {
     let normalized: String = name
         .chars()
@@ -723,6 +739,25 @@ impl ProviderConfig {
     pub fn validate(&self) -> Result<(), ProviderError> {
         validate_identifier(&self.id, "provider id")?;
         self.credential.validate()?;
+        if let ProviderAuth::Header { name } = &self.auth {
+            if !is_valid_http_header_name(name) {
+                return Err(ProviderError::InvalidProvider(
+                    "credential header name must be a valid HTTP field name".into(),
+                ));
+            }
+            if is_reserved_transport_header_name(name) {
+                return Err(ProviderError::InvalidProvider(format!(
+                    "credential header '{name}' cannot override the configured User-Agent"
+                )));
+            }
+        }
+        if !matches!(&self.credential, CredentialRef::None)
+            && matches!(&self.auth, ProviderAuth::None)
+        {
+            return Err(ProviderError::InvalidProvider(
+                "configured credential requires a Provider auth policy".into(),
+            ));
+        }
         if let CredentialRef::OAuth { provider_id, .. } = &self.credential
             && provider_id != &self.id
         {
@@ -1054,12 +1089,13 @@ fn parse_openai_model_value(
     let display_name = json_string(object, &["name", "display_name", "displayName"])
         .unwrap_or_else(|| key.model_id.clone());
     let capabilities = parse_model_capabilities(object);
+    let wire_api = parse_discovered_wire_api(object, index)?;
 
     Ok(ModelDescriptor {
         key,
         display_name,
         description: json_string(object, &["description"]),
-        wire_api: None,
+        wire_api,
         context_window: json_u64(
             object,
             &[
@@ -1079,6 +1115,31 @@ fn parse_openai_model_value(
         source: ModelSource::Remote,
         enabled: true,
     })
+}
+
+fn parse_discovered_wire_api(
+    object: &serde_json::Map<String, Value>,
+    index: usize,
+) -> Result<Option<WireApi>, ProviderError> {
+    let Some(value) = object.get("wire_api").or_else(|| object.get("wireApi")) else {
+        return Ok(None);
+    };
+    let Some(value) = value.as_str() else {
+        return Err(ProviderError::DiscoveryInvalid(format!(
+            "model entry {index} wire API must be a string"
+        )));
+    };
+    let wire_api = match value {
+        "responses" => WireApi::Responses,
+        "chat_completions" => WireApi::ChatCompletions,
+        "messages" => WireApi::Messages,
+        _ => {
+            return Err(ProviderError::DiscoveryInvalid(format!(
+                "model entry {index} has unknown wire API {value:?}"
+            )));
+        }
+    };
+    Ok(Some(wire_api))
 }
 
 fn json_string(object: &serde_json::Map<String, Value>, names: &[&str]) -> Option<String> {
@@ -1252,7 +1313,7 @@ pub struct ProviderSnapshot {
 #[serde(rename_all = "snake_case")]
 pub enum WireApiSource {
     ProviderModelOverride,
-    ProviderDefault,
+    ModelDefinition,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1267,9 +1328,9 @@ pub struct ResolvedWireApi {
 struct ProviderSnapshotProvider<'a> {
     id: &'a str,
     display_name: &'a str,
-    protocol: &'a ProviderProtocol,
     base_url: &'a Url,
     credential: &'a CredentialRef,
+    auth: &'a ProviderAuth,
     discovery: &'a ProviderDiscovery,
     extra_headers: BTreeMap<String, String>,
     enabled: bool,
@@ -1294,9 +1355,9 @@ impl Serialize for ProviderSnapshot {
             .map(|provider| ProviderSnapshotProvider {
                 id: &provider.id,
                 display_name: &provider.display_name,
-                protocol: &provider.protocol,
                 base_url: &provider.base_url,
                 credential: &provider.credential,
+                auth: &provider.auth,
                 discovery: &provider.discovery,
                 extra_headers: redacted_snapshot_headers(&provider.extra_headers),
                 enabled: provider.enabled,
@@ -1338,20 +1399,12 @@ impl ProviderSnapshot {
                 provider: key.provider_id.clone(),
                 model: key.model_id.clone(),
                 wire_api,
-                source: WireApiSource::ProviderModelOverride,
+                source: WireApiSource::ModelDefinition,
             });
         }
-        let provider = self
-            .providers
-            .iter()
-            .find(|provider| provider.id == key.provider_id)
-            .ok_or_else(|| ProviderError::ProviderNotFound(key.provider_id.clone()))?;
-        Ok(ResolvedWireApi {
-            provider: key.provider_id.clone(),
-            model: key.model_id.clone(),
-            wire_api: WireApi::from_provider_protocol(&provider.protocol),
-            source: WireApiSource::ProviderDefault,
-        })
+        Err(ProviderError::InvalidProvider(format!(
+            "wire API is not configured for {key}"
+        )))
     }
 
     /// Resolve an active remote-compaction endpoint for one exact
@@ -1940,9 +1993,9 @@ mod tests {
         let config = ProviderConfig {
             id: "bad/id".into(),
             display_name: "Bad".into(),
-            protocol: ProviderProtocol::OpenAiResponses,
             base_url: Url::parse("https://example.test").unwrap(),
             credential: CredentialRef::None,
+            auth: ProviderAuth::None,
             discovery: ProviderDiscovery::Disabled,
             extra_headers: BTreeMap::new(),
             enabled: true,

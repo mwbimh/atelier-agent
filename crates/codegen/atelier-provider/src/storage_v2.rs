@@ -44,10 +44,10 @@ struct ProvidersFile {
 #[serde(deny_unknown_fields)]
 struct ProviderConfigDisk {
     display_name: String,
-    protocol: ProviderProtocol,
     base_url: Url,
     #[serde(default)]
     credential: CredentialRef,
+    auth: ProviderAuth,
     #[serde(default)]
     discovery: ProviderDiscovery,
     #[serde(default)]
@@ -65,9 +65,9 @@ impl ProviderConfigDisk {
         ProviderConfig {
             id,
             display_name: self.display_name,
-            protocol: self.protocol,
             base_url: self.base_url,
             credential: self.credential,
+            auth: self.auth,
             discovery: self.discovery,
             extra_headers: self.extra_headers,
             enabled: self.enabled,
@@ -77,9 +77,9 @@ impl ProviderConfigDisk {
     fn from_runtime(config: &ProviderConfig) -> Self {
         Self {
             display_name: config.display_name.clone(),
-            protocol: config.protocol.clone(),
             base_url: config.base_url.clone(),
             credential: config.credential.clone(),
+            auth: config.auth.clone(),
             discovery: config.discovery.clone(),
             extra_headers: config.extra_headers.clone(),
             enabled: config.enabled,

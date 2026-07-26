@@ -66,7 +66,7 @@ ate
 Inside Atelier, run either the interactive commands or their complete forms:
 
 ```text
-/provider add allm chat https://api.example.com/v1 env:ALLM_API_KEY
+/provider add allm https://api.example.com/v1 bearer env:ALLM_API_KEY
 /provider test allm
 /provider refresh allm
 /model

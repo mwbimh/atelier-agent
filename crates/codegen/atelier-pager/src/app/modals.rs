@@ -347,6 +347,22 @@ impl AgentView {
             }
         }
 
+        // Provider wizard owns text entry, choices, back, and cancellation.
+        if let ActiveModal::ProviderWizard { state } = modal {
+            return match crate::views::provider_wizard::handle_provider_wizard_key(state, key) {
+                crate::views::provider_wizard::ProviderWizardOutcome::Changed => {
+                    InputOutcome::Changed
+                }
+                crate::views::provider_wizard::ProviderWizardOutcome::Cancel => {
+                    self.active_modal = None;
+                    InputOutcome::Changed
+                }
+                crate::views::provider_wizard::ProviderWizardOutcome::Submit(config) => {
+                    InputOutcome::Action(Action::SubmitProviderWizard(config))
+                }
+            };
+        }
+
         // MemoryBrowser: route through ModalWindow chrome, then delegate.
         if let ActiveModal::MemoryBrowser { state } = modal {
             // When the filter input is focused, Esc exits filter mode
@@ -461,6 +477,7 @@ impl AgentView {
             | ActiveModal::DocViewer { .. }
             | ActiveModal::ShortcutsHelp { .. }
             | ActiveModal::MemoryBrowser { .. }
+            | ActiveModal::ProviderWizard { .. }
             | ActiveModal::Settings { .. }
             | ActiveModal::ResetSettingsConfirm { .. }
             | ActiveModal::RememberNoteReview { .. } => unreachable!(),
@@ -1462,6 +1479,19 @@ impl AgentView {
             }
         }
 
+        // Provider wizard: only modal chrome mouse actions are interactive.
+        if let Some(ActiveModal::ProviderWizard { state }) = &mut self.active_modal {
+            let outcome =
+                mw::handle_modal_mouse(&mut state.window, mouse.kind, mouse.column, mouse.row);
+            return match outcome {
+                ModalWindowOutcome::CloseRequested => {
+                    self.active_modal = None;
+                    InputOutcome::Changed
+                }
+                _ => InputOutcome::Changed,
+            };
+        }
+
         // MemoryBrowser: route through ModalWindow chrome, then delegate.
         if let Some(ActiveModal::MemoryBrowser { state }) = &mut self.active_modal {
             let outcome =
@@ -2236,6 +2266,10 @@ impl AgentView {
                 }
             } else if let modal::ActiveModal::MemoryBrowser { state: mem_state } = active_modal {
                 crate::views::memory_modal::render_memory_modal(buf, area, mem_state, compact);
+            } else if let modal::ActiveModal::ProviderWizard { state } = active_modal {
+                crate::views::provider_wizard::render_provider_wizard(
+                    buf, area, state, compact, &theme,
+                );
             } else if let modal::ActiveModal::Settings {
                 state: settings_state,
             } = active_modal

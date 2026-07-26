@@ -3,7 +3,7 @@
 use std::io;
 use std::path::{Path, PathBuf};
 
-const PROVIDERS_TOML: &str = "schema_version = 2\n\n[providers]\n";
+const PROVIDERS_TOML: &str = "schema_version = 3\n\n[providers]\n";
 const ROLES_TOML: &str = "schema_version = 1\n\n[roles]\n";
 const OPENAI_MODELS_TOML: &str = include_str!("../defaults/models/openai.toml");
 const ANTHROPIC_MODELS_TOML: &str = include_str!("../defaults/models/anthropic.toml");

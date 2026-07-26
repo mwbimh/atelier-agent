@@ -1722,7 +1722,7 @@ mod tests {
             .upsert_provider(atelier_provider::ProviderConfig {
                 id: "local".into(),
                 display_name: "Local".into(),
-                protocol: atelier_provider::ProviderProtocol::OpenAiResponses,
+                auth: atelier_provider::ProviderAuth::Bearer,
                 base_url: url::Url::parse("http://127.0.0.1:4317/v1").unwrap(),
                 credential: atelier_provider::CredentialRef::None,
                 discovery: atelier_provider::ProviderDiscovery::Static,
@@ -1802,7 +1802,7 @@ mod tests {
             .upsert_provider(atelier_provider::ProviderConfig {
                 id: "allm".into(),
                 display_name: "AllM".into(),
-                protocol: atelier_provider::ProviderProtocol::OpenAiChatCompletions,
+                auth: atelier_provider::ProviderAuth::Bearer,
                 base_url: url::Url::parse("http://127.0.0.1:4317/v1").unwrap(),
                 credential: atelier_provider::CredentialRef::None,
                 discovery: atelier_provider::ProviderDiscovery::Static,

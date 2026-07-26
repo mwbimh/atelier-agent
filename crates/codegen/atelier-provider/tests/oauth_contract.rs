@@ -6,7 +6,7 @@ use atelier_provider::auth::{
     refresh_credential,
 };
 use atelier_provider::{
-    CredentialRef, ProviderConfig, ProviderDiscovery, ProviderProtocol, ProviderRegistry,
+    CredentialRef, ProviderAuth, ProviderConfig, ProviderDiscovery, ProviderRegistry,
 };
 use std::collections::{BTreeMap, VecDeque};
 use std::io::Write;
@@ -374,7 +374,7 @@ fn provider_oauth_methods_round_trip_without_storage_v2_changes() {
         .upsert_provider(ProviderConfig {
             id: "allm".into(),
             display_name: "AllM".into(),
-            protocol: ProviderProtocol::OpenAiResponses,
+            auth: ProviderAuth::Bearer,
             base_url: Url::parse("https://api.example.test/v1").unwrap(),
             credential: CredentialRef::OAuth {
                 provider_id: "allm".into(),
@@ -424,7 +424,7 @@ fn provider_oauth_schema_rejects_missing_client_configuration_and_provider_misma
     let config = ProviderConfig {
         id: "allm".into(),
         display_name: "AllM".into(),
-        protocol: ProviderProtocol::OpenAiResponses,
+        auth: ProviderAuth::Bearer,
         base_url: Url::parse("https://api.example.test/v1").unwrap(),
         credential: CredentialRef::OAuth {
             provider_id: "other".into(),

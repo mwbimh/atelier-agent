@@ -207,11 +207,11 @@ fn write_mock_provider_config(home: &Path, base_url: &str, models: &[MockModel])
 
     let quoted_base_url = serde_json::to_string(base_url).context("quote mock Provider URL")?;
     let providers = format!(
-        r#"schema_version = 2
+        r#"schema_version = 3
 
 [providers.mock]
 display_name = "PTY mock"
-protocol = "open_ai_chat_completions"
+auth = {{ type = "none" }}
 base_url = {quoted_base_url}
 enabled = true
 
@@ -274,6 +274,16 @@ model = {quoted_default_model}
         ));
     }
     std::fs::write(atelier_home.join("roles.toml"), roles).context("write mock roles.toml")?;
+
+    std::fs::write(
+        atelier_home.join("config.toml"),
+        r#"context = "default"
+request_agent = "atelier"
+
+sandbox = { profile = "off", backend = "unsafe" }
+"#,
+    )
+    .context("write mock config.toml")?;
 
     Ok(())
 }
@@ -366,6 +376,9 @@ mod tests {
         assert_eq!(env.len(), 6, "env list must not silently grow or shrink");
 
         let atelier_home = content.home().join(".atelier");
+        let config = std::fs::read_to_string(atelier_home.join("config.toml")).unwrap();
+        assert!(config.contains("sandbox = { profile = \"off\", backend = \"unsafe\" }"));
+
         let providers = std::fs::read_to_string(atelier_home.join("providers.toml")).unwrap();
         assert!(providers.contains("[providers.mock]"));
         assert!(providers.contains(&format!("base_url = {:?}", content.url())));

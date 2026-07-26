@@ -21,6 +21,8 @@ mod doubled_lines_out_of_band_repro;
 mod initial_prompt_positional_auto_submits;
 #[path = "pty_e2e/input_echoes_at_idle_prompt.rs"]
 mod input_echoes_at_idle_prompt;
+#[path = "pty_e2e/provider_add_opens_wizard.rs"]
+mod provider_add_opens_wizard;
 #[path = "pty_e2e/renders_on_action.rs"]
 mod renders_on_action;
 #[path = "pty_e2e/requirements_version_failure_exits_2_with_guidance.rs"]

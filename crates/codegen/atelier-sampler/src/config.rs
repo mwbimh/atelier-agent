@@ -17,12 +17,14 @@ use std::fmt;
 use crate::attribution::SharedAttributionCallback;
 use crate::retry::{DEFAULT_MAX_RETRIES, RATE_LIMIT_RETRY_THRESHOLD};
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum AuthScheme {
     #[default]
     Bearer,
     XApiKey,
+    Header(String),
+    None,
 }
 
 /// All knobs that control a single sampling request.
@@ -330,6 +332,24 @@ mod tests {
         assert_eq!(
             round_tripped.doom_loop_recovery,
             with_policy.doom_loop_recovery
+        );
+    }
+
+    #[test]
+    fn auth_scheme_keeps_unit_tokens_and_round_trips_custom_headers() {
+        assert_eq!(serde_json::to_value(AuthScheme::Bearer).unwrap(), "bearer");
+        assert_eq!(
+            serde_json::to_value(AuthScheme::XApiKey).unwrap(),
+            "x_api_key"
+        );
+        assert_eq!(serde_json::to_value(AuthScheme::None).unwrap(), "none");
+
+        let custom = AuthScheme::Header("x-company-key".into());
+        let encoded = serde_json::to_value(&custom).unwrap();
+        assert_eq!(encoded, serde_json::json!({ "header": "x-company-key" }));
+        assert_eq!(
+            serde_json::from_value::<AuthScheme>(encoded).unwrap(),
+            custom
         );
     }
 

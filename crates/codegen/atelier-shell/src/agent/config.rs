@@ -5,7 +5,7 @@ use crate::{config::StorageMode, sampling::ApiBackend, tools::config::ShellTools
 use agent_client_protocol as acp;
 use atelier_agent::prompt::skills::SkillsConfig;
 use atelier_provider::{
-    ModelDescriptor as ProviderModelDescriptor, ProviderProtocol, ProviderSnapshot, WireApi,
+    ModelDescriptor as ProviderModelDescriptor, ProviderAuth, ProviderSnapshot, WireApi,
 };
 use atelier_sampler::{AuthScheme, SamplerConfig};
 use atelier_sampling_types::{
@@ -2793,9 +2793,13 @@ pub fn model_entries_from_provider_snapshot(
                 WireApi::ChatCompletions => ApiBackend::ChatCompletions,
                 WireApi::Messages => ApiBackend::Messages,
             };
-            info.auth_scheme = match wire_api {
-                WireApi::Messages => AuthScheme::XApiKey,
-                WireApi::Responses | WireApi::ChatCompletions => AuthScheme::Bearer,
+            info.auth_scheme = match &provider.auth {
+                ProviderAuth::None => AuthScheme::None,
+                ProviderAuth::Bearer => AuthScheme::Bearer,
+                ProviderAuth::Header { name } if name.eq_ignore_ascii_case("x-api-key") => {
+                    AuthScheme::XApiKey
+                }
+                ProviderAuth::Header { name } => AuthScheme::Header(name.clone()),
             };
             info.hidden = false;
             info.user_selectable = true;
@@ -3547,7 +3551,7 @@ impl ModelInfo {
             temperature: entry.temperature,
             top_p: entry.top_p,
             api_backend: entry.api_backend.clone(),
-            auth_scheme: entry.auth_scheme.unwrap_or_default(),
+            auth_scheme: entry.auth_scheme.clone().unwrap_or_default(),
             extra_headers: entry.extra_headers.clone(),
             context_window: entry.context_window,
             auto_compact_threshold_percent: entry.auto_compact_threshold_percent,
@@ -4073,7 +4077,7 @@ pub fn resolve_credentials(model: &ModelEntry, session_key: Option<&str>) -> Res
             atelier_chat_state::AuthType::ApiKey,
         )
     };
-    let auth_scheme = info.auth_scheme;
+    let auth_scheme = info.auth_scheme.clone();
     tracing::debug!(
         model = % info.model, auth_type = ? auth_type, "resolved credentials"
     );
@@ -4144,7 +4148,7 @@ pub fn try_resolve_model_credentials(
 }
 /// Per-model auth facts (BYOK status + auth scheme) from one effective-config
 /// load, memoized by the session actor.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct ModelAuthFacts {
     pub byok: ModelByok,
     pub auth_scheme: AuthScheme,
@@ -4163,7 +4167,7 @@ pub fn resolve_model_auth_facts(model_id: &str) -> ModelAuthFacts {
     with_resolved_model(model_id, |lookup| ModelAuthFacts {
         byok: byok_from_lookup(&lookup),
         auth_scheme: match lookup {
-            ModelLookup::Loaded(Some(e)) => e.info().auth_scheme,
+            ModelLookup::Loaded(Some(e)) => e.info().auth_scheme.clone(),
             _ => AuthScheme::default(),
         },
     })
@@ -6911,10 +6915,12 @@ reasoning_effort = "low"
             providers: vec![atelier_provider::ProviderConfig {
                 id: "anthropic-local".into(),
                 display_name: "Local Anthropic".into(),
-                protocol: ProviderProtocol::AnthropicMessages,
                 base_url: url::Url::parse("http://127.0.0.1:4317/v1").unwrap(),
                 credential: atelier_provider::CredentialRef::Environment {
                     variable: "ATELIER_ANTHROPIC_KEY".into(),
+                },
+                auth: ProviderAuth::Header {
+                    name: "x-api-key".into(),
                 },
                 discovery: atelier_provider::ProviderDiscovery::Static,
                 extra_headers: std::collections::BTreeMap::new(),
@@ -6924,7 +6930,7 @@ reasoning_effort = "low"
                 key: atelier_provider::ModelKey::new("anthropic-local", "claude-test").unwrap(),
                 display_name: "Claude Test".into(),
                 description: Some("local test model".into()),
-                wire_api: None,
+                wire_api: Some(WireApi::Messages),
                 context_window: Some(64_000),
                 capabilities: atelier_provider::ModelCapabilities {
                     tool_calls: true,
@@ -6976,9 +6982,9 @@ reasoning_effort = "low"
         let provider = atelier_provider::ProviderConfig {
             id: "allm".into(),
             display_name: "AllM".into(),
-            protocol: ProviderProtocol::OpenAiChatCompletions,
             base_url: url::Url::parse("http://127.0.0.1:4317/v1").unwrap(),
             credential: atelier_provider::CredentialRef::None,
+            auth: ProviderAuth::None,
             discovery: atelier_provider::ProviderDiscovery::Static,
             extra_headers: std::collections::BTreeMap::new(),
             enabled: true,
@@ -6987,7 +6993,7 @@ reasoning_effort = "low"
             key: atelier_provider::ModelKey::new("allm", model_id).unwrap(),
             display_name: model_id.into(),
             description: None,
-            wire_api: None,
+            wire_api: Some(WireApi::ChatCompletions),
             context_window: Some(128_000),
             capabilities: Default::default(),
             reasoning_efforts: Vec::new(),
@@ -7014,21 +7020,21 @@ reasoning_effort = "low"
 
     #[test]
     fn remote_compaction_endpoint_propagates_only_for_responses_models() {
-        let provider = |id: &str, protocol| atelier_provider::ProviderConfig {
+        let provider = |id: &str| atelier_provider::ProviderConfig {
             id: id.into(),
             display_name: id.into(),
-            protocol,
             base_url: url::Url::parse(&format!("https://{id}.example.test/v1")).unwrap(),
             credential: atelier_provider::CredentialRef::None,
+            auth: ProviderAuth::None,
             discovery: atelier_provider::ProviderDiscovery::Static,
             extra_headers: std::collections::BTreeMap::new(),
             enabled: true,
         };
-        let descriptor = |provider_id: &str| atelier_provider::ModelDescriptor {
+        let descriptor = |provider_id: &str, wire_api| atelier_provider::ModelDescriptor {
             key: atelier_provider::ModelKey::new(provider_id, "shared").unwrap(),
             display_name: "shared".into(),
             description: None,
-            wire_api: None,
+            wire_api: Some(wire_api),
             context_window: Some(128_000),
             capabilities: Default::default(),
             reasoning_efforts: Vec::new(),
@@ -7045,11 +7051,11 @@ reasoning_effort = "low"
             image_generation: None,
         };
         let snapshot = ProviderSnapshot {
-            providers: vec![
-                provider("responses", ProviderProtocol::OpenAiResponses),
-                provider("chat", ProviderProtocol::OpenAiChatCompletions),
+            providers: vec![provider("responses"), provider("chat")],
+            models: vec![
+                descriptor("responses", WireApi::Responses),
+                descriptor("chat", WireApi::ChatCompletions),
             ],
-            models: vec![descriptor("responses"), descriptor("chat")],
             model_provider_overrides: Default::default(),
             experimental_model_features: std::collections::BTreeMap::from([
                 ("responses/shared".into(), feature.clone()),
@@ -7084,14 +7090,14 @@ reasoning_effort = "low"
     }
 
     #[test]
-    fn provider_protocol_sets_default_wire_api() {
+    fn exact_model_definition_sets_wire_api() {
         let model_key = atelier_provider::ModelKey::new("allm", "deepseek-v4-flash").unwrap();
         let provider = atelier_provider::ProviderConfig {
             id: "allm".into(),
             display_name: "AllM".into(),
-            protocol: ProviderProtocol::OpenAiResponses,
             base_url: url::Url::parse("http://127.0.0.1:4317/v1").unwrap(),
             credential: atelier_provider::CredentialRef::None,
+            auth: ProviderAuth::None,
             discovery: atelier_provider::ProviderDiscovery::Static,
             extra_headers: std::collections::BTreeMap::new(),
             enabled: true,
@@ -7102,7 +7108,7 @@ reasoning_effort = "low"
                 key: model_key.clone(),
                 display_name: "deepseek-v4-flash".into(),
                 description: None,
-                wire_api: None,
+                wire_api: Some(WireApi::Responses),
                 context_window: Some(128_000),
                 capabilities: Default::default(),
                 reasoning_efforts: Vec::new(),
@@ -7126,7 +7132,7 @@ reasoning_effort = "low"
         );
         assert_eq!(
             resolved_wire_api.source,
-            atelier_provider::WireApiSource::ProviderDefault
+            atelier_provider::WireApiSource::ModelDefinition
         );
         assert_eq!(entry.info.api_backend, ApiBackend::Responses);
         assert_eq!(sampling.api_backend, ApiBackend::Responses);

@@ -11,11 +11,11 @@ fn generated_v2_tree_is_loadable_and_roles_are_separate() {
     let home = tempdir().unwrap();
     write(
         &home.path().join("providers.toml"),
-        r#"schema_version = 2
+        r#"schema_version = 3
 
 [providers.allm]
 display_name = "AllM"
-protocol = "open_ai_chat_completions"
+auth = { type = "bearer" }
 base_url = "https://allm.example/v1"
 enabled = true
 
@@ -57,11 +57,11 @@ fn providers_file_rejects_models_roles_and_other_non_connection_sections() {
         write(
             &home.path().join("providers.toml"),
             &format!(
-                r#"schema_version = 2
+                r#"schema_version = 3
 
 [providers.openai]
 display_name = "OpenAI"
-protocol = "open_ai_responses"
+auth = {{ type = "bearer" }}
 base_url = "https://api.openai.com/v1"
 enabled = true
 
@@ -76,21 +76,44 @@ enabled = true
 }
 
 #[test]
-fn model_wire_api_is_provider_scoped_and_falls_back_to_provider_protocol() {
+fn providers_file_rejects_legacy_provider_protocol() {
     let home = tempdir().unwrap();
     write(
         &home.path().join("providers.toml"),
-        r#"schema_version = 2
+        r#"schema_version = 3
+
+[providers.openai]
+display_name = "OpenAI"
+base_url = "https://api.openai.com/v1"
+auth = { type = "bearer" }
+protocol = "open_ai_responses"
+"#,
+    );
+
+    let error = ProviderRegistry::load_or_create(home.path().join("providers.toml"))
+        .expect_err("Provider wire API must not be accepted in providers.toml");
+    assert!(
+        error.to_string().contains("unknown field `protocol`"),
+        "{error}"
+    );
+}
+
+#[test]
+fn model_wire_api_is_provider_scoped_and_missing_pair_configuration_fails_closed() {
+    let home = tempdir().unwrap();
+    write(
+        &home.path().join("providers.toml"),
+        r#"schema_version = 3
 
 [providers.responses]
 display_name = "Responses"
-protocol = "open_ai_responses"
+auth = { type = "bearer" }
 base_url = "https://responses.example/v1"
 enabled = true
 
 [providers.chat]
 display_name = "Chat"
-protocol = "open_ai_chat_completions"
+auth = { type = "bearer" }
 base_url = "https://chat.example/v1"
 enabled = true
 "#,
@@ -121,9 +144,13 @@ context_window = 100000
     assert_eq!(responses.wire_api, WireApi::Messages);
     assert_eq!(responses.source, WireApiSource::ProviderModelOverride);
 
-    let chat = registry.resolve_wire_api(&chat_key).unwrap();
-    assert_eq!(chat.wire_api, WireApi::ChatCompletions);
-    assert_eq!(chat.source, WireApiSource::ProviderDefault);
+    let error = registry.resolve_wire_api(&chat_key).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("wire API is not configured for chat/shared-model"),
+        "{error}"
+    );
 }
 
 #[test]
@@ -131,11 +158,11 @@ fn exact_common_model_preset_supplies_context_effort_and_fast_mode_without_famil
     let home = tempdir().unwrap();
     write(
         &home.path().join("providers.toml"),
-        r#"schema_version = 2
+        r#"schema_version = 3
 
 [providers.allm]
 display_name = "AllM"
-protocol = "open_ai_chat_completions"
+auth = { type = "bearer" }
 base_url = "https://allm.example/v1"
 enabled = true
 "#,
@@ -189,11 +216,11 @@ fn explicit_remote_metadata_takes_precedence_over_common_model_defaults() {
     let home = tempdir().unwrap();
     write(
         &home.path().join("providers.toml"),
-        r#"schema_version = 2
+        r#"schema_version = 3
 
 [providers.openai]
 display_name = "OpenAI"
-protocol = "open_ai_responses"
+auth = { type = "bearer" }
 base_url = "https://api.openai.com/v1"
 enabled = true
 "#,
@@ -203,6 +230,7 @@ enabled = true
         r#"schema_version = 2
 
 [models."gpt-5.4"]
+wire_api = "responses"
 context_window = 272000
 
 [models."gpt-5.4".capabilities]
@@ -218,6 +246,7 @@ tool_calls = true
   "models": [{
     "key": {"provider_id": "openai", "model_id": "gpt-5.4"},
     "display_name": "Remote GPT-5.4",
+    "wire_api": "messages",
     "context_window": 128000,
     "capabilities": {
       "text_input": true,
@@ -239,10 +268,29 @@ tool_calls = true
     let model = registry
         .model(&ModelKey::new("openai", "gpt-5.4").unwrap())
         .unwrap();
+    assert_eq!(model.wire_api, Some(WireApi::Messages));
     assert_eq!(model.context_window, Some(128_000));
     assert!(!model.capabilities.image_input);
     assert!(!model.capabilities.tool_calls);
     assert!(model.capabilities.web_search);
+    let key = ModelKey::new("openai", "gpt-5.4").unwrap();
+    assert_eq!(
+        registry.resolve_wire_api(&key).unwrap().wire_api,
+        WireApi::Messages
+    );
+
+    write(
+        &home.path().join("models/providers/openai/models.toml"),
+        r#"schema_version = 1
+
+[models."gpt-5.4"]
+wire_api = "chat_completions"
+"#,
+    );
+    let registry = ProviderRegistry::load_or_create(home.path().join("providers.toml")).unwrap();
+    let resolved = registry.resolve_wire_api(&key).unwrap();
+    assert_eq!(resolved.wire_api, WireApi::ChatCompletions);
+    assert_eq!(resolved.source, WireApiSource::ProviderModelOverride);
 }
 
 #[test]
@@ -250,11 +298,11 @@ fn generic_remote_discovery_is_enriched_by_exact_common_capabilities() {
     let home = tempdir().unwrap();
     write(
         &home.path().join("providers.toml"),
-        r#"schema_version = 2
+        r#"schema_version = 3
 
 [providers.allm]
 display_name = "AllM"
-protocol = "open_ai_chat_completions"
+auth = { type = "bearer" }
 base_url = "https://allm.example/v1"
 enabled = true
 "#,
@@ -308,11 +356,11 @@ fn provider_model_profile_exposes_experimental_endpoints() {
     let home = tempdir().unwrap();
     write(
         &home.path().join("providers.toml"),
-        r#"schema_version = 2
+        r#"schema_version = 3
 
 [providers.openai]
 display_name = "OpenAI"
-protocol = "open_ai_responses"
+auth = { type = "bearer" }
 base_url = "https://api.openai.com/v1"
 enabled = true
 "#,
@@ -322,6 +370,7 @@ enabled = true
         r#"schema_version = 1
 
 [models."gpt-5.4"]
+wire_api = "responses"
 context_window = 400000
 
 [models."gpt-5.4".experimental.remote_compaction]
@@ -376,23 +425,23 @@ fn image_generation_activation_is_exact_enabled_and_openai_compatible() {
     let home = tempdir().unwrap();
     write(
         &home.path().join("providers.toml"),
-        r#"schema_version = 2
+        r#"schema_version = 3
 
 [providers.alpha]
 display_name = "Alpha"
-protocol = "open_ai_responses"
+auth = { type = "bearer" }
 base_url = "https://alpha.example.test/v1"
 enabled = true
 
 [providers.beta]
 display_name = "Beta"
-protocol = "open_ai_chat_completions"
+auth = { type = "bearer" }
 base_url = "https://beta.example.test/v1"
 enabled = true
 
 [providers.messages]
 display_name = "Messages"
-protocol = "anthropic_messages"
+auth = { type = "header", name = "x-api-key" }
 base_url = "https://messages.example.test/v1"
 enabled = true
 "#,
@@ -402,6 +451,7 @@ enabled = true
         r#"schema_version = 1
 
 [models."shared"]
+wire_api = "chat_completions"
 context_window = 128000
 
 [models."shared".experimental.image_generation]
@@ -409,6 +459,7 @@ enabled = true
 endpoint = "images/generations"
 
 [models."disabled"]
+wire_api = "chat_completions"
 context_window = 128000
 
 [models."disabled".experimental.image_generation]
@@ -421,6 +472,7 @@ endpoint = "images/generations"
         r#"schema_version = 1
 
 [models."shared"]
+wire_api = "chat_completions"
 context_window = 128000
 "#,
     );
@@ -429,6 +481,7 @@ context_window = 128000
         r#"schema_version = 1
 
 [models."shared"]
+wire_api = "messages"
 context_window = 128000
 
 [models."shared".experimental.image_generation]
@@ -477,17 +530,17 @@ fn remote_compaction_activation_is_exact_enabled_and_responses_only() {
     let home = tempdir().unwrap();
     write(
         &home.path().join("providers.toml"),
-        r#"schema_version = 2
+        r#"schema_version = 3
 
 [providers.responses]
 display_name = "Responses"
-protocol = "open_ai_responses"
+auth = { type = "bearer" }
 base_url = "https://responses.example.test/v1"
 enabled = true
 
 [providers.chat]
 display_name = "Chat"
-protocol = "open_ai_chat_completions"
+auth = { type = "bearer" }
 base_url = "https://chat.example.test/v1"
 enabled = true
 "#,
@@ -497,6 +550,7 @@ enabled = true
         r#"schema_version = 1
 
 [models."shared"]
+wire_api = "responses"
 context_window = 128000
 
 [models."shared".experimental.remote_compaction]
@@ -504,6 +558,7 @@ enabled = true
 endpoint = "responses/compact"
 
 [models."disabled"]
+wire_api = "responses"
 context_window = 128000
 
 [models."disabled".experimental.remote_compaction]
@@ -516,6 +571,7 @@ endpoint = "responses/compact"
         r#"schema_version = 1
 
 [models."shared"]
+wire_api = "chat_completions"
 context_window = 128000
 
 [models."shared".experimental.remote_compaction]
@@ -571,11 +627,11 @@ fn experimental_endpoint_rejects_origin_and_path_escape_syntax() {
         let home = tempdir().unwrap();
         write(
             &home.path().join("providers.toml"),
-            r#"schema_version = 2
+            r#"schema_version = 3
 
 [providers.openai]
 display_name = "OpenAI"
-protocol = "open_ai_responses"
+auth = { type = "bearer" }
 base_url = "https://api.openai.com/v1"
 enabled = true
 "#,
@@ -622,11 +678,11 @@ default_effort = "high"
         let home = tempdir().unwrap();
         write(
             &home.path().join("providers.toml"),
-            r#"schema_version = 2
+            r#"schema_version = 3
 
 [providers.openai]
 display_name = "OpenAI"
-protocol = "open_ai_responses"
+auth = { type = "bearer" }
 base_url = "https://api.openai.com/v1"
 enabled = true
 "#,
@@ -654,11 +710,11 @@ fn common_defaults_cannot_enable_experimental_provider_endpoints() {
     let home = tempdir().unwrap();
     write(
         &home.path().join("providers.toml"),
-        r#"schema_version = 2
+        r#"schema_version = 3
 
 [providers.openai]
 display_name = "OpenAI"
-protocol = "open_ai_responses"
+auth = { type = "bearer" }
 base_url = "https://api.openai.com/v1"
 enabled = true
 "#,

@@ -10,9 +10,9 @@ use atelier_provider::auth::{
     OAuthHttpResponse, ProviderOAuthCredentialStore, ProviderOAuthMethod,
 };
 use atelier_provider::{
-    CapabilityOverrides, CredentialRef, ModelDescriptor, ModelKey, ProviderConfig,
-    ProviderDiscovery, ProviderError, ProviderModelOverride, ProviderProtocol, ProviderRegistry,
-    ProviderSnapshot, WireApi,
+    CapabilityOverrides, CredentialRef, ModelDescriptor, ModelKey, ProviderAuth, ProviderConfig,
+    ProviderDiscovery, ProviderError, ProviderModelOverride, ProviderRegistry, ProviderSnapshot,
+    WireApi,
 };
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -181,10 +181,8 @@ struct RefreshResult {
 pub async fn handle(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
     match args.method.as_ref() {
         PROVIDER_LIST | "atelier/provider/list" | MODEL_LIST | "atelier/model/list" => list(args),
-        PROVIDER_CREATE
-        | "atelier/provider/create"
-        | PROVIDER_UPDATE
-        | "atelier/provider/update" => upsert_provider(agent, args).await,
+        PROVIDER_CREATE | "atelier/provider/create" => upsert_provider(agent, args, false).await,
+        PROVIDER_UPDATE | "atelier/provider/update" => upsert_provider(agent, args, true).await,
         PROVIDER_DELETE | "atelier/provider/delete" => delete_provider(agent, args).await,
         PROVIDER_TEST | "atelier/provider/test" => provider_status(args).await,
         PROVIDER_REFRESH_MODELS | "atelier/provider/refresh_models" => {
@@ -661,9 +659,15 @@ fn get_model_from_registry(registry: &ProviderRegistry, key: &ModelKey) -> ExtRe
     }))
 }
 
-async fn upsert_provider(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
+async fn upsert_provider(
+    agent: &MvpAgent,
+    args: &acp::ExtRequest,
+    allow_replacement: bool,
+) -> ExtResult {
     let mut params: ProviderParams = parse_params(args)?;
     let mut registry = registry().map_err(to_acp_error)?;
+    reject_unconfirmed_provider_replacement(&registry, &params.provider.id, allow_replacement)
+        .map_err(to_acp_error)?;
     let existing_credential = registry
         .provider(&params.provider.id)
         .map(|provider| provider.credential.clone());
@@ -684,6 +688,18 @@ async fn upsert_provider(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult 
     persist(&registry).map_err(to_acp_error)?;
     reload_live_catalog(agent).await?;
     to_raw_response(&registry.snapshot())
+}
+
+fn reject_unconfirmed_provider_replacement(
+    registry: &ProviderRegistry,
+    provider_id: &str,
+    allow_replacement: bool,
+) -> Result<(), ProviderError> {
+    match (registry.provider(provider_id).is_some(), allow_replacement) {
+        (true, false) => Err(ProviderError::ProviderAlreadyExists(provider_id.to_owned())),
+        (false, true) => Err(ProviderError::ProviderNotFound(provider_id.to_owned())),
+        _ => Ok(()),
+    }
 }
 
 fn preserve_existing_provider_fields(
@@ -983,33 +999,31 @@ fn build_provider_request(
 fn provider_headers(
     provider: &ProviderConfig,
 ) -> Result<reqwest::header::HeaderMap, ProviderError> {
-    provider_headers_for_wire_api(provider, None)
-}
-
-fn provider_headers_for_wire_api(
-    provider: &ProviderConfig,
-    wire_api: Option<WireApi>,
-) -> Result<reqwest::header::HeaderMap, ProviderError> {
     use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 
     let mut headers = HeaderMap::new();
     if let Some(secret) = provider.credential.resolve()? {
-        let use_messages_auth = wire_api
-            .map(|wire_api| wire_api == WireApi::Messages)
-            .unwrap_or(matches!(
-                provider.protocol,
-                ProviderProtocol::AnthropicMessages
-            ));
-        let (name, value) = if use_messages_auth {
-            ("x-api-key", secret.expose_secret().to_owned())
-        } else {
-            (
-                "authorization",
+        let (name, value) = match &provider.auth {
+            ProviderAuth::None => {
+                return Err(ProviderError::InvalidProvider(
+                    "configured credential has no Provider auth policy".into(),
+                ));
+            }
+            ProviderAuth::Bearer => (
+                HeaderName::from_static("authorization"),
                 format!("Bearer {}", secret.expose_secret()),
-            )
+            ),
+            ProviderAuth::Header { name } => (
+                HeaderName::from_bytes(name.as_bytes()).map_err(|error| {
+                    ProviderError::InvalidProvider(format!(
+                        "invalid credential header name: {error}"
+                    ))
+                })?,
+                secret.expose_secret().to_owned(),
+            ),
         };
         headers.insert(
-            HeaderName::from_static(name),
+            name,
             HeaderValue::from_str(&value).map_err(|error| {
                 ProviderError::InvalidProvider(format!("invalid credential header: {error}"))
             })?,
@@ -1069,11 +1083,12 @@ mod tests {
     use super::{
         apply_credential_update, delete_replaced_secret_store_credential,
         pair_test_runtime_request, parse_model_key, preserve_existing_provider_fields,
-        provider_probe_outcome, redacted_model_override, select_oauth_method,
+        provider_probe_outcome, redacted_model_override, reject_unconfirmed_provider_replacement,
+        select_oauth_method,
     };
     use atelier_provider::{
-        CredentialRef, ModelCapabilities, ModelDescriptor, ModelKey, ModelSource, ProviderConfig,
-        ProviderModelOverride, ProviderProtocol, ProviderRegistry, WireApi,
+        CredentialRef, ModelCapabilities, ModelDescriptor, ModelKey, ModelSource, ProviderAuth,
+        ProviderConfig, ProviderModelOverride, ProviderRegistry, WireApi,
     };
     use std::collections::BTreeMap;
     use url::Url;
@@ -1082,7 +1097,7 @@ mod tests {
         ProviderConfig {
             id: "allm".into(),
             display_name: "AllM".into(),
-            protocol: ProviderProtocol::OpenAiResponses,
+            auth: ProviderAuth::Bearer,
             base_url: Url::parse("https://provider.example/v1").unwrap(),
             credential: CredentialRef::None,
             discovery: atelier_provider::ProviderDiscovery::Disabled,
@@ -1136,6 +1151,21 @@ mod tests {
     }
 
     #[test]
+    fn provider_create_rejects_an_unconfirmed_replacement() {
+        let mut registry = ProviderRegistry::in_memory();
+        registry.upsert_provider(oauth_test_provider()).unwrap();
+
+        let error = reject_unconfirmed_provider_replacement(&registry, "allm", false)
+            .expect_err("create must not replace an existing Provider");
+        assert!(error.to_string().contains("already exists"));
+        reject_unconfirmed_provider_replacement(&registry, "allm", true)
+            .expect("confirmed update may replace an existing Provider");
+        let error = reject_unconfirmed_provider_replacement(&registry, "missing", true)
+            .expect_err("update must not create a missing Provider");
+        assert!(error.to_string().contains("not found"));
+    }
+
+    #[test]
     fn model_key_parser_accepts_composite_key() {
         let key = parse_model_key(super::ModelKeyParams {
             model_key: Some("proxy/model".into()),
@@ -1164,7 +1194,7 @@ mod tests {
         let mut provider = ProviderConfig {
             id: "test".into(),
             display_name: "Test".into(),
-            protocol: ProviderProtocol::OpenAiResponses,
+            auth: ProviderAuth::Bearer,
             base_url: Url::parse("https://provider.example/v1").unwrap(),
             credential: CredentialRef::None,
             discovery: atelier_provider::ProviderDiscovery::Disabled,
@@ -1195,7 +1225,7 @@ mod tests {
             .upsert_provider(ProviderConfig {
                 id: "proxy".into(),
                 display_name: "Company Proxy".into(),
-                protocol: ProviderProtocol::OpenAiResponses,
+                auth: ProviderAuth::Bearer,
                 base_url: Url::parse("https://old.example/v1").unwrap(),
                 credential: CredentialRef::None,
                 discovery: atelier_provider::ProviderDiscovery::Static,
@@ -1206,7 +1236,7 @@ mod tests {
         let mut edited = ProviderConfig {
             id: "proxy".into(),
             display_name: "proxy".into(),
-            protocol: ProviderProtocol::OpenAiChatCompletions,
+            auth: ProviderAuth::Bearer,
             base_url: Url::parse("https://new.example/v1").unwrap(),
             credential: CredentialRef::Environment {
                 variable: "PROXY_KEY".into(),
@@ -1227,7 +1257,7 @@ mod tests {
         ));
         assert_eq!(edited.extra_headers["x-tenant"], "kept");
         assert!(!edited.enabled);
-        assert_eq!(edited.protocol, ProviderProtocol::OpenAiChatCompletions);
+        assert_eq!(edited.auth, ProviderAuth::Bearer);
         assert_eq!(edited.base_url.as_str(), "https://new.example/v1");
     }
 
@@ -1238,7 +1268,7 @@ mod tests {
             .upsert_provider(ProviderConfig {
                 id: "proxy".into(),
                 display_name: "Proxy".into(),
-                protocol: ProviderProtocol::OpenAiResponses,
+                auth: ProviderAuth::Bearer,
                 base_url: Url::parse("https://old.example/v1").unwrap(),
                 credential: CredentialRef::Environment {
                     variable: "PROXY_API_KEY".into(),
@@ -1251,7 +1281,7 @@ mod tests {
         let mut edited = ProviderConfig {
             id: "proxy".into(),
             display_name: "proxy".into(),
-            protocol: ProviderProtocol::OpenAiChatCompletions,
+            auth: ProviderAuth::Bearer,
             base_url: Url::parse("https://new.example/v1").unwrap(),
             credential: CredentialRef::None,
             discovery: atelier_provider::ProviderDiscovery::OpenAiModels {
@@ -1269,7 +1299,7 @@ mod tests {
                 variable: "PROXY_API_KEY".into(),
             }
         );
-        assert_eq!(edited.protocol, ProviderProtocol::OpenAiChatCompletions);
+        assert_eq!(edited.auth, ProviderAuth::Bearer);
         assert_eq!(edited.base_url.as_str(), "https://new.example/v1");
     }
 
@@ -1292,7 +1322,7 @@ mod tests {
             .upsert_provider(ProviderConfig {
                 id: "proxy".into(),
                 display_name: "Proxy".into(),
-                protocol: ProviderProtocol::OpenAiResponses,
+                auth: ProviderAuth::Bearer,
                 base_url: Url::parse("https://old.example/v1").unwrap(),
                 credential: credential.clone(),
                 discovery: atelier_provider::ProviderDiscovery::Static,
@@ -1303,7 +1333,7 @@ mod tests {
         let edited = ProviderConfig {
             id: "proxy".into(),
             display_name: "Proxy".into(),
-            protocol: ProviderProtocol::OpenAiChatCompletions,
+            auth: ProviderAuth::Bearer,
             base_url: Url::parse("https://new.example/v1").unwrap(),
             credential: CredentialRef::None,
             discovery: atelier_provider::ProviderDiscovery::Static,
@@ -1348,7 +1378,7 @@ mod tests {
             .upsert_provider(ProviderConfig {
                 id: "proxy".into(),
                 display_name: "Proxy".into(),
-                protocol: ProviderProtocol::OpenAiResponses,
+                auth: ProviderAuth::Bearer,
                 base_url: Url::parse("https://old.example/v1").unwrap(),
                 credential: credential.clone(),
                 discovery: atelier_provider::ProviderDiscovery::Static,
@@ -1359,7 +1389,7 @@ mod tests {
         let mut edited = ProviderConfig {
             id: "proxy".into(),
             display_name: "proxy".into(),
-            protocol: ProviderProtocol::OpenAiChatCompletions,
+            auth: ProviderAuth::Bearer,
             base_url: Url::parse("https://new.example/v1").unwrap(),
             credential: CredentialRef::None,
             discovery: atelier_provider::ProviderDiscovery::OpenAiModels {
@@ -1400,7 +1430,7 @@ mod tests {
             .upsert_provider(ProviderConfig {
                 id: "proxy".into(),
                 display_name: "Proxy".into(),
-                protocol: ProviderProtocol::OpenAiResponses,
+                auth: ProviderAuth::Bearer,
                 base_url: Url::parse("https://provider.example/v1").unwrap(),
                 credential: CredentialRef::None,
                 discovery: atelier_provider::ProviderDiscovery::Disabled,
@@ -1459,7 +1489,7 @@ mod tests {
             .upsert_provider(ProviderConfig {
                 id: "allm".into(),
                 display_name: "allm".into(),
-                protocol: ProviderProtocol::OpenAiChatCompletions,
+                auth: ProviderAuth::Bearer,
                 base_url: Url::parse("https://provider.example/v1").unwrap(),
                 credential: CredentialRef::None,
                 discovery: atelier_provider::ProviderDiscovery::Disabled,

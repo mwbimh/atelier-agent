@@ -211,7 +211,7 @@ fn role_config_and_registry_round_trip_through_toml() {
 fn missing_roles_file_stays_empty_until_a_role_is_configured() {
     let directory = tempdir().unwrap();
     let path = directory.path().join("providers.toml");
-    std::fs::write(&path, "schema_version = 2\n\n[providers]\n").unwrap();
+    std::fs::write(&path, "schema_version = 3\n\n[providers]\n").unwrap();
 
     let mut registry = ProviderRegistry::load_or_create(&path).unwrap();
     assert!(registry.roles().is_empty());
@@ -233,7 +233,7 @@ fn missing_roles_file_stays_empty_until_a_role_is_configured() {
 fn invalid_persisted_role_is_rejected() {
     let directory = tempdir().unwrap();
     let path = directory.path().join("providers.toml");
-    std::fs::write(&path, "schema_version = 2\n\n[providers]\n").unwrap();
+    std::fs::write(&path, "schema_version = 3\n\n[providers]\n").unwrap();
     std::fs::write(
         directory.path().join("roles.toml"),
         "schema_version = 1\n\n[roles.main]\nprovider = \"\"\nmodel = \"model\"\n",

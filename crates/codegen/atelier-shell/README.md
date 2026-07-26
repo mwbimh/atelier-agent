@@ -72,7 +72,7 @@ files contain only the Provider OAuth method metadata.
 Example:
 
 ```text
-/provider add company responses https://api.example.com/v1 oauth authorization-code desktop-client https://login.example.com/authorize https://login.example.com/token openid,profile
+/provider add company https://api.example.com/v1 bearer oauth authorization-code desktop-client https://login.example.com/authorize https://login.example.com/token openid,profile
 /provider login company authorization-code
 ```
 

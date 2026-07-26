@@ -9,8 +9,8 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use atelier_provider::{
-    CredentialRef, ModelCapabilities, ModelDescriptor, ModelKey, ModelSource, ProviderConfig,
-    ProviderDiscovery, ProviderProtocol, ProviderRegistry, RoleConfig, RoleId, WireApi,
+    CredentialRef, ModelCapabilities, ModelDescriptor, ModelKey, ModelSource, ProviderAuth,
+    ProviderConfig, ProviderDiscovery, ProviderRegistry, RoleConfig, RoleId, WireApi,
 };
 use atelier_test_support::{AtelierStdioClient, MockInferenceServer};
 use tempfile::TempDir;
@@ -25,7 +25,7 @@ fn configure_mock_runtime(home: &TempDir, server: &MockInferenceServer) {
         .upsert_provider(ProviderConfig {
             id: "mock".to_owned(),
             display_name: "Mock inference".to_owned(),
-            protocol: ProviderProtocol::OpenAiChatCompletions,
+            auth: ProviderAuth::Bearer,
             base_url: Url::parse(&server.url()).unwrap(),
             credential: CredentialRef::None,
             discovery: ProviderDiscovery::Static,

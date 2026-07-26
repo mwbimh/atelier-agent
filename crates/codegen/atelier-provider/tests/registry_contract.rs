@@ -1,6 +1,6 @@
 use atelier_provider::{
     CapabilityOverrides, CredentialRef, ModelCapabilities, ModelDescriptor, ModelKey, ModelSource,
-    ProviderConfig, ProviderDiscovery, ProviderModelOverride, ProviderProtocol, ProviderRegistry,
+    ProviderAuth, ProviderConfig, ProviderDiscovery, ProviderModelOverride, ProviderRegistry,
     SecretString, WireApi, WireApiSource, parse_custom_model_id, parse_openai_models_response,
 };
 #[cfg(not(windows))]
@@ -13,7 +13,7 @@ fn provider(id: &str) -> ProviderConfig {
     ProviderConfig {
         id: id.into(),
         display_name: id.into(),
-        protocol: ProviderProtocol::OpenAiResponses,
+        auth: ProviderAuth::Bearer,
         base_url: Url::parse("https://models.example.test/v1").unwrap(),
         credential: CredentialRef::Environment {
             variable: "ATELIER_TEST_KEY".into(),
@@ -50,37 +50,28 @@ fn model_keys_are_provider_scoped() {
 }
 
 #[test]
-fn absent_wire_api_falls_back_to_each_provider_protocol() {
-    for (provider_id, protocol, expected) in [
+fn absent_wire_api_fails_closed_independently_of_provider_auth() {
+    for (provider_id, auth) in [
+        ("bearer", ProviderAuth::Bearer),
         (
-            "responses",
-            ProviderProtocol::OpenAiResponses,
-            WireApi::Responses,
-        ),
-        (
-            "chat",
-            ProviderProtocol::OpenAiChatCompletions,
-            WireApi::ChatCompletions,
-        ),
-        (
-            "messages",
-            ProviderProtocol::AnthropicMessages,
-            WireApi::Messages,
+            "header",
+            ProviderAuth::Header {
+                name: "x-api-key".into(),
+            },
         ),
     ] {
         let key = ModelKey::new(provider_id, "model").unwrap();
         let mut registry = ProviderRegistry::in_memory();
         let mut config = provider(provider_id);
-        config.protocol = protocol;
+        config.auth = auth;
         registry.upsert_provider(config).unwrap();
         registry.upsert_model(model(key.clone())).unwrap();
 
-        let resolved = registry.resolve_wire_api(&key).unwrap();
-        let snapshot_resolved = registry.snapshot().resolve_wire_api(&key).unwrap();
+        let error = registry.resolve_wire_api(&key).unwrap_err();
+        let snapshot_error = registry.snapshot().resolve_wire_api(&key).unwrap_err();
 
-        assert_eq!(resolved.wire_api, expected);
-        assert_eq!(resolved.source, WireApiSource::ProviderDefault);
-        assert_eq!(snapshot_resolved, resolved);
+        assert!(error.to_string().contains("wire API is not configured"));
+        assert_eq!(snapshot_error.to_string(), error.to_string());
     }
 }
 
@@ -252,6 +243,7 @@ fn openai_models_response_parser_is_pure_and_fail_closed() {
               "id": "custom/model",
               "name": "Custom Model",
               "description": "A configured model",
+              "wire_api": "messages",
               "context_window": 131072,
               "capabilities": {
                 "text_input": true,
@@ -274,6 +266,7 @@ fn openai_models_response_parser_is_pure_and_fail_closed() {
         ModelKey::new("proxy", "custom/model").unwrap()
     );
     assert_eq!(parsed[0].display_name, "Custom Model");
+    assert_eq!(parsed[0].wire_api, Some(WireApi::Messages));
     assert_eq!(parsed[0].context_window, Some(131072));
     assert!(parsed[0].capabilities.tool_calls);
     assert!(parsed[0].capabilities.image_input);
@@ -292,6 +285,13 @@ fn openai_models_response_parser_is_pure_and_fail_closed() {
             .model(&ModelKey::new("proxy", "custom/model").unwrap())
             .is_some()
     );
+
+    let error = parse_openai_models_response(
+        "proxy",
+        r#"{"data":[{"id":"bad-wire","wire_api":"guessed"}]}"#,
+    )
+    .expect_err("unknown discovery wire APIs must fail closed");
+    assert!(error.to_string().contains("unknown wire API"), "{error}");
 }
 
 #[test]
@@ -506,7 +506,7 @@ fn model_wire_api_and_provider_model_override_resolve_in_order() {
     registry.upsert_model(descriptor).unwrap();
     let resolved = registry.resolve_wire_api(&key).unwrap();
     assert_eq!(resolved.wire_api, WireApi::Responses);
-    assert_eq!(resolved.source, WireApiSource::ProviderModelOverride);
+    assert_eq!(resolved.source, WireApiSource::ModelDefinition);
 
     registry
         .set_model_provider_override(
@@ -561,7 +561,7 @@ fn model_wire_api_settings_survive_registry_reload() {
 }
 
 #[test]
-fn absent_model_wire_api_uses_provider_default() {
+fn absent_model_wire_api_has_no_provider_fallback() {
     let key = ModelKey::new("responses-provider", "legacy-model").unwrap();
     let mut registry = ProviderRegistry::in_memory();
     registry
@@ -569,34 +569,33 @@ fn absent_model_wire_api_uses_provider_default() {
         .unwrap();
     registry.upsert_model(model(key.clone())).unwrap();
 
-    let resolved = registry.resolve_wire_api(&key).unwrap();
-    assert_eq!(resolved.wire_api, WireApi::Responses);
-    assert_eq!(resolved.source, WireApiSource::ProviderDefault);
+    let error = registry.resolve_wire_api(&key).unwrap_err();
+    assert!(error.to_string().contains("wire API is not configured"));
 }
 
 #[test]
-fn model_wire_api_is_isolated_across_providers() {
-    let key_a = ModelKey::new("proxy-a", "shared-model").unwrap();
-    let key_b = ModelKey::new("proxy-b", "shared-model").unwrap();
+fn model_wire_api_is_isolated_across_exact_provider_model_pairs() {
+    let key_a = ModelKey::new("proxy", "responses-model").unwrap();
+    let key_b = ModelKey::new("proxy", "messages-model").unwrap();
     let mut registry = ProviderRegistry::in_memory();
-    registry.upsert_provider(provider("proxy-a")).unwrap();
-    let mut provider_b = provider("proxy-b");
-    provider_b.protocol = ProviderProtocol::OpenAiChatCompletions;
-    registry.upsert_provider(provider_b).unwrap();
+    registry.upsert_provider(provider("proxy")).unwrap();
     registry.upsert_model(model(key_a.clone())).unwrap();
     registry.upsert_model(model(key_b.clone())).unwrap();
 
     registry
         .set_model_wire_api(&key_a, Some(WireApi::Responses))
         .unwrap();
+    registry
+        .set_model_wire_api(&key_b, Some(WireApi::Messages))
+        .unwrap();
+
     assert_eq!(
         registry.resolve_wire_api(&key_a).unwrap().wire_api,
         WireApi::Responses
     );
     assert_eq!(
         registry.resolve_wire_api(&key_b).unwrap().wire_api,
-        WireApi::ChatCompletions,
-        "proxy-b still uses its Provider default"
+        WireApi::Messages
     );
 
     registry
@@ -614,13 +613,7 @@ fn model_wire_api_is_isolated_across_providers() {
     );
     assert_eq!(
         registry.resolve_wire_api(&key_b).unwrap().wire_api,
-        WireApi::ChatCompletions
-    );
-    assert!(
-        registry
-            .snapshot()
-            .model_provider_overrides
-            .contains_key("proxy-a/shared-model")
+        WireApi::Messages
     );
 }
 

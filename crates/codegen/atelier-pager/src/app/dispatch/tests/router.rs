@@ -934,6 +934,20 @@ fn slash_model_invalid_arg_produces_scrollback_error() {
     assert!(app.agents[&id].prompt.text().is_empty());
 }
 #[test]
+fn slash_provider_add_opens_the_provider_wizard() {
+    let mut app = test_app_with_agent();
+    let id = AgentId(0);
+
+    let effects = dispatch(Action::SendPrompt("/provider add".into()), &mut app);
+
+    assert!(effects.is_empty());
+    assert!(matches!(
+        app.agents[&id].active_modal,
+        Some(crate::views::modal::ActiveModal::ProviderWizard { .. })
+    ));
+}
+
+#[test]
 fn slash_model_no_args_without_providers_only_offers_add() {
     let _provider_presence = super::super::router::override_model_recovery_provider_presence(false);
     let mut app = test_app_with_agent();
@@ -955,7 +969,7 @@ fn slash_model_no_args_without_providers_only_offers_add() {
             .iter()
             .map(|item| item.insert_text.as_str())
             .collect::<Vec<_>>(),
-        vec!["add "],
+        vec!["add"],
         "refresh must stay hidden when there is no configured Provider"
     );
     assert!(
@@ -990,7 +1004,7 @@ fn slash_model_no_args_with_provider_offers_refresh_and_add_and_add_can_continue
             .iter()
             .map(|item| item.insert_text.as_str())
             .collect::<Vec<_>>(),
-        vec!["refresh ", "add "],
+        vec!["refresh ", "add"],
         "configured Providers must make both recovery paths available"
     );
     state.selected = 1;
@@ -1000,28 +1014,15 @@ fn slash_model_no_args_with_provider_offers_refresh_and_add_and_add_can_continue
         &crate::actions::ActionRegistry::defaults(),
     );
 
-    assert!(matches!(
-        outcome,
-        crate::app::app_view::InputOutcome::Changed
-    ));
-    let Some(crate::views::modal::ActiveModal::ArgPicker {
-        command,
-        args_query,
-        items,
-        ..
-    }) = app.agents[&id].active_modal.as_ref()
-    else {
-        panic!("provider add should continue into the staged Provider form");
+    let crate::app::app_view::InputOutcome::Action(action) = outcome else {
+        panic!("provider add selection must execute the terminal add command");
     };
-    assert_eq!(command, "provider");
-    assert_eq!(args_query, "add ");
-    assert_eq!(
-        items
-            .iter()
-            .map(|item| item.insert_text.as_str())
-            .collect::<Vec<_>>(),
-        vec!["add allm ", "add openai ", "add anthropic ", "add local "]
-    );
+    let effects = dispatch(action, &mut app);
+    assert!(effects.is_empty());
+    assert!(matches!(
+        app.agents[&id].active_modal,
+        Some(crate::views::modal::ActiveModal::ProviderWizard { .. })
+    ));
 }
 #[test]
 fn slash_hooks_opens_modal() {

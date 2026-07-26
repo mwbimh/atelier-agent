@@ -2,7 +2,7 @@
 
 use atelier_provider::auth::ProviderOAuthMethod;
 use atelier_provider::{
-    CredentialRef, ProviderConfig, ProviderDiscovery, ProviderProtocol, ProviderRegistry,
+    CredentialRef, ProviderAuth, ProviderConfig, ProviderDiscovery, ProviderRegistry,
 };
 use std::collections::BTreeMap;
 use url::Url;
@@ -80,7 +80,7 @@ impl SlashCommand for ProviderCommand {
 
         Some(
             [
-                "list", "add ", "edit ", "enable ", "disable ", "test ", "refresh ", "login ",
+                "list", "add", "edit ", "enable ", "disable ", "test ", "refresh ", "login ",
                 "logout ", "delete ",
             ]
             .into_iter()
@@ -113,14 +113,18 @@ impl SlashCommand for ProviderCommand {
             }
             "add" | "edit" => {
                 let Some(provider_id) = provider_id else {
-                    return CommandResult::Error(format!(
-                        "Usage: /provider {command} <id> <protocol> <base-url> [credential]"
-                    ));
+                    return if command == "add" {
+                        CommandResult::Action(Action::OpenProviderWizard)
+                    } else {
+                        CommandResult::Error(
+                            "Usage: /provider edit <id> <base-url> <auth> [credential]".into(),
+                        )
+                    };
                 };
                 let fields = parts.collect::<Vec<_>>();
                 if fields.len() < 2 {
                     return CommandResult::Error(format!(
-                        "Usage: /provider {command} <id> <protocol> <base-url> [credential]"
+                        "Usage: /provider {command} <id> <base-url> <auth> [credential]"
                     ));
                 }
                 let credential_provided = fields.len() >= 3;
@@ -259,34 +263,34 @@ fn provider_form_items(
     match fields {
         [] => Some(provider_id_items(command)),
         [_provider_id] if !trailing_space => Some(provider_id_items(command)),
-        [provider_id] => Some(provider_protocol_items(command, provider_id)),
-        [provider_id, _protocol] if !trailing_space => {
-            Some(provider_protocol_items(command, provider_id))
+        [provider_id] => Some(provider_base_url_items(command, provider_id)),
+        [provider_id, _base_url] if !trailing_space => {
+            Some(provider_base_url_items(command, provider_id))
         }
-        [provider_id, protocol] => Some(provider_base_url_items(command, provider_id, protocol)),
-        [provider_id, protocol, _base_url] if !trailing_space => {
-            Some(provider_base_url_items(command, provider_id, protocol))
+        [provider_id, base_url] => Some(provider_auth_items(command, provider_id, base_url)),
+        [provider_id, base_url, _auth] if !trailing_space => {
+            Some(provider_auth_items(command, provider_id, base_url))
         }
-        [provider_id, protocol, base_url] => Some(provider_credential_items(
+        [provider_id, base_url, auth] => Some(provider_credential_items(
             command,
             provider_id,
-            protocol,
             base_url,
+            auth,
         )),
-        [provider_id, protocol, base_url, "oauth"] => Some(provider_oauth_kind_items(
+        [provider_id, base_url, auth, "oauth"] => Some(provider_oauth_kind_items(
             command,
             provider_id,
-            protocol,
             base_url,
+            auth,
         )),
-        [provider_id, protocol, base_url, "oauth", flow]
+        [provider_id, base_url, auth, "oauth", flow]
             if matches!(*flow, "authorization-code" | "device-code") =>
         {
             Some(provider_oauth_template_items(
                 command,
                 provider_id,
-                protocol,
                 base_url,
+                auth,
                 flow,
             ))
         }
@@ -337,64 +341,64 @@ fn provider_id_items(command: &str) -> Vec<ArgItem> {
     .collect()
 }
 
-fn provider_protocol_items(command: &str, provider_id: &str) -> Vec<ArgItem> {
-    [
-        ("responses", "OpenAI Responses API"),
-        ("chat", "OpenAI Chat Completions API"),
-        ("anthropic", "Anthropic Messages API"),
-    ]
-    .into_iter()
-    .map(|(protocol, description)| ArgItem {
-        display: protocol.to_owned(),
-        match_text: protocol.to_owned(),
-        insert_text: format!("{command} {provider_id} {protocol} "),
-        description: description.to_owned(),
-    })
-    .collect()
-}
-
-fn provider_base_url_items(command: &str, provider_id: &str, protocol: &str) -> Vec<ArgItem> {
-    let urls: &[(&str, &str)] = match protocol {
-        "responses" | "openai-responses" => &[
+fn provider_base_url_items(command: &str, provider_id: &str) -> Vec<ArgItem> {
+    let urls: &[(&str, &str)] = match provider_id {
+        "openai" => &[
             ("https://api.openai.com/v1", "OpenAI public API"),
             (
                 "https://api.example.com/v1",
                 "Editable HTTPS Provider template",
             ),
         ],
-        "anthropic" | "messages" => &[
-            ("https://api.anthropic.com", "Anthropic public API"),
-            (
-                "https://api.example.com",
-                "Editable HTTPS Provider template",
-            ),
-        ],
-        _ => &[
+        "anthropic" => &[
+            ("https://api.anthropic.com/v1", "Anthropic public API"),
             (
                 "https://api.example.com/v1",
                 "Editable HTTPS Provider template",
             ),
+        ],
+        "local" => &[
             ("http://127.0.0.1:11434/v1", "Local Ollama-compatible API"),
             ("http://127.0.0.1:1234/v1", "Local LM Studio-compatible API"),
         ],
+        _ => &[(
+            "https://api.example.com/v1",
+            "Editable HTTPS Provider template",
+        )],
     };
     urls.iter()
         .map(|(base_url, description)| ArgItem {
             display: (*base_url).to_owned(),
             match_text: (*base_url).to_owned(),
-            insert_text: format!("{command} {provider_id} {protocol} {base_url} "),
+            insert_text: format!("{command} {provider_id} {base_url} "),
             description: (*description).to_owned(),
         })
         .collect()
 }
 
+fn provider_auth_items(command: &str, provider_id: &str, base_url: &str) -> Vec<ArgItem> {
+    [
+        ("bearer", "Authorization: Bearer <credential>"),
+        ("header:x-api-key", "x-api-key: <credential>"),
+        ("none", "No Provider credential"),
+    ]
+    .into_iter()
+    .map(|(auth, description)| ArgItem {
+        display: auth.to_owned(),
+        match_text: auth.to_owned(),
+        insert_text: format!("{command} {provider_id} {base_url} {auth} "),
+        description: description.to_owned(),
+    })
+    .collect()
+}
+
 fn provider_credential_items(
     command: &str,
     provider_id: &str,
-    protocol: &str,
     base_url: &str,
+    auth: &str,
 ) -> Vec<ArgItem> {
-    let prefix = format!("{command} {provider_id} {protocol} {base_url}");
+    let prefix = format!("{command} {provider_id} {base_url} {auth}");
     let environment_variable = format!(
         "{}_API_KEY",
         provider_id
@@ -455,8 +459,8 @@ fn provider_credential_items(
 fn provider_oauth_kind_items(
     command: &str,
     provider_id: &str,
-    protocol: &str,
     base_url: &str,
+    auth: &str,
 ) -> Vec<ArgItem> {
     [
         ("authorization-code", "OAuth authorization-code + PKCE"),
@@ -466,7 +470,7 @@ fn provider_oauth_kind_items(
     .map(|(flow, description)| ArgItem {
         display: flow.to_owned(),
         match_text: flow.to_owned(),
-        insert_text: format!("{command} {provider_id} {protocol} {base_url} oauth {flow} "),
+        insert_text: format!("{command} {provider_id} {base_url} {auth} oauth {flow} "),
         description: description.to_owned(),
     })
     .collect()
@@ -475,8 +479,8 @@ fn provider_oauth_kind_items(
 fn provider_oauth_template_items(
     command: &str,
     provider_id: &str,
-    protocol: &str,
     base_url: &str,
+    auth: &str,
     flow: &str,
 ) -> Vec<ArgItem> {
     let endpoint = if flow == "authorization-code" {
@@ -488,7 +492,7 @@ fn provider_oauth_template_items(
         display: "CLIENT_ID + endpoints".to_owned(),
         match_text: "client id endpoint token scopes".to_owned(),
         insert_text: format!(
-            "{command} {provider_id} {protocol} {base_url} oauth {flow} CLIENT_ID {endpoint} TOKEN_ENDPOINT"
+            "{command} {provider_id} {base_url} {auth} oauth {flow} CLIENT_ID {endpoint} TOKEN_ENDPOINT"
         ),
         description: "Replace placeholders; optionally append comma-separated scopes".to_owned(),
     }]
@@ -515,26 +519,28 @@ fn provider_id_insert_text(command: &str, provider_id: &str) -> String {
 
 fn parse_provider_spec(provider_id: &str, spec: &str) -> Result<ProviderConfig, String> {
     let mut parts = spec.split_whitespace();
-    let protocol = match parts.next().unwrap_or_default() {
-        "responses" | "openai-responses" => ProviderProtocol::OpenAiResponses,
-        "chat" | "chat-completions" | "openai-chat" => ProviderProtocol::OpenAiChatCompletions,
-        "anthropic" | "messages" => ProviderProtocol::AnthropicMessages,
+    let base_url = Url::parse(parts.next().unwrap_or_default())
+        .map_err(|error| format!("Invalid provider base URL: {error}"))?;
+    let auth = match parts.next().unwrap_or_default() {
+        "bearer" => ProviderAuth::Bearer,
+        "none" => ProviderAuth::None,
+        value if value.starts_with("header:") => ProviderAuth::Header {
+            name: value.strip_prefix("header:").unwrap_or_default().to_owned(),
+        },
         value => {
             return Err(format!(
-                "Unknown protocol '{value}'. Use responses, chat, or anthropic."
+                "Unknown Provider auth '{value}'. Use bearer, header:NAME, or none."
             ));
         }
     };
-    let base_url = Url::parse(parts.next().unwrap_or_default())
-        .map_err(|error| format!("Invalid provider base URL: {error}"))?;
     let credential_fields = parts.collect::<Vec<_>>();
     let credential = parse_credential_spec(provider_id, &credential_fields)?;
     let config = ProviderConfig {
         id: provider_id.to_owned(),
         display_name: provider_id.to_owned(),
-        protocol,
         base_url,
         credential,
+        auth,
         discovery: ProviderDiscovery::OpenAiModels {
             path: "models".to_owned(),
         },
@@ -551,9 +557,9 @@ fn parse_credential_spec(provider_id: &str, fields: &[&str]) -> Result<Credentia
         [value] if value.starts_with("env:") => Ok(CredentialRef::Environment {
             variable: value.strip_prefix("env:").unwrap_or_default().to_owned(),
         }),
-        [value] if value.starts_with("cmd:") => Ok(CredentialRef::Command {
+        [value, args @ ..] if value.starts_with("cmd:") => Ok(CredentialRef::Command {
             program: value.strip_prefix("cmd:").unwrap_or_default().to_owned(),
-            args: Vec::new(),
+            args: args.iter().map(|argument| (*argument).to_owned()).collect(),
         }),
         [
             "oauth",
@@ -648,7 +654,7 @@ mod tests {
     use crate::slash::command::SlashCommand;
     use crate::slash::command::{CommandExecCtx, CommandResult};
     use atelier_provider::auth::ProviderOAuthMethod;
-    use atelier_provider::{CredentialRef, ProviderProtocol};
+    use atelier_provider::{CredentialRef, ProviderAuth};
     use url::Url;
 
     fn empty_ctx() -> CommandExecCtx<'static> {
@@ -704,14 +710,15 @@ mod tests {
         let mut ctx = empty_ctx();
         let result = ProviderCommand.run(
             &mut ctx,
-            "add allm chat https://example.test/v1 env:ALLM_API_KEY",
+            "add allm https://example.test/v1 bearer env:ALLM_API_KEY",
         );
         let CommandResult::Action(Action::RuntimeExtension { method, params }) = result else {
             panic!("provider add must use the live runtime service");
         };
         assert_eq!(method, "_atelier/provider/create");
         assert_eq!(params["provider"]["id"], "allm");
-        assert_eq!(params["provider"]["protocol"], "open_ai_chat_completions");
+        assert_eq!(params["provider"]["auth"]["type"], "bearer");
+        assert!(params["provider"].get("protocol").is_none());
     }
 
     #[test]
@@ -719,7 +726,7 @@ mod tests {
         let mut ctx = empty_ctx();
         let result = ProviderCommand.run(
             &mut ctx,
-            "edit allm chat https://example.test/v1 env:ALLM_API_KEY",
+            "edit allm https://example.test/v1 bearer env:ALLM_API_KEY",
         );
         let CommandResult::Action(Action::RuntimeExtension { method, params }) = result else {
             panic!("provider edit must use the live runtime service");
@@ -731,7 +738,7 @@ mod tests {
     #[test]
     fn provider_edit_without_credential_preserves_existing_credential() {
         let mut ctx = empty_ctx();
-        let result = ProviderCommand.run(&mut ctx, "edit allm chat https://example.test/v1");
+        let result = ProviderCommand.run(&mut ctx, "edit allm https://example.test/v1 bearer");
         let CommandResult::Action(Action::RuntimeExtension { method, params }) = result else {
             panic!("provider edit must use the live runtime service");
         };
@@ -742,7 +749,7 @@ mod tests {
     #[test]
     fn provider_edit_with_explicit_none_clears_existing_credential() {
         let mut ctx = empty_ctx();
-        let result = ProviderCommand.run(&mut ctx, "edit allm chat https://example.test/v1 none");
+        let result = ProviderCommand.run(&mut ctx, "edit allm https://example.test/v1 none none");
         let CommandResult::Action(Action::RuntimeExtension { method, params }) = result else {
             panic!("provider edit must use the live runtime service");
         };
@@ -755,12 +762,12 @@ mod tests {
         let mut ctx = empty_ctx();
         let cases = [
             (
-                "add company responses https://api.example.test/v1 oauth authorization-code desktop-client https://login.example.test/authorize https://login.example.test/token openid,profile",
+                "add company https://api.example.test/v1 bearer oauth authorization-code desktop-client https://login.example.test/authorize https://login.example.test/token openid,profile",
                 "_atelier/provider/create",
                 "authorization-code",
             ),
             (
-                "edit company chat https://api.example.test/v1 oauth device-code desktop-client https://login.example.test/device https://login.example.test/token",
+                "edit company https://api.example.test/v1 bearer oauth device-code desktop-client https://login.example.test/device https://login.example.test/token",
                 "_atelier/provider/update",
                 "device-code",
             ),
@@ -883,9 +890,23 @@ mod tests {
     }
 
     #[test]
-    fn provider_add_and_edit_report_usage_when_required_fields_are_missing() {
+    fn bare_provider_add_opens_the_interactive_wizard() {
         let mut ctx = empty_ctx();
-        for args in ["add allm", "add allm chat", "edit allm", "edit allm chat"] {
+        assert!(matches!(
+            ProviderCommand.run(&mut ctx, "add"),
+            CommandResult::Action(Action::OpenProviderWizard)
+        ));
+    }
+
+    #[test]
+    fn incomplete_provider_specs_report_usage() {
+        let mut ctx = empty_ctx();
+        for args in [
+            "add allm",
+            "add allm https://api.example.test/v1",
+            "edit allm",
+            "edit allm https://api.example.test/v1",
+        ] {
             assert!(
                 matches!(ProviderCommand.run(&mut ctx, args), CommandResult::Error(error) if error.starts_with("Usage:")),
                 "{args} must fail with Usage"
@@ -924,27 +945,27 @@ mod tests {
             .expect("provider add must keep the staged picker open");
         assert!(add_ids.iter().any(|item| item.insert_text == "add allm "));
 
-        let add_protocols = ProviderCommand
-            .suggest_args(&app_ctx, "add allm ")
-            .expect("provider add must suggest protocols after the id");
-        assert!(
-            add_protocols
-                .iter()
-                .any(|item| item.insert_text == "add allm chat ")
-        );
-
         let add_urls = ProviderCommand
-            .suggest_args(&app_ctx, "add allm chat ")
-            .expect("provider add must suggest base URLs after the protocol");
+            .suggest_args(&app_ctx, "add allm ")
+            .expect("provider add must suggest base URLs after the id");
         assert!(
             add_urls
                 .iter()
                 .any(|item| item.insert_text.ends_with("/v1 "))
         );
 
+        let add_auth = ProviderCommand
+            .suggest_args(&app_ctx, "add allm https://api.example.test/v1 ")
+            .expect("provider add must suggest credential injection after the base URL");
+        assert!(
+            add_auth
+                .iter()
+                .any(|item| item.insert_text.ends_with(" bearer "))
+        );
+
         let add_credentials = ProviderCommand
-            .suggest_args(&app_ctx, "add allm chat https://api.example.test/v1 ")
-            .expect("provider add must suggest credential types after the base URL");
+            .suggest_args(&app_ctx, "add allm https://api.example.test/v1 bearer ")
+            .expect("provider add must suggest credential sources after auth");
         assert!(
             add_credentials
                 .iter()
@@ -961,13 +982,13 @@ mod tests {
                 .any(|item| { item.insert_text.ends_with(" oauth device-code ") })
         );
 
-        let edit_protocols = ProviderCommand
+        let edit_urls = ProviderCommand
             .suggest_args(&app_ctx, "edit proxy ")
-            .expect("provider edit must continue with protocol suggestions");
+            .expect("provider edit must continue with base URL suggestions");
         assert!(
-            edit_protocols
+            edit_urls
                 .iter()
-                .any(|item| item.insert_text == "edit proxy responses ")
+                .any(|item| item.insert_text.contains("https://api.example.com/v1"))
         );
     }
 
@@ -984,36 +1005,50 @@ mod tests {
         let authorization_code = ProviderCommand
             .suggest_args(
                 &app_ctx,
-                "add allm chat https://api.example.test/v1 oauth authorization-code ",
+                "add allm https://api.example.test/v1 bearer oauth authorization-code ",
             )
             .expect("authorization-code must expose an editable command template");
         assert_eq!(authorization_code.len(), 1);
         assert_eq!(
             authorization_code[0].insert_text,
-            "add allm chat https://api.example.test/v1 oauth authorization-code CLIENT_ID AUTHORIZATION_ENDPOINT TOKEN_ENDPOINT"
+            "add allm https://api.example.test/v1 bearer oauth authorization-code CLIENT_ID AUTHORIZATION_ENDPOINT TOKEN_ENDPOINT"
         );
 
         let device_code = ProviderCommand
             .suggest_args(
                 &app_ctx,
-                "edit allm responses https://api.example.test/v1 oauth device-code ",
+                "edit allm https://api.example.test/v1 bearer oauth device-code ",
             )
             .expect("device-code must expose an editable command template");
         assert_eq!(device_code.len(), 1);
         assert_eq!(
             device_code[0].insert_text,
-            "edit allm responses https://api.example.test/v1 oauth device-code CLIENT_ID DEVICE_AUTHORIZATION_ENDPOINT TOKEN_ENDPOINT"
+            "edit allm https://api.example.test/v1 bearer oauth device-code CLIENT_ID DEVICE_AUTHORIZATION_ENDPOINT TOKEN_ENDPOINT"
         );
     }
 
     #[test]
-    fn provider_spec_parses_protocol_and_environment_credential() {
+    fn provider_spec_parses_command_credential_arguments() {
         let config = parse_provider_spec(
             "local",
-            "responses https://example.test/v1 env:LOCAL_API_KEY",
+            "https://example.test/v1 bearer cmd:credential-helper --profile work",
         )
-        .expect("valid provider spec");
-        assert_eq!(config.protocol, ProviderProtocol::OpenAiResponses);
+        .expect("valid command credential");
+        assert_eq!(
+            config.credential,
+            CredentialRef::Command {
+                program: "credential-helper".into(),
+                args: vec!["--profile".into(), "work".into()],
+            }
+        );
+    }
+
+    #[test]
+    fn provider_spec_parses_auth_and_environment_credential() {
+        let config =
+            parse_provider_spec("local", "https://example.test/v1 bearer env:LOCAL_API_KEY")
+                .expect("valid provider spec");
+        assert_eq!(config.auth, ProviderAuth::Bearer);
         assert_eq!(
             config.credential,
             CredentialRef::Environment {
@@ -1026,7 +1061,7 @@ mod tests {
     fn provider_spec_parses_authorization_code_oauth_with_optional_scopes() {
         let config = parse_provider_spec(
             "oauth-provider",
-            "responses https://api.example.test/v1 oauth authorization-code desktop-client https://login.example.test/authorize https://login.example.test/token openid,profile,offline_access",
+            "https://api.example.test/v1 bearer oauth authorization-code desktop-client https://login.example.test/authorize https://login.example.test/token openid,profile,offline_access",
         )
         .expect("valid authorization-code Provider spec");
         let CredentialRef::OAuth {
@@ -1064,7 +1099,7 @@ mod tests {
     fn provider_spec_parses_device_code_oauth_without_scopes() {
         let config = parse_provider_spec(
             "oauth-provider",
-            "chat https://api.example.test/v1 oauth device-code desktop-client https://login.example.test/device https://login.example.test/token",
+            "https://api.example.test/v1 bearer oauth device-code desktop-client https://login.example.test/device https://login.example.test/token",
         )
         .expect("valid device-code Provider spec");
         let CredentialRef::OAuth { methods, .. } = config.credential else {
@@ -1090,7 +1125,7 @@ mod tests {
     }
 
     #[test]
-    fn provider_spec_rejects_unknown_protocol() {
-        assert!(parse_provider_spec("local", "grpc https://example.test none").is_err());
+    fn provider_spec_rejects_unknown_auth() {
+        assert!(parse_provider_spec("local", "https://example.test grpc none").is_err());
     }
 }

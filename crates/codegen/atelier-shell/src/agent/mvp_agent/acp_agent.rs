@@ -3695,13 +3695,13 @@ mod vendorless_extension_tests {
     }
 
     #[test]
-    fn inspector_uses_registry_provider_default_wire_api_resolution() {
+    fn inspector_uses_exact_model_wire_api_resolution() {
         let mut registry = atelier_provider::ProviderRegistry::in_memory();
         registry
             .upsert_provider(atelier_provider::ProviderConfig {
                 id: "allm".into(),
                 display_name: "AllM".into(),
-                protocol: atelier_provider::ProviderProtocol::OpenAiResponses,
+                auth: atelier_provider::ProviderAuth::Bearer,
                 base_url: url::Url::parse("http://127.0.0.1:4317/v1").unwrap(),
                 credential: atelier_provider::CredentialRef::None,
                 discovery: atelier_provider::ProviderDiscovery::Static,
@@ -3714,7 +3714,7 @@ mod vendorless_extension_tests {
                 key: atelier_provider::ModelKey::new("allm", "deepseek-v4-flash").unwrap(),
                 display_name: "deepseek-v4-flash".into(),
                 description: None,
-                wire_api: None,
+                wire_api: Some(atelier_provider::WireApi::Responses),
                 context_window: Some(128_000),
                 capabilities: Default::default(),
                 reasoning_efforts: Vec::new(),
@@ -3733,7 +3733,7 @@ mod vendorless_extension_tests {
         assert_eq!(resolved.wire_api, atelier_provider::WireApi::Responses);
         assert_eq!(
             resolved.source,
-            atelier_provider::WireApiSource::ProviderDefault
+            atelier_provider::WireApiSource::ModelDefinition
         );
     }
 
