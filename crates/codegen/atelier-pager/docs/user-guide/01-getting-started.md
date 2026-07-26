@@ -23,8 +23,10 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\release\install-window
 ```
 
 The Workspace Worker and command runner are embedded hidden modes of the same
-executable. Use `-NoPathUpdate` to keep User PATH unchanged or `-SetupSandbox`
-to run the explicit UAC sandbox setup after installation.
+executable. Use `-NoPathUpdate` to keep User PATH unchanged. `-SetupSandbox`
+can provision the Windows sandbox during installation; otherwise the first
+interactive launch asks whether to enable it and opens the UAC approval flow
+automatically when accepted.
 
 Verify the installation:
 
@@ -44,6 +46,11 @@ Start Atelier by running:
 ```bash
 ate
 ```
+
+On Windows, the first interactive launch asks whether to enable OS-level
+sandbox isolation. Accepting opens one UAC approval and continues startup after
+setup. Declining records an explicit `unsafe`/`off` preference and continues
+without OS isolation; `ate sandbox setup` enables it later.
 
 Atelier does not include a hosted default model or product login. Configure a
 Provider and select a model before sending a prompt. Role-specific models are

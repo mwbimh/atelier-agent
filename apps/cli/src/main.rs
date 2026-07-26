@@ -5,6 +5,9 @@
     unreachable_code,
     dead_code
 )]
+#[cfg(windows)]
+mod windows_sandbox_onboarding;
+
 #[cfg(all(feature = "jemalloc", unix))]
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
@@ -1441,9 +1444,42 @@ where
 #[cfg(windows)]
 fn run_public_sandbox_subcommand() -> Option<i32> {
     let args = public_sandbox_args(std::env::args_os().skip(1))?;
+    let command = match atelier_windows_sandbox::parse_public_sandbox_command(args.clone()) {
+        Ok(command) => command,
+        Err(error) => {
+            eprintln!("ate sandbox: {error:#}");
+            return Some(2);
+        }
+    };
     Some(
         match atelier_windows_sandbox::run_public_sandbox_command(args) {
-            Ok(code) => code,
+            Ok(code) => {
+                if code == 0
+                    && matches!(
+                        command,
+                        atelier_windows_sandbox::PublicSandboxCommand::Setup
+                    )
+                {
+                    let home = atelier_config::atelier_home();
+                    let result = atelier_config::defaults::ensure_user_defaults(
+                        &home,
+                        env!("CARGO_PKG_VERSION"),
+                    )
+                    .and_then(|()| {
+                        atelier_config::runtime_defaults::update_sandbox_preference_at(
+                            &home,
+                            atelier_config::runtime_defaults::SandboxPreference::Native,
+                        )
+                    });
+                    if let Err(error) = result {
+                        eprintln!(
+                            "ate sandbox: setup succeeded but the native sandbox preference could not be saved: {error}"
+                        );
+                        return Some(2);
+                    }
+                }
+                code
+            }
             Err(error) => {
                 eprintln!("ate sandbox: {error:#}");
                 2
@@ -1573,13 +1609,19 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
             std::process::exit(1);
         }
     };
-    atelier_shell::config::apply_sandbox(None, sandbox_profile_arg.as_deref(), args.cwd.as_deref())
-        .map_err(|error| anyhow::anyhow!(error))?;
-    flag_dashboard_at_startup_if_requested(&mut args)?;
     let is_interactive = args.command.is_none()
         && args.single.is_none()
         && args.prompt_json.is_none()
         && args.prompt_file.is_none();
+    #[cfg(windows)]
+    windows_sandbox_onboarding::configure_if_needed(
+        &atelier_config::atelier_home(),
+        is_interactive,
+        sandbox_profile_arg.as_deref(),
+    )?;
+    atelier_shell::config::apply_sandbox(None, sandbox_profile_arg.as_deref(), args.cwd.as_deref())
+        .map_err(|error| anyhow::anyhow!(error))?;
+    flag_dashboard_at_startup_if_requested(&mut args)?;
     atelier_shell::http::set_client_name(if is_interactive {
         atelier_workspace::permission::ClientType::AtelierPager
     } else {

@@ -6,10 +6,12 @@ This crate is the local Windows implementation based on the pinned
 
 The active process chain is:
 
-- `ate sandbox setup` launches the hidden elevated setup mode and creates
+- On the first interactive launch, Atelier asks whether to enable the Windows
+  sandbox. Accepting launches the hidden elevated setup mode and creates
   `AtelierSandbox` for network-allowed processes and `AtelierSandboxNoNet` for
   network-disabled processes. Their random passwords are protected with
-  machine-scope DPAPI under `~/.atelier/.sandbox-secrets`.
+  machine-scope DPAPI under `~/.atelier/.sandbox-secrets`. The explicit
+  `ate sandbox setup` command remains available for automation and repair.
 - Persistent WFP rules at `ALE_AUTH_CONNECT_V4/V6` block outbound TCP and UDP
   for the `AtelierSandboxNoNet` account SID. Setup and status verify the rule
   shape and SID binding; WFP failure leaves setup unavailable (fail-closed).
@@ -60,7 +62,10 @@ ate sandbox reset
 ate sandbox reset --yes
 ```
 
-- `setup` is the only setup path and explicitly opens one UAC prompt.
+- `setup` explicitly opens one UAC prompt and also restores the native
+  `workspace` sandbox preference when it had previously been declined.
+- Interactive startup invokes the same setup path after the user accepts the
+  first-launch sandbox question; no manual command is required.
 - `status` is read-only and never elevates.
 - `reset` removes the WFP provider/sublayer/filters, both sandbox accounts,
   setup marker, and DPAPI credential file. Without `--yes`, the user must type

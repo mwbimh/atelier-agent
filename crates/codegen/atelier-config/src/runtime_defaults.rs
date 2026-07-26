@@ -172,6 +172,27 @@ pub fn update_default_model_at(home: &Path, model: &str) -> io::Result<RuntimeDe
     resolve_runtime_defaults_at(home)
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SandboxPreference {
+    Native,
+    Disabled,
+}
+
+pub fn update_sandbox_preference_at(home: &Path, preference: SandboxPreference) -> io::Result<()> {
+    let path = home.join("config.toml");
+    let source = std::fs::read_to_string(&path)?;
+    let mut document = source
+        .parse::<toml_edit::DocumentMut>()
+        .map_err(|error| invalid_data(format!("failed to parse {}: {error}", path.display())))?;
+    let (profile, backend) = match preference {
+        SandboxPreference::Native => ("workspace", "native"),
+        SandboxPreference::Disabled => ("off", "unsafe"),
+    };
+    document["sandbox"]["profile"] = toml_edit::value(profile);
+    document["sandbox"]["backend"] = toml_edit::value(backend);
+    super::fs_atomic::write_atomically(&path, &document.to_string(), None)
+}
+
 pub fn install_runtime_defaults_at(home: &Path) -> io::Result<RuntimeDefaults> {
     let resolved = resolve_runtime_defaults_at(home)?;
     for kind in ContextPrompt::ALL {

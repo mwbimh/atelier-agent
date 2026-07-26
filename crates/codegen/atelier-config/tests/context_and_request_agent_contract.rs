@@ -1,7 +1,7 @@
 use atelier_config::runtime_defaults::{
-    ContextPrompt, install_runtime_defaults_at, load_context_prompt_at,
+    ContextPrompt, SandboxPreference, install_runtime_defaults_at, load_context_prompt_at,
     load_context_role_prompt_at, load_logo_at, merge_role_prompts, resolve_runtime_defaults_at,
-    runtime_context_prompt, runtime_logo, update_default_model_at,
+    runtime_context_prompt, runtime_logo, update_default_model_at, update_sandbox_preference_at,
 };
 
 #[test]
@@ -173,6 +173,35 @@ fn updating_default_model_is_atomic_and_preserves_other_config() {
     assert_eq!(parsed["context"].as_str(), Some("default"));
     assert_eq!(parsed["request_agent"].as_str(), Some("atelier"));
     assert_eq!(parsed["ui"]["theme"].as_str(), Some("ateliernight"));
+}
+
+#[test]
+fn sandbox_preference_update_is_atomic_and_preserves_other_config() {
+    let home = tempfile::tempdir().unwrap();
+    atelier_config::defaults::ensure_user_defaults(home.path(), "1.0.0").unwrap();
+    std::fs::write(
+        home.path().join("config.toml"),
+        "model = \"old/model\"\ncontext = \"default\"\nrequest_agent = \"atelier\"\n\n[sandbox]\nauto_allow_bash = true\n\n[ui]\ntheme = \"ateliernight\"\n",
+    )
+    .unwrap();
+
+    update_sandbox_preference_at(home.path(), SandboxPreference::Disabled).unwrap();
+    let disabled: toml::Value =
+        toml::from_str(&std::fs::read_to_string(home.path().join("config.toml")).unwrap()).unwrap();
+    assert_eq!(disabled["sandbox"]["profile"].as_str(), Some("off"));
+    assert_eq!(disabled["sandbox"]["backend"].as_str(), Some("unsafe"));
+    assert_eq!(disabled["sandbox"]["auto_allow_bash"].as_bool(), Some(true));
+    assert_eq!(disabled["model"].as_str(), Some("old/model"));
+    assert_eq!(disabled["ui"]["theme"].as_str(), Some("ateliernight"));
+
+    update_sandbox_preference_at(home.path(), SandboxPreference::Native).unwrap();
+    let enabled: toml::Value =
+        toml::from_str(&std::fs::read_to_string(home.path().join("config.toml")).unwrap()).unwrap();
+    assert_eq!(enabled["sandbox"]["profile"].as_str(), Some("workspace"));
+    assert_eq!(enabled["sandbox"]["backend"].as_str(), Some("native"));
+    assert_eq!(enabled["sandbox"]["auto_allow_bash"].as_bool(), Some(true));
+    assert_eq!(enabled["model"].as_str(), Some("old/model"));
+    assert_eq!(enabled["ui"]["theme"].as_str(), Some("ateliernight"));
 }
 
 #[test]
