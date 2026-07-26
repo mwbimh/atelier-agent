@@ -1688,7 +1688,7 @@
         let mut pw = PromptWidget::new();
         let mut models = crate::acp::model_state::ModelState::default();
         let model_id =
-            agent_client_protocol::ModelId::new(Arc::from("allm/deepseek-v4-flash"));
+            agent_client_protocol::ModelId::new(Arc::from("example/deepseek-v4-flash"));
         models.available.insert(
             model_id.clone(),
             agent_client_protocol::ModelInfo::new(model_id, "DeepSeek V4 Flash".to_string()),

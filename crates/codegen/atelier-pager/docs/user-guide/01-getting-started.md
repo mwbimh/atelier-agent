@@ -56,19 +56,31 @@ Atelier does not include a hosted default model or product login. Configure a
 Provider and select a model before sending a prompt. Role-specific models are
 optional and can be configured later.
 
-Set the Provider credential in the environment, then start the TUI:
+Set the credential for the Provider you intend to use, then start the TUI. For
+example, with OpenAI:
 
 ```bash
-export ALLM_API_KEY="..."
+export OPENAI_API_KEY="..."
 ate
 ```
 
-Inside Atelier, run either the interactive commands or their complete forms:
+Inside Atelier, open the guided connection flow:
 
 ```text
-/provider add allm https://api.example.com/v1 bearer env:ALLM_API_KEY
-/provider test allm
-/provider refresh allm
+/provider add
+```
+
+Choose a known Provider to use its reviewed API endpoint and authentication
+policy, or choose **Custom endpoint** for a proxy, gateway, or self-hosted API.
+The wizard tests the connection, refreshes models, and opens `/model`; it never
+selects a model automatically.
+
+Advanced custom endpoint example:
+
+```text
+/provider add example https://api.example.com/v1 bearer env:EXAMPLE_API_KEY
+/provider test example
+/provider refresh example
 /model
 /roles
 ```
@@ -163,7 +175,7 @@ Tools can be extended with [MCP servers](05-configuration.md#mcp-servers) for in
 Type `/` in the prompt to access commands. These provide quick actions without writing a full prompt:
 
 ```
-/model allm/deepseek-v4-flash       # Switch model
+/model example/deepseek-v4-flash       # Switch model
 /provider                           # Manage Providers interactively
 /roles                              # Configure fixed Runtime Roles
 /compact                          # Compress conversation history
@@ -200,7 +212,7 @@ ate --rules "Always use TypeScript. Prefer functional components."
 ate --yolo
 
 # Use a specific model
-ate -m allm/deepseek-v4-flash
+ate -m example/deepseek-v4-flash
 
 # Resume a previous session
 ate --resume <session-id>

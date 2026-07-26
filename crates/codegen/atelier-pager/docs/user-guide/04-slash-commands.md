@@ -131,7 +131,7 @@ Aliases: `/title`
 Switch to a different model. Accepts model IDs or display names (case-insensitive). For reasoning models you can also pass an effort level as a second argument:
 
 ```
-/model allm/deepseek-v4-flash
+/model example/deepseek-v4-flash
 /model deepseek-v4-flash
 /model deepseek-v4-flash high
 ```

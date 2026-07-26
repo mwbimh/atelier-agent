@@ -355,13 +355,14 @@ mod tests {
     #[test]
     fn role_set_uses_the_live_runtime_service() {
         let mut ctx = empty_ctx();
-        let result = super::RolesCommand.run(&mut ctx, "set main allm deepseek-v4-flash high true");
+        let result =
+            super::RolesCommand.run(&mut ctx, "set main example deepseek-v4-flash high true");
         let CommandResult::Action(Action::RuntimeExtension { method, params }) = result else {
             panic!("role set must use the live runtime service");
         };
         assert_eq!(method, "_atelier/role/update");
         assert_eq!(params["roleId"], "main");
-        assert_eq!(params["config"]["provider"], "allm");
+        assert_eq!(params["config"]["provider"], "example");
         assert_eq!(params["config"]["model"], "deepseek-v4-flash");
         assert_eq!(params["preservePayload"], true);
     }
@@ -369,7 +370,7 @@ mod tests {
     #[test]
     fn set_role_completion_walks_role_model_effort_and_fast_mode() {
         let mut models = crate::acp::model_state::ModelState::default();
-        let model_id = agent_client_protocol::ModelId::new("allm/deepseek-v4-flash");
+        let model_id = agent_client_protocol::ModelId::new("example/deepseek-v4-flash");
         models.available.insert(
             model_id.clone(),
             agent_client_protocol::ModelInfo::new(model_id, "DeepSeek V4 Flash"),
@@ -383,13 +384,13 @@ mod tests {
         let models = super::RolesCommand
             .suggest_args(&ctx, "set main ")
             .expect("model options");
-        assert_eq!(models[0].insert_text, "set main allm/deepseek-v4-flash ");
+        assert_eq!(models[0].insert_text, "set main example/deepseek-v4-flash ");
         let efforts = super::RolesCommand
-            .suggest_args(&ctx, "set main allm/deepseek-v4-flash ")
+            .suggest_args(&ctx, "set main example/deepseek-v4-flash ")
             .expect("effort options");
         assert!(efforts.iter().any(|item| item.display == "high"));
         let fast_modes = super::RolesCommand
-            .suggest_args(&ctx, "set main allm/deepseek-v4-flash high ")
+            .suggest_args(&ctx, "set main example/deepseek-v4-flash high ")
             .expect("fast mode options");
         assert!(fast_modes.iter().any(|item| item.display == "true"));
         assert!(
@@ -416,9 +417,9 @@ mod tests {
         assert_eq!(config.effort.as_deref(), Some("high"));
         assert!(config.fast_mode);
 
-        let config = parse_role_set("main", &["allm/deepseek-v4-flash", "medium", "false"])
+        let config = parse_role_set("main", &["example/deepseek-v4-flash", "medium", "false"])
             .expect("provider/model composite is accepted for interactive completion");
-        assert_eq!(config.provider, "allm");
+        assert_eq!(config.provider, "example");
         assert_eq!(config.model, "deepseek-v4-flash");
         assert_eq!(config.effort.as_deref(), Some("medium"));
         assert!(!config.fast_mode);
@@ -427,8 +428,10 @@ mod tests {
     #[test]
     fn roles_set_rejects_unknown_reasoning_effort_before_the_rpc_call() {
         let mut ctx = empty_ctx();
-        let result =
-            super::RolesCommand.run(&mut ctx, "set main allm/deepseek-v4-flash nonsense false");
+        let result = super::RolesCommand.run(
+            &mut ctx,
+            "set main example/deepseek-v4-flash nonsense false",
+        );
 
         assert!(
             matches!(result, CommandResult::Error(error) if error.contains("invalid role reasoning effort"))
@@ -437,11 +440,11 @@ mod tests {
 
     #[test]
     fn role_set_parser_distinguishes_none_effort_from_unset() {
-        let explicit_none = parse_role_set("main", &["allm/deepseek-v4-flash", "none"])
+        let explicit_none = parse_role_set("main", &["example/deepseek-v4-flash", "none"])
             .expect("none is a valid reasoning effort");
         assert_eq!(explicit_none.effort.as_deref(), Some("none"));
 
-        let unset = parse_role_set("main", &["allm/deepseek-v4-flash", "-"])
+        let unset = parse_role_set("main", &["example/deepseek-v4-flash", "-"])
             .expect("dash leaves reasoning effort unset");
         assert_eq!(unset.effort, None);
     }

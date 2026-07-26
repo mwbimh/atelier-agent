@@ -28,15 +28,50 @@ async fn provider_add_opens_wizard() {
         .wait_for_text("Add Provider", Duration::from_secs(10))
         .expect("Provider wizard title");
     harness
-        .wait_for_text("Provider ID", Duration::from_secs(10))
-        .expect("Provider ID wizard step");
+        .wait_for_text("Select Provider", Duration::from_secs(10))
+        .expect("known Provider picker");
     let screen = harness.screen_contents();
     assert!(!screen.contains("Usage: /provider add"), "{screen}");
     assert!(
         !screen.to_ascii_lowercase().contains("protocol"),
         "{screen}"
     );
+    assert!(screen.contains("OpenAI"), "{screen}");
+    assert!(screen.contains("Custom endpoint"), "{screen}");
+    let private_provider_name = ["all", "m"].concat();
+    assert!(
+        !screen.to_ascii_lowercase().contains(&private_provider_name),
+        "{screen}"
+    );
 
+    harness
+        .inject_keys(b"\r")
+        .expect("select known OpenAI Provider");
+    harness
+        .wait_for_text("Authentication method", Duration::from_secs(10))
+        .expect("known Provider authentication step");
+    let known_screen = harness.screen_contents();
+    assert!(known_screen.contains("API key"), "{known_screen}");
+    assert!(!known_screen.contains("Base URL"), "{known_screen}");
+    assert!(!known_screen.contains("x-api-key"), "{known_screen}");
+    harness
+        .inject_keys(b"\x1b[Z")
+        .expect("return to Provider selection");
+    harness
+        .wait_for_text("Select Provider", Duration::from_secs(10))
+        .expect("Provider selection after Back");
+
+    for _ in 0..5 {
+        harness
+            .inject_keys(b"\x1b[B")
+            .expect("select Custom endpoint");
+    }
+    harness
+        .inject_keys(b"\r")
+        .expect("open custom Provider flow");
+    harness
+        .wait_for_text("Provider ID", Duration::from_secs(10))
+        .expect("custom Provider ID step");
     harness
         .inject_keys(b"\r")
         .expect("submit empty Provider ID");
@@ -52,7 +87,7 @@ async fn provider_add_opens_wizard() {
         .wait_for_text("Provider already exists", Duration::from_secs(10))
         .expect("replacement confirmation");
     harness
-        .wait_for_text("Choose another ID", Duration::from_secs(10))
+        .wait_for_text("Choose another Provider", Duration::from_secs(10))
         .expect("safe replacement default");
     harness
         .wait_for_text("Replace existing Provider", Duration::from_secs(10))

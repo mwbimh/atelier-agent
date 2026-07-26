@@ -326,10 +326,11 @@ fn provider_id_items(command: &str) -> Vec<ArgItem> {
         }];
     }
     [
-        ("allm", "General OpenAI-compatible Provider"),
-        ("openai", "OpenAI Provider"),
-        ("anthropic", "Anthropic Provider"),
-        ("local", "Local model Provider"),
+        (
+            "custom-provider",
+            "Custom proxy, gateway, or hosted endpoint",
+        ),
+        ("local", "Local model endpoint"),
     ]
     .into_iter()
     .map(|(provider_id, description)| ArgItem {
@@ -357,6 +358,13 @@ fn provider_base_url_items(command: &str, provider_id: &str) -> Vec<ArgItem> {
                 "Editable HTTPS Provider template",
             ),
         ],
+        "google" => &[(
+            "https://generativelanguage.googleapis.com/v1beta/openai",
+            "Google AI Studio OpenAI-compatible API",
+        )],
+        "deepseek" => &[("https://api.deepseek.com", "DeepSeek public API")],
+        "xai" => &[("https://api.x.ai/v1", "xAI public API")],
+        "openrouter" => &[("https://openrouter.ai/api/v1", "OpenRouter public API")],
         "local" => &[
             ("http://127.0.0.1:11434/v1", "Local Ollama-compatible API"),
             ("http://127.0.0.1:1234/v1", "Local LM Studio-compatible API"),
@@ -379,7 +387,10 @@ fn provider_base_url_items(command: &str, provider_id: &str) -> Vec<ArgItem> {
 fn provider_auth_items(command: &str, provider_id: &str, base_url: &str) -> Vec<ArgItem> {
     [
         ("bearer", "Authorization: Bearer <credential>"),
-        ("header:x-api-key", "x-api-key: <credential>"),
+        (
+            "header:x-api-key",
+            "API key header (x-api-key), commonly used by Anthropic-compatible APIs",
+        ),
         ("none", "No Provider credential"),
     ]
     .into_iter()
@@ -710,13 +721,13 @@ mod tests {
         let mut ctx = empty_ctx();
         let result = ProviderCommand.run(
             &mut ctx,
-            "add allm https://example.test/v1 bearer env:ALLM_API_KEY",
+            "add example https://example.test/v1 bearer env:EXAMPLE_API_KEY",
         );
         let CommandResult::Action(Action::RuntimeExtension { method, params }) = result else {
             panic!("provider add must use the live runtime service");
         };
         assert_eq!(method, "_atelier/provider/create");
-        assert_eq!(params["provider"]["id"], "allm");
+        assert_eq!(params["provider"]["id"], "example");
         assert_eq!(params["provider"]["auth"]["type"], "bearer");
         assert!(params["provider"].get("protocol").is_none());
     }
@@ -726,7 +737,7 @@ mod tests {
         let mut ctx = empty_ctx();
         let result = ProviderCommand.run(
             &mut ctx,
-            "edit allm https://example.test/v1 bearer env:ALLM_API_KEY",
+            "edit example https://example.test/v1 bearer env:EXAMPLE_API_KEY",
         );
         let CommandResult::Action(Action::RuntimeExtension { method, params }) = result else {
             panic!("provider edit must use the live runtime service");
@@ -738,7 +749,7 @@ mod tests {
     #[test]
     fn provider_edit_without_credential_preserves_existing_credential() {
         let mut ctx = empty_ctx();
-        let result = ProviderCommand.run(&mut ctx, "edit allm https://example.test/v1 bearer");
+        let result = ProviderCommand.run(&mut ctx, "edit example https://example.test/v1 bearer");
         let CommandResult::Action(Action::RuntimeExtension { method, params }) = result else {
             panic!("provider edit must use the live runtime service");
         };
@@ -749,7 +760,8 @@ mod tests {
     #[test]
     fn provider_edit_with_explicit_none_clears_existing_credential() {
         let mut ctx = empty_ctx();
-        let result = ProviderCommand.run(&mut ctx, "edit allm https://example.test/v1 none none");
+        let result =
+            ProviderCommand.run(&mut ctx, "edit example https://example.test/v1 none none");
         let CommandResult::Action(Action::RuntimeExtension { method, params }) = result else {
             panic!("provider edit must use the live runtime service");
         };
@@ -790,11 +802,11 @@ mod tests {
     #[test]
     fn provider_test_uses_runtime_probe() {
         let mut ctx = empty_ctx();
-        let result = ProviderCommand.run(&mut ctx, "test allm");
+        let result = ProviderCommand.run(&mut ctx, "test example");
         assert!(matches!(
             result,
             CommandResult::Action(Action::RuntimeExtension { method, params })
-                if method == "_atelier/provider/test" && params["providerId"] == "allm"
+                if method == "_atelier/provider/test" && params["providerId"] == "example"
         ));
     }
 
@@ -802,13 +814,13 @@ mod tests {
     fn provider_login_supports_explicit_and_automatic_flow_selection() {
         let mut ctx = empty_ctx();
         for (args, expected_flow) in [
-            ("login allm", serde_json::Value::Null),
+            ("login example", serde_json::Value::Null),
             (
-                "login allm authorization-code",
+                "login example authorization-code",
                 serde_json::Value::String("authorization-code".into()),
             ),
             (
-                "login allm device-code",
+                "login example device-code",
                 serde_json::Value::String("device-code".into()),
             ),
         ] {
@@ -818,7 +830,7 @@ mod tests {
                 panic!("provider login must use the runtime OAuth extension");
             };
             assert_eq!(method, "_atelier/provider/oauth_begin");
-            assert_eq!(params["providerId"], "allm");
+            assert_eq!(params["providerId"], "example");
             assert_eq!(params["flow"], expected_flow);
         }
     }
@@ -827,9 +839,9 @@ mod tests {
     fn provider_logout_uses_runtime_oauth_extension() {
         let mut ctx = empty_ctx();
         assert!(matches!(
-            ProviderCommand.run(&mut ctx, "logout allm"),
+            ProviderCommand.run(&mut ctx, "logout example"),
             CommandResult::Action(Action::RuntimeExtension { method, params })
-                if method == "_atelier/provider/oauth_logout" && params["providerId"] == "allm"
+                if method == "_atelier/provider/oauth_logout" && params["providerId"] == "example"
         ));
     }
 
@@ -852,7 +864,7 @@ mod tests {
     #[test]
     fn provider_login_picker_exposes_each_configured_oauth_flow() {
         let credential = CredentialRef::OAuth {
-            provider_id: "allm".into(),
+            provider_id: "example".into(),
             methods: vec![
                 ProviderOAuthMethod::authorization_code(
                     "desktop-client",
@@ -866,9 +878,9 @@ mod tests {
                 ),
             ],
         };
-        let items = provider_oauth_flow_items("allm", &credential).unwrap();
-        assert_eq!(items[0].insert_text, "login allm authorization-code");
-        assert_eq!(items[1].insert_text, "login allm device-code");
+        let items = provider_oauth_flow_items("example", &credential).unwrap();
+        assert_eq!(items[0].insert_text, "login example authorization-code");
+        assert_eq!(items[1].insert_text, "login example device-code");
     }
 
     #[test]
@@ -876,11 +888,11 @@ mod tests {
         let mut ctx = empty_ctx();
         for args in [
             "list extra",
-            "enable allm extra",
-            "disable allm extra",
-            "delete allm extra",
-            "test allm extra",
-            "refresh allm extra",
+            "enable example extra",
+            "disable example extra",
+            "delete example extra",
+            "test example extra",
+            "refresh example extra",
         ] {
             assert!(
                 matches!(ProviderCommand.run(&mut ctx, args), CommandResult::Error(error) if error.starts_with("Usage:")),
@@ -902,10 +914,10 @@ mod tests {
     fn incomplete_provider_specs_report_usage() {
         let mut ctx = empty_ctx();
         for args in [
-            "add allm",
-            "add allm https://api.example.test/v1",
-            "edit allm",
-            "edit allm https://api.example.test/v1",
+            "add example",
+            "add example https://api.example.test/v1",
+            "edit example",
+            "edit example https://api.example.test/v1",
         ] {
             assert!(
                 matches!(ProviderCommand.run(&mut ctx, args), CommandResult::Error(error) if error.starts_with("Usage:")),
@@ -943,10 +955,15 @@ mod tests {
         let add_ids = ProviderCommand
             .suggest_args(&app_ctx, "add ")
             .expect("provider add must keep the staged picker open");
-        assert!(add_ids.iter().any(|item| item.insert_text == "add allm "));
+        assert!(
+            add_ids
+                .iter()
+                .any(|item| item.insert_text == "add custom-provider ")
+        );
+        assert!(!add_ids.iter().any(|item| item.insert_text == "add openai "));
 
         let add_urls = ProviderCommand
-            .suggest_args(&app_ctx, "add allm ")
+            .suggest_args(&app_ctx, "add custom-provider ")
             .expect("provider add must suggest base URLs after the id");
         assert!(
             add_urls
@@ -955,7 +972,7 @@ mod tests {
         );
 
         let add_auth = ProviderCommand
-            .suggest_args(&app_ctx, "add allm https://api.example.test/v1 ")
+            .suggest_args(&app_ctx, "add custom-provider https://api.example.com/v1 ")
             .expect("provider add must suggest credential injection after the base URL");
         assert!(
             add_auth
@@ -964,12 +981,15 @@ mod tests {
         );
 
         let add_credentials = ProviderCommand
-            .suggest_args(&app_ctx, "add allm https://api.example.test/v1 bearer ")
+            .suggest_args(
+                &app_ctx,
+                "add custom-provider https://api.example.com/v1 bearer ",
+            )
             .expect("provider add must suggest credential sources after auth");
         assert!(
             add_credentials
                 .iter()
-                .any(|item| item.insert_text.ends_with(" env:ALLM_API_KEY"))
+                .any(|item| item.insert_text.ends_with(" env:CUSTOM_PROVIDER_API_KEY"))
         );
         assert!(
             add_credentials
@@ -1005,25 +1025,25 @@ mod tests {
         let authorization_code = ProviderCommand
             .suggest_args(
                 &app_ctx,
-                "add allm https://api.example.test/v1 bearer oauth authorization-code ",
+                "add example https://api.example.test/v1 bearer oauth authorization-code ",
             )
             .expect("authorization-code must expose an editable command template");
         assert_eq!(authorization_code.len(), 1);
         assert_eq!(
             authorization_code[0].insert_text,
-            "add allm https://api.example.test/v1 bearer oauth authorization-code CLIENT_ID AUTHORIZATION_ENDPOINT TOKEN_ENDPOINT"
+            "add example https://api.example.test/v1 bearer oauth authorization-code CLIENT_ID AUTHORIZATION_ENDPOINT TOKEN_ENDPOINT"
         );
 
         let device_code = ProviderCommand
             .suggest_args(
                 &app_ctx,
-                "edit allm https://api.example.test/v1 bearer oauth device-code ",
+                "edit example https://api.example.test/v1 bearer oauth device-code ",
             )
             .expect("device-code must expose an editable command template");
         assert_eq!(device_code.len(), 1);
         assert_eq!(
             device_code[0].insert_text,
-            "edit allm https://api.example.test/v1 bearer oauth device-code CLIENT_ID DEVICE_AUTHORIZATION_ENDPOINT TOKEN_ENDPOINT"
+            "edit example https://api.example.test/v1 bearer oauth device-code CLIENT_ID DEVICE_AUTHORIZATION_ENDPOINT TOKEN_ENDPOINT"
         );
     }
 

@@ -114,7 +114,7 @@ fn oauth_debug_output_never_contains_tokens() {
 #[test]
 fn authorization_code_pkce_uses_a_real_localhost_callback_and_exchanges_the_verifier() {
     let mut config = AuthorizationCodeConfig::new(
-        "allm",
+        "example",
         "atelier-client",
         Url::parse("https://login.example.test/oauth/authorize").unwrap(),
         Url::parse("https://login.example.test/oauth/token").unwrap(),
@@ -178,7 +178,7 @@ fn authorization_code_pkce_uses_a_real_localhost_callback_and_exchanges_the_veri
 #[test]
 fn authorization_code_rejects_a_callback_with_the_wrong_state_before_token_exchange() {
     let config = AuthorizationCodeConfig::new(
-        "allm",
+        "example",
         "atelier-client",
         Url::parse("https://login.example.test/oauth/authorize").unwrap(),
         Url::parse("https://login.example.test/oauth/token").unwrap(),
@@ -206,7 +206,7 @@ fn authorization_code_rejects_a_callback_with_the_wrong_state_before_token_excha
 #[test]
 fn device_code_handles_pending_slow_down_and_success() {
     let mut config = DeviceCodeConfig::new(
-        "allm",
+        "example",
         "atelier-client",
         Url::parse("https://login.example.test/oauth/device/code").unwrap(),
         Url::parse("https://login.example.test/oauth/token").unwrap(),
@@ -266,7 +266,7 @@ fn device_code_handles_pending_slow_down_and_success() {
 #[test]
 fn refresh_token_rotation_replaces_a_returned_refresh_token_and_preserves_it_when_omitted() {
     let config = RefreshTokenConfig::new(
-        "allm",
+        "example",
         "atelier-client",
         Url::parse("https://login.example.test/oauth/token").unwrap(),
     );
@@ -306,15 +306,15 @@ fn provider_credentials_use_a_provider_namespace_and_never_write_tokens_to_disk(
     let store = ProviderOAuthCredentialStore::new(home.path(), MemorySecretStore::default());
     let credential = OAuthCredential::new("access-secret", Some("refresh-secret"), 1_000);
 
-    store.save("allm", &credential).unwrap();
-    let namespace = store.namespace("allm").unwrap();
+    store.save("example", &credential).unwrap();
+    let namespace = store.namespace("example").unwrap();
     assert_eq!(
         namespace.directory(),
         home.path()
             .join("credentials")
             .join("oauth")
             .join("providers")
-            .join("allm")
+            .join("example")
     );
     assert!(
         !namespace
@@ -323,11 +323,11 @@ fn provider_credentials_use_a_provider_namespace_and_never_write_tokens_to_disk(
     );
     assert!(namespace.metadata_path().is_file());
     let metadata = std::fs::read_to_string(namespace.metadata_path()).unwrap();
-    assert!(metadata.contains("allm"));
+    assert!(metadata.contains("example"));
     assert!(!metadata.contains("access-secret"));
     assert!(!metadata.contains("refresh-secret"));
 
-    let loaded = store.load("allm").unwrap().unwrap();
+    let loaded = store.load("example").unwrap().unwrap();
     assert_eq!(loaded.access_token.expose_secret(), "access-secret");
     assert_eq!(
         loaded.refresh_token.as_ref().unwrap().expose_secret(),
@@ -342,12 +342,12 @@ fn failed_refresh_does_not_replace_the_stored_provider_credential() {
     let store = ProviderOAuthCredentialStore::new(home.path(), MemorySecretStore::default());
     store
         .save(
-            "allm",
+            "example",
             &OAuthCredential::new("old-access", Some("old-refresh"), 1_000),
         )
         .unwrap();
     let config = RefreshTokenConfig::new(
-        "allm",
+        "example",
         "atelier-client",
         Url::parse("https://login.example.test/oauth/token").unwrap(),
     );
@@ -357,7 +357,7 @@ fn failed_refresh_does_not_replace_the_stored_provider_credential() {
     )]);
 
     assert!(store.refresh(&client, &config).is_err());
-    let current = store.load("allm").unwrap().unwrap();
+    let current = store.load("example").unwrap().unwrap();
     assert_eq!(current.access_token.expose_secret(), "old-access");
     assert_eq!(
         current.refresh_token.as_ref().unwrap().expose_secret(),
@@ -372,12 +372,12 @@ fn provider_oauth_methods_round_trip_without_storage_v2_changes() {
     let mut registry = ProviderRegistry::load_or_create(&path).unwrap();
     registry
         .upsert_provider(ProviderConfig {
-            id: "allm".into(),
-            display_name: "AllM".into(),
+            id: "example".into(),
+            display_name: "Example".into(),
             auth: ProviderAuth::Bearer,
             base_url: Url::parse("https://api.example.test/v1").unwrap(),
             credential: CredentialRef::OAuth {
-                provider_id: "allm".into(),
+                provider_id: "example".into(),
                 methods: vec![
                     ProviderOAuthMethod::authorization_code(
                         "desktop-client",
@@ -402,11 +402,11 @@ fn provider_oauth_methods_round_trip_without_storage_v2_changes() {
     let CredentialRef::OAuth {
         provider_id,
         methods,
-    } = &reloaded.provider("allm").unwrap().credential
+    } = &reloaded.provider("example").unwrap().credential
     else {
         panic!("expected OAuth credential schema");
     };
-    assert_eq!(provider_id, "allm");
+    assert_eq!(provider_id, "example");
     assert_eq!(methods.len(), 2);
     assert_eq!(methods[0].flow_name(), "authorization-code");
     assert_eq!(methods[1].flow_name(), "device-code");
@@ -419,11 +419,11 @@ fn provider_oauth_schema_rejects_missing_client_configuration_and_provider_misma
         Url::parse("https://login.example.test/oauth/authorize").unwrap(),
         Url::parse("https://login.example.test/oauth/token").unwrap(),
     );
-    assert!(invalid.validate("allm").is_err());
+    assert!(invalid.validate("example").is_err());
 
     let config = ProviderConfig {
-        id: "allm".into(),
-        display_name: "AllM".into(),
+        id: "example".into(),
+        display_name: "Example".into(),
         auth: ProviderAuth::Bearer,
         base_url: Url::parse("https://api.example.test/v1").unwrap(),
         credential: CredentialRef::OAuth {

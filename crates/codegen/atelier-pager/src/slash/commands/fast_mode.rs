@@ -96,7 +96,7 @@ mod tests {
 
     fn state(supports: bool) -> ModelState {
         let mut state = ModelState::default();
-        let id = acp::ModelId::new(Arc::from("allm/deepseek-v4-flash"));
+        let id = acp::ModelId::new(Arc::from("example/deepseek-v4-flash"));
         let info = acp::ModelInfo::new(id.clone(), "DeepSeek V4 Flash".to_owned()).meta(
             serde_json::json!({ "supportsFastMode": supports })
                 .as_object()

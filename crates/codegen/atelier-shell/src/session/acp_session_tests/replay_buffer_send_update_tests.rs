@@ -554,7 +554,7 @@ async fn sampling_events_drive_the_shared_runtime_status_and_first_token_metrics
                 "prompt-runtime-1",
                 None,
                 "main",
-                Some("allm".to_owned()),
+                Some("example".to_owned()),
                 Some("deepseek-v4-flash".to_owned()),
                 crate::runtime_control::now_millis().saturating_sub(25),
             );

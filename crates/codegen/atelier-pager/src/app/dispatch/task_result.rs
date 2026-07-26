@@ -91,7 +91,7 @@ mod runtime_task_format_tests {
     #[test]
     fn provider_oauth_begin_is_rendered_before_completion_polling() {
         let (login_id, rendered) = provider_oauth_begin_ui(&serde_json::json!({
-            "providerId": "allm",
+            "providerId": "example",
             "loginId": "login-1",
             "flow": "device-code",
             "verificationUrl": "https://login.example/device",

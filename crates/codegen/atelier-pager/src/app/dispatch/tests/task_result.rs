@@ -149,11 +149,11 @@ fn provider_wizard_submit_uses_connection_only_provider_config() {
     let agent_id = AgentId(0);
     dispatch(Action::OpenProviderWizard, &mut app);
     let config = atelier_provider::ProviderConfig {
-        id: "allm".into(),
-        display_name: "AllM".into(),
+        id: "example".into(),
+        display_name: "Example".into(),
         base_url: url::Url::parse("https://api.example.test/v1").unwrap(),
         credential: atelier_provider::CredentialRef::Environment {
-            variable: "ALLM_API_KEY".into(),
+            variable: "EXAMPLE_API_KEY".into(),
         },
         auth: atelier_provider::ProviderAuth::Bearer,
         discovery: atelier_provider::ProviderDiscovery::OpenAiModels {
@@ -187,9 +187,25 @@ fn provider_wizard_replaces_an_existing_provider_only_after_confirmation() {
     let agent_id = AgentId(0);
     let mut state =
         crate::views::provider_wizard::ProviderWizardState::with_existing_provider_ids([
-            "allm".to_owned()
+            "example".to_owned()
         ]);
-    for character in "allm".chars() {
+    for _ in 0..5 {
+        let _ = crate::views::provider_wizard::handle_provider_wizard_key(
+            &mut state,
+            &crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Down,
+                crossterm::event::KeyModifiers::NONE,
+            ),
+        );
+    }
+    let _ = crate::views::provider_wizard::handle_provider_wizard_key(
+        &mut state,
+        &crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Enter,
+            crossterm::event::KeyModifiers::NONE,
+        ),
+    );
+    for character in "example".chars() {
         let _ = crate::views::provider_wizard::handle_provider_wizard_key(
             &mut state,
             &crossterm::event::KeyEvent::new(
@@ -224,8 +240,8 @@ fn provider_wizard_replaces_an_existing_provider_only_after_confirmation() {
             state: Box::new(state),
         });
     let config = atelier_provider::ProviderConfig {
-        id: "allm".into(),
-        display_name: "AllM replacement".into(),
+        id: "example".into(),
+        display_name: "Example replacement".into(),
         base_url: url::Url::parse("https://api.example.test/v2").unwrap(),
         credential: atelier_provider::CredentialRef::None,
         auth: atelier_provider::ProviderAuth::None,
@@ -251,7 +267,7 @@ fn provider_wizard_chains_create_test_and_discovery() {
     else {
         panic!("provider wizard must be open");
     };
-    state.provider_id = "allm".into();
+    state.provider_id = "example".into();
 
     let effects = dispatch(
         Action::TaskComplete(TaskResult::RuntimeExtensionComplete {
@@ -264,7 +280,7 @@ fn provider_wizard_chains_create_test_and_discovery() {
     assert!(matches!(
         effects.as_slice(),
         [Effect::RuntimeExtension { method, params, .. }]
-            if method == "_atelier/provider/test" && params["providerId"] == "allm"
+            if method == "_atelier/provider/test" && params["providerId"] == "example"
     ));
 
     let effects = dispatch(
@@ -277,7 +293,7 @@ fn provider_wizard_chains_create_test_and_discovery() {
     );
     assert!(matches!(
         effects.as_slice(),
-        [Effect::RefreshProviderModels { provider_id, .. }] if provider_id == "allm"
+        [Effect::RefreshProviderModels { provider_id, .. }] if provider_id == "example"
     ));
 }
 
@@ -291,7 +307,7 @@ fn provider_wizard_completes_oauth_before_testing_the_connection() {
     else {
         panic!("provider wizard must be open");
     };
-    state.provider_id = "allm".into();
+    state.provider_id = "example".into();
     state.step = crate::views::provider_wizard::ProviderWizardStep::Credential;
     state.selected = 2;
     let _ = crate::views::provider_wizard::handle_provider_wizard_key(
@@ -314,7 +330,7 @@ fn provider_wizard_completes_oauth_before_testing_the_connection() {
         effects.as_slice(),
         [Effect::RuntimeExtension { method, params, .. }]
             if method == "_atelier/provider/oauth_begin"
-                && params["providerId"] == "allm"
+                && params["providerId"] == "example"
                 && params["flow"] == "authorization-code"
     ));
 
@@ -329,7 +345,7 @@ fn provider_wizard_completes_oauth_before_testing_the_connection() {
     assert!(matches!(
         effects.as_slice(),
         [Effect::RuntimeExtension { method, params, .. }]
-            if method == "_atelier/provider/test" && params["providerId"] == "allm"
+            if method == "_atelier/provider/test" && params["providerId"] == "example"
     ));
 }
 
@@ -343,7 +359,7 @@ fn provider_wizard_retries_with_update_after_create_was_persisted() {
     else {
         panic!("provider wizard must be open");
     };
-    state.provider_id = "allm".into();
+    state.provider_id = "example".into();
 
     dispatch(
         Action::TaskComplete(TaskResult::RuntimeExtensionComplete {
@@ -363,8 +379,8 @@ fn provider_wizard_retries_with_update_after_create_was_persisted() {
     );
 
     let config = atelier_provider::ProviderConfig {
-        id: "allm".into(),
-        display_name: "AllM".into(),
+        id: "example".into(),
+        display_name: "Example".into(),
         base_url: url::Url::parse("https://api.example.test/v2").unwrap(),
         credential: atelier_provider::CredentialRef::None,
         auth: atelier_provider::ProviderAuth::None,
@@ -389,7 +405,7 @@ fn provider_wizard_preserves_state_when_connection_test_fails() {
     else {
         panic!("provider wizard must be open");
     };
-    state.provider_id = "allm".into();
+    state.provider_id = "example".into();
 
     let effects = dispatch(
         Action::TaskComplete(TaskResult::RuntimeExtensionFailed {
@@ -406,7 +422,7 @@ fn provider_wizard_preserves_state_when_connection_test_fails() {
     else {
         panic!("failed test must keep the wizard open");
     };
-    assert_eq!(state.provider_id, "allm");
+    assert_eq!(state.provider_id, "example");
     assert_eq!(
         state.step,
         crate::views::provider_wizard::ProviderWizardStep::Summary
@@ -424,8 +440,8 @@ fn provider_wizard_opens_model_picker_after_discovery_succeeds() {
     else {
         panic!("provider wizard must be open");
     };
-    state.provider_id = "allm".into();
-    let model_id = acp::ModelId::new("allm/discovered-model");
+    state.provider_id = "example".into();
+    let model_id = acp::ModelId::new("example/discovered-model");
     let mut available = IndexMap::new();
     available.insert(
         model_id.clone(),
@@ -436,7 +452,7 @@ fn provider_wizard_opens_model_picker_after_discovery_succeeds() {
     let effects = dispatch(
         Action::TaskComplete(TaskResult::ProviderModelsRefreshed {
             agent_id: Some(agent_id),
-            provider_id: "allm".into(),
+            provider_id: "example".into(),
             result: Ok("refreshed 2 models from the provider".into()),
         }),
         &mut app,
@@ -459,12 +475,12 @@ fn provider_wizard_preserves_state_when_discovery_fails() {
     else {
         panic!("provider wizard must be open");
     };
-    state.provider_id = "allm".into();
+    state.provider_id = "example".into();
 
     let effects = dispatch(
         Action::TaskComplete(TaskResult::ProviderModelsRefreshed {
             agent_id: Some(agent_id),
-            provider_id: "allm".into(),
+            provider_id: "example".into(),
             result: Err("model discovery returned HTTP 500".into()),
         }),
         &mut app,
@@ -476,7 +492,7 @@ fn provider_wizard_preserves_state_when_discovery_fails() {
     else {
         panic!("failed discovery must keep the wizard open");
     };
-    assert_eq!(state.provider_id, "allm");
+    assert_eq!(state.provider_id, "example");
     assert_eq!(
         state.step,
         crate::views::provider_wizard::ProviderWizardStep::Summary
@@ -494,7 +510,7 @@ fn provider_models_refresh_result_without_active_agent_is_safe() {
     let effects = dispatch(
         Action::TaskComplete(TaskResult::ProviderModelsRefreshed {
             agent_id: None,
-            provider_id: "allm".into(),
+            provider_id: "example".into(),
             result: Ok("Provider model catalog refreshed".into()),
         }),
         &mut app,

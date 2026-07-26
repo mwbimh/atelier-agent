@@ -6,11 +6,11 @@ use super::*;
 fn refresh_provider_models_is_dispatched_without_active_session() {
     let mut app = test_app();
 
-    let effects = dispatch(Action::RefreshProviderModels("allm".into()), &mut app);
+    let effects = dispatch(Action::RefreshProviderModels("example".into()), &mut app);
 
     assert!(matches!(
         effects.as_slice(),
-        [Effect::RefreshProviderModels { provider_id, .. }] if provider_id == "allm"
+        [Effect::RefreshProviderModels { provider_id, .. }] if provider_id == "example"
     ));
 }
 #[test]

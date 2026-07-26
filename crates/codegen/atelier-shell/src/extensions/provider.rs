@@ -1095,8 +1095,8 @@ mod tests {
 
     fn oauth_test_provider() -> ProviderConfig {
         ProviderConfig {
-            id: "allm".into(),
-            display_name: "AllM".into(),
+            id: "example".into(),
+            display_name: "Example".into(),
             auth: ProviderAuth::Bearer,
             base_url: Url::parse("https://provider.example/v1").unwrap(),
             credential: CredentialRef::None,
@@ -1143,7 +1143,7 @@ mod tests {
             reqwest::StatusCode::UNAUTHORIZED,
             reqwest::StatusCode::INTERNAL_SERVER_ERROR,
         ] {
-            let error = provider_probe_outcome("allm", status)
+            let error = provider_probe_outcome("example", status)
                 .expect_err("non-success Provider probes must fail the RPC");
             let message = error.data.expect("error detail").to_string();
             assert!(message.contains(status.as_str()));
@@ -1155,10 +1155,10 @@ mod tests {
         let mut registry = ProviderRegistry::in_memory();
         registry.upsert_provider(oauth_test_provider()).unwrap();
 
-        let error = reject_unconfirmed_provider_replacement(&registry, "allm", false)
+        let error = reject_unconfirmed_provider_replacement(&registry, "example", false)
             .expect_err("create must not replace an existing Provider");
         assert!(error.to_string().contains("already exists"));
-        reject_unconfirmed_provider_replacement(&registry, "allm", true)
+        reject_unconfirmed_provider_replacement(&registry, "example", true)
             .expect("confirmed update may replace an existing Provider");
         let error = reject_unconfirmed_provider_replacement(&registry, "missing", true)
             .expect_err("update must not create a missing Provider");
@@ -1483,12 +1483,12 @@ mod tests {
 
     #[test]
     fn model_override_rpc_view_redacts_sensitive_payload_values() {
-        let key = ModelKey::new("allm", "deepseek-v4-flash").unwrap();
+        let key = ModelKey::new("example", "deepseek-v4-flash").unwrap();
         let mut registry = ProviderRegistry::in_memory();
         registry
             .upsert_provider(ProviderConfig {
-                id: "allm".into(),
-                display_name: "allm".into(),
+                id: "example".into(),
+                display_name: "example".into(),
                 auth: ProviderAuth::Bearer,
                 base_url: Url::parse("https://provider.example/v1").unwrap(),
                 credential: CredentialRef::None,

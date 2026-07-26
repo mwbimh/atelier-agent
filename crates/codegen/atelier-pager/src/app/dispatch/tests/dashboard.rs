@@ -62,14 +62,14 @@ fn dashboard_bare_runtime_configuration_commands_keep_interactive_drafts() {
 fn dashboard_complete_runtime_commands_dispatch_the_expected_control_effects() {
     let runtime_cases = [
         (
-            "/provider add allm https://example.test/v1 none none",
+            "/provider add example https://example.test/v1 none none",
             "_atelier/provider/create",
         ),
         (
-            "/provider edit allm https://example.test/v1 none none",
+            "/provider edit example https://example.test/v1 none none",
             "_atelier/provider/update",
         ),
-        ("/provider test allm", "_atelier/provider/test"),
+        ("/provider test example", "_atelier/provider/test"),
         ("/roles list", "_atelier/role/list"),
         ("/wire-api list", "_atelier/model/list"),
         ("/tasks", "_atelier/task/list"),
@@ -104,7 +104,7 @@ fn dashboard_complete_runtime_commands_dispatch_the_expected_control_effects() {
     ensure_dashboard_state(&mut app);
     let effects = dispatch(
         Action::DashboardDispatchSlash {
-            text: "/provider refresh allm".into(),
+            text: "/provider refresh example".into(),
         },
         &mut app,
     );
@@ -113,7 +113,7 @@ fn dashboard_complete_runtime_commands_dispatch_the_expected_control_effects() {
         [Effect::RefreshProviderModels {
             agent_id: None,
             provider_id,
-        }] if provider_id == "allm"
+        }] if provider_id == "example"
     ));
 }
 

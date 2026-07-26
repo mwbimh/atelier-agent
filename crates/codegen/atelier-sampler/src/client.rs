@@ -3260,7 +3260,7 @@ mod tests {
             "type": "response.created",
             "sequence_number": 1,
             "response": {
-                "id": "resp_allm_1",
+                "id": "resp_example_1",
                 "object": "response",
                 "created_at": 1784529459,
                 "status": "in_progress",
@@ -3284,7 +3284,7 @@ mod tests {
             "type": "response.in_progress",
             "sequence_number": 2,
             "response": {
-                "id": "resp_allm_2",
+                "id": "resp_example_2",
                 "object": "response",
                 "created_at": 1784531824,
                 "status": "in_progress"

@@ -4895,7 +4895,7 @@ reasoning_effort = "low"
     fn new_from_toml_cfg_preserves_top_level_scalar_model() {
         let raw_config: toml::Value = toml::from_str(
             r#"
-            model = "allm/deepseek-v4-flash"
+            model = "example/deepseek-v4-flash"
 
             [ui]
             compact_mode = true
@@ -4907,7 +4907,7 @@ reasoning_effort = "low"
 
         assert_eq!(
             cfg.model.as_deref(),
-            Some("allm/deepseek-v4-flash"),
+            Some("example/deepseek-v4-flash"),
             "the legacy [model.*] extraction pass must not discard top-level config.toml:model",
         );
         assert!(cfg.ui.compact_mode);
@@ -6980,8 +6980,8 @@ reasoning_effort = "low"
     #[test]
     fn config_model_is_first_in_the_runtime_catalog() {
         let provider = atelier_provider::ProviderConfig {
-            id: "allm".into(),
-            display_name: "AllM".into(),
+            id: "example".into(),
+            display_name: "Example".into(),
             base_url: url::Url::parse("http://127.0.0.1:4317/v1").unwrap(),
             credential: atelier_provider::CredentialRef::None,
             auth: ProviderAuth::None,
@@ -6990,7 +6990,7 @@ reasoning_effort = "low"
             enabled: true,
         };
         let descriptor = |model_id: &str| atelier_provider::ModelDescriptor {
-            key: atelier_provider::ModelKey::new("allm", model_id).unwrap(),
+            key: atelier_provider::ModelKey::new("example", model_id).unwrap(),
             display_name: model_id.into(),
             description: None,
             wire_api: Some(WireApi::ChatCompletions),
@@ -7010,11 +7010,11 @@ reasoning_effort = "low"
         };
 
         let entries =
-            model_entries_from_provider_snapshot(&snapshot, Some("allm/deepseek-v4-flash"));
+            model_entries_from_provider_snapshot(&snapshot, Some("example/deepseek-v4-flash"));
 
         assert_eq!(
             entries.first().map(|(key, _)| key.as_str()),
-            Some("allm/deepseek-v4-flash")
+            Some("example/deepseek-v4-flash")
         );
     }
 
@@ -7091,10 +7091,10 @@ reasoning_effort = "low"
 
     #[test]
     fn exact_model_definition_sets_wire_api() {
-        let model_key = atelier_provider::ModelKey::new("allm", "deepseek-v4-flash").unwrap();
+        let model_key = atelier_provider::ModelKey::new("example", "deepseek-v4-flash").unwrap();
         let provider = atelier_provider::ProviderConfig {
-            id: "allm".into(),
-            display_name: "AllM".into(),
+            id: "example".into(),
+            display_name: "Example".into(),
             base_url: url::Url::parse("http://127.0.0.1:4317/v1").unwrap(),
             credential: atelier_provider::CredentialRef::None,
             auth: ProviderAuth::None,
@@ -7123,7 +7123,7 @@ reasoning_effort = "low"
 
         let resolved_wire_api = snapshot.resolve_wire_api(&model_key).unwrap();
         let entries = model_entries_from_provider_snapshot(&snapshot, None);
-        let entry = entries.get("allm/deepseek-v4-flash").unwrap();
+        let entry = entries.get("example/deepseek-v4-flash").unwrap();
         let sampling = resolve_sampling(entry, None);
 
         assert_eq!(

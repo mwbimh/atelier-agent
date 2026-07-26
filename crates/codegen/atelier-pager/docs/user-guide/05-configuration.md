@@ -247,14 +247,20 @@ changes apply to newly started sessions.
 ### Providers, Models, and Roles
 
 Provider credentials are explicit references such as `env:NAME`,
-`cmd:PROGRAM`, or `none`. Configure them through the TUI:
+`cmd:PROGRAM`, or `none`. Configure them through the guided TUI:
 
 ```text
-/provider add allm https://api.example.com/v1 bearer env:ALLM_API_KEY
-/provider test allm
-/provider refresh allm
+/provider add
 /model
 /roles
+```
+
+Known Providers supply their reviewed API endpoint and authentication policy.
+Choose **Custom endpoint** only when configuring a proxy, gateway, or
+self-hosted API. The complete advanced command remains available:
+
+```text
+/provider add example https://api.example.com/v1 bearer env:EXAMPLE_API_KEY
 ```
 
 See [Provider Credentials](02-authentication.md) and
@@ -688,10 +694,10 @@ Provider credentials use the environment variable named in the Provider's
 `env:NAME` reference. Atelier does not define a global model API-key variable.
 
 ```text
-/provider add allm https://api.example.com/v1 bearer env:ALLM_API_KEY
+/provider add example https://api.example.com/v1 bearer env:EXAMPLE_API_KEY
 ```
 
-In that example, only `ALLM_API_KEY` is read for Provider `allm`.
+In that example, only `EXAMPLE_API_KEY` is read for Provider `example`.
 
 ### Features
 

@@ -212,22 +212,22 @@ fn reset_restores_only_built_in_model_and_context_defaults() {
         "stale default preset\n",
     )
     .unwrap();
-    std::fs::create_dir_all(home.path().join("models/providers/allm")).unwrap();
+    std::fs::create_dir_all(home.path().join("models/providers/example")).unwrap();
     std::fs::write(
-        home.path().join("models/providers/allm/models.toml"),
+        home.path().join("models/providers/example/models.toml"),
         "user provider models\n",
     )
     .unwrap();
-    std::fs::create_dir_all(home.path().join("credentials/oauth/providers/allm")).unwrap();
+    std::fs::create_dir_all(home.path().join("credentials/oauth/providers/example")).unwrap();
     std::fs::write(
         home.path()
-            .join("credentials/oauth/providers/allm/credential.json"),
+            .join("credentials/oauth/providers/example/credential.json"),
         "user credential\n",
     )
     .unwrap();
-    std::fs::create_dir_all(home.path().join("cache/providers/allm")).unwrap();
+    std::fs::create_dir_all(home.path().join("cache/providers/example")).unwrap();
     std::fs::write(
-        home.path().join("cache/providers/allm/models.json"),
+        home.path().join("cache/providers/example/models.json"),
         "user cache\n",
     )
     .unwrap();
@@ -271,19 +271,19 @@ fn reset_restores_only_built_in_model_and_context_defaults() {
     assert_ne!(default_context, "user default context\n");
     assert!(!default_context.trim().is_empty());
     assert_eq!(
-        std::fs::read_to_string(home.path().join("models/providers/allm/models.toml")).unwrap(),
+        std::fs::read_to_string(home.path().join("models/providers/example/models.toml")).unwrap(),
         "user provider models\n"
     );
     assert_eq!(
         std::fs::read_to_string(
             home.path()
-                .join("credentials/oauth/providers/allm/credential.json")
+                .join("credentials/oauth/providers/example/credential.json")
         )
         .unwrap(),
         "user credential\n"
     );
     assert_eq!(
-        std::fs::read_to_string(home.path().join("cache/providers/allm/models.json")).unwrap(),
+        std::fs::read_to_string(home.path().join("cache/providers/example/models.json")).unwrap(),
         "user cache\n"
     );
 }

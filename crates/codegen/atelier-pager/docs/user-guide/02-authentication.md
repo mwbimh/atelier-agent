@@ -20,10 +20,17 @@ Start Atelier and enter:
 
 The command picker exposes Provider list, add, edit, enable, disable, test,
 refresh, login, logout, and delete operations. Submitting `/provider add`
-opens a multi-step connection wizard for Provider identity, base URL,
-credential injection, credential source, discovery, review, test, and model
-refresh. Wire API selection is not a Provider setting; it belongs to each
-exact Provider/model pair.
+starts by selecting a known Provider or **Custom endpoint**.
+
+For a known Provider, Atelier owns the reviewed API endpoint, API-key Header
+policy, discovery settings, and required non-secret protocol Headers. The user
+only chooses the Provider and credential source; the wizard does not ask for a
+base URL, OAuth endpoint, or low-level Header name.
+
+**Custom endpoint** is the advanced path for a proxy, gateway, or self-hosted
+API. It asks separately for the model API base URL, credential injection,
+credential source, and discovery. Wire API selection is not a Provider setting;
+it belongs to each exact Provider/model pair.
 
 The complete advanced command form is:
 
@@ -39,6 +46,11 @@ Supported Provider authentication policies:
 | `header:NAME` | Send the credential in header `NAME` |
 | `none` | Do not inject a credential |
 
+`x-api-key` is an HTTP Header name commonly used by Anthropic-compatible APIs;
+it is not OAuth and it is unrelated to xAI. Known Provider presets select the
+correct policy automatically. Custom endpoints may use
+`header:x-api-key`, Bearer, or another explicitly configured Header.
+
 Supported credential specifications:
 
 | Value | Behavior |
@@ -49,21 +61,42 @@ Supported credential specifications:
 | `oauth authorization-code ...` | Browser authorization-code flow with PKCE |
 | `oauth device-code ...` | Device authorization flow |
 
-Example:
+Known Provider example:
 
 ```bash
-export ALLM_API_KEY="..."
+export OPENAI_API_KEY="..."
 ```
 
 ```text
-/provider add allm https://api.example.com/v1 bearer env:ALLM_API_KEY
-/provider test allm
-/provider refresh allm
+/provider add
 ```
 
-OAuth configuration and login are separate. First create or edit the Provider
-with its OAuth client metadata, then start a configured flow with
-`/provider login`:
+Select **OpenAI**, keep **API key**, and use `OPENAI_API_KEY`. Atelier supplies
+`https://api.openai.com/v1` and the Bearer policy. It then tests the connection,
+refreshes discovery, and opens `/model` without selecting a model.
+
+Advanced custom endpoint example:
+
+```bash
+export EXAMPLE_API_KEY="..."
+```
+
+```text
+/provider add example https://api.example.com/v1 bearer env:EXAMPLE_API_KEY
+/provider test example
+/provider refresh example
+```
+
+## Provider OAuth
+
+Known Provider OAuth is provider-owned. Its integration must define the API
+endpoint, OAuth endpoints, client identity, scopes, refresh behavior, and token
+injection. Atelier never asks ordinary users to invent those values. A known
+Provider only displays OAuth when a reviewed provider-owned flow is available.
+
+For a custom Provider whose OAuth metadata you administer or trust, API and
+OAuth endpoints are separate. First create or edit the Provider with its
+advanced OAuth metadata, then start the configured flow with `/provider login`:
 
 ```text
 /provider add company https://api.example.com/v1 bearer oauth authorization-code desktop-client https://login.example.com/authorize https://login.example.com/token openid,profile,offline_access
@@ -84,7 +117,7 @@ are stored under `$ATELIER_HOME/credentials/oauth/providers/`, not in
 Use the equivalent PowerShell environment syntax on Windows:
 
 ```powershell
-$env:ALLM_API_KEY = "..."
+$env:EXAMPLE_API_KEY = "..."
 ate
 ```
 
@@ -96,8 +129,11 @@ headers.
 
 Run bare `/provider add` for the guided flow. It validates each field, supports
 Shift+Tab to go back and Esc to cancel, and requires explicit confirmation
-before replacing an existing Provider. After save it tests the connection,
-refreshes discovery, and opens `/model`; it never selects a model automatically.
+before replacing an existing Provider. Known Providers hide base URLs and
+Header injection details behind reviewed presets. The **Custom endpoint** path
+exposes those fields as advanced configuration. After save the wizard tests the
+connection, refreshes discovery, and opens `/model`; it never selects a model
+automatically.
 
 Advanced users can also use complete one-line commands. `<auth>` is `bearer`,
 `header:<http-header-name>`, or `none`:
@@ -135,7 +171,7 @@ at the Provider's `models` path. For a base URL such as
 `/v1/models` endpoint.
 
 ```text
-/provider refresh allm
+/provider refresh example
 /model
 ```
 
@@ -152,7 +188,7 @@ parameters.
 
 ```text
 /roles
-/roles set main allm/deepseek-v4-flash high false
+/roles set main example/deepseek-v4-flash high false
 /roles test main
 ```
 
@@ -206,13 +242,13 @@ Confirm that the Provider is present and enabled.
 Check the environment in the process that launches Atelier:
 
 ```bash
-test -n "$ALLM_API_KEY" && echo set
+test -n "$EXAMPLE_API_KEY" && echo set
 ```
 
 On Windows:
 
 ```powershell
-if ($env:ALLM_API_KEY) { "set" }
+if ($env:EXAMPLE_API_KEY) { "set" }
 ```
 
 ### Refresh returns no models
@@ -220,8 +256,8 @@ if ($env:ALLM_API_KEY) { "set" }
 Run:
 
 ```text
-/provider test allm
-/provider refresh allm
+/provider test example
+/provider refresh example
 ```
 
 Then inspect local logs under `$ATELIER_HOME/logs/`. Confirm that the Provider

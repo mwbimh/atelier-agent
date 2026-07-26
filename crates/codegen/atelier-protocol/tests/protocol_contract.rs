@@ -119,7 +119,7 @@ fn structured_rpc_error_preserves_machine_readable_data() {
             "data": {
                 "kind": "model_unavailable",
                 "retryable": false,
-                "provider": "allm",
+                "provider": "example",
                 "model": "deepseek-v4-flash"
             }
         }
@@ -133,7 +133,7 @@ fn structured_rpc_error_preserves_machine_readable_data() {
     assert_eq!(data.kind, "model_unavailable");
     assert!(!data.retryable);
     assert_eq!(data.details, Value::Null);
-    assert_eq!(data.extra["provider"], "allm");
+    assert_eq!(data.extra["provider"], "example");
     assert_eq!(data.extra["model"], "deepseek-v4-flash");
     assert_eq!(
         serde_json::to_value(data).expect("re-encode structured error data"),
@@ -141,7 +141,7 @@ fn structured_rpc_error_preserves_machine_readable_data() {
             "kind": "model_unavailable",
             "retryable": false,
             "details": null,
-            "provider": "allm",
+            "provider": "example",
             "model": "deepseek-v4-flash"
         })
     );

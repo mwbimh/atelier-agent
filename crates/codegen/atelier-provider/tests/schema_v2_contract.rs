@@ -13,16 +13,16 @@ fn generated_v2_tree_is_loadable_and_roles_are_separate() {
         &home.path().join("providers.toml"),
         r#"schema_version = 3
 
-[providers.allm]
-display_name = "AllM"
+[providers.example]
+display_name = "Example"
 auth = { type = "bearer" }
-base_url = "https://allm.example/v1"
+base_url = "https://example.example/v1"
 enabled = true
 
-[providers.allm.credential]
+[providers.example.credential]
 type = "none"
 
-[providers.allm.discovery]
+[providers.example.discovery]
 type = "open_ai_models"
 path = "models"
 "#,
@@ -32,7 +32,7 @@ path = "models"
         r#"schema_version = 1
 
 [roles.planner]
-provider = "allm"
+provider = "example"
 model = "deepseek-v4-flash"
 effort = "high"
 fast_mode = true
@@ -42,7 +42,7 @@ fast_mode = true
     let registry = ProviderRegistry::load_or_create(home.path().join("providers.toml")).unwrap();
     assert_eq!(registry.providers().count(), 1);
     let planner = registry.role(RoleId::Planner).unwrap();
-    assert_eq!(planner.provider, "allm");
+    assert_eq!(planner.provider, "example");
     assert_eq!(planner.model, "deepseek-v4-flash");
 }
 
@@ -160,10 +160,10 @@ fn exact_common_model_preset_supplies_context_effort_and_fast_mode_without_famil
         &home.path().join("providers.toml"),
         r#"schema_version = 3
 
-[providers.allm]
-display_name = "AllM"
+[providers.example]
+display_name = "Example"
 auth = { type = "bearer" }
-base_url = "https://allm.example/v1"
+base_url = "https://example.example/v1"
 enabled = true
 "#,
     );
@@ -180,7 +180,7 @@ fast_mode = false
 "#,
     );
     write(
-        &home.path().join("models/providers/allm/models.toml"),
+        &home.path().join("models/providers/example/models.toml"),
         r#"schema_version = 1
 
 [models."deepseek-v4-flash"]
@@ -189,7 +189,7 @@ fast_mode = false
 
     let registry = ProviderRegistry::load_or_create(home.path().join("providers.toml")).unwrap();
     let model = registry
-        .model(&ModelKey::new("allm", "deepseek-v4-flash").unwrap())
+        .model(&ModelKey::new("example", "deepseek-v4-flash").unwrap())
         .unwrap();
     assert_eq!(model.context_window, Some(1_000_000));
     assert_eq!(model.reasoning_efforts, ["high", "max"]);
@@ -197,7 +197,7 @@ fast_mode = false
     assert!(!model.fast_mode);
 
     write(
-        &home.path().join("models/providers/allm/models.toml"),
+        &home.path().join("models/providers/example/models.toml"),
         r#"schema_version = 1
 
 [models."deepseek-v4-pro"]
@@ -205,7 +205,7 @@ fast_mode = false
     );
     let registry = ProviderRegistry::load_or_create(home.path().join("providers.toml")).unwrap();
     let unmatched = registry
-        .model(&ModelKey::new("allm", "deepseek-v4-pro").unwrap())
+        .model(&ModelKey::new("example", "deepseek-v4-pro").unwrap())
         .unwrap();
     assert_eq!(unmatched.context_window, None);
     assert!(unmatched.reasoning_efforts.is_empty());
@@ -300,10 +300,10 @@ fn generic_remote_discovery_is_enriched_by_exact_common_capabilities() {
         &home.path().join("providers.toml"),
         r#"schema_version = 3
 
-[providers.allm]
-display_name = "AllM"
+[providers.example]
+display_name = "Example"
 auth = { type = "bearer" }
-base_url = "https://allm.example/v1"
+base_url = "https://example.example/v1"
 enabled = true
 "#,
     );
@@ -319,12 +319,12 @@ reasoning_effort = true
 "#,
     );
     write(
-        &home.path().join("cache/providers/allm/models.json"),
+        &home.path().join("cache/providers/example/models.json"),
         r#"{
   "schema_version": 1,
-  "provider_id": "allm",
+  "provider_id": "example",
   "models": [{
-    "key": {"provider_id": "allm", "model_id": "deepseek-v4-flash"},
+    "key": {"provider_id": "example", "model_id": "deepseek-v4-flash"},
     "display_name": "deepseek-v4-flash",
     "capabilities": {
       "text_input": true,
@@ -344,7 +344,7 @@ reasoning_effort = true
 
     let registry = ProviderRegistry::load_or_create(home.path().join("providers.toml")).unwrap();
     let model = registry
-        .model(&ModelKey::new("allm", "deepseek-v4-flash").unwrap())
+        .model(&ModelKey::new("example", "deepseek-v4-flash").unwrap())
         .unwrap();
     assert!(model.capabilities.tool_calls);
     assert!(model.capabilities.parallel_tool_calls);

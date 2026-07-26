@@ -3628,7 +3628,7 @@ mod vendorless_extension_tests {
     fn derived_session_uses_the_requested_role_snapshot_instead_of_main() {
         let mut meta = agent_client_protocol::Meta::new();
         meta.insert("role".into(), serde_json::json!("explore"));
-        let mut explore = atelier_provider::RoleConfig::new("allm", "explore-model").unwrap();
+        let mut explore = atelier_provider::RoleConfig::new("example", "explore-model").unwrap();
         explore.effort = Some("low".into());
         explore.fast_mode = true;
         explore.payload.insert("temperature".into(), serde_json::json!(0.1));
@@ -3666,8 +3666,8 @@ mod vendorless_extension_tests {
     #[test]
     fn unavailable_config_model_error_names_provider_and_remediation() {
         assert_eq!(
-            configured_model_unavailable_message("allm/deepseek-v4-flash"),
-            "configured new-session model is unavailable: allm/deepseek-v4-flash; configure and enable Provider 'allm' or update config.toml:model"
+            configured_model_unavailable_message("example/deepseek-v4-flash"),
+            "configured new-session model is unavailable: example/deepseek-v4-flash; configure and enable Provider 'example' or update config.toml:model"
         );
     }
 
@@ -3687,11 +3687,11 @@ mod vendorless_extension_tests {
 
     #[test]
     fn inspector_does_not_prefix_an_already_composite_model_key() {
-        let key = inspector_model_key("allm", "allm/deepseek-v4-flash").unwrap();
+        let key = inspector_model_key("example", "example/deepseek-v4-flash").unwrap();
 
-        assert_eq!(key.provider_id, "allm");
+        assert_eq!(key.provider_id, "example");
         assert_eq!(key.model_id, "deepseek-v4-flash");
-        assert_eq!(key.to_string(), "allm/deepseek-v4-flash");
+        assert_eq!(key.to_string(), "example/deepseek-v4-flash");
     }
 
     #[test]
@@ -3699,8 +3699,8 @@ mod vendorless_extension_tests {
         let mut registry = atelier_provider::ProviderRegistry::in_memory();
         registry
             .upsert_provider(atelier_provider::ProviderConfig {
-                id: "allm".into(),
-                display_name: "AllM".into(),
+                id: "example".into(),
+                display_name: "Example".into(),
                 auth: atelier_provider::ProviderAuth::Bearer,
                 base_url: url::Url::parse("http://127.0.0.1:4317/v1").unwrap(),
                 credential: atelier_provider::CredentialRef::None,
@@ -3711,7 +3711,7 @@ mod vendorless_extension_tests {
             .unwrap();
         registry
             .upsert_model(atelier_provider::ModelDescriptor {
-                key: atelier_provider::ModelKey::new("allm", "deepseek-v4-flash").unwrap(),
+                key: atelier_provider::ModelKey::new("example", "deepseek-v4-flash").unwrap(),
                 display_name: "deepseek-v4-flash".into(),
                 description: None,
                 wire_api: Some(atelier_provider::WireApi::Responses),
@@ -3726,9 +3726,9 @@ mod vendorless_extension_tests {
             .unwrap();
 
         let resolved =
-            resolve_inspector_wire_api(&registry, "allm", "allm/deepseek-v4-flash").unwrap();
+            resolve_inspector_wire_api(&registry, "example", "example/deepseek-v4-flash").unwrap();
 
-        assert_eq!(resolved.provider, "allm");
+        assert_eq!(resolved.provider, "example");
         assert_eq!(resolved.model, "deepseek-v4-flash");
         assert_eq!(resolved.wire_api, atelier_provider::WireApi::Responses);
         assert_eq!(

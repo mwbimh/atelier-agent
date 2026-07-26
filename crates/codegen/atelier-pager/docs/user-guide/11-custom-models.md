@@ -9,20 +9,22 @@ Role -> Provider -> Model -> request parameters
 
 ## Quick Setup
 
-Set a credential in the environment, start Atelier, and configure a Provider:
+Set a credential in the environment, start Atelier, and open the guided
+Provider flow. For example, with OpenAI:
 
 ```bash
-export ALLM_API_KEY="..."
+export OPENAI_API_KEY="..."
 ate
 ```
 
 ```text
-/provider add allm https://api.example.com/v1 bearer env:ALLM_API_KEY
-/provider test allm
-/provider refresh allm
+/provider add
 ```
 
-After discovery, open the model picker:
+Choose a known Provider to use its reviewed endpoint and authentication policy.
+Choose **Custom endpoint** only for a proxy, gateway, or self-hosted API. After
+the wizard tests the connection and refreshes discovery, it opens the model
+picker automatically. You can also open it manually:
 
 ```text
 /model
@@ -31,14 +33,14 @@ After discovery, open the model picker:
 Then configure the fixed Roles. The same model can be assigned to every Role:
 
 ```text
-/roles set main allm/deepseek-v4-flash high false
-/roles set explore allm/deepseek-v4-flash low true
-/roles set implement allm/deepseek-v4-flash high false
-/roles set review allm/deepseek-v4-flash high false
-/roles set test allm/deepseek-v4-flash medium true
-/roles set compact allm/deepseek-v4-flash low true
-/roles set summary allm/deepseek-v4-flash low true
-/roles set title allm/deepseek-v4-flash low true
+/roles set main example/deepseek-v4-flash high false
+/roles set explore example/deepseek-v4-flash low true
+/roles set implement example/deepseek-v4-flash high false
+/roles set review example/deepseek-v4-flash high false
+/roles set test example/deepseek-v4-flash medium true
+/roles set compact example/deepseek-v4-flash low true
+/roles set summary example/deepseek-v4-flash low true
+/roles set title example/deepseek-v4-flash low true
 ```
 
 Use `/provider`, `/model`, and `/roles` without arguments for interactive
@@ -57,22 +59,35 @@ selection instead of typing the complete commands.
 /provider delete <id>
 ```
 
-Provider authentication policies are `bearer`, `header:NAME`, and `none`.
-Credentials are `env:NAME`, `cmd:PROGRAM`, `none`, or an OAuth method.
-Submitting `/provider add` opens the full connection wizard, while complete
-command forms remain copyable and scriptable. Wire API is configured on the
-exact Provider/model pair, not on the Provider connection.
+Submitting `/provider add` first offers known Provider presets. Presets own
+their API endpoint, API-key Header policy, discovery settings, and required
+non-secret protocol Headers. Users select only the Provider and credential
+source; low-level Header names such as `x-api-key` are not shown in this flow.
 
-Examples:
+**Custom endpoint** is the advanced flow. Its authentication policies are
+`bearer`, `header:NAME`, and `none`; credentials are `env:NAME`, `cmd:PROGRAM`,
+`none`, or advanced custom OAuth metadata. Complete command forms remain
+copyable and scriptable. Wire API is configured on the exact Provider/model
+pair, not on the Provider connection.
+
+Advanced command examples:
 
 ```text
-/provider add openai https://api.openai.com/v1 bearer env:OPENAI_API_KEY
-/provider add anthropic https://api.anthropic.com/v1 header:x-api-key env:ANTHROPIC_API_KEY
+/provider add company-gateway https://ai.example.com/v1 bearer env:COMPANY_AI_API_KEY
 /provider add local http://127.0.0.1:11434/v1 none none
 ```
 
-OAuth Providers include client metadata in the Provider command and use
-`/provider login` only to start a configured flow:
+Use the guided preset rather than the advanced one-line form for known
+Providers so required non-secret Headers and discovery settings are applied.
+
+Known Provider OAuth must be implemented and reviewed by that Provider's
+integration; Atelier never asks users to invent its client ID or OAuth
+endpoints. A known Provider only displays OAuth when such a provider-owned flow
+is available.
+
+For a custom Provider whose OAuth metadata you administer or trust, advanced
+commands can configure the API endpoint and OAuth endpoints separately, then
+use `/provider login` to start the configured flow:
 
 ```text
 /provider add company https://api.example.com/v1 bearer oauth authorization-code desktop-client https://login.example.com/authorize https://login.example.com/token openid,profile
@@ -96,7 +111,7 @@ path. Refresh requests the Provider's model endpoint and updates the local
 catalog:
 
 ```text
-/provider refresh allm
+/provider refresh example
 ```
 
 Refresh keeps explicitly configured static entries and removes remote entries
@@ -107,7 +122,7 @@ List or select discovered models with:
 
 ```text
 /model
-/model allm/deepseek-v4-flash
+/model example/deepseek-v4-flash
 ```
 
 The canonical key is `provider/model`. Display names can also be selected from
@@ -142,8 +157,8 @@ Manage them with:
 Examples:
 
 ```text
-/roles set main allm deepseek-v4-flash high false
-/roles set compact allm/deepseek-v4-flash low true
+/roles set main example deepseek-v4-flash high false
+/roles set compact example/deepseek-v4-flash low true
 /roles payload main {"temperature":0.2,"max_output_tokens":32000}
 /roles test compact
 ```
@@ -184,7 +199,7 @@ Use `execute` to run the test through the Runtime sampler rather than only
 validating configuration:
 
 ```text
-/wire-api test allm/deepseek-v4-flash execute
+/wire-api test example/deepseek-v4-flash execute
 ```
 
 ## Headless Use

@@ -3253,7 +3253,7 @@ mod role_sampling_tests {
 
     #[test]
     fn derived_role_snapshot_applies_effort_fast_mode_and_payload() {
-        let mut role = RoleConfig::new("allm", "review-model").unwrap();
+        let mut role = RoleConfig::new("example", "review-model").unwrap();
         role.effort = Some("low".to_owned());
         role.fast_mode = true;
         role.payload.insert("temperature".to_owned(), json!(0.15));

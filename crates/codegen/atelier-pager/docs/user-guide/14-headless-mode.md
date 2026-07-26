@@ -21,7 +21,7 @@ Atelier processes the prompt, runs any necessary tools, and prints the result to
 | Flag                    | Description                                           |
 | ----------------------- | ----------------------------------------------------- |
 | `-p, --single <PROMPT>` | The prompt to send (or use `--prompt-json` / `--prompt-file`) |
-| `-m, --model <MODEL>`   | Configured model key (for example `allm/deepseek-v4-flash`) |
+| `-m, --model <MODEL>`   | Configured model key (for example `example/deepseek-v4-flash`) |
 | `-s, --session-id <ID>` | Create a **new** session with this **UUID** (errors if invalid UUID or already in use under the target session directory; does not resume — use `-r`/`-c`) |
 | `--fork-session`        | With `-r`/`-c`, fork into a new session ID instead of appending to the original |
 | `-r, --resume <ID>`     | Resume an existing session (errors if not found)      |
@@ -146,7 +146,7 @@ When the prompt reached the model, the same object also carries spend fields
     "total_tokens": 50103
   },
   "modelUsage": {
-    "allm/deepseek-v4-flash": {
+    "example/deepseek-v4-flash": {
       "inputTokens": 7210,
       "outputTokens": 1893,
       "cacheReadInputTokens": 41000,
@@ -362,7 +362,7 @@ class AtelierChat:
                 "--output-format", "streaming-json" if stream else "json",
                 "--yolo"]
 
-    async def create(self, messages, model="allm/deepseek-v4-flash", stream=False):
+    async def create(self, messages, model="example/deepseek-v4-flash", stream=False):
         prompt = messages[-1]["content"] if len(messages) == 1 else "\n".join(
             f"{m['role']}: {m['content']}" for m in messages
         )
@@ -457,10 +457,10 @@ Key environment variables that affect headless mode:
 
 Provider credentials use the environment variable named in the Provider's
 `env:NAME` credential reference. For example, after configuring Provider
-`allm` with `env:ALLM_API_KEY`:
+`example` with `env:EXAMPLE_API_KEY`:
 
 ```bash
-export ALLM_API_KEY="..."
+export EXAMPLE_API_KEY="..."
 export ATELIER_HOME=/srv/atelier-ci
 ate -p "Run the test suite" --yolo
 ```
@@ -485,8 +485,8 @@ Configure and test Providers and Roles once, then make the referenced
 credential environment variables available to the headless process:
 
 ```text
-/provider test allm
-/provider refresh allm
+/provider test example
+/provider refresh example
 /roles test main
 ```
 
@@ -549,7 +549,7 @@ state, logs, and sessions remain isolated from the host profile:
 
 ```bash
 export ATELIER_HOME=/tmp/atelier-ci
-export ALLM_API_KEY="..."
+export EXAMPLE_API_KEY="..."
 ate -p "..."
 ```
 

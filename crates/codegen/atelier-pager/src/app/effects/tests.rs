@@ -14,7 +14,7 @@ async fn session_startup_deadline_returns_instead_of_hanging_forever() {
 #[test]
 fn provider_refresh_message_reads_the_wire_response_top_level() {
     let response = serde_json::json!({
-        "providerId": "allm",
+        "providerId": "example",
         "refreshed": true,
         "models": ["deepseek-v4-flash"],
         "message": "refreshed 1 model from the provider"

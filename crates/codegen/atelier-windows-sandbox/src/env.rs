@@ -146,7 +146,6 @@ fn is_sensitive_environment_name(name: &str) -> bool {
         "OPENAI_",
         "ANTHROPIC_",
         "XAI_",
-        "ALLM_",
         "GITHUB_",
         "GITLAB_",
         "NPM_",
@@ -203,7 +202,7 @@ mod tests {
             ("Path".to_owned(), "C:\\tools".to_owned()),
             ("SystemRoot".to_owned(), "C:\\Windows".to_owned()),
             ("CARGO_HOME".to_owned(), "C:\\cargo".to_owned()),
-            ("ALLM_API_KEY".to_owned(), "secret".to_owned()),
+            ("EXAMPLE_API_KEY".to_owned(), "secret".to_owned()),
             ("AWS_SECRET_ACCESS_KEY".to_owned(), "secret".to_owned()),
             ("GITHUB_TOKEN".to_owned(), "secret".to_owned()),
             ("SSH_AUTH_SOCK".to_owned(), "pipe".to_owned()),
@@ -222,7 +221,7 @@ mod tests {
             Some("C:\\cargo")
         );
         for secret in [
-            "ALLM_API_KEY",
+            "EXAMPLE_API_KEY",
             "AWS_SECRET_ACCESS_KEY",
             "GITHUB_TOKEN",
             "SSH_AUTH_SOCK",

@@ -1800,8 +1800,8 @@ mod tests {
         let mut registry = atelier_provider::ProviderRegistry::load_or_create(&path).unwrap();
         registry
             .upsert_provider(atelier_provider::ProviderConfig {
-                id: "allm".into(),
-                display_name: "AllM".into(),
+                id: "example".into(),
+                display_name: "Example".into(),
                 auth: atelier_provider::ProviderAuth::Bearer,
                 base_url: url::Url::parse("http://127.0.0.1:4317/v1").unwrap(),
                 credential: atelier_provider::CredentialRef::None,
@@ -1812,7 +1812,7 @@ mod tests {
             .unwrap();
         registry
             .upsert_model(atelier_provider::ModelDescriptor {
-                key: atelier_provider::ModelKey::new("allm", "deepseek-v4-flash").unwrap(),
+                key: atelier_provider::ModelKey::new("example", "deepseek-v4-flash").unwrap(),
                 display_name: "deepseek-v4-flash".into(),
                 description: None,
                 wire_api: Some(atelier_provider::WireApi::ChatCompletions),
@@ -1848,7 +1848,7 @@ mod tests {
         assert!(body["availableModels"].as_array().is_some_and(|models| {
             models
                 .iter()
-                .any(|model| model["modelId"] == "allm/deepseek-v4-flash")
+                .any(|model| model["modelId"] == "example/deepseek-v4-flash")
         }));
     }
 

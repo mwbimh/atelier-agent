@@ -4,7 +4,7 @@ use super::*;
 #[test]
 fn model_picker_uses_global_catalog_when_agent_catalog_is_empty() {
     let mut app = test_app_with_agent();
-    let model_id = acp::ModelId::new("allm/gpt-5");
+    let model_id = acp::ModelId::new("example/gpt-5");
     let mut available = IndexMap::new();
     available.insert(
         model_id.clone(),
@@ -33,7 +33,7 @@ fn model_picker_uses_global_catalog_when_agent_catalog_is_empty() {
 #[test]
 fn slash_model_picker_uses_global_catalog_when_agent_catalog_is_empty() {
     let mut app = test_app_with_agent();
-    let model_id = acp::ModelId::new("allm/gpt-5");
+    let model_id = acp::ModelId::new("example/gpt-5");
     let mut available = IndexMap::new();
     available.insert(
         model_id.clone(),
@@ -55,8 +55,8 @@ fn slash_model_picker_uses_global_catalog_when_agent_catalog_is_empty() {
 #[test]
 fn slash_model_command_uses_global_catalog_when_agent_catalog_is_empty() {
     let mut app = test_app_with_agent();
-    let current_id = acp::ModelId::new("allm/current");
-    let target_id = acp::ModelId::new("allm/gpt-5");
+    let current_id = acp::ModelId::new("example/current");
+    let target_id = acp::ModelId::new("example/gpt-5");
     let mut available = IndexMap::new();
     available.insert(
         current_id.clone(),
@@ -71,7 +71,7 @@ fn slash_model_command_uses_global_catalog_when_agent_catalog_is_empty() {
 
     assert!(app.agents[&AgentId(0)].session.models.is_empty());
 
-    let effects = dispatch(Action::SendPrompt("/model allm/gpt-5".into()), &mut app);
+    let effects = dispatch(Action::SendPrompt("/model example/gpt-5".into()), &mut app);
 
     assert!(
         effects.iter().any(|effect| matches!(
