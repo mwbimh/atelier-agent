@@ -559,6 +559,10 @@ pub enum Action {
     },
     /// Open the multi-step Provider connection wizard.
     OpenProviderWizard,
+    /// Open the same wizard pre-populated from an existing Provider.
+    OpenProviderEditWizard {
+        provider_id: String,
+    },
     /// Submit a validated Provider connection from the wizard.
     SubmitProviderWizard(Box<atelier_provider::ProviderConfig>),
     /// Put a free-form slash command entry in the composer without executing

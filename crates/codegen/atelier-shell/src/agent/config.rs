@@ -2775,14 +2775,20 @@ pub fn model_entries_from_provider_snapshot(
                 .iter()
                 .map(|(key, value)| (key.clone(), value.clone()))
                 .collect();
-            let context_window = model.context_window.and_then(NonZeroU64::new).or_else(|| {
-                tracing::error!(
-                    provider = %provider.id,
-                    model = %model.key.model_id,
-                    "Provider model has no configured context window; hiding it"
-                );
-                None
-            })?;
+            const DEFAULT_PROVIDER_CONTEXT_WINDOW: u64 = 100_000;
+            let context_window = model
+                .context_window
+                .and_then(NonZeroU64::new)
+                .unwrap_or_else(|| {
+                    tracing::info!(
+                        provider = %provider.id,
+                        model = %model.key.model_id,
+                        context_window = DEFAULT_PROVIDER_CONTEXT_WINDOW,
+                        "Provider model has no context metadata; using the default context window"
+                    );
+                    NonZeroU64::new(DEFAULT_PROVIDER_CONTEXT_WINDOW)
+                        .expect("default Provider context window is non-zero")
+                });
             info.context_window = context_window;
             let provider_model_override = snapshot
                 .model_provider_overrides
@@ -4587,6 +4593,27 @@ pub fn to_acp_model_info(
                     "agentType".to_string(),
                     serde_json::Value::String(info.agent_type.clone()),
                 );
+                if let Some((provider_id, provider_model_id)) = key.split_once('/') {
+                    map.insert(
+                        "providerId".to_string(),
+                        serde_json::Value::String(provider_id.to_owned()),
+                    );
+                    map.insert(
+                        "modelId".to_string(),
+                        serde_json::Value::String(provider_model_id.to_owned()),
+                    );
+                }
+                map.insert(
+                    "wireApi".to_string(),
+                    serde_json::Value::String(
+                        match &info.api_backend {
+                            ApiBackend::ChatCompletions => "chat_completions",
+                            ApiBackend::Responses => "responses",
+                            ApiBackend::Messages => "messages",
+                        }
+                        .to_owned(),
+                    ),
+                );
                 map.insert(
                     "acceptsImages".to_string(),
                     serde_json::Value::Bool(info.accepts_images),
@@ -6322,6 +6349,26 @@ reasoning_effort = "low"
         assert_eq!(meta["totalContextTokens"], 256_000);
     }
     #[test]
+    fn acp_model_meta_includes_provider_identity_and_wire_api() {
+        let mut models = IndexMap::new();
+        let mut entry = test_model_entry("alpha", "https://test.api/v1", None, None, None);
+        entry.info.name = Some("Alpha".to_string());
+        entry.info.api_backend = ApiBackend::Responses;
+        models.insert("example/alpha".to_string(), entry);
+
+        let acp_models = to_acp_model_info(&models);
+        let meta = acp_models
+            .values()
+            .next()
+            .and_then(|model| model.meta.as_ref())
+            .expect("Provider metadata");
+
+        assert_eq!(meta["providerId"], "example");
+        assert_eq!(meta["modelId"], "alpha");
+        assert_eq!(meta["wireApi"], "responses");
+    }
+
+    #[test]
     fn acp_model_meta_always_includes_agent_type() {
         let mut models = IndexMap::new();
         let mut entry = test_model_entry("plain-model", "https://test.api/v1", None, None, None);
@@ -7096,6 +7143,46 @@ reasoning_effort = "low"
                 .contains_key("remote_compaction_endpoint"),
             "transport routing metadata must not leak into ordinary inference payload"
         );
+    }
+
+    #[test]
+    fn provider_models_without_transport_metadata_use_safe_runtime_defaults() {
+        let model_key = atelier_provider::ModelKey::new("example", "discovered-model").unwrap();
+        let snapshot = ProviderSnapshot {
+            providers: vec![atelier_provider::ProviderConfig {
+                id: "example".into(),
+                display_name: "Example".into(),
+                base_url: url::Url::parse("https://models.example.test/v1").unwrap(),
+                credential: atelier_provider::CredentialRef::None,
+                auth: ProviderAuth::None,
+                discovery: atelier_provider::ProviderDiscovery::Static,
+                extra_headers: std::collections::BTreeMap::new(),
+                enabled: true,
+            }],
+            models: vec![atelier_provider::ModelDescriptor {
+                key: model_key,
+                display_name: "Discovered Model".into(),
+                description: None,
+                wire_api: None,
+                context_window: None,
+                capabilities: Default::default(),
+                reasoning_efforts: Vec::new(),
+                default_effort: None,
+                fast_mode: false,
+                source: atelier_provider::ModelSource::Remote,
+                enabled: true,
+            }],
+            model_provider_overrides: Default::default(),
+            experimental_model_features: Default::default(),
+        };
+
+        let entries = model_entries_from_provider_snapshot(&snapshot, None);
+        let entry = entries
+            .get("example/discovered-model")
+            .expect("models without optional metadata remain selectable");
+
+        assert_eq!(entry.info.context_window.get(), 100_000);
+        assert_eq!(entry.info.api_backend, ApiBackend::ChatCompletions);
     }
 
     #[test]

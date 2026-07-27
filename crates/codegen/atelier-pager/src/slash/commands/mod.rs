@@ -161,12 +161,12 @@ mod tests {
     /// Build a ModelState with two models for testing.
     fn sample_models() -> ModelState {
         let mut models = ModelState::default();
-        let id_fast = acp::ModelId::new(Arc::from("atelier-4.5"));
+        let id_fast = acp::ModelId::new(Arc::from("example/atelier-4.5"));
         models.available.insert(
             id_fast.clone(),
             acp::ModelInfo::new(id_fast.clone(), "Atelier 4.5".to_string()),
         );
-        let id_pro = acp::ModelId::new(Arc::from("atelier-4.3"));
+        let id_pro = acp::ModelId::new(Arc::from("example/atelier-4.3"));
         models.available.insert(
             id_pro.clone(),
             acp::ModelInfo::new(id_pro.clone(), "Atelier 4.3".to_string()),
@@ -412,34 +412,30 @@ mod tests {
             other => panic!("expected QueueCommand, got {other:?}"),
         }
     }
-    /// Bare `/model <name>` switches only the current session.
+    /// `/model` canonicalizes display-name input and persists the composite ID.
     #[test]
     fn model_resolves_by_display_name() {
         let models = sample_models();
         let mut ctx = make_ctx(&models);
         let cmd = model::ModelCommand;
         let result = cmd.run(&mut ctx, "Atelier 4.5");
-        match result {
-            CommandResult::Action(Action::SwitchModel { model_id, effort }) => {
-                assert_eq!(model_id.0.as_ref(), "atelier-4.5");
-                assert_eq!(effort, None);
-            }
-            other => panic!("expected Action(SwitchModel), got {other:?}"),
-        }
+        let CommandResult::Action(Action::RuntimeExtension { method, params }) = result else {
+            panic!("expected config update, got {result:?}");
+        };
+        assert_eq!(method, "_atelier/config/update");
+        assert_eq!(params["model"], "example/atelier-4.5");
+        assert_eq!(params["switch"], true);
     }
     #[test]
     fn model_resolves_by_model_id() {
         let models = sample_models();
         let mut ctx = make_ctx(&models);
         let cmd = model::ModelCommand;
-        let result = cmd.run(&mut ctx, "atelier-4.3");
-        match result {
-            CommandResult::Action(Action::SwitchModel { model_id, effort }) => {
-                assert_eq!(model_id.0.as_ref(), "atelier-4.3");
-                assert_eq!(effort, None);
-            }
-            other => panic!("expected Action(SwitchModel), got {other:?}"),
-        }
+        let result = cmd.run(&mut ctx, "example/atelier-4.3");
+        let CommandResult::Action(Action::RuntimeExtension { params, .. }) = result else {
+            panic!("expected config update, got {result:?}");
+        };
+        assert_eq!(params["model"], "example/atelier-4.3");
     }
     #[test]
     fn model_resolves_case_insensitively() {
@@ -447,13 +443,10 @@ mod tests {
         let mut ctx = make_ctx(&models);
         let cmd = model::ModelCommand;
         let result = cmd.run(&mut ctx, "atelier 4.5");
-        match result {
-            CommandResult::Action(Action::SwitchModel { model_id, effort }) => {
-                assert_eq!(model_id.0.as_ref(), "atelier-4.5");
-                assert_eq!(effort, None);
-            }
-            other => panic!("expected Action(SwitchModel), got {other:?}"),
-        }
+        let CommandResult::Action(Action::RuntimeExtension { params, .. }) = result else {
+            panic!("expected config update, got {result:?}");
+        };
+        assert_eq!(params["model"], "example/atelier-4.5");
     }
     #[test]
     fn model_invalid_arg_returns_error() {
@@ -503,18 +496,23 @@ mod tests {
             screen_mode: crate::app::ScreenMode::Fullscreen,
         };
         let cmd = model::ModelCommand;
-        let items = cmd.suggest_args(&ctx, "").expect("should have suggestions");
+        let providers = cmd.suggest_args(&ctx, "").expect("provider suggestions");
+        assert_eq!(providers.len(), 1);
+        assert_eq!(providers[0].display, "example");
+        assert_eq!(providers[0].insert_text, "example/");
+
+        let items = cmd
+            .suggest_args(&ctx, "example/")
+            .expect("model suggestions");
         assert_eq!(items.len(), 2);
-        assert!(
-            items
-                .iter()
-                .any(|i| i.display.starts_with("Atelier 4.5") && i.insert_text == "Atelier 4.5")
-        );
-        assert!(
-            items
-                .iter()
-                .any(|i| i.display == "Atelier 4.3" && i.insert_text == "Atelier 4.3")
-        );
+        assert!(items.iter().any(|item| {
+            item.display.starts_with("example/atelier-4.5")
+                && item.insert_text == "example/atelier-4.5"
+        }));
+        assert!(items.iter().any(|item| {
+            item.display.starts_with("example/atelier-4.3")
+                && item.insert_text == "example/atelier-4.3"
+        }));
     }
     #[test]
     fn model_suggest_args_empty_models_returns_none() {

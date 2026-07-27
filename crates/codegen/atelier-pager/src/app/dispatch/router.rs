@@ -915,6 +915,9 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
         Action::OpenSettings => dispatch_open_settings(app),
         Action::OpenSlashArgPicker { command } => dispatch_open_slash_arg_picker(app, command),
         Action::OpenProviderWizard => dispatch_open_provider_wizard(app),
+        Action::OpenProviderEditWizard { provider_id } => {
+            dispatch_open_provider_edit_wizard(app, provider_id)
+        }
         Action::SubmitProviderWizard(config) => dispatch_submit_provider_wizard(app, config),
         Action::OpenSlashCommandInput { command } => {
             dispatch_open_slash_command_input(app, command)
@@ -1408,6 +1411,32 @@ fn dispatch_open_provider_wizard(app: &mut AppView) -> Vec<Effect> {
                 existing_provider_ids,
             ),
         ),
+    });
+    vec![]
+}
+
+fn dispatch_open_provider_edit_wizard(app: &mut AppView, provider_id: String) -> Vec<Effect> {
+    let ActiveView::Agent(id) = app.active_view else {
+        return vec![];
+    };
+    let registry = match atelier_provider::ProviderRegistry::load_or_create(
+        atelier_config::atelier_home().join("providers.toml"),
+    ) {
+        Ok(registry) => registry,
+        Err(error) => {
+            app.show_toast(&format!("Could not load Providers: {error}"));
+            return vec![];
+        }
+    };
+    let Some(config) = registry.provider(&provider_id).cloned() else {
+        app.show_toast(&format!("Provider not found: {provider_id}"));
+        return vec![];
+    };
+    let Some(agent) = app.agents.get_mut(&id) else {
+        return vec![];
+    };
+    agent.active_modal = Some(crate::views::modal::ActiveModal::ProviderWizard {
+        state: Box::new(crate::views::provider_wizard::ProviderWizardState::for_edit(config)),
     });
     vec![]
 }

@@ -21,7 +21,7 @@ Start Atelier and enter:
 
 The command picker exposes Provider list, add, edit, enable, disable, test,
 refresh, login, logout, and delete operations. Submitting `/provider add`
-starts by selecting a known Provider or **Custom endpoint**.
+shows **Custom endpoint** first, followed by reviewed Provider presets.
 
 For a known Provider, Atelier owns the reviewed API endpoint, login methods,
 OAuth client, scopes, refresh behavior, API-key policy, discovery settings, and
@@ -29,8 +29,8 @@ required non-secret protocol Headers. The user chooses a login method; the
 wizard does not ask for a base URL, OAuth endpoint, client ID, scope, or
 low-level Header name.
 
-**Custom endpoint** is the advanced path for a proxy, gateway, or self-hosted
-API. It asks separately for the model API base URL, credential injection,
+**Custom endpoint** is the advanced path for a proxy, gateway, local server, or
+self-hosted API. It asks separately for the model API base URL, credential injection,
 credential source, and discovery. Wire API selection is not a Provider setting;
 it belongs to each exact Provider/model pair.
 
@@ -163,6 +163,7 @@ Advanced users can also use complete one-line commands. `<auth>` is `bearer`,
 /provider add <id> <base-url> <auth> [env:NAME|cmd:PROGRAM|none]
 /provider add <id> <base-url> <auth> oauth authorization-code <client-id> <authorization-endpoint> <token-endpoint> [scope1,scope2]
 /provider add <id> <base-url> <auth> oauth device-code <client-id> <device-authorization-endpoint> <token-endpoint> [scope1,scope2]
+/provider edit <id>
 /provider edit <id> <base-url> <auth> [env:NAME|cmd:PROGRAM|none]
 /provider edit <id> <base-url> <auth> oauth authorization-code <client-id> <authorization-endpoint> <token-endpoint> [scope1,scope2]
 /provider edit <id> <base-url> <auth> oauth device-code <client-id> <device-authorization-endpoint> <token-endpoint> [scope1,scope2]
@@ -172,15 +173,17 @@ Advanced users can also use complete one-line commands. `<auth>` is `bearer`,
 /provider refresh <id>
 /provider login <id> [flow]
 /provider logout <id>
-/provider delete <id>
+/provider delete <id> confirm
 ```
 
 Omit `[flow]` for a known Provider; its preset selects the configured login
 method. Explicit flow names are intended for advanced custom OAuth.
 
-`edit` updates the base URL, authentication policy, and credential while
-preserving the Provider's existing display name, discovery settings, extra
-headers, and enabled state.
+`edit <id>` opens a pre-populated review/edit wizard. The complete one-line form
+remains available for automation and updates the base URL, authentication
+policy, and credential while preserving the Provider's existing display name,
+discovery settings, extra headers, and enabled state. Provider deletion always
+requires the explicit `confirm` step.
 
 `test` validates the configured credential and performs a network probe when
 the Provider has a safe probe endpoint. Static subscription catalogs validate
@@ -199,10 +202,12 @@ at the Provider's `models` path. For a base URL such as
 /model
 ```
 
-`/model` shows the models currently available from enabled Providers. If the
-Provider does not expose a compatible model endpoint, configure its catalog
-through the Provider RPC/configuration surface instead of expecting refresh to
-invent model names.
+`/model` first selects a Provider and then one of its discovered models. The
+selected `provider/model` key is persisted to `config.toml`. If discovery omits
+Wire API or context metadata, Atelier uses `chat_completions` and a 100,000-token
+context window instead of hiding the model. If the Provider does not expose a
+compatible model endpoint, configure its catalog locally rather than expecting
+refresh to invent model names.
 
 ## Roles Are Separate from Credentials
 

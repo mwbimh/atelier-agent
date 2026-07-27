@@ -1665,7 +1665,7 @@ mod tests {
         let mut ctrl = SlashController::with_builtins(std::path::PathBuf::from("."));
         let state = SlashState::default();
         let mut models = ModelState::default();
-        let model_id = acp::ModelId::new(Arc::from("example"));
+        let model_id = acp::ModelId::new(Arc::from("example/model"));
         models.available.insert(
             model_id.clone(),
             acp::ModelInfo::new(model_id, "Example".to_string()),
@@ -1675,12 +1675,7 @@ mod tests {
         ctrl.refresh(&state, text, text.len(), &models);
         let snapshot = state.snapshot();
         assert!(snapshot.open);
-        assert!(
-            snapshot
-                .matches
-                .iter()
-                .any(|row| row.display.contains("Example"))
-        );
+        assert!(snapshot.matches.iter().any(|row| row.display == "example"));
         assert!(snapshot.args_range.is_some());
     }
 

@@ -234,12 +234,12 @@ fn cancel_before_first_activity_resets_state_and_discards_orphan_response() {
     assert!(app.agents[&id].session.state.is_idle());
     assert_eq!(app.agents[&id].scrollback.len(), 0);
 }
-/// `/model <name>` switches only the active Session.
+/// `/model <name>` persists the composite key before switching the active Session.
 #[test]
-fn slash_model_valid_dispatches_switch_without_legacy_default_persist() {
+fn slash_model_valid_dispatches_persisted_config_update() {
     let mut app = test_app_with_agent();
     let id = AgentId(0);
-    let model_id = acp::ModelId::new(std::sync::Arc::from("atelier-4.5"));
+    let model_id = acp::ModelId::new(std::sync::Arc::from("example/atelier-4.5"));
     app.agents
         .get_mut(&id)
         .unwrap()
@@ -251,18 +251,14 @@ fn slash_model_valid_dispatches_switch_without_legacy_default_persist() {
             acp::ModelInfo::new(model_id.clone(), "Atelier 4.5".to_string()),
         );
     let effects = dispatch(Action::SendPrompt("/model Atelier 4.5".into()), &mut app);
-    assert_eq!(
-        effects.len(),
-        1,
-        "expected only SwitchModel, got {effects:?}"
-    );
-    assert!(
-        matches!(& effects[0], Effect::SwitchModel { model_id : mid, .. } if mid == &
-        model_id),
-        "effect must be SwitchModel(<resolved id>), got {:?}",
-        effects[0],
-    );
-    assert!(app.agents[&id].session.model_switch_pending);
+    assert!(matches!(
+        effects.as_slice(),
+        [Effect::RuntimeExtension { method, params, .. }]
+            if method == "_atelier/config/update"
+                && params["model"] == "example/atelier-4.5"
+                && params["switch"] == true
+    ));
+    assert!(!app.agents[&id].session.model_switch_pending);
 }
 #[test]
 fn model_switch_pending_resets_correctly_across_success_and_failure() {

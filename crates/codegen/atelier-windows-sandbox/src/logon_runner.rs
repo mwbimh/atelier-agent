@@ -1,9 +1,11 @@
-use crate::acl::{ScopedAclGrant, access_mask_for_mode, grant_restricted_sids};
+use crate::acl::{
+    ScopedAclGrant, access_mask_for_mode, ensure_persistent_workspace_grant, grant_restricted_sids,
+};
 use crate::env::make_environment_block;
 use crate::materialize;
 use crate::process::spawn_as_user_with_handles;
 use crate::setup::{SandboxCreds, ensure_sandbox_creds};
-use crate::token::{LocalSid, create_restricted_token_for_sandbox_user, new_capability_sid};
+use crate::token::{LocalSid, create_restricted_token_for_sandbox_user, workspace_capability_sid};
 use crate::winutil::{argv_to_command_line, path_to_wide, to_wide, win_error};
 use anyhow::{Context, Result, anyhow};
 use serde::{Deserialize, Serialize};
@@ -16,8 +18,7 @@ use std::ptr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::thread;
-use std::time::Duration;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use windows_sys::Win32::Foundation::{
     CloseHandle, GetLastError, HANDLE, HLOCAL, INVALID_HANDLE_VALUE, LocalFree, WAIT_FAILED,
     WAIT_OBJECT_0, WAIT_TIMEOUT,
@@ -48,6 +49,15 @@ use windows_sys::Win32::System::Threading::{
 const PROTOCOL_VERSION: u32 = 1;
 const ERROR_PIPE_CONNECTED: u32 = 535;
 static PIPE_NONCE: AtomicU64 = AtomicU64::new(1);
+
+fn record_spawn_timing(name: &'static str, started: Instant) {
+    tracing::info!(
+        target: "atelier_instrumentation",
+        event = "timing",
+        name,
+        elapsed_us = started.elapsed().as_micros() as u64,
+    );
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 struct RunnerRequest {
@@ -277,33 +287,83 @@ impl Drop for PersistentPipedProcess {
 }
 
 pub fn spawn(request: crate::CommandRequest) -> Result<PersistentPipedProcess> {
+    let total_started = Instant::now();
+
+    let started = Instant::now();
     let validated = crate::runner::validate_request(&request)?;
+    record_spawn_timing("windows_sandbox.validate_request", started);
+
+    let started = Instant::now();
     let source = materialize::runner_source()?;
+    record_spawn_timing("windows_sandbox.runner_source", started);
+
+    let started = Instant::now();
     let creds = ensure_sandbox_creds(request.network_policy)?;
+    record_spawn_timing("windows_sandbox.ensure_credentials", started);
+
     let home = crate::setup::atelier_home()?;
+    let started = Instant::now();
     let runner = materialize::materialize(&source, &home)?;
+    record_spawn_timing("windows_sandbox.materialize_runner", started);
     let program = materialize::remap_program(&validated.program, &source, &runner);
-    let capability = new_capability_sid()?;
+
+    let started = Instant::now();
+    let capability = workspace_capability_sid(&home, &validated.roots, request.mode)?;
     let sandbox_user = LocalSid::from_account(&creds.username)?;
+    record_spawn_timing("windows_sandbox.resolve_sids", started);
+
     let access = access_mask_for_mode(request.mode);
-    let mut grants = Vec::new();
+    let started = Instant::now();
+    let mut acl_changed = false;
     for root in &validated.roots {
-        grants.push(grant_restricted_sids(
+        acl_changed |= ensure_persistent_workspace_grant(
             root,
-            &[sandbox_user.as_ptr(), capability.as_ptr()],
+            sandbox_user.as_ptr(),
+            capability.as_ptr(),
             access,
-        )?);
+        )?;
     }
+    record_spawn_timing(
+        if acl_changed {
+            "windows_sandbox.grant_acl_propagated"
+        } else {
+            "windows_sandbox.grant_acl_reused"
+        },
+        started,
+    );
+
+    // The restricted worker executes the materialized single-binary runner.
+    // Give this one file the current capability; unlike the workspace root,
+    // this scoped change has no recursive propagation cost.
+    let grants = vec![grant_restricted_sids(
+        &runner,
+        &[capability.as_ptr()],
+        access_mask_for_mode(crate::SandboxMode::ReadOnly),
+    )?];
 
     let names = pipe_names();
     let user_sid = sandbox_user.to_string()?;
+    let started = Instant::now();
     let servers = create_servers(&names, &user_sid)?;
+    record_spawn_timing("windows_sandbox.create_pipes", started);
+
+    let started = Instant::now();
     let (process, job) = spawn_logon_runner(&runner, &validated.cwd, &creds, &names)?;
+    record_spawn_timing("windows_sandbox.create_process_with_logon", started);
     let process = RunnerProcessGuard(process);
+
+    let started = Instant::now();
     connect_server(&servers.control, process.raw())?;
+    record_spawn_timing("windows_sandbox.connect_control_pipe", started);
+    let started = Instant::now();
     connect_server(&servers.stdin, process.raw())?;
+    record_spawn_timing("windows_sandbox.connect_stdin_pipe", started);
+    let started = Instant::now();
     connect_server(&servers.stdout, process.raw())?;
+    record_spawn_timing("windows_sandbox.connect_stdout_pipe", started);
+    let started = Instant::now();
     connect_server(&servers.stderr, process.raw())?;
+    record_spawn_timing("windows_sandbox.connect_stderr_pipe", started);
 
     let mut control = servers.control.into_file();
     let payload = RunnerRequest {
@@ -318,8 +378,10 @@ pub fn spawn(request: crate::CommandRequest) -> Result<PersistentPipedProcess> {
         cwd: validated.cwd,
         environment: make_environment_block(&request.env, request.atelier_home.as_deref()),
     };
+    let started = Instant::now();
     write_frame(&mut control, &payload)?;
     let response: RunnerResponse = read_frame(&mut control)?;
+    record_spawn_timing("windows_sandbox.runner_handshake", started);
     match response {
         RunnerResponse::Ready => {}
         RunnerResponse::Error { message } => {
@@ -328,6 +390,7 @@ pub fn spawn(request: crate::CommandRequest) -> Result<PersistentPipedProcess> {
     }
     drop(control);
     let process = process.disarm();
+    record_spawn_timing("windows_sandbox.spawn_total", total_started);
     Ok(PersistentPipedProcess {
         process,
         job,

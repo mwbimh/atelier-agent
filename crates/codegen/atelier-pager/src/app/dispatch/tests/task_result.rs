@@ -6,6 +6,38 @@ use super::super::task_result::{
 use super::*;
 
 #[test]
+fn persisted_model_update_switches_the_active_session() {
+    let mut app = test_app_with_agent();
+    let agent_id = AgentId(0);
+    let model_id = acp::ModelId::new("example/alpha");
+    app.agents
+        .get_mut(&agent_id)
+        .unwrap()
+        .session
+        .models
+        .available
+        .insert(
+            model_id.clone(),
+            acp::ModelInfo::new(model_id.clone(), "Alpha"),
+        );
+
+    let effects = dispatch(
+        Action::TaskComplete(TaskResult::RuntimeExtensionComplete {
+            agent_id: Some(agent_id),
+            method: "_atelier/config/update".into(),
+            response: r#"{"model":"example/alpha","persisted":true,"switch":true,"effort":null}"#
+                .into(),
+        }),
+        &mut app,
+    );
+
+    assert!(effects.iter().any(|effect| matches!(
+        effect,
+        Effect::SwitchModel { model_id: switched, .. } if switched == &model_id
+    )));
+}
+
+#[test]
 fn runtime_attach_replay_is_shown_and_cursor_is_saved() {
     let mut app = test_app_with_agent();
     let agent_id = AgentId(0);
@@ -219,15 +251,6 @@ fn provider_wizard_replaces_an_existing_provider_only_after_confirmation() {
         crate::views::provider_wizard::ProviderWizardState::with_existing_provider_ids([
             "example".to_owned()
         ]);
-    for _ in 0..5 {
-        let _ = crate::views::provider_wizard::handle_provider_wizard_key(
-            &mut state,
-            &crossterm::event::KeyEvent::new(
-                crossterm::event::KeyCode::Down,
-                crossterm::event::KeyModifiers::NONE,
-            ),
-        );
-    }
     let _ = crate::views::provider_wizard::handle_provider_wizard_key(
         &mut state,
         &crossterm::event::KeyEvent::new(

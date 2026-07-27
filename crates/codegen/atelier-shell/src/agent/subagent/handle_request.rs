@@ -1349,7 +1349,6 @@ pub(crate) async fn handle_subagent_request(
         }
     };
     let duration_ms = start.elapsed().as_millis() as u64;
-    let mut turn_token_totals: Option<(u64, u64, u64)> = None;
     let mut result = match wait_outcome {
         SubagentWaitOutcome::Cancelled => {
             let (tool_calls, turns) = signals_snapshot_counts(&child_handle).await;
@@ -1378,14 +1377,7 @@ pub(crate) async fn handle_subagent_request(
                             ..
                         },
                     ),
-                ) => {
-                    turn_token_totals = Some((
-                        snapshot.turn_input_tokens,
-                        snapshot.turn_cached_input_tokens,
-                        snapshot.turn_output_tokens,
-                    ));
-                    (snapshot.current.tool_call_count, snapshot.current.turn_count)
-                }
+                ) => (snapshot.current.tool_call_count, snapshot.current.turn_count),
                 _ => signals_snapshot_counts(&child_handle).await,
             };
             let final_text = child_handle

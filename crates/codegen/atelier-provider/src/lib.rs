@@ -1314,6 +1314,9 @@ pub struct ProviderSnapshot {
 pub enum WireApiSource {
     ProviderModelOverride,
     ModelDefinition,
+    /// No exact transport metadata was available. Atelier uses the documented
+    /// OpenAI-compatible baseline instead of hiding the discovered model.
+    Default,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1402,9 +1405,12 @@ impl ProviderSnapshot {
                 source: WireApiSource::ModelDefinition,
             });
         }
-        Err(ProviderError::InvalidProvider(format!(
-            "wire API is not configured for {key}"
-        )))
+        Ok(ResolvedWireApi {
+            provider: key.provider_id.clone(),
+            model: key.model_id.clone(),
+            wire_api: WireApi::ChatCompletions,
+            source: WireApiSource::Default,
+        })
     }
 
     /// Resolve an active remote-compaction endpoint for one exact

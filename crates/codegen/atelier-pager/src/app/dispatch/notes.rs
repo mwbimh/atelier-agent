@@ -406,6 +406,8 @@ fn runtime_extension_requires_session(method: &str) -> bool {
         && !method.starts_with("atelier/credential/")
         && !method.starts_with("_atelier/role/")
         && !method.starts_with("atelier/role/")
+        && !method.starts_with("_atelier/config/")
+        && !method.starts_with("atelier/config/")
         && !matches!(
             method,
             "_atelier/task/list"

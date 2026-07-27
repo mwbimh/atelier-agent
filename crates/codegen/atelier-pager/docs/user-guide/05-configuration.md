@@ -31,8 +31,9 @@ context = "default"
 request_agent = "atelier"
 ```
 
-`model` is a top-level Provider/model composite key. Atelier does not select the
-first discovered model automatically. Context selection and Request Agent
+`model` is a top-level Provider/model composite key. Selecting a model through
+`/model` writes this value automatically; Atelier never selects the first
+discovered model on its own. Context selection and Request Agent
 selection are also top-level runtime settings; they do not belong in
 `providers.toml`, `roles.toml`, or a `[models]` table.
 
@@ -257,8 +258,8 @@ Configure them through the guided TUI:
 ```
 
 Known Providers supply their reviewed API endpoint, login methods, OAuth
-refresh, and authentication policy. Choose **Custom endpoint** only when
-configuring a proxy, gateway, or self-hosted API. The complete advanced command
+refresh, and authentication policy. **Custom endpoint** appears first for a
+proxy, gateway, local server, or self-hosted API. The complete advanced command
 remains available; administrator-managed one-line commands may also use a
 credential helper executable.
 
@@ -268,7 +269,10 @@ credential helper executable.
 
 See [Provider Credentials](02-authentication.md) and
 [Providers, Models, and Roles](11-custom-models.md). Do not place credentials
-inside `config.toml`, Role payloads, or model payload overrides.
+inside `config.toml`, Role payloads, or model payload overrides. Discovered
+models without explicit transport metadata use `chat_completions` and a
+100,000-token context window until an exact model override supplies different
+values.
 
 ### MCP Servers
 

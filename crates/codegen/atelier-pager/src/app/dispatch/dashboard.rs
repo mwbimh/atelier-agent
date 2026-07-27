@@ -1381,8 +1381,27 @@ pub(super) fn dispatch_dashboard_dispatch_slash(app: &mut AppView, text: String)
             }
             dispatch(Action::ExitDashboard, app)
         }
-        // `/model` on the session-less dashboard stages the model for the
-        // NEXT spawned agent instead of switching a (nonexistent) session.
+        // `/model` persists the default through the Runtime and stages the
+        // same model for the next spawned agent. There is no live Session to
+        // switch on the dashboard, so the config-update completion only needs
+        // to confirm persistence.
+        CommandResult::Action(Action::RuntimeExtension { method, params })
+            if method == "_atelier/config/update" =>
+        {
+            let model_id = params
+                .get("model")
+                .and_then(serde_json::Value::as_str)
+                .map(acp::ModelId::new);
+            let effort = params
+                .get("effort")
+                .and_then(serde_json::Value::as_str)
+                .and_then(|value| value.parse().ok());
+            if let Some(model_id) = model_id {
+                stage_dashboard_model(app, model_id, effort);
+            }
+            dispatch(Action::RuntimeExtension { method, params }, app)
+        }
+        // Retain the direct action for non-persisting internal callers.
         CommandResult::Action(Action::SwitchModel { model_id, effort }) => {
             stage_dashboard_model(app, model_id.clone(), effort);
             vec![]

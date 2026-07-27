@@ -40,8 +40,21 @@ impl SlashCommand for ProviderCommand {
         let command = tokens.first().copied();
         let has_argument = tokens.len() > 1;
 
-        if matches!(command, Some("add" | "edit")) {
-            return provider_form_items(command.unwrap_or_default(), &tokens[1..], trailing_space);
+        if command == Some("add") {
+            return provider_form_items("add", &tokens[1..], trailing_space);
+        }
+        if command == Some("edit") && has_argument && (trailing_space || tokens.len() > 2) {
+            return provider_form_items("edit", &tokens[1..], trailing_space);
+        }
+
+        if command == Some("delete") && tokens.len() == 2 && trailing_space {
+            let provider_id = tokens[1];
+            return Some(vec![ArgItem {
+                display: format!("Delete {provider_id}"),
+                match_text: "confirm delete".to_owned(),
+                insert_text: format!("delete {provider_id} confirm"),
+                description: "Permanent action; Provider credentials and models are removed".into(),
+            }]);
         }
 
         if command == Some("login") && has_argument {
@@ -122,6 +135,11 @@ impl SlashCommand for ProviderCommand {
                     };
                 };
                 let fields = parts.collect::<Vec<_>>();
+                if command == "edit" && fields.is_empty() {
+                    return CommandResult::Action(Action::OpenProviderEditWizard {
+                        provider_id: provider_id.to_owned(),
+                    });
+                }
                 if fields.len() < 2 {
                     return CommandResult::Error(format!(
                         "Usage: /provider {command} <id> <base-url> <auth> [credential]"
@@ -165,10 +183,12 @@ impl SlashCommand for ProviderCommand {
             }
             "delete" => {
                 let Some(provider_id) = provider_id else {
-                    return CommandResult::Error("Usage: /provider delete <id>".into());
+                    return CommandResult::Error("Usage: /provider delete <id> confirm".into());
                 };
-                if parts.next().is_some() {
-                    return CommandResult::Error("Usage: /provider delete <id>".into());
+                if parts.next() != Some("confirm") || parts.next().is_some() {
+                    return CommandResult::Error(format!(
+                        "Deletion requires confirmation. Use /provider delete {provider_id} confirm"
+                    ));
                 }
                 runtime_extension(
                     "_atelier/provider/delete",
@@ -514,7 +534,7 @@ fn runtime_extension(method: &str, params: serde_json::Value) -> CommandResult {
 /// command to the composer instead of submitting an incomplete `/provider
 /// edit` invocation.
 fn provider_id_insert_text(command: &str, provider_id: &str) -> String {
-    if matches!(command, "edit" | "login") {
+    if matches!(command, "login" | "delete") {
         format!("{command} {provider_id} ")
     } else {
         format!("{command} {provider_id}")
@@ -902,7 +922,6 @@ mod tests {
             "list extra",
             "enable example extra",
             "disable example extra",
-            "delete example extra",
             "test example extra",
             "refresh example extra",
         ] {
@@ -923,12 +942,21 @@ mod tests {
     }
 
     #[test]
-    fn incomplete_provider_specs_report_usage() {
+    fn provider_edit_with_only_an_id_opens_the_prefilled_wizard() {
+        let mut ctx = empty_ctx();
+        assert!(matches!(
+            ProviderCommand.run(&mut ctx, "edit example"),
+            CommandResult::Action(Action::OpenProviderEditWizard { provider_id })
+                if provider_id == "example"
+        ));
+    }
+
+    #[test]
+    fn incomplete_advanced_provider_specs_report_usage() {
         let mut ctx = empty_ctx();
         for args in [
             "add example",
             "add example https://api.example.test/v1",
-            "edit example",
             "edit example https://api.example.test/v1",
         ] {
             assert!(
@@ -939,10 +967,24 @@ mod tests {
     }
 
     #[test]
+    fn provider_delete_requires_explicit_confirmation() {
+        let mut ctx = empty_ctx();
+        assert!(matches!(
+            ProviderCommand.run(&mut ctx, "delete example"),
+            CommandResult::Error(error) if error.contains("requires confirmation")
+        ));
+        assert!(matches!(
+            ProviderCommand.run(&mut ctx, "delete example confirm"),
+            CommandResult::Action(Action::RuntimeExtension { method, params })
+                if method == "_atelier/provider/delete" && params["providerId"] == "example"
+        ));
+    }
+
+    #[test]
     fn edit_provider_id_completion_keeps_free_form_args() {
         assert_eq!(
             super::provider_id_insert_text("edit", "proxy"),
-            "edit proxy "
+            "edit proxy"
         );
         assert_eq!(
             super::provider_id_insert_text("refresh", "proxy"),

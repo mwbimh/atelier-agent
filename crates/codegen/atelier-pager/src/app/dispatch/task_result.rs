@@ -40,11 +40,314 @@ fn format_runtime_extension_response(method: &str, response: &str) -> String {
     let value = serde_json::from_str::<serde_json::Value>(response)
         .unwrap_or_else(|_| serde_json::Value::String(response.to_owned()));
     let result = value.get("result").unwrap_or(&value);
-    let rendered = match result {
-        serde_json::Value::String(text) => text.clone(),
-        _ => serde_json::to_string_pretty(result).unwrap_or_else(|_| result.to_string()),
+    match method.trim_start_matches('_') {
+        "atelier/provider/list" => format_provider_list_response(response),
+        "atelier/model/list" => format_wire_api_list_response(result),
+        "atelier/model/get" => format_wire_api_model_response(result),
+        "atelier/role/list" => format_role_list_response(result),
+        "atelier/role/get" | "atelier/role/update" | "atelier/role/update_payload" => {
+            format_role_response(result)
+        }
+        "atelier/role/test" => format_status_response("Role check", result),
+        "atelier/model/update_wire_api" => format_status_response("Wire API updated", result),
+        "atelier/model_provider_override/set" => {
+            format_status_response("Model override updated", result)
+        }
+        "atelier/model_provider_override/delete" => {
+            format_status_response("Model override removed", result)
+        }
+        "atelier/model_provider_override/test" => format_status_response("Wire API check", result),
+        "atelier/provider/create" => format_status_response("Provider added", result),
+        "atelier/provider/update" => format_status_response("Provider updated", result),
+        "atelier/provider/delete" => format_status_response("Provider deleted", result),
+        "atelier/provider/enable" => format_status_response("Provider enabled", result),
+        "atelier/provider/disable" => format_status_response("Provider disabled", result),
+        "atelier/provider/test" => format_status_response("Provider check", result),
+        "atelier/provider/oauth_logout" => format_status_response("Provider signed out", result),
+        "atelier/config/update" => format_status_response("Default model updated", result),
+        "atelier/config/reset_defaults" => format_status_response("Defaults restored", result),
+        "atelier/runtime/status" => format_runtime_status_response(result),
+        "atelier/runtime/doctor" => format_runtime_doctor_response(result),
+        "atelier/runtime/recover" => format_status_response("Runtime recovery", result),
+        "atelier/request/list" => format_runtime_request_list_response(result),
+        "atelier/request/get" => format_runtime_request_response(result),
+        "atelier/trace/get" => format_runtime_trace_response(result),
+        _ => safe_runtime_result(result),
+    }
+}
+
+fn runtime_string<'a>(value: &'a serde_json::Value, names: &[&str]) -> Option<&'a str> {
+    names
+        .iter()
+        .find_map(|name| value.get(*name).and_then(serde_json::Value::as_str))
+}
+
+fn model_key_from_value(model: &serde_json::Value) -> Option<String> {
+    if let Some(key) = runtime_string(model, &["modelKey", "model_key"]) {
+        return Some(key.to_owned());
+    }
+    let key = model.get("key")?;
+    if let Some(key) = key.as_str() {
+        return Some(key.to_owned());
+    }
+    let provider = runtime_string(key, &["providerId", "provider_id"])?;
+    let model_id = runtime_string(key, &["modelId", "model_id"])?;
+    Some(format!("{provider}/{model_id}"))
+}
+
+fn effective_wire_api(model: &serde_json::Value) -> (&str, bool) {
+    let wire = runtime_string(model, &["wireApi", "wire_api"]);
+    (wire.unwrap_or("chat_completions"), wire.is_none())
+}
+
+fn effective_context_window(model: &serde_json::Value) -> (u64, bool) {
+    let context = model
+        .get("contextWindow")
+        .or_else(|| model.get("context_window"))
+        .and_then(serde_json::Value::as_u64);
+    (context.unwrap_or(100_000), context.is_none())
+}
+
+fn format_wire_api_list_response(result: &serde_json::Value) -> String {
+    let Some(models) = result.get("models").and_then(serde_json::Value::as_array) else {
+        return "Wire APIs\nCould not read the model catalog.".to_owned();
     };
-    format!("{method}\n{rendered}")
+    if models.is_empty() {
+        return "Wire APIs\nNo Provider models discovered.\nRefresh a Provider or add one with /provider add."
+            .to_owned();
+    }
+    let mut lines = vec!["Wire APIs".to_owned()];
+    for model in models {
+        let key = model_key_from_value(model).unwrap_or_else(|| "unknown/unknown".to_owned());
+        let (wire_api, wire_default) = effective_wire_api(model);
+        let (context, context_default) = effective_context_window(model);
+        let mut details = format!("{wire_api} · {context} tokens");
+        if wire_default || context_default {
+            details.push_str(" · default metadata");
+        }
+        lines.push(format!("- {key} | {details}"));
+    }
+    lines.push("Change a model with /wire-api wire <provider/model> <wire-api>.".to_owned());
+    lines.join("\n")
+}
+
+fn format_wire_api_model_response(result: &serde_json::Value) -> String {
+    let model = result.get("model").unwrap_or(result);
+    let key = model_key_from_value(model).unwrap_or_else(|| "unknown/unknown".to_owned());
+    let resolved = result.get("wireApi").and_then(serde_json::Value::as_str);
+    let (model_wire, defaulted) = effective_wire_api(model);
+    let wire = resolved.unwrap_or(model_wire);
+    let (context, context_default) = effective_context_window(model);
+    let mut lines = vec![
+        "Wire API".to_owned(),
+        format!("Model: {key}"),
+        format!("Type: {wire}"),
+        format!("Context: {context} tokens"),
+    ];
+    if defaulted || context_default {
+        lines.push("Source: default metadata".to_owned());
+    } else if let Some(source) = runtime_string(result, &["wireApiSource", "wire_api_source"]) {
+        lines.push(format!("Source: {}", source.replace('_', " ")));
+    }
+    lines.join("\n")
+}
+
+fn format_role_list_response(result: &serde_json::Value) -> String {
+    let Some(roles) = result.get("roles").and_then(serde_json::Value::as_array) else {
+        return "Roles\nCould not read Role configuration.".to_owned();
+    };
+    let mut lines = vec!["Roles".to_owned()];
+    for role in roles {
+        let role_id = runtime_string(role, &["roleId", "role_id"]).unwrap_or("unknown");
+        let configured = role
+            .get("configured")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        if !configured {
+            lines.push(format!("- {role_id} | not configured"));
+            continue;
+        }
+        let config = role.get("config").unwrap_or(role);
+        let provider = runtime_string(config, &["provider"]).unwrap_or("unknown");
+        let model = runtime_string(config, &["model"]).unwrap_or("unknown");
+        let effort = runtime_string(config, &["effort"]);
+        let mut details = format!("{provider}/{model}");
+        if let Some(effort) = effort {
+            details.push_str(&format!(" · {effort}"));
+        }
+        lines.push(format!("- {role_id} | {details}"));
+    }
+    lines.push("Configure a Role with /roles set.".to_owned());
+    lines.join("\n")
+}
+
+fn format_role_response(result: &serde_json::Value) -> String {
+    let role_id = runtime_string(result, &["roleId", "role_id"]).unwrap_or("Role");
+    let config = result.get("config").unwrap_or(result);
+    let provider = runtime_string(config, &["provider"]);
+    let model = runtime_string(config, &["model"]);
+    match (provider, model) {
+        (Some(provider), Some(model)) => {
+            let mut lines = vec![
+                format!("Role {role_id}"),
+                format!("Model: {provider}/{model}"),
+            ];
+            if let Some(effort) = runtime_string(config, &["effort"]) {
+                lines.push(format!("Effort: {effort}"));
+            }
+            lines.join("\n")
+        }
+        _ => format!("Role {role_id} updated."),
+    }
+}
+
+fn format_status_response(title: &str, result: &serde_json::Value) -> String {
+    if let Some(message) = runtime_string(result, &["message", "status"]) {
+        return format!("{title}\n{message}");
+    }
+    if let Some(model) = runtime_string(result, &["model", "modelKey", "model_key"]) {
+        return format!("{title}\nModel: {model}");
+    }
+    if let Some(provider) = runtime_string(result, &["providerId", "provider_id", "id"]) {
+        return format!("{title}\nProvider: {provider}");
+    }
+    format!("{title}.")
+}
+
+fn format_runtime_status_response(result: &serde_json::Value) -> String {
+    let Some(statuses) = result.get("statuses").and_then(serde_json::Value::as_array) else {
+        return "Runtime status\nNo status is available.".to_owned();
+    };
+    let mut lines = vec!["Runtime status".to_owned()];
+    for status in statuses {
+        let session = runtime_string(status, &["sessionId", "session_id"]).unwrap_or("unknown");
+        let state = runtime_string(status, &["state"]).unwrap_or("unknown");
+        let provider = runtime_string(status, &["provider"]);
+        let model = runtime_string(status, &["model"]);
+        let target = match (provider, model) {
+            (Some(provider), Some(model)) => format!("{provider}/{model}"),
+            (_, Some(model)) => model.to_owned(),
+            _ => "no model".to_owned(),
+        };
+        lines.push(format!("- {session} | {state} | {target}"));
+        if let Some(message) = runtime_string(status, &["diagnosticMessage", "diagnostic_message"])
+        {
+            lines.push(format!("  {message}"));
+        }
+    }
+    lines.join("\n")
+}
+
+fn format_runtime_doctor_response(result: &serde_json::Value) -> String {
+    let Some(issues) = result.get("issues").and_then(serde_json::Value::as_array) else {
+        return "Runtime doctor\nNo diagnostic report is available.".to_owned();
+    };
+    if issues.is_empty() {
+        return "Runtime doctor\nNo issues found.".to_owned();
+    }
+    let mut lines = vec![format!("Runtime doctor\n{} issue(s)", issues.len())];
+    for issue in issues {
+        let state = runtime_string(issue, &["state"]).unwrap_or("unknown");
+        let message = runtime_string(issue, &["message"]).unwrap_or("No details");
+        lines.push(format!("- {state} | {message}"));
+    }
+    lines.join("\n")
+}
+
+fn request_summary_line(request: &serde_json::Value) -> String {
+    let id = runtime_string(request, &["requestId", "request_id"]).unwrap_or("unknown");
+    let state = runtime_string(request, &["state"]).unwrap_or("unknown");
+    let provider = runtime_string(request, &["provider"]);
+    let model = runtime_string(request, &["model"]);
+    let target = match (provider, model) {
+        (Some(provider), Some(model)) => format!("{provider}/{model}"),
+        (_, Some(model)) => model.to_owned(),
+        _ => "no model".to_owned(),
+    };
+    let wire = runtime_string(request, &["wireApi", "wire_api"])
+        .map(|wire| format!(" · {wire}"))
+        .unwrap_or_default();
+    format!("- {id} | {state} | {target}{wire}")
+}
+
+fn format_runtime_request_list_response(result: &serde_json::Value) -> String {
+    let Some(requests) = result.get("requests").and_then(serde_json::Value::as_array) else {
+        return "Runtime requests\nNo request history is available.".to_owned();
+    };
+    if requests.is_empty() {
+        return "Runtime requests\nNo requests recorded.".to_owned();
+    }
+    let mut lines = vec!["Runtime requests".to_owned()];
+    lines.extend(requests.iter().map(request_summary_line));
+    lines.push("Inspect one with /request <request-id>.".to_owned());
+    lines.join("\n")
+}
+
+fn format_runtime_request_response(result: &serde_json::Value) -> String {
+    let Some(request) = result.get("request").filter(|request| !request.is_null()) else {
+        return "Runtime request\nRequest not found.".to_owned();
+    };
+    let mut lines = vec!["Runtime request".to_owned(), request_summary_line(request)];
+    if let Some(input) = request
+        .get("inputTokens")
+        .and_then(serde_json::Value::as_u64)
+    {
+        lines.push(format!("Input tokens: {}", format_token_number(input)));
+    }
+    if let Some(duration) = request
+        .get("totalDurationMs")
+        .and_then(serde_json::Value::as_u64)
+    {
+        lines.push(format!("Duration: {duration} ms"));
+    }
+    lines.join("\n")
+}
+
+fn format_runtime_trace_response(result: &serde_json::Value) -> String {
+    let Some(events) = result.get("events").and_then(serde_json::Value::as_array) else {
+        return "Runtime trace\nNo trace is available.".to_owned();
+    };
+    if events.is_empty() {
+        return "Runtime trace\nNo events recorded.".to_owned();
+    }
+    let mut lines = vec!["Runtime trace".to_owned()];
+    for event in events {
+        let id = event
+            .get("eventId")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
+        let kind = runtime_string(event, &["kind"]).unwrap_or("event");
+        let request = runtime_string(event, &["requestId", "request_id"])
+            .map(|request| format!(" | {request}"))
+            .unwrap_or_default();
+        lines.push(format!("- #{id} | {kind}{request}"));
+    }
+    if result.get("truncated").and_then(serde_json::Value::as_bool) == Some(true) {
+        lines.push("Older events were truncated.".to_owned());
+    }
+    lines.join("\n")
+}
+
+fn format_token_number(value: u64) -> String {
+    let raw = value.to_string();
+    let mut rendered = String::new();
+    for (index, character) in raw.chars().enumerate() {
+        if index > 0 && (raw.len() - index) % 3 == 0 {
+            rendered.push(',');
+        }
+        rendered.push(character);
+    }
+    rendered
+}
+
+fn safe_runtime_result(result: &serde_json::Value) -> String {
+    match result {
+        serde_json::Value::String(text) if !text.trim().is_empty() => text.clone(),
+        serde_json::Value::Object(_) => runtime_string(result, &["message", "status"])
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| "Operation completed.".to_owned()),
+        _ => "Operation completed.".to_owned(),
+    }
 }
 
 fn provider_oauth_begin_ui(result: &serde_json::Value) -> Option<(String, String)> {
@@ -85,8 +388,8 @@ fn show_dashboard_runtime_output(app: &mut AppView, output: &str) -> bool {
 #[cfg(test)]
 mod runtime_task_format_tests {
     use super::{
-        format_provider_list_response, format_runtime_task_attach_response,
-        format_runtime_task_response, provider_oauth_begin_ui,
+        format_provider_list_response, format_runtime_extension_response,
+        format_runtime_task_attach_response, format_runtime_task_response, provider_oauth_begin_ui,
     };
 
     #[test]
@@ -122,6 +425,68 @@ mod runtime_task_format_tests {
             format_provider_list_response(r#"{"providers":[]}"#),
             "Providers\nNo Providers configured.\nAdd one with /provider add."
         );
+    }
+
+    #[test]
+    fn wire_api_list_is_rendered_without_internal_rpc_names_or_json() {
+        let rendered = format_runtime_extension_response(
+            "_atelier/model/list",
+            r#"{"models":[{"key":{"provider_id":"example","model_id":"alpha"},"display_name":"Alpha","wire_api":"chat_completions","context_window":100000},{"key":{"provider_id":"example","model_id":"beta"},"display_name":"Beta","wire_api":null,"context_window":null}]}"#,
+        );
+
+        assert!(rendered.contains("Wire APIs"));
+        assert!(rendered.contains("example/alpha"));
+        assert!(rendered.contains("chat_completions"));
+        assert!(rendered.contains("example/beta"));
+        for forbidden in ["_atelier/", "provider_id", "display_name", "{", "\""] {
+            assert!(
+                !rendered.contains(forbidden),
+                "leaked {forbidden}: {rendered}"
+            );
+        }
+    }
+
+    #[test]
+    fn role_list_is_rendered_as_a_human_readable_summary() {
+        let rendered = format_runtime_extension_response(
+            "_atelier/role/list",
+            r#"{"roles":[{"roleId":"main","configured":true,"config":{"provider":"example","model":"alpha","effort":"high","fast_mode":false,"payload":{"secret":"redacted"}}},{"roleId":"review","configured":false,"config":null}]}"#,
+        );
+
+        assert!(rendered.contains("Roles"));
+        assert!(rendered.contains("main"));
+        assert!(rendered.contains("example/alpha"));
+        assert!(rendered.contains("review"));
+        assert!(rendered.contains("not configured"));
+        for forbidden in ["_atelier/", "payload", "secret", "{", "\""] {
+            assert!(
+                !rendered.contains(forbidden),
+                "leaked {forbidden}: {rendered}"
+            );
+        }
+    }
+
+    #[test]
+    fn runtime_status_is_rendered_without_payload_json() {
+        let rendered = format_runtime_extension_response(
+            "_atelier/runtime/status",
+            r#"{"protocolVersion":1,"statuses":[{"sessionId":"session-1","state":"streaming_response","provider":"example","model":"alpha","diagnosticMessage":"working"}]}"#,
+        );
+        assert!(rendered.contains("Runtime status"));
+        assert!(rendered.contains("example/alpha"));
+        assert!(rendered.contains("working"));
+        assert!(!rendered.contains("_atelier/"));
+        assert!(!rendered.contains('{'));
+    }
+
+    #[test]
+    fn unknown_runtime_responses_never_fall_back_to_raw_json() {
+        let rendered = format_runtime_extension_response(
+            "_atelier/future/method",
+            r#"{"base_url":"https://private.example","credential":{"type":"environment","variable":"SECRET"}}"#,
+        );
+
+        assert_eq!(rendered, "Operation completed.");
     }
 
     #[test]
@@ -1372,6 +1737,38 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
                     agent_id: Some(agent_id),
                     provider_id,
                 }];
+            }
+            if method == "_atelier/config/update" || method == "atelier/config/update" {
+                let should_switch = result
+                    .and_then(|value| value.get("switch"))
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false);
+                let model_id = result
+                    .and_then(|value| value.get("model"))
+                    .and_then(serde_json::Value::as_str)
+                    .map(acp::ModelId::new);
+                let effort = result
+                    .and_then(|value| value.get("effort"))
+                    .and_then(serde_json::Value::as_str)
+                    .and_then(|value| {
+                        value
+                            .parse::<atelier_shell::sampling::types::ReasoningEffort>()
+                            .ok()
+                    });
+                if should_switch && let Some(model_id) = model_id {
+                    if agent_id.is_some() {
+                        return dispatch(Action::SwitchModel { model_id, effort }, app);
+                    }
+                    app.models.set_current(model_id.clone(), effort);
+                    if let Some(dashboard) = app.dashboard.as_mut() {
+                        dashboard.models.set_current(model_id, effort);
+                    }
+                    let rendered = format_runtime_extension_response(&method, &response);
+                    if !show_dashboard_runtime_output(app, &rendered) {
+                        app.show_toast(&rendered);
+                    }
+                    return vec![];
+                }
             }
             if method == "_atelier/provider/list" || method == "atelier/provider/list" {
                 let rendered = format_provider_list_response(&response);

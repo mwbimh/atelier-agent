@@ -126,21 +126,25 @@ Aliases: `/title`
 
 ## Model and Mode
 
-### `/model <name>`
+### `/model <provider/model>`
 
-Switch to a different model. Accepts model IDs or display names (case-insensitive). For reasoning models you can also pass an effort level as a second argument:
+Select a model, persist its canonical `provider/model` key to `config.toml`, and
+switch the active Session. Bare `/model` opens a Provider → Model → Effort
+picker. The effort step contains only values advertised by the selected model.
+Display-name input remains accepted for command-line compatibility, but the
+stored value is always the unambiguous composite key.
 
 ```
 /model example/deepseek-v4-flash
-/model deepseek-v4-flash
-/model deepseek-v4-flash high
+/model example/deepseek-v4-flash high
 ```
 
 Aliases: `/m`
 
-Bare `/model` opens the catalog picker. The catalog is populated by enabled
-Providers; use `/provider refresh <id>` when a configured Provider has not yet
-published its models to the local catalog.
+The catalog is populated by enabled Providers. Use `/provider refresh <id>`
+when a configured Provider has not yet published its models to the local
+catalog. Models without transport metadata remain available with the baseline
+`chat_completions` Wire API and a 100,000-token context window.
 
 ### `/provider`
 
@@ -153,6 +157,7 @@ Advanced custom endpoint commands remain scriptable:
 /provider list
 /provider add
 /provider add <id> <base-url> <bearer|header:NAME|none> [env:NAME|cmd:PROGRAM|none]
+/provider edit <id>
 /provider edit <id> <base-url> <bearer|header:NAME|none> [env:NAME|cmd:PROGRAM|none]
 /provider login <id> [flow]
 /provider logout <id>
@@ -160,7 +165,7 @@ Advanced custom endpoint commands remain scriptable:
 /provider disable <id>
 /provider test <id>
 /provider refresh <id>
-/provider delete <id>
+/provider delete <id> confirm
 ```
 
 Aliases: `/providers`
@@ -190,11 +195,13 @@ Inspect and change model-level Wire API settings:
 /wire-api get <provider/model>
 /wire-api wire <provider/model> <chat_completions|responses|messages|default>
 /wire-api override <provider/model> <wire-api|default> [json-payload]
-/wire-api delete <provider/model>
+/wire-api delete <provider/model> confirm
 /wire-api test <provider/model> [execute]
 ```
 
-Bare `/wire-api` opens the interactive picker.
+Bare `/wire-api` opens the interactive picker. List and inspection results are
+rendered as user-readable summaries; internal RPC names and JSON are not shown.
+Removing an override requires the explicit confirmation step.
 
 ### `/effort <level>`
 

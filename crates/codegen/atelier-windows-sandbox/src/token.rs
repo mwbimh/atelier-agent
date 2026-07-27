@@ -2,8 +2,10 @@ use crate::winutil::to_wide;
 use crate::winutil::win_error;
 use anyhow::Result;
 use std::ffi::c_void;
+use std::path::{Path, PathBuf};
 use std::ptr;
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 use windows_sys::Win32::Foundation::{
     CloseHandle, ERROR_INVALID_PARAMETER, ERROR_SUCCESS, GENERIC_ALL, GetLastError, HANDLE, HLOCAL,
@@ -31,6 +33,7 @@ const WRITE_RESTRICTED: u32 = 0x08;
 const DEFAULT_DACL_ACCESS_MASK: u32 = GENERIC_ALL;
 const SE_GROUP_LOGON_ID: u32 = 0xC000_0000;
 static PROCESS_CAPABILITY_SID: OnceLock<Result<String, String>> = OnceLock::new();
+static CAPABILITY_NONCE: AtomicU64 = AtomicU64::new(1);
 
 #[repr(C)]
 struct TokenDefaultDaclInfo {
@@ -82,12 +85,8 @@ fn standard_policy_sids(capability: *mut c_void, logon: *mut c_void) -> [*mut c_
     [capability, logon]
 }
 
-fn sandbox_user_policy_sids(
-    capability: *mut c_void,
-    user: *mut c_void,
-    logon: *mut c_void,
-) -> [*mut c_void; 3] {
-    [capability, user, logon]
+fn sandbox_user_policy_sids(capability: *mut c_void, logon: *mut c_void) -> [*mut c_void; 2] {
+    [capability, logon]
 }
 
 fn restricting_entries<const N: usize>(sids: [*mut c_void; N]) -> [SID_AND_ATTRIBUTES; N] {
@@ -195,21 +194,88 @@ impl Drop for LocalSid {
     }
 }
 
+fn generate_capability_sid_text() -> Result<String> {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|err| anyhow::anyhow!("system clock before Unix epoch: {err}"))?
+        .as_nanos();
+    let pid = u128::from(unsafe { GetCurrentProcessId() });
+    let nonce = u128::from(CAPABILITY_NONCE.fetch_add(1, Ordering::Relaxed));
+    let mixed = nanos ^ pid.rotate_left(29) ^ nonce.rotate_left(61);
+    let a = mixed as u32;
+    let b = (mixed >> 32) as u32;
+    let c = (mixed >> 64) as u32;
+    let d = (mixed >> 96) as u32;
+    Ok(format!("S-1-5-21-{a}-{b}-{c}-{d}"))
+}
+
 pub fn new_capability_sid() -> Result<LocalSid> {
-    let value = PROCESS_CAPABILITY_SID.get_or_init(|| {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|err| format!("system clock before Unix epoch: {err}"))?
-            .as_nanos();
-        let pid = u128::from(unsafe { GetCurrentProcessId() });
-        let a = (nanos as u64 ^ pid as u64) as u32;
-        let b = (nanos.rotate_left(17) as u64 ^ (pid >> 32) as u64) as u32;
-        let c = (nanos >> 32) as u32;
-        let d = (nanos >> 64) as u32;
-        Ok(format!("S-1-5-21-{a}-{b}-{c}-{d}"))
-    });
+    let value = PROCESS_CAPABILITY_SID
+        .get_or_init(|| generate_capability_sid_text().map_err(|error| error.to_string()));
     let value = value.as_ref().map_err(|error| anyhow::anyhow!("{error}"))?;
     LocalSid::new(value)
+}
+
+fn capability_path(home: &Path, roots: &[PathBuf], mode: crate::SandboxMode) -> PathBuf {
+    use sha2::{Digest, Sha256};
+    let mut digest = Sha256::new();
+    digest.update(match mode {
+        crate::SandboxMode::ReadOnly => b"read-only".as_slice(),
+        crate::SandboxMode::WorkspaceWrite => b"workspace-write".as_slice(),
+    });
+    for root in roots {
+        digest.update([0]);
+        digest.update(crate::canonical_path_key(root).as_bytes());
+    }
+    let hash = digest.finalize();
+    let mut name = String::with_capacity(hash.len() * 2 + 4);
+    for byte in hash {
+        use std::fmt::Write as _;
+        write!(&mut name, "{byte:02x}").expect("write capability hash");
+    }
+    name.push_str(".sid");
+    home.join(".sandbox").join("capabilities").join(name)
+}
+
+/// Load the stable capability identity for one exact root set and access mode.
+/// Persisting this identity lets an already-propagated workspace ACL be reused
+/// across Atelier launches instead of recursively rewriting the repository on
+/// every Session startup.
+pub fn workspace_capability_sid(
+    home: &Path,
+    roots: &[PathBuf],
+    mode: crate::SandboxMode,
+) -> Result<LocalSid> {
+    if roots.is_empty() {
+        return Err(anyhow::anyhow!(
+            "workspace capability requires at least one root"
+        ));
+    }
+    let path = capability_path(home, roots, mode);
+    if let Ok(value) = std::fs::read_to_string(&path) {
+        return LocalSid::new(value.trim());
+    }
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("workspace capability path has no parent"))?;
+    std::fs::create_dir_all(parent)?;
+    let value = generate_capability_sid_text()?;
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+    {
+        Ok(mut file) => {
+            use std::io::Write as _;
+            file.write_all(value.as_bytes())?;
+            file.sync_all()?;
+            LocalSid::new(&value)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            LocalSid::new(std::fs::read_to_string(&path)?.trim())
+        }
+        Err(error) => Err(error.into()),
+    }
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -487,9 +553,9 @@ pub fn create_restricted_token(capability: &LocalSid) -> Result<RestrictedToken>
 }
 
 /// Derive a WRITE_RESTRICTED primary token from the dedicated sandbox
-/// account's current logon token. The sandbox account SID is included in the
-/// restricting set so access requires both the account ACL and the per-process
-/// capability ACL.
+/// account's current logon token. The normal token supplies the sandbox-account
+/// side of the access check; the restricting set deliberately requires the
+/// per-workspace capability instead of accepting the account SID again.
 pub fn create_restricted_token_for_sandbox_user(capability: &LocalSid) -> Result<RestrictedToken> {
     let desired: TOKEN_ACCESS_MASK = TOKEN_DUPLICATE
         | TOKEN_QUERY
@@ -506,15 +572,10 @@ pub fn create_restricted_token_for_sandbox_user(capability: &LocalSid) -> Result
     let mut logon = unsafe { logon_sid_bytes(base.raw()) }?;
     let system_read = LocalSid::new("S-1-5-32-545")?;
     let world_read = LocalSid::new("S-1-1-0")?;
-    let policy_sids = sandbox_user_policy_sids(
-        capability.as_ptr(),
-        user.as_mut_ptr().cast(),
-        logon.as_mut_ptr().cast(),
-    );
+    let policy_sids = sandbox_user_policy_sids(capability.as_ptr(), logon.as_mut_ptr().cast());
     let restrictions = restricting_entries([
         policy_sids[0],
         policy_sids[1],
-        policy_sids[2],
         system_read.as_ptr(),
         world_read.as_ptr(),
     ]);
@@ -539,8 +600,8 @@ pub fn create_restricted_token_for_sandbox_user(capability: &LocalSid) -> Result
     let token = OwnedHandle(restricted);
     let default_dacl_sids = [
         policy_sids[0],
+        user.as_mut_ptr().cast(),
         policy_sids[1],
-        policy_sids[2],
         world_read.as_ptr(),
     ];
     unsafe {
@@ -580,16 +641,47 @@ mod tests {
     }
 
     #[test]
-    fn token_default_dacl_policy_contains_only_explicit_identity_sids() {
+    fn sandbox_user_restrictions_require_the_capability_not_the_account_sid() {
         let capability = 1usize as *mut c_void;
-        let user = 2usize as *mut c_void;
         let logon = 3usize as *mut c_void;
 
         assert_eq!(standard_policy_sids(capability, logon), [capability, logon]);
         assert_eq!(
-            sandbox_user_policy_sids(capability, user, logon),
-            [capability, user, logon]
+            sandbox_user_policy_sids(capability, logon),
+            [capability, logon]
         );
+    }
+
+    #[test]
+    fn workspace_capability_is_stable_per_root_and_mode() {
+        let home = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let roots = vec![root.path().to_path_buf()];
+
+        let first = super::workspace_capability_sid(
+            home.path(),
+            &roots,
+            crate::SandboxMode::WorkspaceWrite,
+        )
+        .unwrap()
+        .to_string()
+        .unwrap();
+        let second = super::workspace_capability_sid(
+            home.path(),
+            &roots,
+            crate::SandboxMode::WorkspaceWrite,
+        )
+        .unwrap()
+        .to_string()
+        .unwrap();
+        let read_only =
+            super::workspace_capability_sid(home.path(), &roots, crate::SandboxMode::ReadOnly)
+                .unwrap()
+                .to_string()
+                .unwrap();
+
+        assert_eq!(first, second);
+        assert_ne!(first, read_only);
     }
 
     #[test]

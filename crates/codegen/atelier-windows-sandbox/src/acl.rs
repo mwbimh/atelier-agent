@@ -11,13 +11,16 @@ use windows_sys::Win32::Security::Authorization::{
     SetNamedSecurityInfoW, TRUSTEE_IS_SID, TRUSTEE_IS_UNKNOWN, TRUSTEE_W,
 };
 use windows_sys::Win32::Security::{
-    ACE_FLAGS, CONTAINER_INHERIT_ACE, DACL_SECURITY_INFORMATION, OBJECT_INHERIT_ACE,
+    ACCESS_ALLOWED_ACE, ACE_FLAGS, ACE_HEADER, CONTAINER_INHERIT_ACE, DACL_SECURITY_INFORMATION,
+    EqualSid, GetAce, OBJECT_INHERIT_ACE,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     DELETE, FILE_GENERIC_EXECUTE, FILE_GENERIC_READ, FILE_GENERIC_WRITE,
 };
 
 const INHERIT_FLAGS: ACE_FLAGS = OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE;
+const ACCESS_ALLOWED_ACE_KIND: u8 = 0;
+const INHERIT_HEADER_FLAGS: u8 = INHERIT_FLAGS as u8;
 
 /// A temporary capability grant. The original DACL is restored when the guard
 /// is dropped, so a capability SID never becomes a persistent access path.
@@ -130,6 +133,123 @@ pub fn grant_restricted_sids(
 /// Persist an inheritable ACL grant. This is used only for the materialized
 /// internal runner directory, which the dedicated sandbox account must be able
 /// to read and execute across sessions.
+fn dacl_has_inheritable_grant(dacl: *mut ACL, sid: *mut c_void, access_mask: u32) -> bool {
+    if dacl.is_null() {
+        return false;
+    }
+    let ace_count = unsafe { (*dacl).AceCount };
+    for index in 0..ace_count {
+        let mut ace = ptr::null_mut();
+        if unsafe { GetAce(dacl, u32::from(index), &mut ace) } == 0 || ace.is_null() {
+            continue;
+        }
+        let header = unsafe { &*ace.cast::<ACE_HEADER>() };
+        if header.AceType != ACCESS_ALLOWED_ACE_KIND
+            || header.AceFlags & INHERIT_HEADER_FLAGS != INHERIT_HEADER_FLAGS
+        {
+            continue;
+        }
+        let allowed = unsafe { &*ace.cast::<ACCESS_ALLOWED_ACE>() };
+        let ace_sid = (&allowed.SidStart as *const u32)
+            .cast_mut()
+            .cast::<c_void>();
+        if unsafe { EqualSid(ace_sid, sid) } != 0 && allowed.Mask & access_mask == access_mask {
+            return true;
+        }
+    }
+    false
+}
+
+/// Ensure the workspace root has stable account and capability grants. The
+/// expensive inheritable ACL propagation runs only when either exact ACE is
+/// missing; subsequent launches verify the root DACL and reuse it.
+pub fn ensure_persistent_workspace_grant(
+    path: &Path,
+    sandbox_user: *mut c_void,
+    capability: *mut c_void,
+    capability_access: u32,
+) -> Result<bool> {
+    let path_wide = path_to_wide(path);
+    let mut dacl = ptr::null_mut();
+    let mut security_descriptor = ptr::null_mut();
+    let code = unsafe {
+        GetNamedSecurityInfoW(
+            path_wide.as_ptr(),
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION,
+            ptr::null_mut(),
+            ptr::null_mut(),
+            &mut dacl,
+            ptr::null_mut(),
+            &mut security_descriptor,
+        )
+    };
+    if code != 0 {
+        return Err(win32_error("GetNamedSecurityInfoW", code));
+    }
+    let account_access = access_mask_for_mode(crate::SandboxMode::WorkspaceWrite);
+    let already_present = dacl_has_inheritable_grant(dacl, sandbox_user, account_access)
+        && dacl_has_inheritable_grant(dacl, capability, capability_access);
+    if already_present {
+        if !security_descriptor.is_null() {
+            unsafe { LocalFree(security_descriptor as HLOCAL) };
+        }
+        return Ok(false);
+    }
+
+    let entries = [
+        EXPLICIT_ACCESS_W {
+            grfAccessPermissions: account_access,
+            grfAccessMode: GRANT_ACCESS,
+            grfInheritance: INHERIT_FLAGS,
+            Trustee: TRUSTEE_W {
+                pMultipleTrustee: ptr::null_mut(),
+                MultipleTrusteeOperation: 0,
+                TrusteeForm: TRUSTEE_IS_SID,
+                TrusteeType: TRUSTEE_IS_UNKNOWN,
+                ptstrName: sandbox_user.cast(),
+            },
+        },
+        EXPLICIT_ACCESS_W {
+            grfAccessPermissions: capability_access,
+            grfAccessMode: GRANT_ACCESS,
+            grfInheritance: INHERIT_FLAGS,
+            Trustee: TRUSTEE_W {
+                pMultipleTrustee: ptr::null_mut(),
+                MultipleTrusteeOperation: 0,
+                TrusteeForm: TRUSTEE_IS_SID,
+                TrusteeType: TRUSTEE_IS_UNKNOWN,
+                ptstrName: capability.cast(),
+            },
+        },
+    ];
+    let mut new_dacl = ptr::null_mut();
+    let code =
+        unsafe { SetEntriesInAclW(entries.len() as u32, entries.as_ptr(), dacl, &mut new_dacl) };
+    if !security_descriptor.is_null() {
+        unsafe { LocalFree(security_descriptor as HLOCAL) };
+    }
+    if code != 0 {
+        return Err(win32_error("SetEntriesInAclW", code));
+    }
+    let code = unsafe {
+        SetNamedSecurityInfoW(
+            path_wide.as_ptr(),
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION,
+            ptr::null_mut(),
+            ptr::null_mut(),
+            new_dacl,
+            ptr::null_mut(),
+        )
+    };
+    unsafe { LocalFree(new_dacl as HLOCAL) };
+    if code != 0 {
+        return Err(win32_error("SetNamedSecurityInfoW", code));
+    }
+    Ok(true)
+}
+
 pub fn grant_persistent_sids(path: &Path, sids: &[*mut c_void], access_mask: u32) -> Result<()> {
     if sids.is_empty() {
         return Err(anyhow::anyhow!("no SIDs supplied"));
@@ -229,7 +349,7 @@ impl Drop for ScopedAclGrant {
 #[cfg(test)]
 mod tests {
     use super::access_mask_for_mode;
-    use super::grant_restricted_sids;
+    use super::{ensure_persistent_workspace_grant, grant_restricted_sids};
     use crate::SandboxMode;
     use crate::token::LocalSid;
     use std::process::Command;
@@ -249,6 +369,35 @@ mod tests {
         assert_eq!(mask & WRITE_DAC, 0);
         assert_eq!(mask & WRITE_OWNER, 0);
         assert_ne!(mask, FILE_ALL_ACCESS);
+    }
+
+    #[test]
+    fn persistent_workspace_grant_is_verified_and_reused() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let user =
+            LocalSid::new("S-1-5-21-111111111-222222222-333333333-444444441").expect("user sid");
+        let capability = LocalSid::new("S-1-5-21-111111111-222222222-333333333-444444442")
+            .expect("capability sid");
+        let access = access_mask_for_mode(SandboxMode::WorkspaceWrite);
+
+        assert!(
+            ensure_persistent_workspace_grant(
+                temp.path(),
+                user.as_ptr(),
+                capability.as_ptr(),
+                access,
+            )
+            .expect("first grant")
+        );
+        assert!(
+            !ensure_persistent_workspace_grant(
+                temp.path(),
+                user.as_ptr(),
+                capability.as_ptr(),
+                access,
+            )
+            .expect("reused grant")
+        );
     }
 
     #[test]

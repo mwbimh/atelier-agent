@@ -185,7 +185,7 @@ struct ProviderStatus {
 struct RefreshResult {
     provider_id: String,
     refreshed: bool,
-    models: Vec<ModelDescriptor>,
+    model_count: usize,
     message: String,
 }
 
@@ -865,16 +865,14 @@ async fn test_model_provider_override(args: &acp::ExtRequest) -> ExtResult {
         .cloned()
         .ok_or_else(|| ProviderError::ProviderNotFound(key.provider_id.clone()))
         .map_err(to_acp_error)?;
-    let endpoint = provider_endpoint(&provider, resolved.wire_api);
     if !params.execute {
         return to_raw_response(&serde_json::json!({
             "modelKey": key.to_string(),
             "providerId": provider.id,
             "model": key.model_id,
             "wireApi": resolved.wire_api,
-            "endpoint": endpoint,
             "executed": false,
-            "message": "pair test preview; set execute=true to send a minimal request",
+            "message": "Pair configuration is ready; use execute to send a minimal request",
         }));
     }
     let (config, request) = pair_test_runtime_request(&registry, &key).map_err(to_acp_error)?;
@@ -891,10 +889,9 @@ async fn test_model_provider_override(args: &acp::ExtRequest) -> ExtResult {
         "modelKey": key.to_string(),
         "providerId": provider.id,
         "wireApi": resolved.wire_api,
-        "endpoint": endpoint,
         "executed": true,
         "ok": true,
-        "message": "pair test completed through the runtime sampler",
+        "message": "Pair test completed through the runtime sampler",
     }))
 }
 
@@ -973,7 +970,16 @@ async fn upsert_provider(
     )
     .map_err(to_acp_error)?;
     reload_live_catalog(agent).await?;
-    to_raw_response(&registry.snapshot())
+    to_raw_response(&serde_json::json!({
+        "providerId": provider_id,
+        "updated": allow_replacement,
+        "created": !allow_replacement,
+        "message": if allow_replacement {
+            "Provider updated"
+        } else {
+            "Provider added"
+        },
+    }))
 }
 
 fn reject_unconfirmed_provider_replacement(
@@ -1052,7 +1058,11 @@ async fn delete_provider(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult 
     )
     .map_err(to_acp_error)?;
     reload_live_catalog(agent).await?;
-    to_raw_response(&registry.snapshot())
+    to_raw_response(&serde_json::json!({
+        "providerId": params.provider_id,
+        "deleted": true,
+        "message": "Provider deleted",
+    }))
 }
 
 async fn set_provider_enabled(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
@@ -1063,7 +1073,15 @@ async fn set_provider_enabled(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtRe
         .map_err(to_acp_error)?;
     persist(&registry).map_err(to_acp_error)?;
     reload_live_catalog(agent).await?;
-    to_raw_response(&registry.snapshot())
+    to_raw_response(&serde_json::json!({
+        "providerId": params.provider_id,
+        "enabled": params.enabled,
+        "message": if params.enabled {
+            "Provider enabled"
+        } else {
+            "Provider disabled"
+        },
+    }))
 }
 
 async fn provider_status(args: &acp::ExtRequest) -> ExtResult {
@@ -1159,25 +1177,30 @@ async fn refresh_models(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
         }
     };
     reload_live_catalog(agent).await?;
-    let models: Vec<_> = registry
+    let model_count = registry
         .models()
         .filter(|model| model.key.provider_id == provider.id)
-        .collect();
+        .count();
     to_raw_response(&RefreshResult {
         provider_id: provider.id,
         refreshed,
-        models,
+        model_count,
         message,
     })
 }
 
 async fn upsert_model(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
     let params: ModelParams = parse_params(args)?;
+    let model_key = params.model.key.to_string();
     let mut registry = registry().map_err(to_acp_error)?;
     registry.upsert_model(params.model).map_err(to_acp_error)?;
     persist(&registry).map_err(to_acp_error)?;
     reload_live_catalog(agent).await?;
-    to_raw_response(&registry.snapshot())
+    to_raw_response(&serde_json::json!({
+        "modelKey": model_key,
+        "updated": true,
+        "message": "Model updated",
+    }))
 }
 
 async fn set_capabilities(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
@@ -1192,7 +1215,11 @@ async fn set_capabilities(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult
         .map_err(to_acp_error)?;
     persist(&registry).map_err(to_acp_error)?;
     reload_live_catalog(agent).await?;
-    to_raw_response(&registry.snapshot())
+    to_raw_response(&serde_json::json!({
+        "modelKey": key.to_string(),
+        "updated": true,
+        "message": "Model capabilities updated",
+    }))
 }
 
 fn credential_status() -> ExtResult {

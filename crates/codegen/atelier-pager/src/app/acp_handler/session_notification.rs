@@ -1,4 +1,49 @@
 use super::*;
+
+fn format_token_count(value: u64) -> String {
+    let raw = value.to_string();
+    let mut rendered = String::with_capacity(raw.len() + raw.len() / 3);
+    for (index, character) in raw.chars().enumerate() {
+        if index > 0 && (raw.len() - index) % 3 == 0 {
+            rendered.push(',');
+        }
+        rendered.push(character);
+    }
+    rendered
+}
+
+fn format_turn_usage(
+    usage: &atelier_shell::extensions::notification::PromptUsage,
+) -> Option<String> {
+    let totals = &usage.totals;
+    if totals.model_calls == 0 && totals.input_tokens == 0 && totals.output_tokens == 0 {
+        return None;
+    }
+    let mut parts = vec![
+        format!("input {}", format_token_count(totals.input_tokens)),
+        format!("output {}", format_token_count(totals.output_tokens)),
+    ];
+    if totals.cached_read_tokens > 0 {
+        parts.push(format!(
+            "cached {}",
+            format_token_count(totals.cached_read_tokens)
+        ));
+    }
+    if totals.reasoning_tokens > 0 {
+        parts.push(format!(
+            "reasoning {}",
+            format_token_count(totals.reasoning_tokens)
+        ));
+    }
+    if totals.model_calls > 1 {
+        parts.push(format!("{} model calls", totals.model_calls));
+    }
+    if usage.usage_is_incomplete {
+        parts.push("partial".to_owned());
+    }
+    Some(format!("Usage · {}", parts.join(" · ")))
+}
+
 /// Stash a live stop/stop_failure batch under `stash_pid` for the turn marker
 /// to fold. `merge_same_name` merges a same-name repeat instead of standalone.
 pub(super) fn stash_live_stop_batch(
@@ -210,6 +255,7 @@ pub(super) fn handle_session_notification(notif: &acp::ExtNotification, app: &mu
             prompt_id,
             stop_reason,
             agent_result,
+            usage,
             ..
         } => {
             if agent.session.loading_replay {
@@ -240,6 +286,9 @@ pub(super) fn handle_session_notification(notif: &acp::ExtNotification, app: &mu
                         agent_result.as_deref(),
                         cancel_trigger,
                     ));
+                if let Some(summary) = usage.as_ref().and_then(format_turn_usage) {
+                    agent.scrollback.push_block(RenderBlock::system(summary));
+                }
                 false
             }
         }
@@ -1313,4 +1362,35 @@ pub(super) fn detect_plan_mode_change(update: &acp::SessionUpdate, agent: &mut A
         );
     }
     true
+}
+
+#[cfg(test)]
+mod usage_summary_tests {
+    use super::format_turn_usage;
+    use atelier_shell::extensions::notification::{PromptUsage, PromptUsageModel};
+
+    #[test]
+    fn usage_summary_shows_tokens_cache_reasoning_and_model_calls() {
+        let usage = PromptUsage {
+            totals: PromptUsageModel {
+                input_tokens: 12_345,
+                output_tokens: 2_000,
+                total_tokens: 14_345,
+                cached_read_tokens: 10_000,
+                reasoning_tokens: 500,
+                model_calls: 2,
+                api_duration_ms: 4_000,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let summary = format_turn_usage(&usage).expect("usage summary");
+        assert!(summary.contains("input 12,345"));
+        assert!(summary.contains("output 2,000"));
+        assert!(summary.contains("cached 10,000"));
+        assert!(summary.contains("reasoning 500"));
+        assert!(!summary.contains("tok/s"));
+        assert!(summary.contains("2 model calls"));
+    }
 }

@@ -50,7 +50,7 @@ fn model_keys_are_provider_scoped() {
 }
 
 #[test]
-fn absent_wire_api_fails_closed_independently_of_provider_auth() {
+fn absent_wire_api_defaults_to_chat_completions_independently_of_provider_auth() {
     for (provider_id, auth) in [
         ("bearer", ProviderAuth::Bearer),
         (
@@ -67,11 +67,12 @@ fn absent_wire_api_fails_closed_independently_of_provider_auth() {
         registry.upsert_provider(config).unwrap();
         registry.upsert_model(model(key.clone())).unwrap();
 
-        let error = registry.resolve_wire_api(&key).unwrap_err();
-        let snapshot_error = registry.snapshot().resolve_wire_api(&key).unwrap_err();
+        let resolved = registry.resolve_wire_api(&key).unwrap();
+        let snapshot_resolved = registry.snapshot().resolve_wire_api(&key).unwrap();
 
-        assert!(error.to_string().contains("wire API is not configured"));
-        assert_eq!(snapshot_error.to_string(), error.to_string());
+        assert_eq!(resolved.wire_api, WireApi::ChatCompletions);
+        assert_eq!(resolved.source, WireApiSource::Default);
+        assert_eq!(snapshot_resolved, resolved);
     }
 }
 
@@ -561,7 +562,7 @@ fn model_wire_api_settings_survive_registry_reload() {
 }
 
 #[test]
-fn absent_model_wire_api_has_no_provider_fallback() {
+fn absent_model_wire_api_uses_the_global_chat_default() {
     let key = ModelKey::new("responses-provider", "legacy-model").unwrap();
     let mut registry = ProviderRegistry::in_memory();
     registry
@@ -569,8 +570,9 @@ fn absent_model_wire_api_has_no_provider_fallback() {
         .unwrap();
     registry.upsert_model(model(key.clone())).unwrap();
 
-    let error = registry.resolve_wire_api(&key).unwrap_err();
-    assert!(error.to_string().contains("wire API is not configured"));
+    let resolved = registry.resolve_wire_api(&key).unwrap();
+    assert_eq!(resolved.wire_api, WireApi::ChatCompletions);
+    assert_eq!(resolved.source, WireApiSource::Default);
 }
 
 #[test]

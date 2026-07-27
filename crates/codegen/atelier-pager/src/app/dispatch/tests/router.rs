@@ -76,11 +76,14 @@ fn slash_model_command_uses_global_catalog_when_agent_catalog_is_empty() {
     assert!(
         effects.iter().any(|effect| matches!(
             effect,
-            Effect::SwitchModel { model_id, .. } if model_id == &target_id
+            Effect::RuntimeExtension { method, params, .. }
+                if method == "_atelier/config/update"
+                    && params["model"] == target_id.0.as_ref()
+                    && params["switch"] == true
         )),
-        "expected /model to resolve the refreshed global catalog, got {effects:?}"
+        "expected /model to persist the refreshed global catalog entry, got {effects:?}"
     );
-    assert!(app.agents[&AgentId(0)].session.model_switch_pending);
+    assert!(!app.agents[&AgentId(0)].session.model_switch_pending);
     assert_eq!(
         app.agents[&AgentId(0)].session.models.current,
         Some(current_id),

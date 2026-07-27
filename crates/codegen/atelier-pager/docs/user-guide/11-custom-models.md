@@ -21,8 +21,10 @@ ate
 /provider add
 ```
 
-Choose a known Provider to use its reviewed endpoint and authentication policy.
-Choose **Custom endpoint** only for a proxy, gateway, or self-hosted API. After
+The first choice is **Custom endpoint**, for a proxy, gateway, local server, or
+self-hosted API. Reviewed presets are also available for OpenAI, Anthropic,
+Google AI Studio, DeepSeek, xAI, OpenRouter, Groq, Cerebras, Together AI,
+Fireworks AI, NVIDIA NIM, Moonshot AI, Hugging Face, and Z.AI. After
 the wizard tests the connection and refreshes discovery, it opens the model
 picker automatically. You can also open it manually:
 
@@ -51,12 +53,13 @@ selection instead of typing the complete commands.
 ```text
 /provider list
 /provider add <id> <base-url> <auth> [credential]
+/provider edit <id>
 /provider edit <id> <base-url> <auth> [credential]
 /provider enable <id>
 /provider disable <id>
 /provider test <id>
 /provider refresh <id>
-/provider delete <id>
+/provider delete <id> confirm
 ```
 
 Submitting `/provider add` first offers known Provider presets. Presets own
@@ -125,8 +128,10 @@ List or select discovered models with:
 /model example/deepseek-v4-flash
 ```
 
-The canonical key is `provider/model`. Display names can also be selected from
-the interactive model picker.
+The canonical key is `provider/model`. The interactive picker first selects the
+Provider and then shows that Provider's models with their full composite keys.
+Selecting a model writes the key to `config.toml` and switches the active
+Session.
 
 ## Fixed Roles
 
@@ -181,9 +186,10 @@ apply independently of Role configuration.
 
 ## Wire API Configuration
 
-Wire API is configured only for an exact Provider/model pair; there is no
-Provider-level protocol or fallback. Inspect or override model-specific behavior
-with:
+Wire API overrides are configured only for an exact Provider/model pair; there
+is no Provider-level protocol. When discovery supplies no Wire API or context
+metadata, Atelier keeps the model selectable with `chat_completions` and a
+100,000-token context window. Inspect or override model-specific behavior with:
 
 ```text
 /wire-api
@@ -191,10 +197,11 @@ with:
 /wire-api get <provider/model>
 /wire-api wire <provider/model> <chat_completions|responses|messages|default>
 /wire-api override <provider/model> <wire-api|default> [json-payload]
-/wire-api delete <provider/model>
+/wire-api delete <provider/model> confirm
 /wire-api test <provider/model> [execute]
 ```
 
+List and inspection commands render concise summaries instead of internal JSON.
 Use `execute` to run the test through the Runtime sampler rather than only
 validating configuration:
 
@@ -214,6 +221,12 @@ ATELIER_HOME=/srv/atelier-ci ate \
 
 The process reads Provider credentials from the configured environment. There
 is no interactive product login requirement.
+
+After each completed interactive turn, the TUI shows available token usage.
+Token-per-second output is omitted until the Provider stream supplies a reliable
+first-to-last generated-token interval. Provider account quota is shown only
+when a Provider exposes a reviewed usage source; Atelier does not guess billing
+endpoints.
 
 ## Troubleshooting
 

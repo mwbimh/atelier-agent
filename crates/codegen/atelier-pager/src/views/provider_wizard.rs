@@ -53,6 +53,15 @@ enum KnownProvider {
     Google,
     DeepSeek,
     Xai,
+    OpenRouter,
+    Groq,
+    Cerebras,
+    Together,
+    Fireworks,
+    Nvidia,
+    Moonshot,
+    HuggingFace,
+    Zai,
 }
 
 struct ProviderChoice {
@@ -73,6 +82,11 @@ struct ProviderPreset {
 
 fn provider_choices() -> Vec<ProviderChoice> {
     vec![
+        ProviderChoice {
+            label: "Custom endpoint",
+            description: "Proxy, gateway, local server, or self-hosted API",
+            known: None,
+        },
         ProviderChoice {
             label: "OpenAI",
             description: "ChatGPT Plus/Pro OAuth or an OpenAI API key",
@@ -99,15 +113,63 @@ fn provider_choices() -> Vec<ProviderChoice> {
             known: Some(KnownProvider::Xai),
         },
         ProviderChoice {
-            label: "Custom endpoint",
-            description: "Advanced setup for a proxy, gateway, or self-hosted API",
-            known: None,
+            label: "OpenRouter",
+            description: "OpenAI-compatible access to the OpenRouter catalog",
+            known: Some(KnownProvider::OpenRouter),
+        },
+        ProviderChoice {
+            label: "Groq",
+            description: "OpenAI-compatible low-latency inference",
+            known: Some(KnownProvider::Groq),
+        },
+        ProviderChoice {
+            label: "Cerebras",
+            description: "OpenAI-compatible Cerebras inference",
+            known: Some(KnownProvider::Cerebras),
+        },
+        ProviderChoice {
+            label: "Together AI",
+            description: "OpenAI-compatible Together AI catalog",
+            known: Some(KnownProvider::Together),
+        },
+        ProviderChoice {
+            label: "Fireworks AI",
+            description: "OpenAI-compatible Fireworks inference",
+            known: Some(KnownProvider::Fireworks),
+        },
+        ProviderChoice {
+            label: "NVIDIA NIM",
+            description: "OpenAI-compatible NVIDIA hosted models",
+            known: Some(KnownProvider::Nvidia),
+        },
+        ProviderChoice {
+            label: "Moonshot AI",
+            description: "OpenAI-compatible Moonshot models",
+            known: Some(KnownProvider::Moonshot),
+        },
+        ProviderChoice {
+            label: "Hugging Face",
+            description: "OpenAI-compatible Hugging Face inference router",
+            known: Some(KnownProvider::HuggingFace),
+        },
+        ProviderChoice {
+            label: "Z.AI",
+            description: "OpenAI-compatible Z.AI coding models",
+            known: Some(KnownProvider::Zai),
         },
     ]
 }
 
 fn provider_choice_count() -> usize {
     provider_choices().len()
+}
+
+fn known_provider_from_id(provider_id: &str) -> Option<KnownProvider> {
+    provider_choices().into_iter().find_map(|choice| {
+        choice
+            .known
+            .filter(|known| provider_preset(*known).id == provider_id)
+    })
 }
 
 fn provider_preset(provider: KnownProvider) -> ProviderPreset {
@@ -169,6 +231,105 @@ fn provider_preset(provider: KnownProvider) -> ProviderPreset {
             },
             extra_headers: BTreeMap::new(),
         },
+        KnownProvider::OpenRouter => ProviderPreset {
+            id: "openrouter",
+            display_name: "OpenRouter",
+            base_url: "https://openrouter.ai/api/v1",
+            auth: ProviderAuth::Bearer,
+            environment_variable: "OPENROUTER_API_KEY",
+            discovery: ProviderDiscovery::OpenAiModels {
+                path: "models".into(),
+            },
+            extra_headers: BTreeMap::new(),
+        },
+        KnownProvider::Groq => ProviderPreset {
+            id: "groq",
+            display_name: "Groq",
+            base_url: "https://api.groq.com/openai/v1",
+            auth: ProviderAuth::Bearer,
+            environment_variable: "GROQ_API_KEY",
+            discovery: ProviderDiscovery::OpenAiModels {
+                path: "models".into(),
+            },
+            extra_headers: BTreeMap::new(),
+        },
+        KnownProvider::Cerebras => ProviderPreset {
+            id: "cerebras",
+            display_name: "Cerebras",
+            base_url: "https://api.cerebras.ai/v1",
+            auth: ProviderAuth::Bearer,
+            environment_variable: "CEREBRAS_API_KEY",
+            discovery: ProviderDiscovery::OpenAiModels {
+                path: "models".into(),
+            },
+            extra_headers: BTreeMap::new(),
+        },
+        KnownProvider::Together => ProviderPreset {
+            id: "together",
+            display_name: "Together AI",
+            base_url: "https://api.together.ai/v1",
+            auth: ProviderAuth::Bearer,
+            environment_variable: "TOGETHER_API_KEY",
+            discovery: ProviderDiscovery::OpenAiModels {
+                path: "models".into(),
+            },
+            extra_headers: BTreeMap::new(),
+        },
+        KnownProvider::Fireworks => ProviderPreset {
+            id: "fireworks",
+            display_name: "Fireworks AI",
+            base_url: "https://api.fireworks.ai/inference/v1",
+            auth: ProviderAuth::Bearer,
+            environment_variable: "FIREWORKS_API_KEY",
+            discovery: ProviderDiscovery::OpenAiModels {
+                path: "models".into(),
+            },
+            extra_headers: BTreeMap::new(),
+        },
+        KnownProvider::Nvidia => ProviderPreset {
+            id: "nvidia",
+            display_name: "NVIDIA NIM",
+            base_url: "https://integrate.api.nvidia.com/v1",
+            auth: ProviderAuth::Bearer,
+            environment_variable: "NVIDIA_API_KEY",
+            discovery: ProviderDiscovery::OpenAiModels {
+                path: "models".into(),
+            },
+            extra_headers: BTreeMap::from([("NVCF-POLL-SECONDS".into(), "3600".into())]),
+        },
+        KnownProvider::Moonshot => ProviderPreset {
+            id: "moonshotai",
+            display_name: "Moonshot AI",
+            base_url: "https://api.moonshot.ai/v1",
+            auth: ProviderAuth::Bearer,
+            environment_variable: "MOONSHOT_API_KEY",
+            discovery: ProviderDiscovery::OpenAiModels {
+                path: "models".into(),
+            },
+            extra_headers: BTreeMap::new(),
+        },
+        KnownProvider::HuggingFace => ProviderPreset {
+            id: "huggingface",
+            display_name: "Hugging Face",
+            base_url: "https://router.huggingface.co/v1",
+            auth: ProviderAuth::Bearer,
+            environment_variable: "HF_TOKEN",
+            discovery: ProviderDiscovery::OpenAiModels {
+                path: "models".into(),
+            },
+            extra_headers: BTreeMap::new(),
+        },
+        KnownProvider::Zai => ProviderPreset {
+            id: "zai",
+            display_name: "Z.AI",
+            base_url: "https://api.z.ai/api/coding/paas/v4",
+            auth: ProviderAuth::Bearer,
+            environment_variable: "ZAI_API_KEY",
+            discovery: ProviderDiscovery::OpenAiModels {
+                path: "models".into(),
+            },
+            extra_headers: BTreeMap::new(),
+        },
     }
 }
 
@@ -216,7 +377,17 @@ fn known_auth_choices(provider: KnownProvider) -> Vec<KnownAuthChoice> {
                 credential: CredentialKind::Environment,
             },
         ],
-        KnownProvider::Google | KnownProvider::DeepSeek => vec![KnownAuthChoice {
+        KnownProvider::Google
+        | KnownProvider::DeepSeek
+        | KnownProvider::OpenRouter
+        | KnownProvider::Groq
+        | KnownProvider::Cerebras
+        | KnownProvider::Together
+        | KnownProvider::Fireworks
+        | KnownProvider::Nvidia
+        | KnownProvider::Moonshot
+        | KnownProvider::HuggingFace
+        | KnownProvider::Zai => vec![KnownAuthChoice {
             label: "API key",
             description: "Read the Provider API key from an environment variable",
             credential: CredentialKind::Environment,
@@ -237,6 +408,9 @@ pub struct ProviderWizardState {
     known_provider: Option<KnownProvider>,
     auth: ProviderAuth,
     credential_kind: Option<CredentialKind>,
+    /// Exact credential reference retained while editing until the user
+    /// explicitly chooses a different authentication method.
+    preserved_credential: Option<CredentialRef>,
     credential_value: String,
     oauth_client_id: String,
     oauth_authorization_endpoint: String,
@@ -269,6 +443,7 @@ impl Default for ProviderWizardState {
             known_provider: None,
             auth: ProviderAuth::Bearer,
             credential_kind: None,
+            preserved_credential: None,
             credential_value: String::new(),
             oauth_client_id: String::new(),
             oauth_authorization_endpoint: String::new(),
@@ -288,6 +463,45 @@ impl ProviderWizardState {
     pub fn with_existing_provider_ids(provider_ids: impl IntoIterator<Item = String>) -> Self {
         Self {
             existing_provider_ids: provider_ids.into_iter().collect(),
+            ..Self::default()
+        }
+    }
+
+    pub fn for_edit(config: ProviderConfig) -> Self {
+        let known_provider = known_provider_from_id(&config.id);
+        let credential_kind = match &config.credential {
+            CredentialRef::Environment { .. } => Some(CredentialKind::Environment),
+            CredentialRef::OAuth { methods, .. } => {
+                methods.first().and_then(|method| match method {
+                    ProviderOAuthMethod::Preset { id } => Some(CredentialKind::OAuthPreset(*id)),
+                    ProviderOAuthMethod::AuthorizationCode { .. } => {
+                        Some(CredentialKind::OAuthAuthorizationCode)
+                    }
+                    ProviderOAuthMethod::DeviceCode { .. } => Some(CredentialKind::OAuthDeviceCode),
+                })
+            }
+            CredentialRef::None
+            | CredentialRef::Command { .. }
+            | CredentialRef::SecretStore { .. } => None,
+        };
+        let credential_value = match &config.credential {
+            CredentialRef::Environment { variable } => variable.clone(),
+            _ => String::new(),
+        };
+        Self {
+            step: ProviderWizardStep::Summary,
+            provider_id: config.id.clone(),
+            display_name: config.display_name.clone(),
+            base_url: config.base_url.to_string(),
+            existing_provider_ids: [config.id.clone()].into_iter().collect(),
+            replace_existing: true,
+            known_provider,
+            auth: config.auth.clone(),
+            credential_kind,
+            preserved_credential: Some(config.credential.clone()),
+            credential_value,
+            discovery: config.discovery.clone(),
+            extra_headers: config.extra_headers.clone(),
             ..Self::default()
         }
     }
@@ -379,6 +593,7 @@ impl ProviderWizardState {
         self.extra_headers = preset.extra_headers;
         self.credential_value = preset.environment_variable.into();
         self.credential_kind = Some(credential);
+        self.preserved_credential = None;
         self.replace_existing = replace_existing;
 
         match credential {
@@ -432,6 +647,7 @@ impl ProviderWizardState {
         self.base_url.clear();
         self.auth = ProviderAuth::Bearer;
         self.credential_kind = None;
+        self.preserved_credential = None;
         self.credential_value.clear();
         self.oauth_client_id.clear();
         self.oauth_authorization_endpoint.clear();
@@ -625,31 +841,35 @@ impl ProviderWizardState {
                 self.selected = 0;
                 self.apply_known_auth(credential);
             }
-            ProviderWizardStep::Auth => match self.selected {
-                0 => {
-                    self.auth = ProviderAuth::Bearer;
-                    self.selected = 0;
-                    self.step = ProviderWizardStep::Credential;
+            ProviderWizardStep::Auth => {
+                self.preserved_credential = None;
+                match self.selected {
+                    0 => {
+                        self.auth = ProviderAuth::Bearer;
+                        self.selected = 0;
+                        self.step = ProviderWizardStep::Credential;
+                    }
+                    1 => {
+                        self.auth = ProviderAuth::Header {
+                            name: "x-api-key".into(),
+                        };
+                        self.selected = 0;
+                        self.step = ProviderWizardStep::Credential;
+                    }
+                    2 => {
+                        self.input.clear();
+                        self.step = ProviderWizardStep::CustomHeader;
+                    }
+                    _ => {
+                        self.auth = ProviderAuth::None;
+                        self.credential_kind = None;
+                        self.selected = 0;
+                        self.step = ProviderWizardStep::Discovery;
+                    }
                 }
-                1 => {
-                    self.auth = ProviderAuth::Header {
-                        name: "x-api-key".into(),
-                    };
-                    self.selected = 0;
-                    self.step = ProviderWizardStep::Credential;
-                }
-                2 => {
-                    self.input.clear();
-                    self.step = ProviderWizardStep::CustomHeader;
-                }
-                _ => {
-                    self.auth = ProviderAuth::None;
-                    self.credential_kind = None;
-                    self.selected = 0;
-                    self.step = ProviderWizardStep::Discovery;
-                }
-            },
+            }
             ProviderWizardStep::Credential => {
+                self.preserved_credential = None;
                 let previous_kind = self.credential_kind;
                 let selected_kind = match self.selected {
                     0 => CredentialKind::Environment,
@@ -697,6 +917,9 @@ impl ProviderWizardState {
     }
 
     fn credential(&self) -> Result<CredentialRef, String> {
+        if let Some(credential) = &self.preserved_credential {
+            return Ok(credential.clone());
+        }
         match self.credential_kind {
             None => Ok(CredentialRef::None),
             Some(CredentialKind::Environment) => Ok(CredentialRef::Environment {
@@ -1243,7 +1466,6 @@ mod tests {
 
     fn select_custom_provider(state: &mut ProviderWizardState) {
         assert_eq!(state.step, ProviderWizardStep::Provider);
-        down(state, provider_choice_count() - 1);
         enter(state);
         assert_eq!(state.step, ProviderWizardStep::Id);
     }
@@ -1253,6 +1475,7 @@ mod tests {
         let mut state = ProviderWizardState::default();
         assert_eq!(state.step, ProviderWizardStep::Provider);
 
+        down(&mut state, 1);
         enter(&mut state);
         assert_eq!(state.step, ProviderWizardStep::KnownAuth);
         assert_eq!(state.provider_id, "openai");
@@ -1281,6 +1504,7 @@ mod tests {
     #[test]
     fn known_openai_oauth_uses_a_provider_owned_preset_without_client_metadata() {
         let mut state = ProviderWizardState::default();
+        down(&mut state, 1);
         enter(&mut state);
         assert_eq!(state.step, ProviderWizardStep::KnownAuth);
 
@@ -1309,7 +1533,7 @@ mod tests {
     #[test]
     fn known_xai_subscription_uses_provider_owned_device_oauth() {
         let mut state = ProviderWizardState::default();
-        down(&mut state, 4);
+        down(&mut state, 5);
         enter(&mut state);
         assert_eq!(state.step, ProviderWizardStep::KnownAuth);
 
@@ -1331,7 +1555,7 @@ mod tests {
     #[test]
     fn known_anthropic_provider_owns_its_api_key_header_policy() {
         let mut state = ProviderWizardState::default();
-        down(&mut state, 1);
+        down(&mut state, 2);
         enter(&mut state);
         assert_eq!(state.step, ProviderWizardStep::KnownAuth);
         assert_eq!(state.provider_id, "anthropic");
@@ -1366,7 +1590,7 @@ mod tests {
     #[test]
     fn known_anthropic_oauth_uses_bearer_and_provider_identity_headers() {
         let mut state = ProviderWizardState::default();
-        down(&mut state, 1);
+        down(&mut state, 2);
         enter(&mut state);
         enter(&mut state);
         assert_eq!(state.step, ProviderWizardStep::Summary);
@@ -1439,6 +1663,7 @@ mod tests {
     #[test]
     fn existing_known_provider_requires_explicit_replacement_confirmation() {
         let mut state = ProviderWizardState::with_existing_provider_ids(["openai".to_owned()]);
+        down(&mut state, 1);
         enter(&mut state);
         assert_eq!(state.step, ProviderWizardStep::ExistingProvider);
         assert!(!state.replace_existing);
@@ -1448,6 +1673,7 @@ mod tests {
         assert!(!state.replace_existing);
 
         enter(&mut state);
+        assert_eq!(state.step, ProviderWizardStep::ExistingProvider);
         down(&mut state, 1);
         enter(&mut state);
         assert_eq!(state.step, ProviderWizardStep::KnownAuth);
@@ -1524,14 +1750,51 @@ mod tests {
         assert_eq!(
             labels,
             [
+                "Custom endpoint",
                 "OpenAI",
                 "Anthropic",
                 "Google AI Studio",
                 "DeepSeek",
                 "xAI",
-                "Custom endpoint",
+                "OpenRouter",
+                "Groq",
+                "Cerebras",
+                "Together AI",
+                "Fireworks AI",
+                "NVIDIA NIM",
+                "Moonshot AI",
+                "Hugging Face",
+                "Z.AI",
             ]
         );
+    }
+
+    #[test]
+    fn edit_wizard_starts_from_review_and_preserves_advanced_credentials() {
+        let config = ProviderConfig {
+            id: "company-gateway".into(),
+            display_name: "Company Gateway".into(),
+            base_url: Url::parse("https://gateway.example.test/v1").unwrap(),
+            credential: CredentialRef::Command {
+                program: "secret-helper".into(),
+                args: vec!["read".into()],
+            },
+            auth: ProviderAuth::Bearer,
+            discovery: ProviderDiscovery::OpenAiModels {
+                path: "models".into(),
+            },
+            extra_headers: BTreeMap::new(),
+            enabled: true,
+        };
+
+        let mut state = ProviderWizardState::for_edit(config.clone());
+        assert_eq!(state.step, ProviderWizardStep::Summary);
+        assert!(state.replaces_existing_provider());
+        let ProviderWizardOutcome::Submit(submitted) = enter(&mut state) else {
+            panic!("edit review must submit");
+        };
+        assert_eq!(submitted.credential, config.credential);
+        assert_eq!(submitted.base_url, config.base_url);
     }
 
     #[test]

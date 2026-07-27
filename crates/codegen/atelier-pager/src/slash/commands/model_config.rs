@@ -66,15 +66,23 @@ impl SlashCommand for ModelConfigCommand {
             return Some(subcommands());
         }
         if tokens.len() == 1 {
-            let append_space = matches!(command, "wire" | "override" | "test");
+            let append_space = matches!(command, "wire" | "override" | "delete" | "test");
             return Some(model_items(ctx, command, append_space));
         }
         if tokens.len() == 2 && !trailing_space {
-            let append_space = matches!(command, "wire" | "override" | "test");
+            let append_space = matches!(command, "wire" | "override" | "delete" | "test");
             return Some(model_items(ctx, command, append_space));
         }
         let model_key = tokens[1];
         if tokens.len() == 2 && trailing_space {
+            if command == "delete" {
+                return Some(vec![ArgItem {
+                    display: format!("Remove override for {model_key}"),
+                    match_text: "confirm remove override".to_owned(),
+                    insert_text: format!("delete {model_key} confirm"),
+                    description: "Restore the model's definition or default Wire API".to_owned(),
+                }]);
+            }
             if matches!(command, "wire" | "override") {
                 return Some(
                     ["chat_completions", "responses", "messages", "default"]
@@ -201,11 +209,18 @@ impl SlashCommand for ModelConfigCommand {
                 )
             }
             "delete" => {
-                let [_, model_key] = tokens.as_slice() else {
+                let [_, model_key, confirmation] = tokens.as_slice() else {
                     return CommandResult::Error(
-                        "Usage: /wire-api delete <provider/model>".to_owned(),
+                        "Deletion requires confirmation. Use /wire-api delete <provider/model> confirm"
+                            .to_owned(),
                     );
                 };
+                if confirmation != "confirm" {
+                    return CommandResult::Error(
+                        "Deletion requires confirmation. Use /wire-api delete <provider/model> confirm"
+                            .to_owned(),
+                    );
+                }
                 extension(OVERRIDE_DELETE, json!({ "modelKey": model_key }))
             }
             "test" => {
@@ -373,9 +388,11 @@ mod tests {
     }
 
     #[test]
-    fn delete_suggestions_finish_after_model_selection() {
+    fn delete_suggestions_require_an_explicit_confirmation_step() {
         let models = suggested("delete ");
-        assert_eq!(insert_text(&models, "proxy/gpt-5"), "delete proxy/gpt-5");
+        assert_eq!(insert_text(&models, "proxy/gpt-5"), "delete proxy/gpt-5 ");
+        let confirmation = suggested("delete proxy/gpt-5 ");
+        assert_eq!(confirmation[0].insert_text, "delete proxy/gpt-5 confirm");
     }
 
     #[test]
@@ -421,7 +438,6 @@ mod tests {
             "list extra",
             "get proxy/gpt-5 extra",
             "wire proxy/gpt-5 responses extra",
-            "delete proxy/gpt-5 extra",
             "test proxy/gpt-5 preview extra",
             "test proxy/gpt-5 send",
             "test proxy/gpt-5 execute extra",
@@ -431,5 +447,20 @@ mod tests {
                 "{args} must fail with Usage"
             );
         }
+    }
+
+    #[test]
+    fn delete_command_requires_confirmation() {
+        let mut command_ctx = ctx();
+        assert!(matches!(
+            ModelConfigCommand.run(&mut command_ctx, "delete proxy/gpt-5"),
+            CommandResult::Error(error) if error.contains("requires confirmation")
+        ));
+        assert!(matches!(
+            ModelConfigCommand.run(&mut command_ctx, "delete proxy/gpt-5 confirm"),
+            CommandResult::Action(Action::RuntimeExtension { method, params })
+                if method == "_atelier/model_provider_override/delete"
+                    && params["modelKey"] == "proxy/gpt-5"
+        ));
     }
 }

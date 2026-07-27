@@ -99,7 +99,7 @@ protocol = "open_ai_responses"
 }
 
 #[test]
-fn model_wire_api_is_provider_scoped_and_missing_pair_configuration_fails_closed() {
+fn model_wire_api_is_provider_scoped_and_missing_pair_uses_chat_default() {
     let home = tempdir().unwrap();
     write(
         &home.path().join("providers.toml"),
@@ -144,13 +144,9 @@ context_window = 100000
     assert_eq!(responses.wire_api, WireApi::Messages);
     assert_eq!(responses.source, WireApiSource::ProviderModelOverride);
 
-    let error = registry.resolve_wire_api(&chat_key).unwrap_err();
-    assert!(
-        error
-            .to_string()
-            .contains("wire API is not configured for chat/shared-model"),
-        "{error}"
-    );
+    let chat = registry.resolve_wire_api(&chat_key).unwrap();
+    assert_eq!(chat.wire_api, WireApi::ChatCompletions);
+    assert_eq!(chat.source, WireApiSource::Default);
 }
 
 #[test]

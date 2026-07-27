@@ -74,6 +74,12 @@ workspace ACL capabilities, profile-aware environment construction, Job Object
 lifetime control, named-pipe authorization, and account-bound WFP network
 rules.
 
+The first launch for a canonical root/access-mode pair installs and propagates a
+stable capability ACL. Later launches verify and reuse that ACE. This removes
+the previous recursive ACL rewrite from every Session startup while preserving
+fail-closed capability isolation. Startup instrumentation records credential,
+runner materialization, ACL, logon, pipe, and Worker-handshake timings.
+
 Check readiness with:
 
 ```powershell

@@ -87,14 +87,28 @@ impl SlashCommand for RolesCommand {
         }
         if command == "set" && tokens.len() == 3 && trailing_space {
             let model = tokens[2];
+            let Some(model_id) = ctx.models.resolve_by_name_or_id(model) else {
+                return Some(Vec::new());
+            };
+            let mut options = ctx.models.reasoning_effort_options_for(&model_id);
+            if options.is_empty() {
+                return Some(vec![ArgItem {
+                    display: "model default".to_owned(),
+                    match_text: "default".to_owned(),
+                    insert_text: format!("set {role} {model} - "),
+                    description: "No explicit reasoning effort".into(),
+                }]);
+            }
             return Some(
-                ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
-                    .into_iter()
-                    .map(|effort| ArgItem {
-                        display: effort.to_owned(),
-                        match_text: effort.to_owned(),
-                        insert_text: format!("set {role} {model} {effort} "),
-                        description: "reasoning effort".into(),
+                options
+                    .drain(..)
+                    .map(|option| ArgItem {
+                        display: option.label,
+                        match_text: option.id.clone(),
+                        insert_text: format!("set {role} {model} {} ", option.id),
+                        description: option
+                            .description
+                            .unwrap_or_else(|| "reasoning effort".into()),
                     })
                     .collect(),
             );
@@ -373,7 +387,17 @@ mod tests {
         let model_id = agent_client_protocol::ModelId::new("example/deepseek-v4-flash");
         models.available.insert(
             model_id.clone(),
-            agent_client_protocol::ModelInfo::new(model_id, "DeepSeek V4 Flash"),
+            agent_client_protocol::ModelInfo::new(model_id, "DeepSeek V4 Flash").meta(
+                serde_json::json!({
+                    "supportsReasoningEffort": true,
+                    "reasoningEfforts": [
+                        { "value": "low", "label": "Low" },
+                        { "value": "high", "label": "High", "default": true }
+                    ]
+                })
+                .as_object()
+                .cloned(),
+            ),
         );
         let ctx = crate::slash::command::AppCtx {
             models: &models,
@@ -388,7 +412,8 @@ mod tests {
         let efforts = super::RolesCommand
             .suggest_args(&ctx, "set main example/deepseek-v4-flash ")
             .expect("effort options");
-        assert!(efforts.iter().any(|item| item.display == "high"));
+        assert!(efforts.iter().any(|item| item.display == "High"));
+        assert!(efforts.iter().all(|item| item.match_text != "xhigh"));
         let fast_modes = super::RolesCommand
             .suggest_args(&ctx, "set main example/deepseek-v4-flash high ")
             .expect("fast mode options");

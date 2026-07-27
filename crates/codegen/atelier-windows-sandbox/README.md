@@ -24,8 +24,15 @@ The active process chain is:
 - The persistent-user runner derives a user-aware `WRITE_RESTRICTED` token,
   starts the target with `CreateProcessAsUserW`, and remains in a parent-owned
   kill-on-close Job Object.
-- Workspace roots receive temporary account and capability ACL entries. The
-  original ACLs are restored when the sandboxed process exits.
+- Each canonical workspace root and access mode receives a stable capability
+  SID stored under `~/.atelier/.sandbox/capabilities`. The first launch for a
+  root propagates the account/capability ACL once; later launches verify and
+  reuse the exact inheritable ACEs instead of recursively rewriting the whole
+  repository. Read-only and workspace-write modes use different capabilities.
+- The restricted child requires the workspace capability in its restricting
+  SID set. The sandbox account SID remains on the normal-token side of the
+  Windows access check, so a broader account ACE cannot bypass a read-only
+  capability.
 - `ATELIER_HOME` is the only home-directory variable introduced by this
   crate. Telemetry is `None`/no-op and OTEL exporter variables are disabled in
   the child environment.
@@ -75,8 +82,15 @@ The WFP implementation is derived from the pinned Apache-2.0 Codex source
 listed above. Atelier uses its own stable WFP GUID namespace and removes the
 Codex telemetry path.
 
-After one-time setup, run the real OS-boundary test with:
+After one-time setup, run the real OS-boundary tests with a built single-binary
+runner:
 
 ```powershell
+$env:ATE_BINARY = (Resolve-Path target\debug\ate.exe)
+cargo test --locked -p atelier-windows-sandbox --test contract -- --nocapture --test-threads=1
 cargo test --locked -p atelier-windows-sandbox --test network_wfp_e2e -- --ignored --nocapture --test-threads=1
 ```
+
+Process-boundary tests skip with an explicit message when `ATE_BINARY` (or
+`ATELIER_SANDBOX_RUNNER`) is absent; they no longer launch the Rust test harness
+as if it implemented the hidden runner mode.

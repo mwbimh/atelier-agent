@@ -3,9 +3,10 @@
 
 //! First-stage Windows sandbox support for Atelier.
 //!
-//! The active implementation is a real restricted-token runner with temporary
-//! capability ACLs, strict existing-path validation, and account-bound Windows
-//! Filtering Platform rules. ConPTY remains outside the current implementation.
+//! The active implementation is a real restricted-token runner with stable
+//! per-workspace capability ACLs, strict existing-path validation, and
+//! account-bound Windows Filtering Platform rules. ConPTY remains outside the
+//! current implementation.
 
 mod acl;
 mod dpapi;

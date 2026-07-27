@@ -23,7 +23,23 @@ fn command_request(mode: SandboxMode, root: &std::path::Path) -> CommandRequest 
     )
 }
 
+fn embedded_runner_supported_or_skip() -> bool {
+    let configured = std::env::var_os("ATELIER_SANDBOX_RUNNER")
+        .or_else(|| std::env::var_os("ATE_BINARY"))
+        .map(PathBuf::from)
+        .is_some_and(|path| path.is_file());
+    if !configured {
+        eprintln!(
+            "skipping Windows process contract: set ATE_BINARY to a built ate.exe so the hidden sandbox-runner mode is available"
+        );
+    }
+    configured
+}
+
 fn restricted_token_supported_or_skip() -> bool {
+    if !embedded_runner_supported_or_skip() {
+        return false;
+    }
     match atelier_windows_sandbox::probe_restricted_token() {
         Ok(()) => true,
         Err(error)

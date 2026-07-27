@@ -35,6 +35,53 @@ async fn provider_list_hides_internal_json_and_models() {
     harness.quit().expect("clean quit");
 }
 
+/// The real slash composer walks Provider → model, then persists the exact
+/// composite key without requiring a live Session.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore]
+async fn model_picker_persists_provider_scoped_model() {
+    let content = ContentController::start().await.expect("start content");
+    let binary = pager_binary().expect("resolve pager binary");
+    let mut harness =
+        PtyHarness::spawn_with_content(&binary, DEFAULT_ROWS, DEFAULT_COLS, &content, &[])
+            .expect("spawn pager with content");
+    harness.set_respond_to_queries(true);
+
+    harness
+        .wait_for_text(WELCOME_SCREEN_SENTINEL, WELCOME_TIMEOUT)
+        .expect("welcome text");
+    inject_keys_paced(&mut harness, b"/model ");
+    harness
+        .wait_for_text("mock", Duration::from_secs(10))
+        .expect("Provider phase");
+    harness.inject_keys(b"\t").expect("accept Provider");
+    harness
+        .wait_for_text("mock/test-model", Duration::from_secs(10))
+        .expect("model phase");
+    inject_keys_paced(&mut harness, b"test-model");
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    inject_keys_paced(&mut harness, b"\r");
+    harness.update(Duration::from_millis(500));
+
+    let config_path = content.home().join(".atelier").join("config.toml");
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let config = loop {
+        let source = std::fs::read_to_string(&config_path).expect("read config.toml");
+        if source.contains("model = \"mock/test-model\"") {
+            break source;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "model selection was not persisted:\n{source}\nraw output:\n{}",
+            String::from_utf8_lossy(harness.raw_output())
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    assert!(config.contains("model = \"mock/test-model\""));
+
+    harness.quit().expect("clean quit");
+}
+
 /// Submitting the exact `/provider add` command opens the connection wizard.
 /// This covers the real composer → slash dispatch → modal path rather than
 /// invoking `ProviderCommand::run` directly.
@@ -78,6 +125,9 @@ async fn provider_add_opens_wizard() {
     );
 
     harness
+        .inject_keys(b"\x1b[B")
+        .expect("select OpenAI after Custom endpoint");
+    harness
         .inject_keys(b"\r")
         .expect("select known OpenAI Provider");
     harness
@@ -120,11 +170,9 @@ async fn provider_add_opens_wizard() {
         .wait_for_text("Select Provider", Duration::from_secs(10))
         .expect("Provider selection after Back");
 
-    for _ in 0..5 {
-        harness
-            .inject_keys(b"\x1b[B")
-            .expect("select Custom endpoint");
-    }
+    harness
+        .inject_keys(b"\x1b[A")
+        .expect("select Custom endpoint first");
     harness
         .inject_keys(b"\r")
         .expect("open custom Provider flow");

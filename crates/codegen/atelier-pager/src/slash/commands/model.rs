@@ -1,6 +1,5 @@
-//! `/model` (alias `/m`) — switch model + (optionally) reasoning effort.
-//! Chained autocomplete: pick a reasoning-supported model → trailing space
-//! re-opens the dropdown into a `low|medium|high|xhigh` sub-menu.
+//! `/model` (alias `/m`) — persist and switch the active Provider/model.
+//! Chained autocomplete walks Provider → model → model-specific effort.
 
 use agent_client_protocol as acp;
 use atelier_shell::sampling::types::supports_reasoning_effort_meta;
@@ -37,7 +36,7 @@ impl SlashCommand for ModelCommand {
     }
 
     fn usage(&self) -> &str {
-        "/model <name> [effort] | /model default <provider/model>"
+        "/model <provider/model> [effort]"
     }
 
     fn takes_args(&self) -> bool {
@@ -45,7 +44,7 @@ impl SlashCommand for ModelCommand {
     }
 
     fn arg_placeholder(&self) -> Option<&str> {
-        Some("<model> [effort]")
+        Some("<provider/model> [effort]")
     }
 
     fn suggest_args(&self, ctx: &AppCtx, args_query: &str) -> Option<Vec<ArgItem>> {
@@ -53,11 +52,13 @@ impl SlashCommand for ModelCommand {
             return None;
         }
 
-        // Effort phase if input is "<reasoning-model> ", else model phase.
         if let Some(model_id) = detect_effort_phase(ctx.models, args_query) {
             return Some(build_effort_items(ctx.models, &model_id));
         }
-        Some(build_model_items(ctx.models))
+        if let Some(provider_id) = provider_phase(ctx.models, args_query) {
+            return Some(build_model_items(ctx.models, &provider_id));
+        }
+        Some(build_provider_items(ctx.models))
     }
 
     fn run(&self, ctx: &mut CommandExecCtx, args: &str) -> CommandResult {
@@ -68,26 +69,13 @@ impl SlashCommand for ModelCommand {
             });
         }
 
-        if let Some(model) = trimmed.strip_prefix("default ") {
-            let model = model.trim();
-            if model.is_empty() || model.split('/').count() != 2 {
-                return CommandResult::Error("Usage: /model default <provider/model>".to_owned());
-            }
-            return CommandResult::Action(Action::RuntimeExtension {
-                method: "_atelier/config/update".to_owned(),
-                params: serde_json::json!({ "model": model }),
-            });
-        }
+        let trimmed = trimmed.strip_prefix("default ").unwrap_or(trimmed).trim();
 
-        // Prefer an exact full-string catalog match first. Model display names
-        // often contain spaces ("Atelier 4.5"); if we split on the last token
-        // first, a shorter catalog entry ("Atelier") would steal the prefix and
-        // treat "4.5" as an effort level.
+        // Prefer the exact composite key. Display-name matching remains for
+        // command-line compatibility, but every successful selection is
+        // canonicalized to `provider/model` before it is persisted.
         if let Some(id) = ctx.models.resolve_by_name_or_id(trimmed) {
-            return CommandResult::Action(Action::SwitchModel {
-                model_id: id,
-                effort: None,
-            });
+            return persist_model_selection(id, None);
         }
 
         // Trailing effort token + reasoning model → typed switch. Successful
@@ -105,10 +93,7 @@ impl SlashCommand for ModelCommand {
                 .unwrap_or(false)
         {
             return match ctx.models.resolve_effort_for_model(&id, token) {
-                Ok(effort) => CommandResult::Action(Action::SwitchModel {
-                    model_id: id,
-                    effort: Some(effort),
-                }),
+                Ok(effort) => persist_model_selection(id, Some(effort)),
                 Err(err) => CommandResult::Error(err.message()),
             };
         }
@@ -138,22 +123,41 @@ fn split_trailing_token(args: &str) -> Option<(&str, &str)> {
     Some((prefix, last))
 }
 
-/// Returns the matched model id when `args_query` is `"<reasoning-model> ..."`.
-/// Longest-name-first to disambiguate names that share a prefix.
+fn persist_model_selection(
+    model_id: acp::ModelId,
+    effort: Option<atelier_shell::sampling::types::ReasoningEffort>,
+) -> CommandResult {
+    CommandResult::Action(Action::RuntimeExtension {
+        method: "_atelier/config/update".to_owned(),
+        params: serde_json::json!({
+            "model": model_id.0.as_ref(),
+            "switch": true,
+            "effort": effort.map(|value| value.as_str()),
+        }),
+    })
+}
+
+/// Returns the matched model id when `args_query` is
+/// `"<provider/model> ..."`. Display names remain accepted for typed legacy
+/// input, but interactive completion always uses the composite key.
 fn detect_effort_phase(models: &ModelState, args_query: &str) -> Option<acp::ModelId> {
-    let mut candidates: Vec<(&acp::ModelId, &str)> = models
+    let mut candidates: Vec<(&acp::ModelId, String)> = models
         .available
         .iter()
         .filter(|(_, info)| supports_reasoning_effort(info))
-        .map(|(id, info)| (id, info.name.as_str()))
+        .flat_map(|(id, info)| {
+            [id.0.to_string(), info.name.clone()]
+                .into_iter()
+                .map(move |label| (id, label))
+        })
         .collect();
-    candidates.sort_by_key(|(_, name)| std::cmp::Reverse(name.len()));
+    candidates.sort_by_key(|(_, label)| std::cmp::Reverse(label.len()));
 
-    for (id, name) in candidates {
-        if args_query.len() > name.len()
-            && args_query.is_char_boundary(name.len())
-            && args_query[..name.len()].eq_ignore_ascii_case(name)
-            && args_query[name.len()..].starts_with(char::is_whitespace)
+    for (id, label) in candidates {
+        if args_query.len() > label.len()
+            && args_query.is_char_boundary(label.len())
+            && args_query[..label.len()].eq_ignore_ascii_case(&label)
+            && args_query[label.len()..].starts_with(char::is_whitespace)
         {
             return Some(id.clone());
         }
@@ -161,33 +165,69 @@ fn detect_effort_phase(models: &ModelState, args_query: &str) -> Option<acp::Mod
     None
 }
 
-/// One row per logical model. Reasoning models get a trailing space in
-/// `insert_text` so the prompt widget chains into the effort sub-menu.
-fn build_model_items(models: &ModelState) -> Vec<ArgItem> {
+fn provider_phase(models: &ModelState, args_query: &str) -> Option<String> {
+    let first = args_query.split_whitespace().next().unwrap_or(args_query);
+    let (provider, _) = first.split_once('/')?;
+    models
+        .available
+        .keys()
+        .any(|id| {
+            id.0.as_ref()
+                .split_once('/')
+                .is_some_and(|(candidate, _)| candidate == provider)
+        })
+        .then(|| provider.to_owned())
+}
+
+fn build_provider_items(models: &ModelState) -> Vec<ArgItem> {
+    let mut providers = indexmap::IndexMap::<String, usize>::new();
+    for id in models.available.keys() {
+        if let Some((provider, _)) = id.0.as_ref().split_once('/') {
+            *providers.entry(provider.to_owned()).or_default() += 1;
+        }
+    }
+    providers
+        .into_iter()
+        .map(|(provider, count)| ArgItem {
+            display: provider.clone(),
+            match_text: provider.clone(),
+            insert_text: format!("{provider}/"),
+            description: format!(
+                "{count} available model{}",
+                if count == 1 { "" } else { "s" }
+            ),
+        })
+        .collect()
+}
+
+/// One row per logical model for the selected Provider. Every row shows and
+/// inserts its full composite ID, eliminating ambiguity across Providers.
+fn build_model_items(models: &ModelState, provider_id: &str) -> Vec<ArgItem> {
     let current_id = models.current.as_ref();
-    let mut items: Vec<ArgItem> = Vec::with_capacity(models.available.len());
+    let mut items = Vec::new();
     for (id, info) in &models.available {
+        let Some((provider, _)) = id.0.as_ref().split_once('/') else {
+            continue;
+        };
+        if provider != provider_id {
+            continue;
+        }
         let is_current = current_id == Some(id);
         let supports = supports_reasoning_effort(info);
-
+        let key = id.0.to_string();
         let display = if is_current {
-            format!("{} (current)", info.name)
+            format!("{key} — {} (current)", info.name)
         } else {
-            info.name.clone()
+            format!("{key} — {}", info.name)
         };
-
-        // Trailing space on reasoning models: signals "more input
-        // expected" to the prompt widget so Enter advances to effort
-        // phase instead of submitting.
         let insert_text = if supports {
-            format!("{} ", info.name)
+            format!("{key} ")
         } else {
-            info.name.clone()
+            key.clone()
         };
-
         items.push(ArgItem {
             display,
-            match_text: info.name.clone(),
+            match_text: format!("{key} {}", info.name),
             insert_text,
             description: info.description.clone().unwrap_or_default(),
         });
@@ -198,11 +238,10 @@ fn build_model_items(models: &ModelState) -> Vec<ArgItem> {
 /// One row per effort level for the `/model` chained effort phase.
 /// `insert_text` is `"ModelName high"` so selecting a row completes both tokens.
 fn build_effort_items(models: &ModelState, model_id: &acp::ModelId) -> Vec<ArgItem> {
-    let info = match models.available.get(model_id) {
-        Some(info) => info,
-        None => return Vec::new(),
-    };
-    let model_name = info.name.clone();
+    if !models.available.contains_key(model_id) {
+        return Vec::new();
+    }
+    let model_name = model_id.0.to_string();
     let is_current_model = models.current.as_ref() == Some(model_id);
     let options = models.reasoning_effort_options_for(model_id);
     build_effort_arg_items(
@@ -216,7 +255,6 @@ fn build_effort_items(models: &ModelState, model_id: &acp::ModelId) -> Vec<ArgIt
 #[cfg(test)]
 mod tests {
     use super::*;
-    use atelier_shell::sampling::types::ReasoningEffort;
     use std::sync::Arc;
 
     fn model_with_reasoning(id: &str, name: &str) -> (acp::ModelId, acp::ModelInfo) {
@@ -282,10 +320,10 @@ mod tests {
     }
 
     #[test]
-    fn empty_query_returns_one_row_per_logical_model() {
+    fn autocomplete_walks_provider_then_unambiguous_model_ids() {
         let mut state = ModelState::default();
-        let (rid, rinfo) = model_with_reasoning("reasoning-x", "Reasoning X");
-        let (pid, pinfo) = plain_model("atelier-4.5", "Atelier 4.5");
+        let (rid, rinfo) = model_with_reasoning("example/reasoning-x", "Reasoning X");
+        let (pid, pinfo) = plain_model("other/atelier-4.5", "Atelier 4.5");
         state.available.insert(rid, rinfo);
         state.available.insert(pid, pinfo);
 
@@ -296,30 +334,21 @@ mod tests {
             has_session_announcements: false,
             screen_mode: crate::app::ScreenMode::Fullscreen,
         };
-        let items = cmd.suggest_args(&ctx, "").unwrap();
-        assert_eq!(items.len(), 2, "model phase: one row per logical model");
+        let providers = cmd.suggest_args(&ctx, "").unwrap();
+        assert_eq!(providers.len(), 2);
+        assert!(providers.iter().any(|item| item.insert_text == "example/"));
+        assert!(providers.iter().any(|item| item.insert_text == "other/"));
 
-        // Reasoning model has trailing space in insert_text -- this is the
-        // signal the prompt widget reads to keep the dropdown open after
-        // Enter so the effort sub-menu can render.
-        let reasoning = items
-            .iter()
-            .find(|i| i.match_text == "Reasoning X")
-            .unwrap();
-        assert_eq!(reasoning.insert_text, "Reasoning X ");
-
-        // Plain model has no trailing space -- Enter commits immediately.
-        let plain = items
-            .iter()
-            .find(|i| i.match_text == "Atelier 4.5")
-            .unwrap();
-        assert_eq!(plain.insert_text, "Atelier 4.5");
+        let models = cmd.suggest_args(&ctx, "example/").unwrap();
+        assert_eq!(models.len(), 1);
+        assert!(models[0].display.contains("example/reasoning-x"));
+        assert_eq!(models[0].insert_text, "example/reasoning-x ");
     }
 
     #[test]
     fn trailing_space_after_reasoning_model_enters_effort_phase() {
         let mut state = ModelState::default();
-        let (id, info) = model_with_reasoning("reasoning-x", "Reasoning X");
+        let (id, info) = model_with_reasoning("example/reasoning-x", "Reasoning X");
         state.available.insert(id, info);
 
         let cmd = ModelCommand;
@@ -329,17 +358,12 @@ mod tests {
             has_session_announcements: false,
             screen_mode: crate::app::ScreenMode::Fullscreen,
         };
-        // Args query has a trailing space -> effort phase. Items come out
-        // Ordered exactly as the model-specific metadata declares it.
-        let items = cmd.suggest_args(&ctx, "Reasoning X ").unwrap();
+        let items = cmd.suggest_args(&ctx, "example/reasoning-x ").unwrap();
         assert_eq!(items.len(), 3);
-        assert_eq!(items[0].insert_text, "Reasoning X low");
-        assert_eq!(items[1].insert_text, "Reasoning X medium");
-        assert_eq!(items[2].insert_text, "Reasoning X high");
-        // Display is just the level so the user sees a clean column.
+        assert_eq!(items[0].insert_text, "example/reasoning-x low");
+        assert_eq!(items[1].insert_text, "example/reasoning-x medium");
+        assert_eq!(items[2].insert_text, "example/reasoning-x high");
         assert_eq!(items[0].display, "Low");
-        // match_text carries the sort-key prefix that forces the matcher's
-        // alphabetical tiebreak to preserve the declared option order.
         assert!(items[0].match_text.starts_with("a "));
         assert!(items[2].match_text.starts_with("c "));
     }
@@ -347,7 +371,7 @@ mod tests {
     #[test]
     fn partial_effort_query_still_in_effort_phase() {
         let mut state = ModelState::default();
-        let (id, info) = model_with_reasoning("reasoning-x", "Reasoning X");
+        let (id, info) = model_with_reasoning("example/reasoning-x", "Reasoning X");
         state.available.insert(id, info);
 
         let cmd = ModelCommand;
@@ -357,15 +381,14 @@ mod tests {
             has_session_announcements: false,
             screen_mode: crate::app::ScreenMode::Fullscreen,
         };
-        // Still in effort phase; matcher upstream narrows to high.
-        let items = cmd.suggest_args(&ctx, "Reasoning X h").unwrap();
+        let items = cmd.suggest_args(&ctx, "example/reasoning-x h").unwrap();
         assert_eq!(items.len(), 3);
     }
 
     #[test]
-    fn partial_model_query_stays_in_model_phase() {
+    fn partial_model_query_stays_in_selected_provider_phase() {
         let mut state = ModelState::default();
-        let (id, info) = model_with_reasoning("reasoning-x", "Reasoning X");
+        let (id, info) = model_with_reasoning("example/reasoning-x", "Reasoning X");
         state.available.insert(id, info);
 
         let cmd = ModelCommand;
@@ -375,25 +398,26 @@ mod tests {
             has_session_announcements: false,
             screen_mode: crate::app::ScreenMode::Fullscreen,
         };
-        // No trailing space, user is still typing the model name.
-        let items = cmd.suggest_args(&ctx, "Reason").unwrap();
+        let items = cmd.suggest_args(&ctx, "example/Reason").unwrap();
         assert_eq!(items.len(), 1);
-        assert_eq!(items[0].insert_text, "Reasoning X ");
+        assert_eq!(items[0].insert_text, "example/reasoning-x ");
     }
 
     #[test]
-    fn run_parses_model_plus_effort_when_supported() {
+    fn run_persists_model_plus_effort_before_switching() {
         let mut state = ModelState::default();
-        let (id, info) = model_with_reasoning("reasoning-x", "Reasoning X");
+        let (id, info) = model_with_reasoning("example/reasoning-x", "Reasoning X");
         state.available.insert(id, info);
         let mut ctx = dummy_exec_ctx(&state);
-        let result = ModelCommand.run(&mut ctx, "Reasoning X high");
+        let result = ModelCommand.run(&mut ctx, "example/reasoning-x high");
         match result {
-            CommandResult::Action(Action::SwitchModel { model_id, effort }) => {
-                assert_eq!(model_id.0.as_ref(), "reasoning-x");
-                assert_eq!(effort, Some(ReasoningEffort::High));
+            CommandResult::Action(Action::RuntimeExtension { method, params }) => {
+                assert_eq!(method, "_atelier/config/update");
+                assert_eq!(params["model"], "example/reasoning-x");
+                assert_eq!(params["effort"], "high");
+                assert_eq!(params["switch"], true);
             }
-            other => panic!("expected SwitchModel with effort, got {other:?}"),
+            other => panic!("expected persisted model selection, got {other:?}"),
         }
     }
 
@@ -432,81 +456,78 @@ mod tests {
 
     #[test]
     fn run_prefers_full_multi_word_model_name_over_prefix_plus_effort() {
-        // Catalog has both "Atelier" (reasoning) and "Atelier 4.5". `/model Atelier 4.5`
-        // must select the full name, not treat "4.5" as an effort on "Atelier".
         let mut state = ModelState::default();
-        let (short_id, short_info) = model_with_reasoning("atelier", "Atelier");
-        let (long_id, long_info) = model_with_reasoning("atelier-4.5", "Atelier 4.5");
+        let (short_id, short_info) = model_with_reasoning("example/atelier", "Atelier");
+        let (long_id, long_info) = model_with_reasoning("example/atelier-4.5", "Atelier 4.5");
         state.available.insert(short_id, short_info);
         state.available.insert(long_id.clone(), long_info);
         let mut ctx = dummy_exec_ctx(&state);
         let result = ModelCommand.run(&mut ctx, "Atelier 4.5");
         match result {
-            CommandResult::Action(Action::SwitchModel { model_id, effort }) => {
-                assert_eq!(model_id, long_id);
-                assert_eq!(effort, None);
+            CommandResult::Action(Action::RuntimeExtension { method, params }) => {
+                assert_eq!(method, "_atelier/config/update");
+                assert_eq!(params["model"], long_id.0.as_ref());
+                assert!(params["effort"].is_null());
             }
-            other => panic!("expected SwitchModel(Atelier 4.5), got {other:?}"),
+            other => panic!("expected persisted Atelier 4.5 selection, got {other:?}"),
         }
     }
 
     #[test]
     fn run_rejects_effort_for_non_reasoning_model() {
         let mut state = ModelState::default();
-        let (id, info) = plain_model("atelier-4.5", "Atelier 4.5");
+        let (id, info) = plain_model("example/atelier-4.5", "Atelier 4.5");
         state.available.insert(id, info);
         let mut ctx = dummy_exec_ctx(&state);
-        let result = ModelCommand.run(&mut ctx, "Atelier 4.5 high");
-        // Falls through to "is the whole string a model name?" — which
-        // it isn't, so we get an Unknown error.
+        let result = ModelCommand.run(&mut ctx, "example/atelier-4.5 high");
         assert!(matches!(result, CommandResult::Error(_)));
     }
 
-    /// The bare `/model <name>` form resolves a typed `ModelId` and switches
-    /// only the current Session.
     #[test]
-    fn run_bare_model_name_switches_only_the_current_session() {
+    fn run_bare_model_name_persists_the_composite_id() {
         let mut state = ModelState::default();
-        let (id, info) = plain_model("atelier-4.5", "Atelier 4.5");
+        let (id, info) = plain_model("example/atelier-4.5", "Atelier 4.5");
         state.available.insert(id.clone(), info);
         let mut ctx = dummy_exec_ctx(&state);
         let result = ModelCommand.run(&mut ctx, "Atelier 4.5");
         match result {
-            CommandResult::Action(Action::SwitchModel { model_id, effort }) => {
-                assert_eq!(model_id, id);
-                assert_eq!(effort, None);
+            CommandResult::Action(Action::RuntimeExtension { method, params }) => {
+                assert_eq!(method, "_atelier/config/update");
+                assert_eq!(params["model"], id.0.as_ref());
+                assert_eq!(params["switch"], true);
             }
-            other => panic!("expected Action::SwitchModel, got {other:?}"),
+            other => panic!("expected persisted model selection, got {other:?}"),
         }
     }
 
-    /// Case-insensitive matching against the catalog: `/model atelier 4.5`
-    /// resolves to the same `ModelId` as `/model Atelier 4.5`.
     #[test]
-    fn run_switch_model_resolves_case_insensitively() {
+    fn run_model_name_resolves_case_insensitively() {
         let mut state = ModelState::default();
-        let (id, info) = plain_model("atelier-4.5", "Atelier 4.5");
+        let (id, info) = plain_model("example/atelier-4.5", "Atelier 4.5");
         state.available.insert(id.clone(), info);
         let mut ctx = dummy_exec_ctx(&state);
         let result = ModelCommand.run(&mut ctx, "atelier 4.5");
         match result {
-            CommandResult::Action(Action::SwitchModel { model_id, effort }) => {
-                assert_eq!(model_id, id);
-                assert_eq!(effort, None);
+            CommandResult::Action(Action::RuntimeExtension { method, params }) => {
+                assert_eq!(method, "_atelier/config/update");
+                assert_eq!(params["model"], id.0.as_ref());
             }
-            other => panic!("expected Action::SwitchModel, got {other:?}"),
+            other => panic!("expected persisted model selection, got {other:?}"),
         }
     }
 
     #[test]
-    fn run_default_subcommand_updates_new_session_default_through_config_rpc() {
-        let state = ModelState::default();
+    fn legacy_default_subcommand_uses_the_same_persist_and_switch_path() {
+        let mut state = ModelState::default();
+        let (id, info) = plain_model("provider/model", "Model");
+        state.available.insert(id, info);
         let mut ctx = dummy_exec_ctx(&state);
         let result = ModelCommand.run(&mut ctx, "default provider/model");
         match result {
             CommandResult::Action(Action::RuntimeExtension { method, params }) => {
                 assert_eq!(method, "_atelier/config/update");
                 assert_eq!(params["model"], "provider/model");
+                assert_eq!(params["switch"], true);
             }
             other => panic!("expected config update extension, got {other:?}"),
         }

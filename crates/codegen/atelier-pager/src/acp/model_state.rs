@@ -72,9 +72,29 @@ impl ModelState {
         }
     }
 
-    /// Machine-readable model ID string for the current model (e.g. "atelier-4.5").
+    /// Machine-readable model ID string for the current model (for local
+    /// Provider models this is always the unambiguous `provider/model` key).
     pub fn current_model_id_str(&self) -> Option<&str> {
         Some(self.current.as_ref()?.0.as_ref())
+    }
+
+    /// Effective Wire API advertised by the runtime for the current model.
+    pub fn current_wire_api(&self) -> Option<&str> {
+        self.available
+            .get(self.current.as_ref()?)?
+            .meta
+            .as_ref()?
+            .get("wireApi")?
+            .as_str()
+    }
+
+    /// Compact prompt label that keeps routing identity and transport visible.
+    pub fn current_prompt_label(&self) -> Option<String> {
+        let model = self.current_model_id_str()?;
+        match self.current_wire_api() {
+            Some(wire_api) => Some(format!("{model} · {wire_api}")),
+            None => Some(model.to_owned()),
+        }
     }
 
     /// Total context window tokens for the current model (if available).
@@ -361,6 +381,26 @@ mod tests {
     fn test_current_model_name() {
         let state = sample_models();
         assert_eq!(state.current_model_name(), Some("Model A".to_string()));
+    }
+
+    #[test]
+    fn prompt_label_includes_composite_model_id_and_wire_api() {
+        let id = acp::ModelId::new(Arc::from("example/model-a"));
+        let mut state = ModelState::default();
+        state.available.insert(
+            id.clone(),
+            acp::ModelInfo::new(id.clone(), "Model A").meta(
+                serde_json::json!({ "wireApi": "chat_completions" })
+                    .as_object()
+                    .cloned(),
+            ),
+        );
+        state.current = Some(id);
+
+        assert_eq!(
+            state.current_prompt_label().as_deref(),
+            Some("example/model-a · chat_completions")
+        );
     }
 
     #[test]

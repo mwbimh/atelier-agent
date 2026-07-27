@@ -10,8 +10,13 @@ pub const CONFIG_UPDATE: &str = "_atelier/config/update";
 pub const RESET_DEFAULTS: &str = "_atelier/config/reset_defaults";
 
 #[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct UpdateConfigParams {
     model: String,
+    #[serde(default)]
+    switch: bool,
+    #[serde(default)]
+    effort: Option<String>,
 }
 
 pub async fn handle(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
@@ -49,12 +54,18 @@ fn update_config(args: &acp::ExtRequest) -> ExtResult {
             acp::Error::invalid_params().data(format!("configured model is unavailable: {key}"))
         );
     }
-    let defaults = atelier_config::runtime_defaults::update_default_model_at(
+    atelier_config::runtime_defaults::update_default_model_at(
         &atelier_config::atelier_home(),
         &key.to_string(),
     )
     .map_err(|error| acp::Error::internal_error().data(error.to_string()))?;
-    to_raw_response(&defaults)
+    to_raw_response(&serde_json::json!({
+        "model": key.to_string(),
+        "persisted": true,
+        "switch": params.switch,
+        "effort": params.effort,
+        "message": "Default model updated",
+    }))
 }
 
 async fn reset_defaults(agent: &MvpAgent) -> ExtResult {

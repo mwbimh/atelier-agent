@@ -8703,15 +8703,15 @@ mod tests {
         };
 
         // Seed a model catalog and open `/model ` so arg suggestions exist.
-        let model_id = acp::ModelId::new("beta-model");
+        let model_id = acp::ModelId::new("example/beta-model");
         let mut available = IndexMap::new();
         available.insert(
             model_id.clone(),
             acp::ModelInfo::new(model_id.clone(), "Beta Model"),
         );
         available.insert(
-            acp::ModelId::new("alpha-model"),
-            acp::ModelInfo::new(acp::ModelId::new("alpha-model"), "Alpha Model"),
+            acp::ModelId::new("example/alpha-model"),
+            acp::ModelInfo::new(acp::ModelId::new("example/alpha-model"), "Alpha Model"),
         );
         state.models.update_catalog(available, Some(model_id));
         // Mirror how the real dashboard types into the dispatch box:
@@ -8743,10 +8743,7 @@ mod tests {
         );
         let text = state.dispatch.text();
         assert!(
-            text.contains("alpha-model")
-                || text.contains("beta-model")
-                || text.contains("Alpha")
-                || text.contains("Beta"),
+            text.contains("example/"),
             "dispatch should contain accepted model completion, got {text:?}"
         );
         assert!(
@@ -8775,7 +8772,7 @@ mod tests {
             row_items: vec![0, 1, 2, 3],
             has_scrollbar: false,
         };
-        let model_id = acp::ModelId::new("hover-model");
+        let model_id = acp::ModelId::new("example/hover-model");
         let mut available = IndexMap::new();
         available.insert(
             model_id.clone(),

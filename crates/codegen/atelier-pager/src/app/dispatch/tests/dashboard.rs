@@ -1734,12 +1734,17 @@ fn seed_model(app: &mut AppView, id: &str, name: &str) {
 #[test]
 fn dashboard_slash_model_stages_pending_model() {
     let mut app = test_app();
-    seed_model(&mut app, "atelier-4.5", "Atelier 4.5");
+    seed_model(&mut app, "example/atelier-4.5", "Atelier 4.5");
     open_dashboard(&mut app);
-    let effects = dispatch_dashboard_dispatch_slash(&mut app, "/model atelier-4.5".into());
+    let effects = dispatch_dashboard_dispatch_slash(&mut app, "/model example/atelier-4.5".into());
     assert!(
-        effects.is_empty(),
-        "dashboard model selection must only stage the next Session: {effects:?}"
+        matches!(
+            effects.as_slice(),
+            [Effect::RuntimeExtension { agent_id: None, method, params }]
+                if method == "_atelier/config/update"
+                    && params["model"] == "example/atelier-4.5"
+        ),
+        "dashboard model selection dispatched {effects:?}"
     );
     assert!(app.agents.is_empty(), "no session should be created");
     let pending = app
@@ -1749,7 +1754,7 @@ fn dashboard_slash_model_stages_pending_model() {
         .pending_model
         .as_ref()
         .expect("pending_model must be set");
-    assert_eq!(pending.id.0.as_ref(), "atelier-4.5");
+    assert_eq!(pending.id.0.as_ref(), "example/atelier-4.5");
     assert_eq!(pending.display, "Atelier 4.5");
     assert!(pending.effort.is_none());
     // The catalog snapshot's `current` tracks the staged model so the
@@ -1762,7 +1767,7 @@ fn dashboard_slash_model_stages_pending_model() {
             .current
             .as_ref()
             .map(|id| id.0.as_ref()),
-        Some("atelier-4.5"),
+        Some("example/atelier-4.5"),
         "staging must update the snapshot's current selection",
     );
 }

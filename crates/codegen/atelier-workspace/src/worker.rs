@@ -38,6 +38,15 @@ pub const MAX_WORKER_FRAME_BYTES: usize = 8 * 1024 * 1024;
 const DEFAULT_WORKER_CALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 const WORKER_HANDSHAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
+fn record_worker_spawn_timing(name: &'static str, started: std::time::Instant) {
+    tracing::info!(
+        target: atelier_telemetry::instrumentation::TARGET,
+        event = "timing",
+        name,
+        elapsed_us = started.elapsed().as_micros() as u64,
+    );
+}
+
 /// OS sandbox mode used to launch a workspace worker.
 ///
 /// The mode is deliberately required at every spawn site so a read-only
@@ -255,12 +264,18 @@ impl WorkspaceWorkerClient {
         worker_path: PathBuf,
         sandbox_mode: WorkspaceWorkerSandboxMode,
     ) -> WorkspaceResult<Self> {
+        let total_started = std::time::Instant::now();
+        let started = std::time::Instant::now();
         let root = canonical_root(&root).await?;
+        record_worker_spawn_timing("workspace_worker.canonical_root", started);
         let nonce = uuid::Uuid::new_v4().to_string();
+        let started = std::time::Instant::now();
         let (program, args) = worker_process_command(&root, &worker_path)?;
+        record_worker_spawn_timing("workspace_worker.command", started);
 
         #[cfg(windows)]
         let (child, stdin, stdout, stderr_task) = {
+            let started = std::time::Instant::now();
             let request = atelier_windows_sandbox::CommandRequest::new(
                 sandbox_mode.windows_mode(),
                 vec![root.clone()],
@@ -286,12 +301,14 @@ impl WorkspaceWorkerClient {
                 let mut sink = tokio::io::stderr();
                 let _ = tokio::io::copy(&mut stderr, &mut sink).await;
             });
-            (
+            let result = (
                 WorkerProcess::Restricted(child),
                 Box::new(tokio::fs::File::from_std(stdin)) as Box<dyn AsyncWrite + Unpin + Send>,
                 Box::new(tokio::fs::File::from_std(stdout)) as Box<dyn AsyncRead + Unpin + Send>,
                 Some(stderr_task),
-            )
+            );
+            record_worker_spawn_timing("workspace_worker.restricted_process", started);
+            result
         };
 
         #[cfg(not(windows))]
@@ -329,6 +346,7 @@ impl WorkspaceWorkerClient {
             next_request_id: 0,
             root: root.clone(),
         };
+        let started = std::time::Instant::now();
         write_frame(
             &mut connection.stdin,
             &WorkerRequest::Hello {
@@ -339,6 +357,8 @@ impl WorkspaceWorkerClient {
         )
         .await
         .map_err(worker_protocol_to_workspace)?;
+        record_worker_spawn_timing("workspace_worker.write_hello", started);
+        let started = std::time::Instant::now();
         match tokio::time::timeout(
             WORKER_HANDSHAKE_TIMEOUT,
             read_frame::<_, WorkerResponse>(&mut connection.stdout),
@@ -361,6 +381,8 @@ impl WorkspaceWorkerClient {
                 return Err(worker_crashed(&mut connection.child).await);
             }
         }
+        record_worker_spawn_timing("workspace_worker.handshake", started);
+        record_worker_spawn_timing("workspace_worker.spawn_total", total_started);
         Ok(Self {
             inner: Arc::new(Mutex::new(connection)),
         })

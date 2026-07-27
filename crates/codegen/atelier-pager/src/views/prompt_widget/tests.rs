@@ -1694,22 +1694,18 @@
             agent_client_protocol::ModelInfo::new(model_id, "DeepSeek V4 Flash".to_string()),
         );
 
-        // Type "/model gr" and position cursor at end (in args).
-        pw.textarea.insert_str("/model deep");
+        // Type a Provider prefix and position the cursor at the end.
+        pw.textarea.insert_str("/model ex");
         pw.refresh_slash(&models);
 
         let snap = pw.slash_snapshot();
         assert!(snap.open, "arg suggestions should be open");
         assert!(snap.args_range.is_some());
 
-        // Accept arg completion → should replace "gr" with "Atelier 4.5".
+        // Accept arg completion → should replace the query with the Provider phase.
         pw.accept_slash_completion(&models);
         let text = pw.textarea.text().to_string();
-        assert!(
-            text.contains("DeepSeek V4 Flash"),
-            "arg should be replaced, got: {:?}",
-            text
-        );
+        assert!(text.contains("example/"), "arg should be replaced, got: {text:?}");
         assert!(text.starts_with("/model "));
     }
 
