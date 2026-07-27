@@ -50,14 +50,20 @@ async fn model_picker_persists_provider_scoped_model() {
     harness
         .wait_for_text(WELCOME_SCREEN_SENTINEL, WELCOME_TIMEOUT)
         .expect("welcome text");
-    inject_keys_paced(&mut harness, b"/model ");
+    inject_keys_paced(&mut harness, b"/model");
+    harness.inject_keys(b"\r").expect("open model picker");
     harness
         .wait_for_text("mock", Duration::from_secs(10))
         .expect("Provider phase");
-    harness.inject_keys(b"\t").expect("accept Provider");
+    harness.inject_keys(b"\r").expect("select Provider");
     harness
         .wait_for_text("mock/test-model", Duration::from_secs(10))
         .expect("model phase");
+    let provider_screen = harness.screen_contents();
+    assert!(
+        !provider_screen.contains("Unknown model: mock/"),
+        "{provider_screen}"
+    );
     inject_keys_paced(&mut harness, b"test-model");
     tokio::time::sleep(Duration::from_millis(250)).await;
     inject_keys_paced(&mut harness, b"\r");

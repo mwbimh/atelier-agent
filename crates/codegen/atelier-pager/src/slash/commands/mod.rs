@@ -499,19 +499,17 @@ mod tests {
         let providers = cmd.suggest_args(&ctx, "").expect("provider suggestions");
         assert_eq!(providers.len(), 1);
         assert_eq!(providers[0].display, "example");
-        assert_eq!(providers[0].insert_text, "example/");
+        assert_eq!(providers[0].insert_text, "example/ ");
 
         let items = cmd
-            .suggest_args(&ctx, "example/")
+            .suggest_args(&ctx, "example/ ")
             .expect("model suggestions");
         assert_eq!(items.len(), 2);
         assert!(items.iter().any(|item| {
-            item.display.starts_with("example/atelier-4.5")
-                && item.insert_text == "example/atelier-4.5"
+            item.display == "example/atelier-4.5" && item.insert_text == "example/atelier-4.5"
         }));
         assert!(items.iter().any(|item| {
-            item.display.starts_with("example/atelier-4.3")
-                && item.insert_text == "example/atelier-4.3"
+            item.display == "example/atelier-4.3" && item.insert_text == "example/atelier-4.3"
         }));
     }
     #[test]

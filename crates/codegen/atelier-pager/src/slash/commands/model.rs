@@ -191,7 +191,10 @@ fn build_provider_items(models: &ModelState) -> Vec<ArgItem> {
         .map(|(provider, count)| ArgItem {
             display: provider.clone(),
             match_text: provider.clone(),
-            insert_text: format!("{provider}/"),
+            // A trailing space is the shared picker contract for "continue to
+            // the next argument phase". Without it, Enter treats the Provider
+            // as a complete model selection and executes `/model provider/`.
+            insert_text: format!("{provider}/ "),
             description: format!(
                 "{count} available model{}",
                 if count == 1 { "" } else { "s" }
@@ -200,8 +203,9 @@ fn build_provider_items(models: &ModelState) -> Vec<ArgItem> {
         .collect()
 }
 
-/// One row per logical model for the selected Provider. Every row shows and
-/// inserts its full composite ID, eliminating ambiguity across Providers.
+/// One row per logical model for the selected Provider. The visible label and
+/// inserted value are the same canonical `provider/model` key. The display
+/// name remains searchable but is not redundantly appended to the row.
 fn build_model_items(models: &ModelState, provider_id: &str) -> Vec<ArgItem> {
     let current_id = models.current.as_ref();
     let mut items = Vec::new();
@@ -215,21 +219,24 @@ fn build_model_items(models: &ModelState, provider_id: &str) -> Vec<ArgItem> {
         let is_current = current_id == Some(id);
         let supports = supports_reasoning_effort(info);
         let key = id.0.to_string();
-        let display = if is_current {
-            format!("{key} — {} (current)", info.name)
-        } else {
-            format!("{key} — {}", info.name)
-        };
         let insert_text = if supports {
             format!("{key} ")
         } else {
             key.clone()
         };
+        let description = match (is_current, info.description.as_deref()) {
+            (true, Some(description)) if !description.is_empty() => {
+                format!("Current model · {description}")
+            }
+            (true, _) => "Current model".to_owned(),
+            (false, Some(description)) => description.to_owned(),
+            (false, None) => String::new(),
+        };
         items.push(ArgItem {
-            display,
+            display: key.clone(),
             match_text: format!("{key} {}", info.name),
             insert_text,
-            description: info.description.clone().unwrap_or_default(),
+            description,
         });
     }
     items
@@ -336,12 +343,12 @@ mod tests {
         };
         let providers = cmd.suggest_args(&ctx, "").unwrap();
         assert_eq!(providers.len(), 2);
-        assert!(providers.iter().any(|item| item.insert_text == "example/"));
-        assert!(providers.iter().any(|item| item.insert_text == "other/"));
+        assert!(providers.iter().any(|item| item.insert_text == "example/ "));
+        assert!(providers.iter().any(|item| item.insert_text == "other/ "));
 
-        let models = cmd.suggest_args(&ctx, "example/").unwrap();
+        let models = cmd.suggest_args(&ctx, "example/ ").unwrap();
         assert_eq!(models.len(), 1);
-        assert!(models[0].display.contains("example/reasoning-x"));
+        assert_eq!(models[0].display, "example/reasoning-x");
         assert_eq!(models[0].insert_text, "example/reasoning-x ");
     }
 
