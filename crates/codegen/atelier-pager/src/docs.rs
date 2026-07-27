@@ -278,6 +278,20 @@ mod tests {
     }
 
     #[test]
+    fn public_user_guide_does_not_name_low_level_provider_auth_headers() {
+        let private_header_name = ["x", "-api-key"].concat();
+        for doc in USER_GUIDE {
+            assert!(
+                !doc.content
+                    .to_ascii_lowercase()
+                    .contains(&private_header_name),
+                "public doc {} names a low-level Provider authentication Header",
+                doc.filename
+            );
+        }
+    }
+
+    #[test]
     fn user_guide_entries_have_no_duplicates() {
         let mut seen = std::collections::HashSet::new();
         for doc in USER_GUIDE {

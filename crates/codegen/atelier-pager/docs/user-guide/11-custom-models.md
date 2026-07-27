@@ -62,7 +62,7 @@ selection instead of typing the complete commands.
 Submitting `/provider add` first offers known Provider presets. Presets own
 their API endpoint, API-key Header policy, discovery settings, and required
 non-secret protocol Headers. Users select only the Provider and credential
-source; low-level Header names such as `x-api-key` are not shown in this flow.
+source; low-level authentication Header names are not shown in this flow.
 
 **Custom endpoint** is the advanced flow. Its authentication policies are
 `bearer`, `header:NAME`, and `none`; credentials are `env:NAME`, `cmd:PROGRAM`,

@@ -46,10 +46,8 @@ Supported Provider authentication policies:
 | `header:NAME` | Send the credential in header `NAME` |
 | `none` | Do not inject a credential |
 
-`x-api-key` is an HTTP Header name commonly used by Anthropic-compatible APIs;
-it is not OAuth and it is unrelated to xAI. Known Provider presets select the
-correct policy automatically. Custom endpoints may use
-`header:x-api-key`, Bearer, or another explicitly configured Header.
+Known Provider presets select the correct authentication policy automatically.
+Custom endpoints may use Bearer or another explicitly configured Header.
 
 Supported credential specifications:
 
