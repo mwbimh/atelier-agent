@@ -7,10 +7,12 @@ use std::collections::BTreeMap;
 use url::Url;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "kebab-case")]
 pub enum ProviderOAuthPreset {
+    #[serde(rename = "openai-codex-browser")]
     OpenAiCodexBrowser,
+    #[serde(rename = "anthropic-browser")]
     AnthropicBrowser,
+    #[serde(rename = "xai-device")]
     XaiDevice,
 }
 

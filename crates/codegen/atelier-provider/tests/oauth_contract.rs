@@ -516,6 +516,13 @@ fn known_provider_oauth_presets_round_trip_without_exposing_client_metadata() {
         toml::from_str::<ProviderOAuthMethod>(&encoded).unwrap(),
         method
     );
+
+    let openai = toml::to_string(&ProviderOAuthMethod::preset(
+        ProviderOAuthPreset::OpenAiCodexBrowser,
+    ))
+    .unwrap();
+    assert!(openai.contains("id = \"openai-codex-browser\""));
+    assert!(!openai.contains("open-ai"));
 }
 
 #[test]
