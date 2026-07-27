@@ -12,6 +12,13 @@ use url::Url;
 const DEFAULT_CALLBACK_PATH: &str = "/oauth/callback";
 const DEVICE_GRANT_TYPE: &str = "urn:ietf:params:oauth:grant-type:device_code";
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum OAuthTokenRequestFormat {
+    #[default]
+    Form,
+    Json,
+}
+
 #[derive(Debug, Clone)]
 pub struct AuthorizationCodeConfig {
     pub provider_id: String,
@@ -20,9 +27,13 @@ pub struct AuthorizationCodeConfig {
     pub token_endpoint: Url,
     pub scopes: Vec<String>,
     pub callback_port: u16,
+    pub callback_host: String,
     pub callback_path: String,
     pub authorization_params: BTreeMap<String, String>,
     pub token_params: BTreeMap<String, String>,
+    pub token_request_format: OAuthTokenRequestFormat,
+    pub state_from_pkce_verifier: bool,
+    pub include_state_in_token_request: bool,
 }
 
 impl AuthorizationCodeConfig {
@@ -39,9 +50,13 @@ impl AuthorizationCodeConfig {
             token_endpoint,
             scopes: Vec::new(),
             callback_port: 0,
+            callback_host: "127.0.0.1".into(),
             callback_path: DEFAULT_CALLBACK_PATH.into(),
             authorization_params: BTreeMap::new(),
             token_params: BTreeMap::new(),
+            token_request_format: OAuthTokenRequestFormat::Form,
+            state_from_pkce_verifier: false,
+            include_state_in_token_request: false,
         }
     }
 
@@ -87,9 +102,17 @@ pub struct AuthorizationCodeSession {
 impl AuthorizationCodeSession {
     pub fn begin(config: AuthorizationCodeConfig) -> Result<Self, OAuthError> {
         config.validate()?;
-        let callback = LocalhostCallback::bind(config.callback_port, &config.callback_path)?;
+        let callback = LocalhostCallback::bind(
+            config.callback_port,
+            &config.callback_path,
+            &config.callback_host,
+        )?;
         let pkce = Pkce::generate();
-        let state = generate_state();
+        let state = if config.state_from_pkce_verifier {
+            pkce.verifier.clone()
+        } else {
+            generate_state()
+        };
         let mut authorization_url = config.authorization_endpoint.clone();
         {
             let mut query = authorization_url.query_pairs_mut();
@@ -158,7 +181,16 @@ impl AuthorizationCodeSession {
             ("redirect_uri".into(), redirect_uri.into()),
             ("code_verifier".into(), pkce.verifier),
         ]);
-        parse_token_response(client.post_form(&config.token_endpoint, &form)?, None)
+        if config.include_state_in_token_request {
+            form.push(("state".into(), state));
+        }
+        let response = match config.token_request_format {
+            OAuthTokenRequestFormat::Form => client.post_form(&config.token_endpoint, &form)?,
+            OAuthTokenRequestFormat::Json => {
+                client.post_json(&config.token_endpoint, &form_json(form))?
+            }
+        };
+        parse_token_response(response, None, None)
     }
 }
 
@@ -308,7 +340,7 @@ impl DeviceCodeSession {
         ]);
         let response = client.post_form(&self.config.token_endpoint, &form)?;
         if (200..300).contains(&response.status) {
-            return parse_token_response(response, None).map(DeviceCodePoll::Complete);
+            return parse_token_response(response, None, None).map(DeviceCodePoll::Complete);
         }
         let status = response.status;
         let error: ServerErrorResponse =
@@ -334,6 +366,7 @@ pub struct RefreshTokenConfig {
     pub client_id: String,
     pub token_endpoint: Url,
     pub token_params: BTreeMap<String, String>,
+    pub token_request_format: OAuthTokenRequestFormat,
 }
 
 impl RefreshTokenConfig {
@@ -347,6 +380,7 @@ impl RefreshTokenConfig {
             client_id: client_id.into(),
             token_endpoint,
             token_params: BTreeMap::new(),
+            token_request_format: OAuthTokenRequestFormat::Form,
         }
     }
 
@@ -375,9 +409,24 @@ pub fn refresh_credential(
         ("refresh_token".into(), refresh_token.expose_secret().into()),
         ("client_id".into(), config.client_id.clone()),
     ]);
+    let response = match config.token_request_format {
+        OAuthTokenRequestFormat::Form => client.post_form(&config.token_endpoint, &form)?,
+        OAuthTokenRequestFormat::Json => {
+            client.post_json(&config.token_endpoint, &form_json(form))?
+        }
+    };
     parse_token_response(
-        client.post_form(&config.token_endpoint, &form)?,
+        response,
         Some(refresh_token),
+        credential.identity_token.as_ref(),
+    )
+}
+
+fn form_json(form: Vec<(String, String)>) -> serde_json::Value {
+    serde_json::Value::Object(
+        form.into_iter()
+            .map(|(name, value)| (name, serde_json::Value::String(value)))
+            .collect(),
     )
 }
 

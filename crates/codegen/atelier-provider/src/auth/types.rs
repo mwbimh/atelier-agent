@@ -35,12 +35,23 @@ pub trait OAuthHttpClient: Send + Sync {
         url: &Url,
         form: &[(String, String)],
     ) -> Result<OAuthHttpResponse, OAuthError>;
+
+    fn post_json(
+        &self,
+        _url: &Url,
+        _body: &serde_json::Value,
+    ) -> Result<OAuthHttpResponse, OAuthError> {
+        Err(OAuthError::InvalidConfig(
+            "OAuth HTTP client does not support JSON token requests".into(),
+        ))
+    }
 }
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct OAuthCredential {
     pub access_token: SecretString,
     pub refresh_token: Option<SecretString>,
+    pub identity_token: Option<SecretString>,
     pub token_type: String,
     pub expires_at_unix_seconds: Option<u64>,
     pub scopes: Vec<String>,
@@ -55,6 +66,7 @@ impl OAuthCredential {
         Self {
             access_token: SecretString::new(access_token),
             refresh_token: refresh_token.map(|token| SecretString::new(token.into())),
+            identity_token: None,
             token_type: "Bearer".into(),
             expires_at_unix_seconds: Some(expires_at_unix_seconds),
             scopes: Vec::new(),
@@ -69,6 +81,7 @@ impl OAuthCredential {
     pub(crate) fn from_token_response(
         response: TokenResponse,
         previous_refresh_token: Option<&SecretString>,
+        previous_identity_token: Option<&SecretString>,
     ) -> Result<Self, OAuthError> {
         if response.access_token.trim().is_empty() {
             return Err(OAuthError::InvalidResponse(
@@ -80,6 +93,11 @@ impl OAuthCredential {
             .filter(|token| !token.trim().is_empty())
             .map(SecretString::new)
             .or_else(|| previous_refresh_token.cloned());
+        let identity_token = response
+            .id_token
+            .filter(|token| !token.trim().is_empty())
+            .map(SecretString::new)
+            .or_else(|| previous_identity_token.cloned());
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(|_| OAuthError::ClockBeforeUnixEpoch)?
@@ -94,6 +112,7 @@ impl OAuthCredential {
         Ok(Self {
             access_token: SecretString::new(response.access_token),
             refresh_token,
+            identity_token,
             token_type: response.token_type.unwrap_or_else(|| "Bearer".into()),
             expires_at_unix_seconds,
             scopes,
@@ -104,6 +123,10 @@ impl OAuthCredential {
         let wire = OAuthCredentialWire {
             access_token: self.access_token.expose_secret(),
             refresh_token: self.refresh_token.as_ref().map(SecretString::expose_secret),
+            identity_token: self
+                .identity_token
+                .as_ref()
+                .map(SecretString::expose_secret),
             token_type: &self.token_type,
             expires_at_unix_seconds: self.expires_at_unix_seconds,
             scopes: &self.scopes,
@@ -124,6 +147,7 @@ impl OAuthCredential {
         Ok(Self {
             access_token: SecretString::new(wire.access_token),
             refresh_token: wire.refresh_token.map(SecretString::new),
+            identity_token: wire.identity_token.map(SecretString::new),
             token_type: wire.token_type,
             expires_at_unix_seconds: wire.expires_at_unix_seconds,
             scopes: wire.scopes,
@@ -139,6 +163,10 @@ impl fmt::Debug for OAuthCredential {
             .field(
                 "refresh_token",
                 &self.refresh_token.as_ref().map(|_| "REDACTED"),
+            )
+            .field(
+                "identity_token",
+                &self.identity_token.as_ref().map(|_| "REDACTED"),
             )
             .field("token_type", &self.token_type)
             .field("expires_at_unix_seconds", &self.expires_at_unix_seconds)
@@ -205,6 +233,8 @@ pub(crate) struct TokenResponse {
     #[serde(default)]
     pub(crate) refresh_token: Option<String>,
     #[serde(default)]
+    pub(crate) id_token: Option<String>,
+    #[serde(default)]
     pub(crate) expires_in: Option<u64>,
     #[serde(default)]
     pub(crate) token_type: Option<String>,
@@ -222,11 +252,16 @@ pub(crate) struct ServerErrorResponse {
 pub(crate) fn parse_token_response(
     response: OAuthHttpResponse,
     previous_refresh_token: Option<&SecretString>,
+    previous_identity_token: Option<&SecretString>,
 ) -> Result<OAuthCredential, OAuthError> {
     if (200..300).contains(&response.status) {
         let token: TokenResponse =
             serde_json::from_slice(&response.body).map_err(OAuthError::ResponseJson)?;
-        return OAuthCredential::from_token_response(token, previous_refresh_token);
+        return OAuthCredential::from_token_response(
+            token,
+            previous_refresh_token,
+            previous_identity_token,
+        );
     }
     Err(parse_server_error(response))
 }
@@ -250,6 +285,7 @@ pub(crate) fn parse_server_error(response: OAuthHttpResponse) -> OAuthError {
 struct OAuthCredentialWire<'a> {
     access_token: &'a str,
     refresh_token: Option<&'a str>,
+    identity_token: Option<&'a str>,
     token_type: &'a str,
     expires_at_unix_seconds: Option<u64>,
     scopes: &'a [String],
@@ -259,6 +295,8 @@ struct OAuthCredentialWire<'a> {
 struct OAuthCredentialOwned {
     access_token: String,
     refresh_token: Option<String>,
+    #[serde(default)]
+    identity_token: Option<String>,
     token_type: String,
     expires_at_unix_seconds: Option<u64>,
     #[serde(default)]

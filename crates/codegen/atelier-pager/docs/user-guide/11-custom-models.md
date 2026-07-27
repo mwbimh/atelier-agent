@@ -65,10 +65,10 @@ non-secret protocol Headers. Users select only the Provider and credential
 source; low-level authentication Header names are not shown in this flow.
 
 **Custom endpoint** is the advanced flow. Its authentication policies are
-`bearer`, `header:NAME`, and `none`; credentials are `env:NAME`, `cmd:PROGRAM`,
-`none`, or advanced custom OAuth metadata. Complete command forms remain
-copyable and scriptable. Wire API is configured on the exact Provider/model
-pair, not on the Provider connection.
+`bearer`, `header:NAME`, and `none`; the interactive wizard offers `env:NAME`
+or advanced custom OAuth metadata. The one-line command additionally supports
+`cmd:PROGRAM` for administrator-managed secret helper executables. Wire API is
+configured on the exact Provider/model pair, not on the Provider connection.
 
 Advanced command examples:
 

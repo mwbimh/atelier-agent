@@ -2,8 +2,8 @@ use atelier_provider::SecretString;
 use atelier_provider::auth::{
     AuthorizationCodeConfig, AuthorizationCodeSession, DeviceCodeConfig, DeviceCodePoll,
     DeviceCodeSession, OAuthCredential, OAuthError, OAuthHttpClient, OAuthHttpResponse,
-    OAuthSecretStore, ProviderOAuthCredentialStore, ProviderOAuthMethod, RefreshTokenConfig,
-    refresh_credential,
+    OAuthSecretStore, ProviderOAuthCredentialStore, ProviderOAuthMethod, ProviderOAuthPreset,
+    RefreshTokenConfig, refresh_credential,
 };
 use atelier_provider::{
     CredentialRef, ProviderAuth, ProviderConfig, ProviderDiscovery, ProviderRegistry,
@@ -45,6 +45,30 @@ impl OAuthHttpClient for ScriptedHttpClient {
             .lock()
             .unwrap()
             .push((url.clone(), form.iter().cloned().collect()));
+        self.responses
+            .lock()
+            .unwrap()
+            .pop_front()
+            .ok_or_else(|| OAuthError::transport("scripted response exhausted"))
+    }
+
+    fn post_json(
+        &self,
+        url: &Url,
+        body: &serde_json::Value,
+    ) -> Result<OAuthHttpResponse, OAuthError> {
+        let fields = body
+            .as_object()
+            .expect("JSON token body")
+            .iter()
+            .map(|(key, value)| {
+                (
+                    key.clone(),
+                    value.as_str().expect("string token field").to_owned(),
+                )
+            })
+            .collect();
+        self.requests.lock().unwrap().push((url.clone(), fields));
         self.responses
             .lock()
             .unwrap()
@@ -94,7 +118,8 @@ fn json_response(status: u16, value: serde_json::Value) -> OAuthHttpResponse {
 
 #[test]
 fn oauth_debug_output_never_contains_tokens() {
-    let credential = OAuthCredential::new("access-secret", Some("refresh-secret"), 1_000);
+    let mut credential = OAuthCredential::new("access-secret", Some("refresh-secret"), 1_000);
+    credential.identity_token = Some(SecretString::new("identity-secret"));
     let response = json_response(
         200,
         serde_json::json!({
@@ -107,6 +132,7 @@ fn oauth_debug_output_never_contains_tokens() {
     let response_debug = format!("{response:?}");
     assert!(!credential_debug.contains("access-secret"));
     assert!(!credential_debug.contains("refresh-secret"));
+    assert!(!credential_debug.contains("identity-secret"));
     assert!(!response_debug.contains("response-access-secret"));
     assert!(!response_debug.contains("response-refresh-secret"));
 }
@@ -154,6 +180,7 @@ fn authorization_code_pkce_uses_a_real_localhost_callback_and_exchanges_the_veri
         serde_json::json!({
             "access_token": "access-1",
             "refresh_token": "refresh-1",
+            "id_token": "identity-1",
             "expires_in": 3600,
             "token_type": "Bearer"
         }),
@@ -163,6 +190,10 @@ fn authorization_code_pkce_uses_a_real_localhost_callback_and_exchanges_the_veri
     assert_eq!(
         credential.refresh_token.as_ref().unwrap().expose_secret(),
         "refresh-1"
+    );
+    assert_eq!(
+        credential.identity_token.as_ref().unwrap().expose_secret(),
+        "identity-1"
     );
 
     let requests = client.requests();
@@ -270,7 +301,8 @@ fn refresh_token_rotation_replaces_a_returned_refresh_token_and_preserves_it_whe
         "atelier-client",
         Url::parse("https://login.example.test/oauth/token").unwrap(),
     );
-    let original = OAuthCredential::new("old-access", Some("old-refresh"), 1_000);
+    let mut original = OAuthCredential::new("old-access", Some("old-refresh"), 1_000);
+    original.identity_token = Some(SecretString::new("old-identity"));
     let rotating = ScriptedHttpClient::with_responses([json_response(
         200,
         serde_json::json!({
@@ -281,6 +313,10 @@ fn refresh_token_rotation_replaces_a_returned_refresh_token_and_preserves_it_whe
     )]);
     let rotated = refresh_credential(&rotating, &config, &original).unwrap();
     assert_eq!(rotated.access_token.expose_secret(), "new-access");
+    assert_eq!(
+        rotated.identity_token.as_ref().unwrap().expose_secret(),
+        "old-identity"
+    );
     assert_eq!(
         rotated.refresh_token.as_ref().unwrap().expose_secret(),
         "new-refresh"
@@ -304,7 +340,8 @@ fn refresh_token_rotation_replaces_a_returned_refresh_token_and_preserves_it_whe
 fn provider_credentials_use_a_provider_namespace_and_never_write_tokens_to_disk() {
     let home = tempdir().unwrap();
     let store = ProviderOAuthCredentialStore::new(home.path(), MemorySecretStore::default());
-    let credential = OAuthCredential::new("access-secret", Some("refresh-secret"), 1_000);
+    let mut credential = OAuthCredential::new("access-secret", Some("refresh-secret"), 1_000);
+    credential.identity_token = Some(SecretString::new("identity-secret"));
 
     store.save("example", &credential).unwrap();
     let namespace = store.namespace("example").unwrap();
@@ -326,12 +363,17 @@ fn provider_credentials_use_a_provider_namespace_and_never_write_tokens_to_disk(
     assert!(metadata.contains("example"));
     assert!(!metadata.contains("access-secret"));
     assert!(!metadata.contains("refresh-secret"));
+    assert!(!metadata.contains("identity-secret"));
 
     let loaded = store.load("example").unwrap().unwrap();
     assert_eq!(loaded.access_token.expose_secret(), "access-secret");
     assert_eq!(
         loaded.refresh_token.as_ref().unwrap().expose_secret(),
         "refresh-secret"
+    );
+    assert_eq!(
+        loaded.identity_token.as_ref().unwrap().expose_secret(),
+        "identity-secret"
     );
     assert!(store.namespace("../other").is_err());
 }
@@ -410,6 +452,70 @@ fn provider_oauth_methods_round_trip_without_storage_v2_changes() {
     assert_eq!(methods.len(), 2);
     assert_eq!(methods[0].flow_name(), "authorization-code");
     assert_eq!(methods[1].flow_name(), "device-code");
+}
+
+#[test]
+fn known_provider_oauth_presets_expand_to_provider_owned_runtime_configuration() {
+    let openai = ProviderOAuthPreset::OpenAiCodexBrowser
+        .authorization_code_config()
+        .unwrap()
+        .expect("OpenAI browser flow");
+    assert_eq!(openai.callback_port, 1455);
+    assert_eq!(openai.callback_host, "localhost");
+    assert_eq!(openai.callback_path, "/auth/callback");
+    assert_eq!(
+        openai.authorization_endpoint.host_str(),
+        Some("auth.openai.com")
+    );
+
+    let anthropic = ProviderOAuthPreset::AnthropicBrowser
+        .authorization_code_config()
+        .unwrap()
+        .expect("Anthropic browser flow");
+    assert_eq!(anthropic.callback_port, 53_692);
+    assert!(anthropic.state_from_pkce_verifier);
+    assert!(anthropic.include_state_in_token_request);
+    assert_eq!(
+        anthropic.token_request_format,
+        atelier_provider::auth::OAuthTokenRequestFormat::Json
+    );
+
+    let xai = ProviderOAuthPreset::XaiDevice
+        .device_code_config()
+        .unwrap()
+        .expect("xAI device flow");
+    assert_eq!(
+        xai.device_authorization_endpoint.host_str(),
+        Some("auth.x.ai")
+    );
+    assert!(xai.scopes.iter().any(|scope| scope == "offline_access"));
+}
+
+#[test]
+fn known_provider_oauth_presets_round_trip_without_exposing_client_metadata() {
+    let method = ProviderOAuthMethod::preset(ProviderOAuthPreset::XaiDevice);
+    assert_eq!(method.flow_name(), "xai-device");
+    method.validate("xai").unwrap();
+    assert!(method.validate("openai").is_err());
+
+    let encoded = toml::to_string(&method).unwrap();
+    assert!(encoded.contains("flow = \"preset\""));
+    assert!(encoded.contains("id = \"xai-device\""));
+    for forbidden in [
+        "client_id",
+        "authorization_endpoint",
+        "token_endpoint",
+        "scope",
+    ] {
+        assert!(
+            !encoded.contains(forbidden),
+            "preset leaked {forbidden}: {encoded}"
+        );
+    }
+    assert_eq!(
+        toml::from_str::<ProviderOAuthMethod>(&encoded).unwrap(),
+        method
+    );
 }
 
 #[test]

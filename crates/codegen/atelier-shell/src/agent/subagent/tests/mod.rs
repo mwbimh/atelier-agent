@@ -3449,6 +3449,7 @@ fn test_sampling_config(model_slug: &str) -> atelier_sampling_types::SamplingCon
     use std::num::NonZeroU64;
     atelier_sampling_types::SamplingConfig {
         base_url: "https://api.test/v1".to_string(),
+        provider_id: None,
         model: model_slug.to_string(),
         max_completion_tokens: None,
         temperature: None,

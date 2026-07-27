@@ -1,7 +1,8 @@
 # Provider Credentials
 
-Atelier does not have a product account, browser login, or hosted default
-model. Model access is configured per Provider. A Provider defines:
+Atelier does not have a product account or hosted default model. Model access
+is configured per Provider through Provider-owned OAuth or an API key. A
+Provider defines:
 
 - the base URL;
 - how credentials are resolved and injected;
@@ -22,10 +23,11 @@ The command picker exposes Provider list, add, edit, enable, disable, test,
 refresh, login, logout, and delete operations. Submitting `/provider add`
 starts by selecting a known Provider or **Custom endpoint**.
 
-For a known Provider, Atelier owns the reviewed API endpoint, API-key Header
-policy, discovery settings, and required non-secret protocol Headers. The user
-only chooses the Provider and credential source; the wizard does not ask for a
-base URL, OAuth endpoint, or low-level Header name.
+For a known Provider, Atelier owns the reviewed API endpoint, login methods,
+OAuth client, scopes, refresh behavior, API-key policy, discovery settings, and
+required non-secret protocol Headers. The user chooses a login method; the
+wizard does not ask for a base URL, OAuth endpoint, client ID, scope, or
+low-level Header name.
 
 **Custom endpoint** is the advanced path for a proxy, gateway, or self-hosted
 API. It asks separately for the model API base URL, credential injection,
@@ -49,15 +51,23 @@ Supported Provider authentication policies:
 Known Provider presets select the correct authentication policy automatically.
 Custom endpoints may use Bearer or another explicitly configured Header.
 
-Supported credential specifications:
+Interactive known-Provider login does not expose credential commands or OAuth
+metadata. API-key methods read a named environment variable; OAuth methods open
+the Provider-owned browser or device flow.
+
+Advanced one-line configuration accepts:
 
 | Value | Behavior |
 |---|---|
 | `env:NAME` | Read the credential from environment variable `NAME` when needed |
-| `cmd:PROGRAM` | Run `PROGRAM` and use its stdout as the credential |
+| `cmd:PROGRAM` | Advanced only: execute `PROGRAM` directly and read one line from stdout |
 | `none` | Send no Provider credential |
-| `oauth authorization-code ...` | Browser authorization-code flow with PKCE |
-| `oauth device-code ...` | Device authorization flow |
+| `oauth authorization-code ...` | Advanced custom browser flow with PKCE |
+| `oauth device-code ...` | Advanced custom device authorization flow |
+
+`cmd:PROGRAM` exists for secret-manager CLIs and compatibility automation. It
+is not a shell expression and is not shown by the interactive Provider wizard.
+Prefer OAuth or `env:NAME` unless an administrator explicitly requires it.
 
 Known Provider example:
 
@@ -69,9 +79,10 @@ export OPENAI_API_KEY="..."
 /provider add
 ```
 
-Select **OpenAI**, keep **API key**, and use `OPENAI_API_KEY`. Atelier supplies
-`https://api.openai.com/v1` and the Bearer policy. It then tests the connection,
-refreshes discovery, and opens `/model` without selecting a model.
+Select **OpenAI**, then **OpenAI API key**, and use `OPENAI_API_KEY`. Atelier
+supplies `https://api.openai.com/v1` and the authentication policy. It then
+tests the connection, refreshes discovery, and opens `/model` without selecting
+a model.
 
 Advanced custom endpoint example:
 
@@ -87,10 +98,17 @@ export EXAMPLE_API_KEY="..."
 
 ## Provider OAuth
 
-Known Provider OAuth is provider-owned. Its integration must define the API
+Known Provider OAuth is provider-owned. Its integration defines the API
 endpoint, OAuth endpoints, client identity, scopes, refresh behavior, and token
-injection. Atelier never asks ordinary users to invent those values. A known
-Provider only displays OAuth when a reviewed provider-owned flow is available.
+injection. Atelier never asks ordinary users to invent those values.
+
+The guided flow currently provides:
+
+- **OpenAI → ChatGPT Plus/Pro**: browser OAuth for the Codex endpoint;
+- **Anthropic → Claude Pro/Max**: browser OAuth;
+- **xAI → SuperGrok or X Premium**: device authorization OAuth.
+
+Google AI Studio and DeepSeek currently expose API-key login only.
 
 For a custom Provider whose OAuth metadata you administer or trust, API and
 OAuth endpoints are separate. First create or edit the Provider with its
@@ -129,9 +147,9 @@ Run bare `/provider add` for the guided flow. It validates each field, supports
 Shift+Tab to go back and Esc to cancel, and requires explicit confirmation
 before replacing an existing Provider. Known Providers hide base URLs and
 Header injection details behind reviewed presets. The **Custom endpoint** path
-exposes those fields as advanced configuration. After save the wizard tests the
-connection, refreshes discovery, and opens `/model`; it never selects a model
-automatically.
+exposes those fields as advanced configuration. After save the wizard completes
+the selected login, validates the connection when a safe probe exists,
+refreshes discovery, and opens `/model`; it never selects a model automatically.
 
 Advanced users can also use complete one-line commands. `<auth>` is `bearer`,
 `header:<http-header-name>`, or `none`:
@@ -148,18 +166,22 @@ Advanced users can also use complete one-line commands. `<auth>` is `bearer`,
 /provider disable <id>
 /provider test <id>
 /provider refresh <id>
-/provider login <id> [authorization-code|device-code]
+/provider login <id> [flow]
 /provider logout <id>
 /provider delete <id>
 ```
+
+Omit `[flow]` for a known Provider; its preset selects the configured login
+method. Explicit flow names are intended for advanced custom OAuth.
 
 `edit` updates the base URL, authentication policy, and credential while
 preserving the Provider's existing display name, discovery settings, extra
 headers, and enabled state.
 
-`test` verifies that the configured Provider can be reached with its configured
-credential. `refresh` performs model discovery and updates that Provider's
-local model catalog.
+`test` validates the configured credential and performs a network probe when
+the Provider has a safe probe endpoint. Static subscription catalogs validate
+the OAuth credential without inventing an API request. `refresh` performs model
+discovery when enabled and updates that Provider's local model catalog.
 
 ## Model Discovery
 

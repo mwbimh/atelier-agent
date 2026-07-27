@@ -198,18 +198,11 @@ impl SlashCommand for ProviderCommand {
             }
             "login" => {
                 let Some(provider_id) = provider_id else {
-                    return CommandResult::Error(
-                        "Usage: /provider login <id> [authorization-code|device-code]".into(),
-                    );
+                    return CommandResult::Error("Usage: /provider login <id> [flow]".into());
                 };
                 let flow = parts.next();
-                if parts.next().is_some()
-                    || flow
-                        .is_some_and(|flow| !matches!(flow, "authorization-code" | "device-code"))
-                {
-                    return CommandResult::Error(
-                        "Usage: /provider login <id> [authorization-code|device-code]".into(),
-                    );
+                if parts.next().is_some() {
+                    return CommandResult::Error("Usage: /provider login <id> [flow]".into());
                 }
                 runtime_extension(
                     "_atelier/provider/oauth_begin",
@@ -440,10 +433,10 @@ fn provider_credential_items(
             description: "Read the API credential from this environment variable".to_owned(),
         },
         ArgItem {
-            display: "cmd:PROGRAM".to_owned(),
-            match_text: "cmd command program".to_owned(),
+            display: "cmd:PROGRAM (advanced)".to_owned(),
+            match_text: "cmd external secret helper program".to_owned(),
             insert_text: format!("{prefix} cmd:PROGRAM"),
-            description: "Replace PROGRAM with a credential command".to_owned(),
+            description: "Execute a secret-manager helper and read one stdout line".to_owned(),
         },
         ArgItem {
             display: "none".to_owned(),
@@ -651,6 +644,9 @@ fn oauth_credential(
             scopes: method_scopes,
             ..
         } => *method_scopes = scopes,
+        ProviderOAuthMethod::Preset { .. } => {
+            unreachable!("advanced command OAuth metadata cannot produce a preset")
+        }
     }
     Ok(CredentialRef::OAuth {
         provider_id: provider_id.to_owned(),
@@ -664,7 +660,7 @@ mod tests {
     use crate::app::actions::Action;
     use crate::slash::command::SlashCommand;
     use crate::slash::command::{CommandExecCtx, CommandResult};
-    use atelier_provider::auth::ProviderOAuthMethod;
+    use atelier_provider::auth::{ProviderOAuthMethod, ProviderOAuthPreset};
     use atelier_provider::{CredentialRef, ProviderAuth};
     use url::Url;
 
@@ -813,15 +809,22 @@ mod tests {
     #[test]
     fn provider_login_supports_explicit_and_automatic_flow_selection() {
         let mut ctx = empty_ctx();
-        for (args, expected_flow) in [
-            ("login example", serde_json::Value::Null),
+        for (args, expected_provider, expected_flow) in [
+            ("login example", "example", serde_json::Value::Null),
             (
                 "login example authorization-code",
+                "example",
                 serde_json::Value::String("authorization-code".into()),
             ),
             (
                 "login example device-code",
+                "example",
                 serde_json::Value::String("device-code".into()),
+            ),
+            (
+                "login openai openai-codex-browser",
+                "openai",
+                serde_json::Value::String("openai-codex-browser".into()),
             ),
         ] {
             let CommandResult::Action(Action::RuntimeExtension { method, params }) =
@@ -830,7 +833,7 @@ mod tests {
                 panic!("provider login must use the runtime OAuth extension");
             };
             assert_eq!(method, "_atelier/provider/oauth_begin");
-            assert_eq!(params["providerId"], "example");
+            assert_eq!(params["providerId"], expected_provider);
             assert_eq!(params["flow"], expected_flow);
         }
     }
@@ -881,6 +884,15 @@ mod tests {
         let items = provider_oauth_flow_items("example", &credential).unwrap();
         assert_eq!(items[0].insert_text, "login example authorization-code");
         assert_eq!(items[1].insert_text, "login example device-code");
+
+        let preset = CredentialRef::OAuth {
+            provider_id: "openai".into(),
+            methods: vec![ProviderOAuthMethod::preset(
+                ProviderOAuthPreset::OpenAiCodexBrowser,
+            )],
+        };
+        let items = provider_oauth_flow_items("openai", &preset).unwrap();
+        assert_eq!(items[0].insert_text, "login openai openai-codex-browser");
     }
 
     #[test]

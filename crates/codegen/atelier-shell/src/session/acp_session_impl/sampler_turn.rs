@@ -247,6 +247,7 @@ impl SessionActor {
             .await
             .unwrap_or_else(|| atelier_sampling_types::SamplingConfig {
                 base_url: String::new(),
+                provider_id: None,
                 model: String::new(),
                 max_completion_tokens: None,
                 temperature: None,
@@ -265,6 +266,10 @@ impl SessionActor {
         let use_bearer_resolver = gate.active();
         self.log_auth_gate_unknown("reconstruct_full_config", gate, &cfg.base_url);
         let auth_scheme = model_facts.auth_scheme;
+        let provider_oauth_resolvers = cfg
+            .provider_id
+            .as_deref()
+            .and_then(crate::extensions::provider::oauth_request_resolvers);
         let mut extra_headers = cfg.extra_headers;
         crate::agent::config::inject_url_derived_headers(
             &mut extra_headers,
@@ -298,6 +303,7 @@ impl SessionActor {
         SamplingConfig {
             api_key: creds.api_key,
             base_url: cfg.base_url,
+            provider_id: cfg.provider_id,
             model: cfg.model,
             max_completion_tokens: cfg.max_completion_tokens,
             temperature: cfg.temperature,
@@ -327,20 +333,25 @@ impl SessionActor {
                 .map(|a| a.user_id),
             origin_client: self.origin_client.clone(),
             attribution_callback: self.attribution_callback.clone(),
-            bearer_resolver: if use_bearer_resolver {
-                self.auth_manager
-                    .as_ref()
-                    .map(|am| -> atelier_sampler::SharedBearerResolver {
-                        std::sync::Arc::new(AuthManagerBearerResolver(am.clone()))
-                    })
-            } else {
-                None
-            },
+            bearer_resolver: provider_oauth_resolvers
+                .as_ref()
+                .map(|(bearer, _)| bearer.clone())
+                .or_else(|| {
+                    if use_bearer_resolver {
+                        self.auth_manager.as_ref().map(
+                            |am| -> atelier_sampler::SharedBearerResolver {
+                                std::sync::Arc::new(AuthManagerBearerResolver(am.clone()))
+                            },
+                        )
+                    } else {
+                        None
+                    }
+                }),
             supports_backend_search: self.supports_backend_search.get(),
             compactions_remaining: self.compactions_remaining.get(),
             compaction_at_tokens: self.compaction_at_tokens.get(),
             doom_loop_recovery: self.doom_loop_recovery,
-            header_injector: None,
+            header_injector: provider_oauth_resolvers.map(|(_, headers)| headers),
         }
     }
 

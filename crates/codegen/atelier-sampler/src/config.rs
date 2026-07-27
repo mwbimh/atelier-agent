@@ -53,6 +53,9 @@ pub enum AuthScheme {
 pub struct SamplerConfig {
     pub api_key: Option<String>,
     pub base_url: String,
+    /// Exact local Provider ID for live Provider-scoped authentication.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_id: Option<String>,
     pub model: String,
     pub max_completion_tokens: Option<u32>,
     pub temperature: Option<f32>,
@@ -221,6 +224,7 @@ impl Default for SamplerConfig {
         Self {
             api_key: None,
             base_url: String::new(),
+            provider_id: None,
             model: String::new(),
             max_completion_tokens: None,
             temperature: None,

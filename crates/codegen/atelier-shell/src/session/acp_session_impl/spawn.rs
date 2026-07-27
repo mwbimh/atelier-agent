@@ -447,6 +447,7 @@ pub(crate) async fn spawn_session_actor(
     }
     let chat_state_sampling_config = atelier_sampling_types::SamplingConfig {
         base_url: sampling_config.base_url.clone(),
+        provider_id: sampling_config.provider_id.clone(),
         model: sampling_config.model.clone(),
         max_completion_tokens: sampling_config.max_completion_tokens,
         temperature: sampling_config.temperature,

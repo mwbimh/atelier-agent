@@ -829,28 +829,35 @@ impl SamplingClient {
     /// POST with default headers. Overrides auth from resolver if wired.
     fn post(&self, url: impl reqwest::IntoUrl) -> reqwest::RequestBuilder {
         let mut headers = self.default_headers.clone();
-        if let Some(resolver) = &self.bearer_resolver
-            && let Some(fresh) = resolver.current_bearer()
-        {
+        if let Some(resolver) = &self.bearer_resolver {
+            let fresh = resolver.current_bearer();
             match &self.defaults.auth_scheme {
                 AuthScheme::XApiKey => {
                     headers.remove(AUTHORIZATION);
-                    if let Ok(v) = HeaderValue::from_str(&fresh) {
-                        headers.insert(HeaderName::from_static("x-api-key"), v);
+                    headers.remove(HeaderName::from_static("x-api-key"));
+                    if let Some(fresh) = fresh
+                        && let Ok(value) = HeaderValue::from_str(&fresh)
+                    {
+                        headers.insert(HeaderName::from_static("x-api-key"), value);
                     }
                 }
                 AuthScheme::Bearer => {
                     headers.remove(HeaderName::from_static("x-api-key"));
-                    if let Ok(v) = HeaderValue::from_str(&format!("Bearer {fresh}")) {
-                        headers.insert(AUTHORIZATION, v);
+                    headers.remove(AUTHORIZATION);
+                    if let Some(fresh) = fresh
+                        && let Ok(value) = HeaderValue::from_str(&format!("Bearer {fresh}"))
+                    {
+                        headers.insert(AUTHORIZATION, value);
                     }
                 }
                 AuthScheme::Header(name) => {
-                    if let (Ok(name), Ok(value)) = (
-                        HeaderName::from_bytes(name.as_bytes()),
-                        HeaderValue::from_str(&fresh),
-                    ) {
-                        headers.insert(name, value);
+                    if let Ok(name) = HeaderName::from_bytes(name.as_bytes()) {
+                        headers.remove(&name);
+                        if let Some(fresh) = fresh
+                            && let Ok(value) = HeaderValue::from_str(&fresh)
+                        {
+                            headers.insert(name, value);
+                        }
                     }
                 }
                 AuthScheme::None => {}
@@ -2392,6 +2399,7 @@ mod tests {
         SamplerConfig {
             api_key: Some("test-key".to_string()),
             base_url: "https://example.test".to_string(),
+            provider_id: None,
             model: "test-model".to_string(),
             max_completion_tokens: None,
             temperature: None,
@@ -2784,6 +2792,15 @@ mod tests {
         }
     }
 
+    #[derive(Debug)]
+    struct MissingBearerResolver;
+
+    impl crate::config::BearerResolver for MissingBearerResolver {
+        fn current_bearer(&self) -> Option<String> {
+            None
+        }
+    }
+
     impl crate::attribution::Auth401AttributionCallback for CountingCallback {
         fn record_401(
             &self,
@@ -2903,6 +2920,22 @@ mod tests {
                 .and_then(|v| v.to_str().ok()),
             Some("Bearer fresh-bearer"),
         );
+    }
+
+    #[test]
+    fn missing_live_bearer_fails_closed_instead_of_reusing_the_stale_snapshot() {
+        let cfg = SamplerConfig {
+            api_key: Some("stale-bearer".to_string()),
+            auth_scheme: AuthScheme::Bearer,
+            bearer_resolver: Some(std::sync::Arc::new(MissingBearerResolver)),
+            ..minimal_config()
+        };
+        let client = SamplingClient::new(cfg).expect("client should build");
+        let request = client
+            .post("https://example.test/v1/responses")
+            .build()
+            .expect("request should build");
+        assert!(request.headers().get(AUTHORIZATION).is_none());
     }
 
     #[test]

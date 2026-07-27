@@ -40,6 +40,7 @@ pub(crate) fn ctx_with_toggle(toggle: HashMap<String, bool>) -> SubagentSpawnCon
         sampling_config: atelier_sampler::SamplerConfig {
             api_key: None,
             base_url: String::new(),
+            provider_id: None,
             model: String::new(),
             max_completion_tokens: None,
             temperature: None,

@@ -144,13 +144,18 @@ published its models to the local catalog.
 
 ### `/provider`
 
-Manage the local Provider registry. Bare `/provider` opens an interactive
-subcommand picker; every action also has a complete command form:
+Manage the local Provider registry. Bare `/provider add` opens the guided
+Provider and login-method picker. Known Providers can expose Provider-owned
+OAuth and API-key methods without asking for endpoints or client metadata.
+Advanced custom endpoint commands remain scriptable:
 
 ```text
 /provider list
-/provider add <id> <chat|responses|anthropic> <base-url> [env:NAME|cmd:PROGRAM|none]
-/provider edit <id> <chat|responses|anthropic> <base-url> [env:NAME|cmd:PROGRAM|none]
+/provider add
+/provider add <id> <base-url> <bearer|header:NAME|none> [env:NAME|cmd:PROGRAM|none]
+/provider edit <id> <base-url> <bearer|header:NAME|none> [env:NAME|cmd:PROGRAM|none]
+/provider login <id> [flow]
+/provider logout <id>
 /provider enable <id>
 /provider disable <id>
 /provider test <id>

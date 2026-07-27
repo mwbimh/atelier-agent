@@ -1037,6 +1037,9 @@ impl ApiBackend {
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct SamplingConfig {
     pub base_url: String,
+    /// Exact local Provider ID when the model comes from the Provider registry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_id: Option<String>,
     pub model: String,
     pub max_completion_tokens: Option<u32>,
     pub temperature: Option<f32>,

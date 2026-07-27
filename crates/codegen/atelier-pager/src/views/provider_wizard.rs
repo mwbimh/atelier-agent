@@ -1,4 +1,6 @@
-use atelier_provider::auth::{ProviderOAuthMethod, ProviderOAuthMethod as OAuthMethod};
+use atelier_provider::auth::{
+    ProviderOAuthMethod, ProviderOAuthMethod as OAuthMethod, ProviderOAuthPreset,
+};
 use atelier_provider::{CredentialRef, ProviderAuth, ProviderConfig, ProviderDiscovery};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::buffer::Buffer;
@@ -26,7 +28,6 @@ pub enum ProviderWizardStep {
     CustomHeader,
     Credential,
     CredentialValue,
-    CredentialArguments,
     OAuthClientId,
     OAuthAuthorizationEndpoint,
     OAuthTokenEndpoint,
@@ -40,7 +41,7 @@ pub enum ProviderWizardStep {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CredentialKind {
     Environment,
-    Command,
+    OAuthPreset(ProviderOAuthPreset),
     OAuthAuthorizationCode,
     OAuthDeviceCode,
 }
@@ -74,12 +75,12 @@ fn provider_choices() -> Vec<ProviderChoice> {
     vec![
         ProviderChoice {
             label: "OpenAI",
-            description: "Connect with an OpenAI API key",
+            description: "ChatGPT Plus/Pro OAuth or an OpenAI API key",
             known: Some(KnownProvider::OpenAi),
         },
         ProviderChoice {
             label: "Anthropic",
-            description: "Connect with an Anthropic API key",
+            description: "Claude Pro/Max OAuth or an Anthropic API key",
             known: Some(KnownProvider::Anthropic),
         },
         ProviderChoice {
@@ -94,7 +95,7 @@ fn provider_choices() -> Vec<ProviderChoice> {
         },
         ProviderChoice {
             label: "xAI",
-            description: "Connect with an xAI API key",
+            description: "SuperGrok/X OAuth or an xAI API key",
             known: Some(KnownProvider::Xai),
         },
         ProviderChoice {
@@ -171,6 +172,58 @@ fn provider_preset(provider: KnownProvider) -> ProviderPreset {
     }
 }
 
+struct KnownAuthChoice {
+    label: &'static str,
+    description: &'static str,
+    credential: CredentialKind,
+}
+
+fn known_auth_choices(provider: KnownProvider) -> Vec<KnownAuthChoice> {
+    match provider {
+        KnownProvider::OpenAi => vec![
+            KnownAuthChoice {
+                label: "ChatGPT Plus/Pro",
+                description: "Sign in with OAuth for the Codex endpoint",
+                credential: CredentialKind::OAuthPreset(ProviderOAuthPreset::OpenAiCodexBrowser),
+            },
+            KnownAuthChoice {
+                label: "OpenAI API key",
+                description: "Read OPENAI_API_KEY or another environment variable",
+                credential: CredentialKind::Environment,
+            },
+        ],
+        KnownProvider::Anthropic => vec![
+            KnownAuthChoice {
+                label: "Claude Pro/Max",
+                description: "Sign in with Anthropic OAuth",
+                credential: CredentialKind::OAuthPreset(ProviderOAuthPreset::AnthropicBrowser),
+            },
+            KnownAuthChoice {
+                label: "Anthropic API key",
+                description: "Read ANTHROPIC_API_KEY or another environment variable",
+                credential: CredentialKind::Environment,
+            },
+        ],
+        KnownProvider::Xai => vec![
+            KnownAuthChoice {
+                label: "SuperGrok or X Premium",
+                description: "Sign in with the xAI device authorization flow",
+                credential: CredentialKind::OAuthPreset(ProviderOAuthPreset::XaiDevice),
+            },
+            KnownAuthChoice {
+                label: "xAI API key",
+                description: "Read XAI_API_KEY or another environment variable",
+                credential: CredentialKind::Environment,
+            },
+        ],
+        KnownProvider::Google | KnownProvider::DeepSeek => vec![KnownAuthChoice {
+            label: "API key",
+            description: "Read the Provider API key from an environment variable",
+            credential: CredentialKind::Environment,
+        }],
+    }
+}
+
 pub struct ProviderWizardState {
     pub window: ModalWindowState,
     pub step: ProviderWizardStep,
@@ -185,7 +238,6 @@ pub struct ProviderWizardState {
     auth: ProviderAuth,
     credential_kind: Option<CredentialKind>,
     credential_value: String,
-    credential_args: Vec<String>,
     oauth_client_id: String,
     oauth_authorization_endpoint: String,
     oauth_token_endpoint: String,
@@ -218,7 +270,6 @@ impl Default for ProviderWizardState {
             auth: ProviderAuth::Bearer,
             credential_kind: None,
             credential_value: String::new(),
-            credential_args: Vec::new(),
             oauth_client_id: String::new(),
             oauth_authorization_endpoint: String::new(),
             oauth_token_endpoint: String::new(),
@@ -251,6 +302,7 @@ impl ProviderWizardState {
 
     pub fn oauth_flow_name(&self) -> Option<&'static str> {
         match self.credential_kind {
+            Some(CredentialKind::OAuthPreset(preset)) => Some(preset.id()),
             Some(CredentialKind::OAuthAuthorizationCode) => Some("authorization-code"),
             Some(CredentialKind::OAuthDeviceCode) => Some("device-code"),
             _ => None,
@@ -289,10 +341,12 @@ impl ProviderWizardState {
         match self.step {
             ProviderWizardStep::Provider => provider_choice_count(),
             ProviderWizardStep::ExistingProvider => 2,
-            ProviderWizardStep::KnownAuth => 1,
+            ProviderWizardStep::KnownAuth => self
+                .known_provider
+                .map(known_auth_choices)
+                .map_or(0, |choices| choices.len()),
             ProviderWizardStep::Auth => 4,
-            ProviderWizardStep::Credential if self.is_known() => 2,
-            ProviderWizardStep::Credential => 4,
+            ProviderWizardStep::Credential => 3,
             ProviderWizardStep::Discovery => 3,
             _ => 0,
         }
@@ -307,11 +361,68 @@ impl ProviderWizardState {
         self.auth = preset.auth;
         self.credential_kind = None;
         self.credential_value = preset.environment_variable.into();
-        self.credential_args.clear();
         self.discovery = preset.discovery;
         self.extra_headers = preset.extra_headers;
         self.replace_existing = false;
         self.input.clear();
+    }
+
+    fn apply_known_auth(&mut self, credential: CredentialKind) {
+        let provider = self
+            .known_provider
+            .expect("known authentication requires a selected Provider");
+        let replace_existing = self.replace_existing;
+        let preset = provider_preset(provider);
+        self.base_url = preset.base_url.into();
+        self.auth = preset.auth;
+        self.discovery = preset.discovery;
+        self.extra_headers = preset.extra_headers;
+        self.credential_value = preset.environment_variable.into();
+        self.credential_kind = Some(credential);
+        self.replace_existing = replace_existing;
+
+        match credential {
+            CredentialKind::Environment => {
+                self.input = self.credential_value.clone();
+                self.step = ProviderWizardStep::CredentialValue;
+            }
+            CredentialKind::OAuthPreset(ProviderOAuthPreset::OpenAiCodexBrowser) => {
+                self.base_url = "https://chatgpt.com/backend-api/codex".into();
+                self.auth = ProviderAuth::Bearer;
+                self.discovery = ProviderDiscovery::Static;
+                self.credential_value.clear();
+                self.input.clear();
+                self.step = ProviderWizardStep::Summary;
+            }
+            CredentialKind::OAuthPreset(ProviderOAuthPreset::AnthropicBrowser) => {
+                self.auth = ProviderAuth::Bearer;
+                self.discovery = ProviderDiscovery::Static;
+                self.extra_headers = BTreeMap::from([
+                    ("anthropic-version".into(), "2023-06-01".into()),
+                    (
+                        "anthropic-dangerous-direct-browser-access".into(),
+                        "true".into(),
+                    ),
+                    (
+                        "anthropic-beta".into(),
+                        "claude-code-20250219,oauth-2025-04-20".into(),
+                    ),
+                    ("x-app".into(), "cli".into()),
+                ]);
+                self.credential_value.clear();
+                self.input.clear();
+                self.step = ProviderWizardStep::Summary;
+            }
+            CredentialKind::OAuthPreset(ProviderOAuthPreset::XaiDevice) => {
+                self.auth = ProviderAuth::Bearer;
+                self.credential_value.clear();
+                self.input.clear();
+                self.step = ProviderWizardStep::Summary;
+            }
+            CredentialKind::OAuthAuthorizationCode | CredentialKind::OAuthDeviceCode => {
+                unreachable!("custom OAuth is not a known Provider login method")
+            }
+        }
     }
 
     fn reset_custom_provider(&mut self) {
@@ -322,7 +433,6 @@ impl ProviderWizardState {
         self.auth = ProviderAuth::Bearer;
         self.credential_kind = None;
         self.credential_value.clear();
-        self.credential_args.clear();
         self.oauth_client_id.clear();
         self.oauth_authorization_endpoint.clear();
         self.oauth_token_endpoint.clear();
@@ -409,25 +519,9 @@ impl ProviderWizardState {
             }
             ProviderWizardStep::CredentialValue => {
                 if value.is_empty() {
-                    return Err("Credential reference value is required".into());
+                    return Err("Environment variable name is required".into());
                 }
                 self.credential_value = value;
-                if self.credential_kind == Some(CredentialKind::Command) {
-                    self.input = serde_json::to_string(&self.credential_args)
-                        .unwrap_or_else(|_| "[]".to_owned());
-                    self.step = ProviderWizardStep::CredentialArguments;
-                } else {
-                    self.after_credential_reference();
-                }
-            }
-            ProviderWizardStep::CredentialArguments => {
-                let args = serde_json::from_str::<Vec<String>>(&value).map_err(|error| {
-                    format!("Command arguments must be a JSON string array: {error}")
-                })?;
-                if args.iter().any(|argument| argument.contains('\0')) {
-                    return Err("Command arguments must not contain NUL".into());
-                }
-                self.credential_args = args;
                 self.after_credential_reference();
             }
             ProviderWizardStep::OAuthClientId => {
@@ -520,10 +614,16 @@ impl ProviderWizardState {
                 }
             }
             ProviderWizardStep::KnownAuth => {
-                self.credential_kind = Some(CredentialKind::Environment);
-                self.credential_value = self.default_environment_variable();
+                let Some(provider) = self.known_provider else {
+                    return;
+                };
+                let choices = known_auth_choices(provider);
+                let Some(choice) = choices.get(self.selected) else {
+                    return;
+                };
+                let credential = choice.credential;
                 self.selected = 0;
-                self.step = ProviderWizardStep::Credential;
+                self.apply_known_auth(credential);
             }
             ProviderWizardStep::Auth => match self.selected {
                 0 => {
@@ -551,18 +651,10 @@ impl ProviderWizardState {
             },
             ProviderWizardStep::Credential => {
                 let previous_kind = self.credential_kind;
-                let selected_kind = if self.is_known() {
-                    match self.selected {
-                        0 => CredentialKind::Environment,
-                        _ => CredentialKind::Command,
-                    }
-                } else {
-                    match self.selected {
-                        0 => CredentialKind::Environment,
-                        1 => CredentialKind::Command,
-                        2 => CredentialKind::OAuthAuthorizationCode,
-                        _ => CredentialKind::OAuthDeviceCode,
-                    }
+                let selected_kind = match self.selected {
+                    0 => CredentialKind::Environment,
+                    1 => CredentialKind::OAuthAuthorizationCode,
+                    _ => CredentialKind::OAuthDeviceCode,
                 };
                 self.credential_kind = Some(selected_kind);
                 match selected_kind {
@@ -573,17 +665,12 @@ impl ProviderWizardState {
                         self.input = self.credential_value.clone();
                         self.step = ProviderWizardStep::CredentialValue;
                     }
-                    CredentialKind::Command => {
-                        if previous_kind != Some(CredentialKind::Command) {
-                            self.credential_value.clear();
-                            self.credential_args.clear();
-                        }
-                        self.input = self.credential_value.clone();
-                        self.step = ProviderWizardStep::CredentialValue;
-                    }
                     CredentialKind::OAuthAuthorizationCode | CredentialKind::OAuthDeviceCode => {
                         self.input = self.oauth_client_id.clone();
                         self.step = ProviderWizardStep::OAuthClientId;
+                    }
+                    CredentialKind::OAuthPreset(_) => {
+                        unreachable!("known OAuth presets bypass custom credential setup")
                     }
                 }
             }
@@ -615,9 +702,9 @@ impl ProviderWizardState {
             Some(CredentialKind::Environment) => Ok(CredentialRef::Environment {
                 variable: self.credential_value.clone(),
             }),
-            Some(CredentialKind::Command) => Ok(CredentialRef::Command {
-                program: self.credential_value.clone(),
-                args: self.credential_args.clone(),
+            Some(CredentialKind::OAuthPreset(preset)) => Ok(CredentialRef::OAuth {
+                provider_id: self.provider_id.clone(),
+                methods: vec![ProviderOAuthMethod::preset(preset)],
             }),
             Some(CredentialKind::OAuthAuthorizationCode)
             | Some(CredentialKind::OAuthDeviceCode) => {
@@ -654,6 +741,9 @@ impl ProviderWizardState {
                         scopes: method_scopes,
                         ..
                     } => *method_scopes = scopes,
+                    ProviderOAuthMethod::Preset { .. } => {
+                        unreachable!("custom OAuth metadata cannot produce a preset")
+                    }
                 }
                 Ok(CredentialRef::OAuth {
                     provider_id: self.provider_id.clone(),
@@ -682,11 +772,6 @@ impl ProviderWizardState {
     fn back_from_summary(&mut self) {
         if self.is_known() {
             match self.credential_kind {
-                Some(CredentialKind::Command) => {
-                    self.input = serde_json::to_string(&self.credential_args)
-                        .unwrap_or_else(|_| "[]".to_owned());
-                    self.step = ProviderWizardStep::CredentialArguments;
-                }
                 Some(CredentialKind::Environment) => {
                     self.input = self.credential_value.clone();
                     self.step = ProviderWizardStep::CredentialValue;
@@ -754,13 +839,14 @@ impl ProviderWizardState {
                     ProviderWizardStep::Auth
                 }
             }
-            ProviderWizardStep::CredentialValue | ProviderWizardStep::OAuthClientId => {
-                self.step = ProviderWizardStep::Credential
+            ProviderWizardStep::CredentialValue => {
+                self.step = if self.is_known() {
+                    ProviderWizardStep::KnownAuth
+                } else {
+                    ProviderWizardStep::Credential
+                };
             }
-            ProviderWizardStep::CredentialArguments => {
-                self.input = self.credential_value.clone();
-                self.step = ProviderWizardStep::CredentialValue;
-            }
+            ProviderWizardStep::OAuthClientId => self.step = ProviderWizardStep::Credential,
             ProviderWizardStep::OAuthAuthorizationEndpoint => {
                 self.input = self.oauth_client_id.clone();
                 self.step = ProviderWizardStep::OAuthClientId;
@@ -776,18 +862,9 @@ impl ProviderWizardState {
             ProviderWizardStep::Discovery => {
                 if self.auth == ProviderAuth::None {
                     self.step = ProviderWizardStep::Auth;
-                } else if matches!(
-                    self.credential_kind,
-                    Some(CredentialKind::Environment | CredentialKind::Command)
-                ) {
-                    if self.credential_kind == Some(CredentialKind::Command) {
-                        self.input = serde_json::to_string(&self.credential_args)
-                            .unwrap_or_else(|_| "[]".to_owned());
-                        self.step = ProviderWizardStep::CredentialArguments;
-                    } else {
-                        self.input = self.credential_value.clone();
-                        self.step = ProviderWizardStep::CredentialValue;
-                    }
+                } else if self.credential_kind == Some(CredentialKind::Environment) {
+                    self.input = self.credential_value.clone();
+                    self.step = ProviderWizardStep::CredentialValue;
                 } else {
                     self.input = self.oauth_scopes.clone();
                     self.step = ProviderWizardStep::OAuthScopes;
@@ -873,9 +950,8 @@ fn step_title(step: ProviderWizardStep) -> &'static str {
         ProviderWizardStep::KnownAuth => "Authentication method",
         ProviderWizardStep::Auth => "Credential injection (advanced)",
         ProviderWizardStep::CustomHeader => "Credential header",
-        ProviderWizardStep::Credential => "Credential source",
-        ProviderWizardStep::CredentialValue => "Credential reference",
-        ProviderWizardStep::CredentialArguments => "Credential command arguments",
+        ProviderWizardStep::Credential => "Credential source (custom endpoint)",
+        ProviderWizardStep::CredentialValue => "API key environment variable",
         ProviderWizardStep::OAuthClientId => "Advanced custom OAuth client ID",
         ProviderWizardStep::OAuthAuthorizationEndpoint => {
             "Advanced custom OAuth authorization endpoint"
@@ -921,6 +997,18 @@ fn choice_lines(state: &ProviderWizardState) -> Vec<Line<'static>> {
     if state.step == ProviderWizardStep::Provider {
         return provider_choice_lines(state);
     }
+    if state.step == ProviderWizardStep::KnownAuth {
+        return state
+            .known_provider
+            .map(known_auth_choices)
+            .unwrap_or_default()
+            .into_iter()
+            .enumerate()
+            .map(|(index, choice)| {
+                choice_line(index, state.selected, choice.label, choice.description)
+            })
+            .collect();
+    }
     let choices: Vec<(&str, &str)> = match state.step {
         ProviderWizardStep::ExistingProvider => vec![
             (
@@ -932,10 +1020,6 @@ fn choice_lines(state: &ProviderWizardState) -> Vec<Line<'static>> {
                 "Overwrite its connection and credential reference",
             ),
         ],
-        ProviderWizardStep::KnownAuth => vec![(
-            "API key",
-            "Use the selected Provider's built-in endpoint and authentication policy",
-        )],
         ProviderWizardStep::Auth => vec![
             ("Bearer token", "Authorization: Bearer <credential>"),
             (
@@ -948,26 +1032,15 @@ fn choice_lines(state: &ProviderWizardState) -> Vec<Line<'static>> {
             ),
             ("No authentication", "Do not send a credential"),
         ],
-        ProviderWizardStep::Credential if state.is_known() => vec![
-            ("Environment variable", "Read a named environment variable"),
-            (
-                "Credential command",
-                "Run a program that prints the credential",
-            ),
-        ],
         ProviderWizardStep::Credential => vec![
             ("Environment variable", "Read a named environment variable"),
             (
-                "Credential command",
-                "Run a program that prints the credential",
-            ),
-            (
                 "Advanced custom OAuth: authorization code",
-                "Configure Provider-owned OAuth metadata with PKCE",
+                "Configure OAuth metadata with PKCE",
             ),
             (
                 "Advanced custom OAuth: device code",
-                "Configure a Provider-owned device authorization flow",
+                "Configure a device authorization flow",
             ),
         ],
         ProviderWizardStep::Discovery => vec![
@@ -986,7 +1059,10 @@ fn choice_lines(state: &ProviderWizardState) -> Vec<Line<'static>> {
 
 fn summary_lines(state: &ProviderWizardState) -> Vec<Line<'static>> {
     let auth = if state.is_known() {
-        "Provider-managed API key policy".to_owned()
+        match state.credential_kind {
+            Some(CredentialKind::OAuthPreset(_)) => "Provider-managed OAuth".to_owned(),
+            _ => "Provider-managed API key policy".to_owned(),
+        }
     } else {
         match &state.auth {
             ProviderAuth::None => "none".to_owned(),
@@ -1000,16 +1076,7 @@ fn summary_lines(state: &ProviderWizardState) -> Vec<Line<'static>> {
     let credential = match state.credential_kind {
         None => "none".to_owned(),
         Some(CredentialKind::Environment) => format!("environment: {}", state.credential_value),
-        Some(CredentialKind::Command) => format!(
-            "command: {} ({} argument{})",
-            state.credential_value,
-            state.credential_args.len(),
-            if state.credential_args.len() == 1 {
-                ""
-            } else {
-                "s"
-            }
-        ),
+        Some(CredentialKind::OAuthPreset(preset)) => format!("OAuth login: {}", preset.id()),
         Some(CredentialKind::OAuthAuthorizationCode) => {
             "advanced custom OAuth authorization code".to_owned()
         }
@@ -1053,7 +1120,7 @@ fn helper_line(state: &ProviderWizardState) -> Option<Line<'static>> {
             "This is the model API endpoint. OAuth authorization and token endpoints are configured separately.",
         )),
         ProviderWizardStep::KnownAuth => Some(Line::from(
-            "Atelier supplies the API endpoint and HTTP authentication policy for this Provider.",
+            "Choose subscription OAuth or an API key. Atelier owns the endpoint, OAuth client, scopes, refresh, and request authentication.",
         )),
         ProviderWizardStep::Auth => Some(Line::from(
             "Advanced custom endpoint setup: choose how the resolved credential is sent.",
@@ -1191,8 +1258,7 @@ mod tests {
         assert_eq!(state.provider_id, "openai");
         assert_eq!(state.base_url, "https://api.openai.com/v1");
 
-        enter(&mut state);
-        assert_eq!(state.step, ProviderWizardStep::Credential);
+        down(&mut state, 1);
         enter(&mut state);
         assert_eq!(state.step, ProviderWizardStep::CredentialValue);
         assert_eq!(state.input, "OPENAI_API_KEY");
@@ -1213,14 +1279,53 @@ mod tests {
     }
 
     #[test]
-    fn known_provider_command_source_does_not_reuse_the_environment_variable_name() {
+    fn known_openai_oauth_uses_a_provider_owned_preset_without_client_metadata() {
         let mut state = ProviderWizardState::default();
         enter(&mut state);
+        assert_eq!(state.step, ProviderWizardStep::KnownAuth);
+
         enter(&mut state);
-        down(&mut state, 1);
+        assert_eq!(state.step, ProviderWizardStep::Summary);
+        assert_eq!(state.base_url, "https://chatgpt.com/backend-api/codex");
+        let ProviderWizardOutcome::Submit(config) = enter(&mut state) else {
+            panic!("OpenAI OAuth preset must submit");
+        };
+        assert_eq!(config.auth, ProviderAuth::Bearer);
+        assert_eq!(config.discovery, ProviderDiscovery::Static);
+        assert_eq!(
+            config.credential,
+            CredentialRef::OAuth {
+                provider_id: "openai".into(),
+                methods: vec![ProviderOAuthMethod::preset(
+                    ProviderOAuthPreset::OpenAiCodexBrowser,
+                )],
+            }
+        );
+        let serialized = toml::to_string(&config.credential).unwrap();
+        assert!(!serialized.contains("client_id"));
+        assert!(!serialized.contains("endpoint"));
+    }
+
+    #[test]
+    fn known_xai_subscription_uses_provider_owned_device_oauth() {
+        let mut state = ProviderWizardState::default();
+        down(&mut state, 4);
         enter(&mut state);
-        assert_eq!(state.step, ProviderWizardStep::CredentialValue);
-        assert!(state.input.is_empty());
+        assert_eq!(state.step, ProviderWizardStep::KnownAuth);
+
+        enter(&mut state);
+        assert_eq!(state.step, ProviderWizardStep::Summary);
+        assert_eq!(state.oauth_flow_name(), Some("xai-device"));
+        let ProviderWizardOutcome::Submit(config) = enter(&mut state) else {
+            panic!("xAI OAuth preset must submit");
+        };
+        assert_eq!(
+            config.credential,
+            CredentialRef::OAuth {
+                provider_id: "xai".into(),
+                methods: vec![ProviderOAuthMethod::preset(ProviderOAuthPreset::XaiDevice)],
+            }
+        );
     }
 
     #[test]
@@ -1231,7 +1336,7 @@ mod tests {
         assert_eq!(state.step, ProviderWizardStep::KnownAuth);
         assert_eq!(state.provider_id, "anthropic");
 
-        enter(&mut state);
+        down(&mut state, 1);
         enter(&mut state);
         enter(&mut state);
         let ProviderWizardOutcome::Submit(config) = enter(&mut state) else {
@@ -1256,6 +1361,31 @@ mod tests {
                 .map(String::as_str),
             Some("2023-06-01")
         );
+    }
+
+    #[test]
+    fn known_anthropic_oauth_uses_bearer_and_provider_identity_headers() {
+        let mut state = ProviderWizardState::default();
+        down(&mut state, 1);
+        enter(&mut state);
+        enter(&mut state);
+        assert_eq!(state.step, ProviderWizardStep::Summary);
+
+        let ProviderWizardOutcome::Submit(config) = enter(&mut state) else {
+            panic!("Anthropic OAuth preset must submit");
+        };
+        assert_eq!(config.auth, ProviderAuth::Bearer);
+        assert_eq!(config.discovery, ProviderDiscovery::Static);
+        assert_eq!(
+            config.credential,
+            CredentialRef::OAuth {
+                provider_id: "anthropic".into(),
+                methods: vec![ProviderOAuthMethod::preset(
+                    ProviderOAuthPreset::AnthropicBrowser,
+                )],
+            }
+        );
+        assert!(config.extra_headers.contains_key("anthropic-beta"));
     }
 
     #[test]
@@ -1301,7 +1431,7 @@ mod tests {
         type_text(&mut state, "https://api.example.test/v1");
         enter(&mut state);
         enter(&mut state);
-        down(&mut state, 2);
+        down(&mut state, 1);
         enter(&mut state);
         assert_eq!(state.step, ProviderWizardStep::OAuthClientId);
     }
@@ -1325,7 +1455,7 @@ mod tests {
     }
 
     #[test]
-    fn command_credential_preserves_explicit_arguments_for_custom_provider() {
+    fn interactive_credential_choices_do_not_expose_command_execution() {
         let mut state = ProviderWizardState::default();
         select_custom_provider(&mut state);
         type_text(&mut state, "company");
@@ -1334,26 +1464,13 @@ mod tests {
         type_text(&mut state, "https://api.example.test/v1");
         enter(&mut state);
         enter(&mut state);
-        down(&mut state, 1);
-        enter(&mut state);
-        type_text(&mut state, "credential-helper");
-        enter(&mut state);
-        assert_eq!(state.step, ProviderWizardStep::CredentialArguments);
-        state.input = r#"["--profile","work"]"#.to_owned();
-        enter(&mut state);
-        assert_eq!(state.step, ProviderWizardStep::Discovery);
-        down(&mut state, 1);
-        enter(&mut state);
-        let ProviderWizardOutcome::Submit(config) = enter(&mut state) else {
-            panic!("wizard must submit the command credential");
-        };
-        assert_eq!(
-            config.credential,
-            CredentialRef::Command {
-                program: "credential-helper".into(),
-                args: vec!["--profile".into(), "work".into()],
-            }
-        );
+        assert_eq!(state.step, ProviderWizardStep::Credential);
+
+        let rendered = choice_lines(&state)
+            .into_iter()
+            .map(|line| format!("{line:?}"))
+            .collect::<String>();
+        assert!(!rendered.to_ascii_lowercase().contains("command"));
     }
 
     #[test]

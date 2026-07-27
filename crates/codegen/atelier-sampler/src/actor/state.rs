@@ -83,6 +83,7 @@ mod tests {
         SamplerConfig {
             api_key: None,
             base_url: "https://example.test".into(),
+            provider_id: None,
             model: "test-model".into(),
             max_completion_tokens: None,
             temperature: None,

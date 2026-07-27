@@ -1249,11 +1249,10 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
                     agent.active_modal.as_mut()
             {
                 let provider_id = state.provider_id.clone();
-                state.set_status("Testing Provider connection…");
-                return vec![Effect::RuntimeExtension {
+                state.set_status("Discovering Provider models…");
+                return vec![Effect::RefreshProviderModels {
                     agent_id: Some(agent_id),
-                    method: "_atelier/provider/test".into(),
-                    params: serde_json::json!({ "providerId": provider_id }),
+                    provider_id,
                 }];
             }
             if method == "_atelier/task/list" || method == "atelier/task/list" {

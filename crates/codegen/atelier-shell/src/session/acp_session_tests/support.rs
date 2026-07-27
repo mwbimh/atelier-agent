@@ -175,6 +175,7 @@ pub(crate) async fn create_test_actor_ex(
         vec![],
         atelier_sampling_types::SamplingConfig {
             base_url: "http://localhost".to_string(),
+            provider_id: None,
             model: "test".to_string(),
             max_completion_tokens: None,
             temperature: None,

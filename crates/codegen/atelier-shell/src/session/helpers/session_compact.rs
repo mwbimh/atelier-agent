@@ -1970,6 +1970,7 @@ mod reasoning_compaction_regression_tests {
         SamplerConfig {
             api_key: Some("test-api-key".to_string()),
             base_url: base_url.to_string(),
+            provider_id: None,
             model: "test-model".to_string(),
             max_completion_tokens: Some(1000),
             temperature: Some(0.7),

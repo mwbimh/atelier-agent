@@ -11,10 +11,10 @@ mod pkce;
 mod store;
 mod types;
 
-pub use config::ProviderOAuthMethod;
+pub use config::{ProviderOAuthMethod, ProviderOAuthPreset};
 pub use flow::{
     AuthorizationCodeConfig, AuthorizationCodeSession, DeviceCodeConfig, DeviceCodePoll,
-    DeviceCodeSession, RefreshTokenConfig, refresh_credential,
+    DeviceCodeSession, OAuthTokenRequestFormat, RefreshTokenConfig, refresh_credential,
 };
 pub use store::{
     OAuthSecretStore, ProviderCredentialNamespace, ProviderOAuthCredentialStore,

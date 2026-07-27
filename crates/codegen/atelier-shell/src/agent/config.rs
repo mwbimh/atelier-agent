@@ -4363,6 +4363,14 @@ pub fn sampling_config_for_model(
     user_id: Option<String>,
 ) -> SamplerConfig {
     let info = model.info();
+    let provider_id = info
+        .id
+        .as_deref()
+        .and_then(|id| atelier_provider::ModelKey::parse(id).ok())
+        .map(|key| key.provider_id);
+    let oauth_resolvers = provider_id
+        .as_deref()
+        .and_then(crate::extensions::provider::oauth_request_resolvers);
     let model_name = info.model.clone();
     let max_completion_tokens = info.max_completion_tokens;
     let temperature = info.temperature;
@@ -4378,6 +4386,7 @@ pub fn sampling_config_for_model(
         api_key: credentials.api_key,
         model: model_name,
         base_url: credentials.base_url,
+        provider_id,
         max_completion_tokens,
         temperature,
         top_p,
@@ -4399,12 +4408,12 @@ pub fn sampling_config_for_model(
         user_id,
         origin_client: None,
         attribution_callback: None,
-        bearer_resolver: None,
+        bearer_resolver: oauth_resolvers.as_ref().map(|(bearer, _)| bearer.clone()),
         supports_backend_search: info.supports_backend_search,
         compactions_remaining: info.compactions_remaining,
         compaction_at_tokens: info.compaction_at_tokens,
         doom_loop_recovery: None,
-        header_injector: None,
+        header_injector: oauth_resolvers.map(|(_, headers)| headers),
     }
 }
 /// Fold URL-derived headers into `extra_headers`.

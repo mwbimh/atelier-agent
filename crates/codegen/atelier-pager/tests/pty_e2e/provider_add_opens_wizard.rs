@@ -51,9 +51,35 @@ async fn provider_add_opens_wizard() {
         .wait_for_text("Authentication method", Duration::from_secs(10))
         .expect("known Provider authentication step");
     let known_screen = harness.screen_contents();
-    assert!(known_screen.contains("API key"), "{known_screen}");
+    assert!(known_screen.contains("ChatGPT Plus/Pro"), "{known_screen}");
+    assert!(known_screen.contains("OAuth"), "{known_screen}");
+    assert!(known_screen.contains("OpenAI API key"), "{known_screen}");
+    assert!(
+        !known_screen.contains("Credential command"),
+        "{known_screen}"
+    );
     assert!(!known_screen.contains("Base URL"), "{known_screen}");
     assert!(!known_screen.contains("x-api-key"), "{known_screen}");
+    harness.inject_keys(b"\r").expect("select ChatGPT OAuth");
+    harness
+        .wait_for_text("Review", Duration::from_secs(10))
+        .expect("OAuth review step");
+    let oauth_review = harness.screen_contents();
+    assert!(
+        oauth_review.contains("Provider-managed OAuth"),
+        "{oauth_review}"
+    );
+    assert!(
+        !oauth_review.contains("Credential command"),
+        "{oauth_review}"
+    );
+    assert!(!oauth_review.contains("OAuth client ID"), "{oauth_review}");
+    harness
+        .inject_keys(b"\x1b[Z")
+        .expect("return to login method selection");
+    harness
+        .wait_for_text("Authentication method", Duration::from_secs(10))
+        .expect("login method selection after Back");
     harness
         .inject_keys(b"\x1b[Z")
         .expect("return to Provider selection");

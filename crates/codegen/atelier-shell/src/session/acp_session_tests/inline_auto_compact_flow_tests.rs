@@ -47,6 +47,7 @@ async fn create_test_actor(
         vec![],
         atelier_sampling_types::SamplingConfig {
             base_url: "http://localhost".to_string(),
+            provider_id: None,
             model: "test".to_string(),
             max_completion_tokens: None,
             temperature: None,
@@ -480,6 +481,7 @@ async fn create_test_actor_with_memory(
         vec![],
         atelier_sampling_types::SamplingConfig {
             base_url: "http://localhost".to_string(),
+            provider_id: None,
             model: "test".to_string(),
             max_completion_tokens: None,
             temperature: None,
@@ -1232,6 +1234,7 @@ async fn test_idle_resume_does_not_fetch_vendor_model_metadata() {
                 vec![],
                 atelier_sampling_types::SamplingConfig {
                     base_url: mock_url,
+                    provider_id: None,
                     model: "test-model".to_string(),
                     max_completion_tokens: Some(8192),
                     temperature: None,

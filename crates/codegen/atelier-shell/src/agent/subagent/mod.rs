@@ -1009,9 +1009,14 @@ async fn read_parent_sampling_config(
             let auth_scheme = crate::agent::config::try_resolve_model_credentials(&cfg.model, None)
                 .map(|r| r.auth_scheme)
                 .unwrap_or_default();
+            let oauth_resolvers = cfg
+                .provider_id
+                .as_deref()
+                .and_then(crate::extensions::provider::oauth_request_resolvers);
             let inherited = atelier_sampler::SamplerConfig {
                 api_key: creds.api_key,
                 base_url: cfg.base_url,
+                provider_id: cfg.provider_id,
                 model: cfg.model.clone(),
                 max_completion_tokens: cfg.max_completion_tokens,
                 temperature: cfg.temperature,
@@ -1034,7 +1039,7 @@ async fn read_parent_sampling_config(
                 user_id: ctx.sampling_config.user_id.clone(),
                 origin_client: ctx.sampling_config.origin_client.clone(),
                 attribution_callback: ctx.attribution_callback.clone(),
-                bearer_resolver: None,
+                bearer_resolver: oauth_resolvers.as_ref().map(|(bearer, _)| bearer.clone()),
                 supports_backend_search: ctx
                     .models_manager
                     .model_supports_backend_search(ctx.model_id.0.as_ref()),
@@ -1045,7 +1050,9 @@ async fn read_parent_sampling_config(
                     .models_manager
                     .model_compaction_at_tokens(ctx.model_id.0.as_ref()),
                 doom_loop_recovery: ctx.sampling_config.doom_loop_recovery,
-                header_injector: ctx.sampling_config.header_injector.clone(),
+                header_injector: oauth_resolvers
+                    .map(|(_, headers)| headers)
+                    .or_else(|| ctx.sampling_config.header_injector.clone()),
             };
             let model_id = ctx.model_id.clone();
             let global_model_id = ctx.models_manager.current_model_id();

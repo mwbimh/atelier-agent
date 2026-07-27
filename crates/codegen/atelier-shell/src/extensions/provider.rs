@@ -6,18 +6,20 @@
 
 use agent_client_protocol as acp;
 use atelier_provider::auth::{
-    AuthorizationCodeSession, DeviceCodePoll, DeviceCodeSession, OAuthError, OAuthHttpClient,
-    OAuthHttpResponse, ProviderOAuthCredentialStore, ProviderOAuthMethod,
+    AuthorizationCodeSession, DeviceCodePoll, DeviceCodeSession, OAuthCredential, OAuthError,
+    OAuthHttpClient, OAuthHttpResponse, ProviderOAuthCredentialStore, ProviderOAuthMethod,
+    RefreshTokenConfig, refresh_credential,
 };
 use atelier_provider::{
     CapabilityOverrides, CredentialRef, ModelDescriptor, ModelKey, ProviderAuth, ProviderConfig,
     ProviderDiscovery, ProviderError, ProviderModelOverride, ProviderRegistry, ProviderSnapshot,
     WireApi,
 };
+use base64::Engine as _;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use super::{ExtResult, parse_params, to_raw_response};
 use crate::agent::MvpAgent;
@@ -288,6 +290,69 @@ async fn begin_oauth_login(args: &acp::ExtRequest) -> ExtResult {
     let result = tokio::task::spawn_blocking(move || {
         let client = RuntimeOAuthHttpClient;
         match method {
+            ProviderOAuthMethod::Preset { id } => {
+                if let Some(config) = id.authorization_code_config()? {
+                    let session = AuthorizationCodeSession::begin(config)?;
+                    let url = session.authorization_url().to_string();
+                    let browser_opened = webbrowser::open(&url).is_ok();
+                    pending_oauth_logins()
+                        .lock()
+                        .map_err(|_| OAuthError::transport("OAuth login state lock is poisoned"))?
+                        .insert(
+                            login_id_for_task.clone(),
+                            PendingOAuthLogin::AuthorizationCode {
+                                provider_id: provider_id.clone(),
+                                session,
+                            },
+                        );
+                    Ok::<_, OAuthError>(serde_json::json!({
+                        "providerId": provider_id,
+                        "loginId": login_id_for_task,
+                        "flow": id.id(),
+                        "verificationUrl": url,
+                        "userCode": null,
+                        "browserOpened": browser_opened,
+                        "message": "Complete Provider authorization in the browser",
+                    }))
+                } else if let Some(config) = id.device_code_config()? {
+                    let session = DeviceCodeSession::begin(&client, config)?;
+                    let verification_url = session
+                        .verification_uri_complete()
+                        .unwrap_or_else(|| session.verification_uri());
+                    if verification_url.scheme() != "https" {
+                        return Err(OAuthError::InvalidResponse(
+                            "Provider OAuth returned an untrusted verification URL".into(),
+                        ));
+                    }
+                    let url = verification_url.to_string();
+                    let user_code = session.user_code().to_owned();
+                    let browser_opened = webbrowser::open(&url).is_ok();
+                    pending_oauth_logins()
+                        .lock()
+                        .map_err(|_| OAuthError::transport("OAuth login state lock is poisoned"))?
+                        .insert(
+                            login_id_for_task.clone(),
+                            PendingOAuthLogin::DeviceCode {
+                                provider_id: provider_id.clone(),
+                                session,
+                            },
+                        );
+                    Ok(serde_json::json!({
+                        "providerId": provider_id,
+                        "loginId": login_id_for_task,
+                        "flow": id.id(),
+                        "verificationUrl": url,
+                        "userCode": user_code,
+                        "browserOpened": browser_opened,
+                        "message": "Enter the device code, then return to Atelier",
+                    }))
+                } else {
+                    Err(OAuthError::InvalidConfig(format!(
+                        "OAuth preset {} has no login flow",
+                        id.id()
+                    )))
+                }
+            }
             method @ ProviderOAuthMethod::AuthorizationCode { .. } => {
                 let session = AuthorizationCodeSession::begin(
                     method.authorization_code_config(&provider_id)?,
@@ -445,13 +510,201 @@ impl OAuthHttpClient for RuntimeOAuthHttpClient {
             .form(form)
             .send()
             .map_err(|error| OAuthError::transport(error.to_string()))?;
-        let status = response.status().as_u16();
-        let body = response
-            .bytes()
-            .map_err(|error| OAuthError::transport(error.to_string()))?
-            .to_vec();
-        Ok(OAuthHttpResponse { status, body })
+        oauth_http_response(response)
     }
+
+    fn post_json(
+        &self,
+        url: &url::Url,
+        body: &serde_json::Value,
+    ) -> Result<OAuthHttpResponse, OAuthError> {
+        let response = crate::http::shared_blocking_client()
+            .post(url.clone())
+            .json(body)
+            .send()
+            .map_err(|error| OAuthError::transport(error.to_string()))?;
+        oauth_http_response(response)
+    }
+}
+
+fn oauth_http_response(
+    response: reqwest::blocking::Response,
+) -> Result<OAuthHttpResponse, OAuthError> {
+    let status = response.status().as_u16();
+    let body = response
+        .bytes()
+        .map_err(|error| OAuthError::transport(error.to_string()))?
+        .to_vec();
+    Ok(OAuthHttpResponse { status, body })
+}
+
+fn provider_oauth_refresh_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
+fn refresh_config_for_method(
+    provider_id: &str,
+    method: &ProviderOAuthMethod,
+) -> Result<RefreshTokenConfig, OAuthError> {
+    match method {
+        ProviderOAuthMethod::Preset { id } => id.refresh_token_config(),
+        ProviderOAuthMethod::AuthorizationCode {
+            client_id,
+            token_endpoint,
+            token_params,
+            ..
+        }
+        | ProviderOAuthMethod::DeviceCode {
+            client_id,
+            token_endpoint,
+            token_params,
+            ..
+        } => {
+            let mut config =
+                RefreshTokenConfig::new(provider_id, client_id.clone(), token_endpoint.clone());
+            config.token_params = token_params.clone();
+            Ok(config)
+        }
+    }
+}
+
+fn load_live_oauth_credential(
+    provider_id: &str,
+    method: &ProviderOAuthMethod,
+) -> Result<OAuthCredential, OAuthError> {
+    let _guard = provider_oauth_refresh_lock()
+        .lock()
+        .map_err(|_| OAuthError::transport("Provider OAuth refresh lock is poisoned"))?;
+    let store = ProviderOAuthCredentialStore::system(atelier_config::atelier_home());
+    let current = store
+        .load(provider_id)?
+        .ok_or_else(|| OAuthError::CredentialMissing(provider_id.into()))?;
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| OAuthError::ClockBeforeUnixEpoch)?
+        .as_secs();
+    if !current.is_expired_at(now.saturating_add(300)) {
+        return Ok(current);
+    }
+    let config = refresh_config_for_method(provider_id, method)?;
+    let refreshed = refresh_credential(&RuntimeOAuthHttpClient, &config, &current)?;
+    store.save(provider_id, &refreshed)?;
+    Ok(refreshed)
+}
+
+#[derive(Debug)]
+struct ProviderOAuthBearerResolver {
+    provider_id: String,
+    method: ProviderOAuthMethod,
+}
+
+impl atelier_sampler::BearerResolver for ProviderOAuthBearerResolver {
+    fn current_bearer(&self) -> Option<String> {
+        load_live_oauth_credential(&self.provider_id, &self.method)
+            .map(|credential| credential.access_token.into_inner())
+            .map_err(|error| {
+                tracing::error!(
+                    provider = %self.provider_id,
+                    error = %error,
+                    "Provider OAuth credential resolution failed"
+                );
+                error
+            })
+            .ok()
+    }
+}
+
+#[derive(Debug)]
+struct ProviderOAuthHeaderInjector {
+    provider_id: String,
+    method: ProviderOAuthMethod,
+}
+
+impl atelier_sampler::HeaderInjector for ProviderOAuthHeaderInjector {
+    fn inject(&self, headers: &mut reqwest::header::HeaderMap) {
+        if !matches!(
+            self.method,
+            ProviderOAuthMethod::Preset {
+                id: atelier_provider::auth::ProviderOAuthPreset::OpenAiCodexBrowser
+            }
+        ) {
+            return;
+        }
+        let Ok(credential) = load_live_oauth_credential(&self.provider_id, &self.method) else {
+            return;
+        };
+        let Some(account_id) = oauth_chatgpt_account_id(&credential) else {
+            tracing::error!(
+                provider = %self.provider_id,
+                "OpenAI Codex OAuth token does not contain a ChatGPT account ID"
+            );
+            return;
+        };
+        if let Ok(value) = reqwest::header::HeaderValue::from_str(&account_id) {
+            headers.insert(
+                reqwest::header::HeaderName::from_static("chatgpt-account-id"),
+                value,
+            );
+        }
+    }
+}
+
+fn oauth_chatgpt_account_id(credential: &OAuthCredential) -> Option<String> {
+    credential
+        .identity_token
+        .as_ref()
+        .and_then(|token| chatgpt_account_id(token.expose_secret()))
+        .or_else(|| chatgpt_account_id(credential.access_token.expose_secret()))
+}
+
+fn chatgpt_account_id(access_token: &str) -> Option<String> {
+    let payload = access_token.split('.').nth(1)?;
+    let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(payload)
+        .or_else(|_| base64::engine::general_purpose::URL_SAFE.decode(payload))
+        .ok()?;
+    let claims: serde_json::Value = serde_json::from_slice(&decoded).ok()?;
+    claims
+        .get("chatgpt_account_id")
+        .and_then(serde_json::Value::as_str)
+        .or_else(|| {
+            claims
+                .get("https://api.openai.com/auth")
+                .and_then(|auth| auth.get("chatgpt_account_id"))
+                .and_then(serde_json::Value::as_str)
+        })
+        .or_else(|| {
+            claims
+                .get("organizations")
+                .and_then(serde_json::Value::as_array)
+                .and_then(|organizations| organizations.first())
+                .and_then(|organization| organization.get("id"))
+                .and_then(serde_json::Value::as_str)
+        })
+        .map(str::to_owned)
+}
+
+pub(crate) fn oauth_request_resolvers(
+    provider_id: &str,
+) -> Option<(
+    atelier_sampler::SharedBearerResolver,
+    atelier_sampler::SharedHeaderInjector,
+)> {
+    let registry = registry().ok()?;
+    let provider = registry.provider(provider_id)?;
+    let method = select_oauth_method(provider, None).ok()?;
+    let bearer: atelier_sampler::SharedBearerResolver =
+        std::sync::Arc::new(ProviderOAuthBearerResolver {
+            provider_id: provider_id.to_owned(),
+            method: method.clone(),
+        });
+    let headers: atelier_sampler::SharedHeaderInjector =
+        std::sync::Arc::new(ProviderOAuthHeaderInjector {
+            provider_id: provider_id.to_owned(),
+            method,
+        });
+    Some((bearer, headers))
 }
 
 fn to_oauth_acp_error(error: OAuthError) -> acp::Error {
@@ -679,13 +932,18 @@ async fn upsert_provider(
         )
         .map_err(to_acp_error)?;
     }
+    let provider_id = params.provider.id.clone();
     let replacement_credential = params.provider.credential.clone();
     registry
         .upsert_provider(params.provider)
         .map_err(to_acp_error)?;
-    delete_replaced_secret_store_credential(existing_credential.as_ref(), &replacement_credential)
-        .map_err(to_acp_error)?;
     persist(&registry).map_err(to_acp_error)?;
+    delete_replaced_provider_credential(
+        &provider_id,
+        existing_credential.as_ref(),
+        &replacement_credential,
+    )
+    .map_err(to_acp_error)?;
     reload_live_catalog(agent).await?;
     to_raw_response(&registry.snapshot())
 }
@@ -722,26 +980,49 @@ fn preserve_existing_provider_fields(
     Ok(())
 }
 
-fn delete_replaced_secret_store_credential(
+fn delete_replaced_provider_credential(
+    provider_id: &str,
     existing: Option<&CredentialRef>,
     replacement: &CredentialRef,
 ) -> Result<(), ProviderError> {
-    let Some(existing @ CredentialRef::SecretStore { .. }) = existing else {
+    let Some(existing) = existing else {
         return Ok(());
     };
     if existing == replacement {
         return Ok(());
     }
-    existing.delete_secret().map_err(ProviderError::from)
+    match existing {
+        CredentialRef::SecretStore { .. } => existing.delete_secret().map_err(ProviderError::from),
+        CredentialRef::OAuth { .. } => {
+            ProviderOAuthCredentialStore::system(atelier_config::atelier_home())
+                .delete(provider_id)
+                .map(|_| ())
+                .map_err(|error| ProviderError::InvalidProvider(error.to_string()))
+        }
+        CredentialRef::None | CredentialRef::Environment { .. } | CredentialRef::Command { .. } => {
+            Ok(())
+        }
+    }
 }
 
 async fn delete_provider(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
     let params: ProviderIdParams = parse_params(args)?;
     let mut registry = registry().map_err(to_acp_error)?;
+    let credential = registry
+        .provider(&params.provider_id)
+        .map(|provider| provider.credential.clone())
+        .ok_or_else(|| ProviderError::ProviderNotFound(params.provider_id.clone()))
+        .map_err(to_acp_error)?;
     registry
         .remove_provider(&params.provider_id)
         .map_err(to_acp_error)?;
     persist(&registry).map_err(to_acp_error)?;
+    delete_replaced_provider_credential(
+        &params.provider_id,
+        Some(&credential),
+        &CredentialRef::None,
+    )
+    .map_err(to_acp_error)?;
     reload_live_catalog(agent).await?;
     to_raw_response(&registry.snapshot())
 }
@@ -766,6 +1047,18 @@ async fn provider_status(args: &acp::ExtRequest) -> ExtResult {
         .cloned()
         .ok_or_else(|| ProviderError::ProviderNotFound(params.provider_id.clone()))
         .map_err(to_acp_error)?;
+    if matches!(&provider.discovery, ProviderDiscovery::Static)
+        && matches!(&provider.credential, CredentialRef::OAuth { .. })
+    {
+        provider_headers(&provider).map_err(to_acp_error)?;
+        return to_raw_response(&ProviderStatus {
+            provider_id: provider.id,
+            configured: true,
+            network_probe: false,
+            http_status: None,
+            message: "Provider OAuth credential is available; this static catalog has no safe probe endpoint".into(),
+        });
+    }
     let url = provider_probe_url(&provider).map_err(to_acp_error)?;
     let response = build_provider_request(&provider, url.clone())
         .map_err(to_acp_error)?
@@ -1002,7 +1295,17 @@ fn provider_headers(
     use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 
     let mut headers = HeaderMap::new();
-    if let Some(secret) = provider.credential.resolve()? {
+    let (secret, oauth_account_id) = match &provider.credential {
+        CredentialRef::OAuth { .. } => {
+            let method = select_oauth_method(provider, None)?;
+            let credential = load_live_oauth_credential(&provider.id, &method)
+                .map_err(|error| ProviderError::InvalidProvider(error.to_string()))?;
+            let account_id = oauth_chatgpt_account_id(&credential);
+            (Some(credential.access_token), account_id)
+        }
+        credential => (credential.resolve()?, None),
+    };
+    if let Some(secret) = secret {
         let (name, value) = match &provider.auth {
             ProviderAuth::None => {
                 return Err(ProviderError::InvalidProvider(
@@ -1028,6 +1331,26 @@ fn provider_headers(
                 ProviderError::InvalidProvider(format!("invalid credential header: {error}"))
             })?,
         );
+        if matches!(
+            &provider.credential,
+            CredentialRef::OAuth { methods, .. }
+                if methods.iter().any(|method| matches!(
+                    method,
+                    ProviderOAuthMethod::Preset {
+                        id: atelier_provider::auth::ProviderOAuthPreset::OpenAiCodexBrowser
+                    }
+                ))
+        ) && let Some(account_id) = oauth_account_id
+        {
+            headers.insert(
+                HeaderName::from_static("chatgpt-account-id"),
+                HeaderValue::from_str(&account_id).map_err(|error| {
+                    ProviderError::InvalidProvider(format!(
+                        "invalid ChatGPT account header: {error}"
+                    ))
+                })?,
+            );
+        }
     }
     for (name, value) in &provider.extra_headers {
         let name = HeaderName::from_bytes(name.as_bytes()).map_err(|error| {
@@ -1081,10 +1404,10 @@ fn to_acp_error(error: ProviderError) -> acp::Error {
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_credential_update, delete_replaced_secret_store_credential,
-        pair_test_runtime_request, parse_model_key, preserve_existing_provider_fields,
-        provider_probe_outcome, redacted_model_override, reject_unconfirmed_provider_replacement,
-        select_oauth_method,
+        apply_credential_update, chatgpt_account_id, delete_replaced_provider_credential,
+        oauth_chatgpt_account_id, pair_test_runtime_request, parse_model_key,
+        preserve_existing_provider_fields, provider_probe_outcome, redacted_model_override,
+        reject_unconfirmed_provider_replacement, select_oauth_method,
     };
     use atelier_provider::{
         CredentialRef, ModelCapabilities, ModelDescriptor, ModelKey, ModelSource, ProviderAuth,
@@ -1104,6 +1427,26 @@ mod tests {
             extra_headers: BTreeMap::new(),
             enabled: true,
         }
+    }
+
+    #[test]
+    fn openai_codex_account_id_is_derived_from_the_oauth_access_token() {
+        use base64::Engine as _;
+        let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(br#"{"https://api.openai.com/auth":{"chatgpt_account_id":"acct-123"}}"#);
+        let token = format!("header.{payload}.signature");
+        assert_eq!(chatgpt_account_id(&token).as_deref(), Some("acct-123"));
+        let mut credential = atelier_provider::auth::OAuthCredential::new(
+            "opaque-access-token",
+            Some("refresh-token"),
+            u64::MAX,
+        );
+        credential.identity_token = Some(atelier_provider::SecretString::new(token));
+        assert_eq!(
+            oauth_chatgpt_account_id(&credential).as_deref(),
+            Some("acct-123")
+        );
+        assert!(chatgpt_account_id("not-a-jwt").is_none());
     }
 
     #[test]
@@ -1346,7 +1689,8 @@ mod tests {
         let replacement_credential = edited.credential.clone();
 
         registry.upsert_provider(edited).unwrap();
-        delete_replaced_secret_store_credential(
+        delete_replaced_provider_credential(
+            "proxy",
             existing_credential.as_ref(),
             &replacement_credential,
         )
@@ -1400,7 +1744,8 @@ mod tests {
         };
 
         preserve_existing_provider_fields(&registry, &mut edited, true).unwrap();
-        delete_replaced_secret_store_credential(
+        delete_replaced_provider_credential(
+            "proxy",
             registry
                 .provider("proxy")
                 .map(|provider| &provider.credential),

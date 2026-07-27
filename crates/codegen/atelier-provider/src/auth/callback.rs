@@ -18,8 +18,13 @@ pub(super) struct CallbackResult {
 }
 
 impl LocalhostCallback {
-    pub(super) fn bind(port: u16, path: &str) -> Result<Self, OAuthError> {
+    pub(super) fn bind(port: u16, path: &str, redirect_host: &str) -> Result<Self, OAuthError> {
         validate_callback_path(path)?;
+        if !matches!(redirect_host, "127.0.0.1" | "localhost") {
+            return Err(OAuthError::InvalidConfig(
+                "OAuth callback host must be 127.0.0.1 or localhost".into(),
+            ));
+        }
         let listener =
             TcpListener::bind((Ipv4Addr::LOCALHOST, port)).map_err(OAuthError::CallbackBind)?;
         listener
@@ -29,7 +34,7 @@ impl LocalhostCallback {
             .local_addr()
             .map_err(OAuthError::CallbackBind)?
             .port();
-        let redirect_uri = Url::parse(&format!("http://127.0.0.1:{port}{path}"))
+        let redirect_uri = Url::parse(&format!("http://{redirect_host}:{port}{path}"))
             .map_err(|error| OAuthError::InvalidConfig(error.to_string()))?;
         Ok(Self {
             listener,

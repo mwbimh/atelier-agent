@@ -206,6 +206,7 @@ impl ShellToolsetConfig {
         let default_base = SamplerConfig {
             api_key: None,
             base_url: "https://api.atelier/v1".to_string(),
+            provider_id: None,
             model: String::new(),
             max_completion_tokens: None,
             temperature: None,

@@ -246,8 +246,9 @@ changes apply to newly started sessions.
 
 ### Providers, Models, and Roles
 
-Provider credentials are explicit references such as `env:NAME`,
-`cmd:PROGRAM`, or `none`. Configure them through the guided TUI:
+Known Providers use Provider-owned OAuth or an environment-backed API key.
+Custom Providers use explicit references such as `env:NAME` or `none`.
+Configure them through the guided TUI:
 
 ```text
 /provider add
@@ -255,9 +256,11 @@ Provider credentials are explicit references such as `env:NAME`,
 /roles
 ```
 
-Known Providers supply their reviewed API endpoint and authentication policy.
-Choose **Custom endpoint** only when configuring a proxy, gateway, or
-self-hosted API. The complete advanced command remains available:
+Known Providers supply their reviewed API endpoint, login methods, OAuth
+refresh, and authentication policy. Choose **Custom endpoint** only when
+configuring a proxy, gateway, or self-hosted API. The complete advanced command
+remains available; administrator-managed one-line commands may also use a
+credential helper executable.
 
 ```text
 /provider add example https://api.example.com/v1 bearer env:EXAMPLE_API_KEY

@@ -96,6 +96,7 @@ async fn test_idle_resume_does_not_fetch_vendor_model_metadata() {
                 vec![],
                 atelier_sampling_types::SamplingConfig {
                     base_url: mock_url,
+                    provider_id: None,
                     model: "test-model".to_string(),
                     max_completion_tokens: Some(8192),
                     temperature: None,

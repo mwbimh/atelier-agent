@@ -298,7 +298,7 @@ fn provider_wizard_chains_create_test_and_discovery() {
 }
 
 #[test]
-fn provider_wizard_completes_oauth_before_testing_the_connection() {
+fn provider_wizard_completes_oauth_before_discovering_models() {
     let mut app = test_app_with_agent();
     let agent_id = AgentId(0);
     dispatch(Action::OpenProviderWizard, &mut app);
@@ -309,7 +309,7 @@ fn provider_wizard_completes_oauth_before_testing_the_connection() {
     };
     state.provider_id = "example".into();
     state.step = crate::views::provider_wizard::ProviderWizardStep::Credential;
-    state.selected = 2;
+    state.selected = 1;
     let _ = crate::views::provider_wizard::handle_provider_wizard_key(
         state,
         &crossterm::event::KeyEvent::new(
@@ -344,8 +344,7 @@ fn provider_wizard_completes_oauth_before_testing_the_connection() {
     );
     assert!(matches!(
         effects.as_slice(),
-        [Effect::RuntimeExtension { method, params, .. }]
-            if method == "_atelier/provider/test" && params["providerId"] == "example"
+        [Effect::RefreshProviderModels { provider_id, .. }] if provider_id == "example"
     ));
 }
 
