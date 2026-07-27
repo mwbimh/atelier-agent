@@ -151,6 +151,10 @@ exposes those fields as advanced configuration. After save the wizard completes
 the selected login, validates the connection when a safe probe exists,
 refreshes discovery, and opens `/model`; it never selects a model automatically.
 
+`/provider list` shows only Provider name, ID, authentication category, and
+status. It does not print connection configuration, credential references, the
+internal runtime method, or the model catalog.
+
 Advanced users can also use complete one-line commands. `<auth>` is `bearer`,
 `header:<http-header-name>`, or `none`:
 

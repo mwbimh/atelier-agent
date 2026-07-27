@@ -144,6 +144,36 @@ fn detach_rejection_does_not_render_success() {
 }
 
 #[test]
+fn provider_list_runtime_response_is_rendered_without_internal_rpc_or_models() {
+    let mut app = test_app_with_agent();
+    let agent_id = AgentId(0);
+
+    let effects = dispatch(
+        Action::TaskComplete(TaskResult::RuntimeExtensionComplete {
+            agent_id: Some(agent_id),
+            method: "_atelier/provider/list".into(),
+            response: r#"{"providers":[{"id":"openai","displayName":"OpenAI","authentication":"OAuth","enabled":true}],"models":[{"displayName":"Must Not Render"}]}"#.into(),
+        }),
+        &mut app,
+    );
+
+    assert!(effects.is_empty());
+    let rendered = app.agents[&agent_id]
+        .scrollback
+        .iter_entries()
+        .filter_map(|(_, entry)| match &entry.block {
+            RenderBlock::System(block) => Some(block.text.as_str()),
+            _ => None,
+        })
+        .last()
+        .expect("Provider list summary");
+    assert!(rendered.contains("OpenAI (openai) | OAuth | enabled"));
+    assert!(!rendered.contains("_atelier/provider/list"));
+    assert!(!rendered.contains("Must Not Render"));
+    assert!(!rendered.contains('{'));
+}
+
+#[test]
 fn provider_wizard_submit_uses_connection_only_provider_config() {
     let mut app = test_app_with_agent();
     let agent_id = AgentId(0);

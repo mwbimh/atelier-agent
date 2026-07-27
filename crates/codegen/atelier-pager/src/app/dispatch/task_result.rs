@@ -85,8 +85,44 @@ fn show_dashboard_runtime_output(app: &mut AppView, output: &str) -> bool {
 #[cfg(test)]
 mod runtime_task_format_tests {
     use super::{
-        format_runtime_task_attach_response, format_runtime_task_response, provider_oauth_begin_ui,
+        format_provider_list_response, format_runtime_task_attach_response,
+        format_runtime_task_response, provider_oauth_begin_ui,
     };
+
+    #[test]
+    fn provider_list_is_rendered_as_a_summary_without_internal_json_or_models() {
+        let rendered = format_provider_list_response(
+            r#"{"providers":[{"id":"openai","display_name":"OpenAI","enabled":true,"authentication":"OAuth","base_url":"https://must-not-render.example","credential":{"type":"environment","variable":"SECRET_NAME"}}],"models":[{"display_name":"Must Not Render"}]}"#,
+        );
+
+        assert!(rendered.contains("Providers"));
+        assert!(rendered.contains("OpenAI"));
+        assert!(rendered.contains("openai"));
+        assert!(rendered.contains("OAuth"));
+        assert!(rendered.contains("enabled"));
+        for forbidden in [
+            "_atelier/provider/list",
+            "must-not-render",
+            "Must Not Render",
+            "base_url",
+            "credential",
+            "SECRET_NAME",
+            "{",
+        ] {
+            assert!(
+                !rendered.contains(forbidden),
+                "Provider summary leaked {forbidden}: {rendered}"
+            );
+        }
+    }
+
+    #[test]
+    fn empty_provider_list_has_an_actionable_empty_state() {
+        assert_eq!(
+            format_provider_list_response(r#"{"providers":[]}"#),
+            "Providers\nNo Providers configured.\nAdd one with /provider add."
+        );
+    }
 
     #[test]
     fn provider_oauth_begin_is_rendered_before_completion_polling() {
@@ -167,6 +203,88 @@ mod runtime_task_format_tests {
         assert!(rendered.text.contains("gap"));
         assert!(rendered.text.contains("truncated"));
     }
+}
+
+fn provider_summary_field(value: &str) -> String {
+    value.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn provider_authentication_summary(provider: &serde_json::Value) -> &'static str {
+    if let Some(authentication) = provider
+        .get("authentication")
+        .and_then(serde_json::Value::as_str)
+    {
+        return match authentication {
+            "OAuth" => "OAuth",
+            "Environment credential" => "Environment credential",
+            "Stored credential" => "Stored credential",
+            "Credential helper" => "Credential helper",
+            "None" => "None",
+            _ => "Configured",
+        };
+    }
+    match provider
+        .get("credential")
+        .and_then(|credential| credential.get("type"))
+        .and_then(serde_json::Value::as_str)
+    {
+        Some("o_auth" | "oauth") => "OAuth",
+        Some("environment") => "Environment credential",
+        Some("secret_store") => "Stored credential",
+        Some("command") => "Credential helper",
+        Some("none") | None => "None",
+        Some(_) => "Configured",
+    }
+}
+
+fn format_provider_list_response(response: &str) -> String {
+    let value = serde_json::from_str::<serde_json::Value>(response).unwrap_or_default();
+    let result = value.get("result").unwrap_or(&value);
+    let Some(providers) = result
+        .get("providers")
+        .and_then(serde_json::Value::as_array)
+    else {
+        return "Providers\nCould not read the Provider list.".to_owned();
+    };
+    if providers.is_empty() {
+        return "Providers\nNo Providers configured.\nAdd one with /provider add.".to_owned();
+    }
+
+    let mut lines = vec!["Providers".to_owned()];
+    for provider in providers {
+        let id = provider
+            .get("id")
+            .and_then(serde_json::Value::as_str)
+            .map(provider_summary_field)
+            .filter(|id| !id.is_empty())
+            .unwrap_or_else(|| "unknown".to_owned());
+        let display_name = provider
+            .get("displayName")
+            .or_else(|| provider.get("display_name"))
+            .and_then(serde_json::Value::as_str)
+            .map(provider_summary_field)
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| id.clone());
+        let authentication = provider_authentication_summary(provider);
+        let status = if provider
+            .get("enabled")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(true)
+        {
+            "enabled"
+        } else {
+            "disabled"
+        };
+        if display_name == id {
+            lines.push(format!("- {id} | {authentication} | {status}"));
+        } else {
+            lines.push(format!(
+                "- {display_name} ({id}) | {authentication} | {status}"
+            ));
+        }
+    }
+    lines.push("Manage Providers with /provider add, /provider edit, or /provider delete.".into());
+    lines.join("\n")
 }
 
 fn format_runtime_task_response(response: &str) -> String {
@@ -1254,6 +1372,19 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
                     agent_id: Some(agent_id),
                     provider_id,
                 }];
+            }
+            if method == "_atelier/provider/list" || method == "atelier/provider/list" {
+                let rendered = format_provider_list_response(&response);
+                if let Some(agent_id) = agent_id
+                    && let Some(agent) = app.agents.get_mut(&agent_id)
+                {
+                    agent
+                        .scrollback
+                        .push_block(crate::scrollback::block::RenderBlock::system(rendered));
+                } else if !show_dashboard_runtime_output(app, &rendered) {
+                    app.show_toast(&rendered);
+                }
+                return vec![];
             }
             if method == "_atelier/task/list" || method == "atelier/task/list" {
                 let rendered = format_runtime_task_response(&response);

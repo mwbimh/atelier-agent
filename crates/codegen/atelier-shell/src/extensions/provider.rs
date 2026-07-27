@@ -163,6 +163,15 @@ struct ModelOverrideTestParams {
 
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
+struct ProviderListItem<'a> {
+    id: &'a str,
+    display_name: &'a str,
+    authentication: &'static str,
+    enabled: bool,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 struct ProviderStatus {
     provider_id: String,
     configured: bool,
@@ -724,6 +733,25 @@ fn redacted_model_override(registry: &ProviderRegistry, key: &ModelKey) -> serde
     atelier_acp_runtime::redact_payload(&value)
 }
 
+fn provider_list_payload(registry: &ProviderRegistry) -> serde_json::Value {
+    let providers = registry
+        .providers()
+        .map(|provider| ProviderListItem {
+            id: &provider.id,
+            display_name: &provider.display_name,
+            authentication: match &provider.credential {
+                CredentialRef::OAuth { .. } => "OAuth",
+                CredentialRef::Environment { .. } => "Environment credential",
+                CredentialRef::SecretStore { .. } => "Stored credential",
+                CredentialRef::Command { .. } => "Credential helper",
+                CredentialRef::None => "None",
+            },
+            enabled: provider.enabled,
+        })
+        .collect::<Vec<_>>();
+    serde_json::json!({ "providers": providers })
+}
+
 fn list(args: &acp::ExtRequest) -> ExtResult {
     let registry = registry().map_err(to_acp_error)?;
     if args.method.as_ref() == MODEL_LIST || args.method.as_ref() == "atelier/model/list" {
@@ -731,7 +759,7 @@ fn list(args: &acp::ExtRequest) -> ExtResult {
             "models": registry.snapshot().models,
         }));
     }
-    to_raw_response(&registry.snapshot())
+    to_raw_response(&provider_list_payload(&registry))
 }
 
 fn get_model(args: &acp::ExtRequest) -> ExtResult {
@@ -1406,8 +1434,8 @@ mod tests {
     use super::{
         apply_credential_update, chatgpt_account_id, delete_replaced_provider_credential,
         oauth_chatgpt_account_id, pair_test_runtime_request, parse_model_key,
-        preserve_existing_provider_fields, provider_probe_outcome, redacted_model_override,
-        reject_unconfirmed_provider_replacement, select_oauth_method,
+        preserve_existing_provider_fields, provider_list_payload, provider_probe_outcome,
+        redacted_model_override, reject_unconfirmed_provider_replacement, select_oauth_method,
     };
     use atelier_provider::{
         CredentialRef, ModelCapabilities, ModelDescriptor, ModelKey, ModelSource, ProviderAuth,
@@ -1426,6 +1454,49 @@ mod tests {
             discovery: atelier_provider::ProviderDiscovery::Disabled,
             extra_headers: BTreeMap::new(),
             enabled: true,
+        }
+    }
+
+    #[test]
+    fn provider_list_payload_contains_only_user_facing_provider_summaries() {
+        let mut registry = ProviderRegistry::in_memory();
+        registry.upsert_provider(oauth_test_provider()).unwrap();
+        registry
+            .upsert_model(ModelDescriptor {
+                key: ModelKey::new("example", "must-not-leak").unwrap(),
+                display_name: "Must Not Leak".into(),
+                description: None,
+                wire_api: Some(WireApi::ChatCompletions),
+                context_window: Some(1),
+                capabilities: ModelCapabilities::default(),
+                reasoning_efforts: vec![],
+                default_effort: None,
+                fast_mode: false,
+                source: ModelSource::UserOverride,
+                enabled: true,
+            })
+            .unwrap();
+
+        let payload = provider_list_payload(&registry);
+        let encoded = serde_json::to_string(&payload).unwrap();
+        let provider = payload["providers"][0].as_object().unwrap();
+        assert_eq!(provider["id"], "example");
+        assert_eq!(provider["authentication"], "None");
+        assert!(!payload.as_object().unwrap().contains_key("models"));
+        assert!(!encoded.contains("must-not-leak"));
+        for forbidden in [
+            "base_url",
+            "baseUrl",
+            "credential",
+            "auth",
+            "discovery",
+            "extra_headers",
+            "extraHeaders",
+        ] {
+            assert!(
+                !provider.contains_key(forbidden),
+                "list leaked {forbidden}: {encoded}"
+            );
         }
     }
 

@@ -2,6 +2,39 @@
 #[allow(unused_imports)]
 use super::common::*;
 
+/// `/provider list` renders only a user-facing Provider summary. The internal
+/// RPC name, connection JSON, credentials, and model catalog stay hidden.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore]
+async fn provider_list_hides_internal_json_and_models() {
+    let content = ContentController::start().await.expect("start content");
+    let binary = pager_binary().expect("resolve pager binary");
+    let mut harness =
+        PtyHarness::spawn_with_content(&binary, DEFAULT_ROWS, DEFAULT_COLS, &content, &[])
+            .expect("spawn pager with content");
+    harness.set_respond_to_queries(true);
+
+    harness
+        .wait_for_text(WELCOME_SCREEN_SENTINEL, WELCOME_TIMEOUT)
+        .expect("welcome text");
+    inject_keys_paced(&mut harness, b"/provider list");
+    harness.inject_keys(b"\r").expect("submit Provider list");
+    harness
+        .wait_for_text("PTY mock (mock) | None | enabled", Duration::from_secs(10))
+        .expect("Provider summary");
+
+    let screen = harness.screen_contents();
+    assert!(screen.contains("Providers"), "{screen}");
+    assert!(!screen.contains("_atelier/provider/list"), "{screen}");
+    assert!(!screen.contains("base_url"), "{screen}");
+    assert!(!screen.contains("credential"), "{screen}");
+    assert!(!screen.contains("context_window"), "{screen}");
+    assert!(!screen.contains("chat_completions"), "{screen}");
+    assert!(!screen.contains("\"models\""), "{screen}");
+
+    harness.quit().expect("clean quit");
+}
+
 /// Submitting the exact `/provider add` command opens the connection wizard.
 /// This covers the real composer → slash dispatch → modal path rather than
 /// invoking `ProviderCommand::run` directly.
