@@ -40,3 +40,26 @@ fn windows_installer_manages_powershell_runtime_and_uses_the_adjacent_binary() {
     assert!(source.contains("sandbox setup"));
     assert!(!source.contains("ATELIER_RELEASE_BASE_URL"));
 }
+
+#[test]
+fn windows_installer_elevation_preserves_optional_arguments_and_child_errors() {
+    let script = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("scripts/install-windows.ps1");
+    let source = std::fs::read_to_string(&script).unwrap_or_else(|error| {
+        panic!(
+            "missing Windows release installer {}: {error}",
+            script.display()
+        )
+    });
+
+    assert!(source.contains("$elevatedParameters = @{"));
+    assert!(source.contains("$elevatedParameters[\"InstallDir\"] = $InstallDir"));
+    assert!(source.contains("-EncodedCommand"));
+    assert!(source.contains("$elevationLog"));
+    assert!(source.contains("Elevated installer output:"));
+    assert!(
+        !source.contains(
+            "\"-InstallDir\", $InstallDir,\n        \"-PowerShellVersion\", $PowerShellVersion"
+        ),
+        "an empty InstallDir must not consume -PowerShellVersion during the elevated handoff"
+    );
+}

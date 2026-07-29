@@ -55,21 +55,83 @@ function Set-AtelierReadExecuteAcl {
 }
 
 if (-not $SkipPowerShellRuntime -and -not (Test-IsAdministrator)) {
-    $elevatedArgs = @(
-        "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $PSCommandPath,
-        "-InstallDir", $InstallDir,
-        "-PowerShellVersion", $PowerShellVersion
-    )
-    if ($NoPathUpdate) { $elevatedArgs += "-NoPathUpdate" }
-    if ($SetupSandbox) { $elevatedArgs += "-SetupSandbox" }
-    if (-not [string]::IsNullOrWhiteSpace($PowerShellArchive)) {
-        $elevatedArgs += @("-PowerShellArchive", $PowerShellArchive)
-        $elevatedArgs += @("-PowerShellArchiveSha256", $PowerShellArchiveSha256)
+    # Start-Process joins ArgumentList entries into one native command line.
+    # Empty values (notably the default InstallDir) and paths containing spaces
+    # therefore cannot be forwarded safely as a plain string array. Serialize
+    # the child parameters and invoke the elevated copy through EncodedCommand.
+    $elevatedParameters = @{
+        ScriptPath = $PSCommandPath
+        PowerShellVersion = $PowerShellVersion
+        NoPathUpdate = [bool]$NoPathUpdate
+        SetupSandbox = [bool]$SetupSandbox
     }
+    if (-not [string]::IsNullOrWhiteSpace($InstallDir)) {
+        $elevatedParameters["InstallDir"] = $InstallDir
+    }
+    if (-not [string]::IsNullOrWhiteSpace($PowerShellArchive)) {
+        $elevatedParameters["PowerShellArchive"] = $PowerShellArchive
+        $elevatedParameters["PowerShellArchiveSha256"] = $PowerShellArchiveSha256
+    }
+
+    $elevationLog = Join-Path ([IO.Path]::GetTempPath()) (
+        "atelier-install-elevated-{0}.log" -f [Guid]::NewGuid().ToString("N")
+    )
+    $elevatedParameters["LogPath"] = $elevationLog
+    $payloadJson = $elevatedParameters | ConvertTo-Json -Compress
+    $payloadBase64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($payloadJson))
+    $elevatedCommand = @"
+`$ErrorActionPreference = "Stop"
+`$payloadJson = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String("$payloadBase64"))
+`$payload = `$payloadJson | ConvertFrom-Json
+`$invokeParameters = @{
+    PowerShellVersion = [string]`$payload.PowerShellVersion
+}
+if (`$payload.PSObject.Properties.Name -contains "InstallDir") {
+    `$invokeParameters["InstallDir"] = [string]`$payload.InstallDir
+}
+if ([bool]`$payload.NoPathUpdate) { `$invokeParameters["NoPathUpdate"] = `$true }
+if ([bool]`$payload.SetupSandbox) { `$invokeParameters["SetupSandbox"] = `$true }
+if (`$payload.PSObject.Properties.Name -contains "PowerShellArchive") {
+    `$invokeParameters["PowerShellArchive"] = [string]`$payload.PowerShellArchive
+    `$invokeParameters["PowerShellArchiveSha256"] = [string]`$payload.PowerShellArchiveSha256
+}
+try {
+    & ([string]`$payload.ScriptPath) @invokeParameters *>&1 |
+        Out-File -LiteralPath ([string]`$payload.LogPath) -Encoding UTF8
+    exit 0
+} catch {
+    (`$_ | Out-String) | Out-File -LiteralPath ([string]`$payload.LogPath) -Append -Encoding UTF8
+    exit 1
+}
+"@
+    $encodedCommand = [Convert]::ToBase64String(
+        [Text.Encoding]::Unicode.GetBytes($elevatedCommand)
+    )
+
     Write-Host "Administrator approval is required to install the managed PowerShell runtime."
-    $process = Start-Process -FilePath "powershell.exe" -Verb RunAs -Wait -PassThru -ArgumentList $elevatedArgs
+    try {
+        $process = Start-Process -FilePath "powershell.exe" -Verb RunAs -Wait -PassThru -ArgumentList @(
+            "-NoProfile", "-ExecutionPolicy", "Bypass", "-EncodedCommand", $encodedCommand
+        )
+    } catch {
+        Remove-Item -LiteralPath $elevationLog -Force -ErrorAction SilentlyContinue
+        throw
+    }
+
+    $elevatedOutput = if (Test-Path -LiteralPath $elevationLog -PathType Leaf) {
+        (Get-Content -LiteralPath $elevationLog -Raw).Trim()
+    } else {
+        ""
+    }
+    Remove-Item -LiteralPath $elevationLog -Force -ErrorAction SilentlyContinue
     if ($process.ExitCode -ne 0) {
-        throw "Elevated Atelier installation failed with exit code $($process.ExitCode)"
+        if ([string]::IsNullOrWhiteSpace($elevatedOutput)) {
+            throw "Elevated Atelier installation failed with exit code $($process.ExitCode)"
+        }
+        throw "Elevated Atelier installation failed with exit code $($process.ExitCode).`nElevated installer output:`n$elevatedOutput"
+    }
+    if (-not [string]::IsNullOrWhiteSpace($elevatedOutput)) {
+        Write-Host $elevatedOutput
     }
     exit 0
 }
