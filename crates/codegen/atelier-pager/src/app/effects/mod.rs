@@ -3249,63 +3249,6 @@ pub(crate) fn execute(
                     }
                 });
         }
-        Effect::FetchCatalogEntry { kind, name } => {
-            let tx = acp_tx.clone();
-            tasks
-                .spawn(async move {
-                    let params = serde_json::json!({ "kind" : kind, "name" : name });
-                    let request = acp::ExtRequest::new(
-                        "atelier/bundle/entry/get",
-                        serde_json::value::to_raw_value(&params)
-                            .expect("serialize bundle/entry/get params")
-                            .into(),
-                    );
-                    match acp_send(request, &tx).await {
-                        Ok(resp) => {
-                            let wrapper: serde_json::Value = serde_json::from_str(
-                                    resp.0.get(),
-                                )
-                                .unwrap_or_default();
-                            if let Some(err) = wrapper.get("error") {
-                                let msg = err
-                                    .as_str()
-                                    .map(String::from)
-                                    .unwrap_or_else(|| "unknown error".to_string());
-                                return TaskResult::CatalogEntryFailed {
-                                    error: msg,
-                                };
-                            }
-                            let inner = wrapper.get("result").unwrap_or(&wrapper);
-                            match serde_json::from_value::<
-                                super::bundle::EntryGetResult,
-                            >(inner.clone()) {
-                                Ok(r) => {
-                                    TaskResult::CatalogEntryReady {
-                                        kind: r.kind,
-                                        name: r.name,
-                                        content: r.content,
-                                    }
-                                }
-                                Err(e) => {
-                                    tracing::debug!(
-                                        "failed to parse catalog entry response: {e}"
-                                    );
-                                    TaskResult::CatalogEntryFailed {
-                                        error: "couldn't load entry".to_string(),
-                                    }
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            TaskResult::CatalogEntryFailed {
-                                error: sanitize_user_error(
-                                    &format!("couldn't load entry: {e}"),
-                                ),
-                            }
-                        }
-                    }
-                });
-        }
         Effect::FetchBundleStatus => {
             let tx = acp_tx.clone();
             tasks
@@ -3339,12 +3282,7 @@ pub(crate) fn execute(
                                     TaskResult::BundleStatusReady {
                                         has_cache: r.has_cache,
                                         version: r.version,
-                                        personas: r.personas,
-                                        roles: r.roles,
-                                        agents: r.agents,
                                         skills: r.skills,
-                                        persona_details: r.persona_details,
-                                        role_details: r.role_details,
                                     }
                                 }
                                 Err(_) => {

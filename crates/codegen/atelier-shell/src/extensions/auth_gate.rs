@@ -11,7 +11,7 @@ pub(crate) fn require_xai_auth(
     let auth = auth_manager
         .current_or_expired()
         .ok_or_else(|| acp::Error::auth_required().data(missing_message))?;
-    if !auth.is_xai_auth() {
+    if !auth.is_configured_refresh_auth() {
         return Err(acp::Error::auth_required().data(non_xai_message));
     }
     Ok(auth)

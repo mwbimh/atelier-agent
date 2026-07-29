@@ -1,6 +1,7 @@
 use atelier_config::runtime_defaults::{
     ContextPrompt, SandboxPreference, install_runtime_defaults_at, load_context_prompt_at,
-    load_context_role_prompt_at, load_logo_at, merge_role_prompts, resolve_runtime_defaults_at,
+    load_context_role_prompt_at, load_logo_at, load_resolved_context_role_prompt_at,
+    load_resolved_context_role_prompt_source_at, merge_role_prompts, resolve_runtime_defaults_at,
     runtime_context_prompt, runtime_logo, update_default_model_at, update_sandbox_preference_at,
 };
 
@@ -87,6 +88,122 @@ fn context_role_prompt_is_optional_safe_and_merged_after_the_generic_subagent_pr
         .unwrap_err()
         .to_string();
     assert!(error.contains("invalid context role"), "{error}");
+}
+
+#[test]
+fn role_context_resolution_uses_selected_role_chain_then_default_without_main() {
+    use atelier_provider::RoleId;
+
+    let home = tempfile::tempdir().unwrap();
+    atelier_config::defaults::ensure_user_defaults(home.path(), "1.0.0").unwrap();
+    std::fs::create_dir_all(home.path().join("contexts/custom/roles")).unwrap();
+    std::fs::write(
+        home.path().join("contexts/custom/roles/general.md"),
+        "CUSTOM GENERAL\n",
+    )
+    .unwrap();
+    std::fs::write(
+        home.path().join("contexts/custom/roles/main.md"),
+        "CUSTOM MAIN MUST NOT LEAK\n",
+    )
+    .unwrap();
+
+    assert_eq!(
+        load_resolved_context_role_prompt_at(home.path(), "custom", RoleId::Review)
+            .unwrap()
+            .as_deref(),
+        Some("CUSTOM GENERAL\n")
+    );
+    assert_eq!(
+        load_resolved_context_role_prompt_at(home.path(), "custom", RoleId::Compact)
+            .unwrap()
+            .as_deref(),
+        Some(
+            "Condense the supplied material without losing decisions, constraints, unresolved work, exact errors, or verification evidence needed to continue.\n"
+        )
+    );
+}
+
+#[test]
+fn resolved_role_context_reports_the_actual_package_role_and_path() {
+    use atelier_provider::RoleId;
+
+    let home = tempfile::tempdir().unwrap();
+    atelier_config::defaults::ensure_user_defaults(home.path(), "1.0.0").unwrap();
+    std::fs::create_dir_all(home.path().join("contexts/custom/roles")).unwrap();
+    std::fs::write(
+        home.path().join("contexts/custom/roles/general.md"),
+        "CUSTOM GENERAL\n",
+    )
+    .unwrap();
+
+    let resolved =
+        load_resolved_context_role_prompt_source_at(home.path(), "custom", RoleId::Review)
+            .unwrap()
+            .unwrap();
+
+    assert_eq!(resolved.package, "custom");
+    assert_eq!(resolved.role, RoleId::General);
+    assert_eq!(resolved.prompt, "CUSTOM GENERAL\n");
+    assert_eq!(
+        resolved.path,
+        home.path().join("contexts/custom/roles/general.md")
+    );
+
+    let fallback =
+        load_resolved_context_role_prompt_source_at(home.path(), "custom", RoleId::Compact)
+            .unwrap()
+            .unwrap();
+    assert_eq!(fallback.package, "default");
+    assert_eq!(fallback.role, RoleId::Compact);
+}
+
+#[test]
+fn empty_role_context_file_is_authoritative_and_stops_fallback() {
+    use atelier_provider::RoleId;
+
+    let home = tempfile::tempdir().unwrap();
+    atelier_config::defaults::ensure_user_defaults(home.path(), "1.0.0").unwrap();
+    std::fs::create_dir_all(home.path().join("contexts/custom/roles")).unwrap();
+    std::fs::write(home.path().join("contexts/custom/roles/review.md"), "").unwrap();
+
+    assert_eq!(
+        load_resolved_context_role_prompt_at(home.path(), "custom", RoleId::Review).unwrap(),
+        Some(String::new())
+    );
+}
+
+#[test]
+fn unreadable_role_context_fails_closed_without_falling_back() {
+    use atelier_provider::RoleId;
+
+    let home = tempfile::tempdir().unwrap();
+    atelier_config::defaults::ensure_user_defaults(home.path(), "1.0.0").unwrap();
+    let role_path = home.path().join("contexts/custom/roles/review.md");
+    std::fs::create_dir_all(&role_path).unwrap();
+
+    let error =
+        load_resolved_context_role_prompt_at(home.path(), "custom", RoleId::Review).unwrap_err();
+
+    assert_ne!(error.kind(), std::io::ErrorKind::NotFound);
+}
+
+#[test]
+fn missing_context_prompt_falls_back_to_default_but_empty_file_does_not() {
+    let home = tempfile::tempdir().unwrap();
+    atelier_config::defaults::ensure_user_defaults(home.path(), "1.0.0").unwrap();
+    std::fs::create_dir_all(home.path().join("contexts/custom")).unwrap();
+
+    assert_eq!(
+        load_context_prompt_at(home.path(), "custom", ContextPrompt::Subagent).unwrap(),
+        load_context_prompt_at(home.path(), "default", ContextPrompt::Subagent).unwrap()
+    );
+
+    std::fs::write(home.path().join("contexts/custom/subagent.md"), "").unwrap();
+    assert_eq!(
+        load_context_prompt_at(home.path(), "custom", ContextPrompt::Subagent).unwrap(),
+        ""
+    );
 }
 
 #[test]

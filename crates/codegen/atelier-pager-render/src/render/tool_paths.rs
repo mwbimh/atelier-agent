@@ -349,6 +349,7 @@ mod tests {
         assert_eq!(unresolved.relative_to_cwd, None);
     }
 
+    #[cfg(unix)]
     #[test]
     fn expanded_outside_cwd_stays_normalized_target() {
         let cwd = Path::new("/Users/me/project");
@@ -359,6 +360,7 @@ mod tests {
         assert!(!got.starts_with("/Users/me/project"), "got {got}");
     }
 
+    #[cfg(unix)]
     #[test]
     fn expanded_surface_uses_worktree_cwd() {
         let cwd = Path::new("/Users/me/.atelier/worktrees/foo");

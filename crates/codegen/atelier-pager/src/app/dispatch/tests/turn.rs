@@ -1262,16 +1262,16 @@ fn build_rows_with_roster_hides_subagent_rows() {
 }
 
 /// Subagent labels also sanitise ANSI escapes
-/// out of the persona.
+/// out of the fixed Role.
 #[test]
 fn subagent_label_strips_control_characters() {
     use crate::views::dashboard::build_rows;
     let mut app = test_app_with_agent();
     let agent = app.agents.get_mut(&AgentId(0)).unwrap();
     let mut info = make_test_subagent("child-evil", "sa-evil");
-    // Inject an ANSI escape into the persona — this is what flows
+    // Inject an ANSI escape into the fixed Role — this is what flows
     // through `format_subagent_label` → row builder sanitisation.
-    info.persona = Some(Arc::from("a\x1b[31mevil\x1b[0m"));
+    info.role = Some(Arc::from("a\x1b[31mevil\x1b[0m"));
     agent
         .subagent_sessions
         .insert(info.child_session_id.to_string(), info);

@@ -376,8 +376,6 @@ pub(super) fn dispatch_open_extensions_modal(
         return vec![];
     };
 
-    // Mutual exclusivity: close agents modal when opening extensions.
-    agent.agents_modal = None;
     let mut modal = ExtensionsModalState::new(tab);
     modal.session_team_id = app.team_id.clone();
     agent.extensions_modal = Some(modal);
@@ -394,66 +392,6 @@ pub(super) fn dispatch_open_extensions_modal(
     };
     agent.pending_extensions_fetch = false;
     extensions_modal_tab_fetches(id, session_id)
-}
-
-/// Open the agents modal, showing all agent definitions.
-pub(super) fn dispatch_open_config_agents_modal(
-    app: &mut AppView,
-    initial_tab: Option<crate::views::agents_modal::AgentsTab>,
-) -> Vec<Effect> {
-    use crate::views::agents_modal::{AgentsModalState, load_agent_toggle};
-
-    let ActiveView::Agent(id) = app.active_view else {
-        return vec![];
-    };
-    let bundle = app.bundle_state.clone();
-    let Some(agent) = app.agents.get_mut(&id) else {
-        return vec![];
-    };
-
-    // Mutual exclusivity with extensions_modal
-    agent.extensions_modal = None;
-
-    let cwd = agent.session.cwd.clone();
-    let toggle = load_agent_toggle();
-    let model_agent_type = agent
-        .session
-        .models
-        .current
-        .as_ref()
-        .and_then(|id| agent.session.models.available.get(id))
-        .and_then(model_agent_type_from_info);
-    let session_id = agent.session.session_id.clone();
-    let active_agent = agent.session_agent_name.clone();
-    let mut modal = AgentsModalState::new(
-        &cwd,
-        &toggle,
-        &bundle,
-        model_agent_type.as_deref(),
-        active_agent,
-    );
-    if let Some(tab) = initial_tab {
-        modal.active_tab = tab;
-    }
-    agent.agents_modal = Some(modal);
-    if let Some(session_id) = session_id {
-        return vec![Effect::FetchSessionAgentName {
-            agent_id: id,
-            session_id,
-        }];
-    }
-    vec![]
-}
-
-/// `agentType` / `agent_type` from a catalog `ModelInfo` meta blob.
-fn model_agent_type_from_info(info: &agent_client_protocol::ModelInfo) -> Option<String> {
-    let meta = info.meta.as_ref()?;
-    ["agentType", "agent_type"]
-        .into_iter()
-        .find_map(|key| meta.get(key))
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())
-        .map(str::to_owned)
 }
 
 /// Copy the selected block's metadata (e.g., command) to clipboard.

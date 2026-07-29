@@ -695,7 +695,7 @@ pub(crate) async fn try_ensure_session_noninteractive(
 fn expired_refreshable_session(auth_manager: &AuthManager) -> Option<AtelierAuth> {
     auth_manager
         .current_or_expired()
-        .filter(|a| a.is_xai_auth() && a.refresh_token.is_some())
+        .filter(|a| a.is_configured_refresh_auth() && a.refresh_token.is_some())
 }
 
 /// Cold-start mint via non-interactive providers (external command, devbox);

@@ -72,7 +72,7 @@ pub enum PromptAudience {
     /// Top-level interactive session. Full base template, all catalog sections.
     #[default]
     Primary,
-    /// Child/subagent session. Compact base template, no persona/subagent catalogs.
+    /// Child/subagent session. Compact base template.
     Subagent,
 }
 use atelier_tools::bridge::ToolBridge;
@@ -103,11 +103,6 @@ pub struct PromptContext {
     /// AGENTS.md files discovered during build, in precedence order
     /// (repo root → CWD; deeper files override).
     pub agents_md_files: Vec<AgentConfigFile>,
-    /// Pre-rendered persona summaries for system prompt injection.
-    /// Each entry is a formatted string like:
-    /// `- **reviewer** [user]: Writes structured review notes...`
-    #[serde(default)]
-    pub persona_summaries: Vec<String>,
     /// ISO-8601 UTC timestamp captured at build time.
     pub build_timestamp_utc: String,
     /// Whether the memory system is enabled for this session.
@@ -123,10 +118,6 @@ pub struct PromptContext {
     /// Moved from the user task prompt so they're part of durable identity.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role_instructions: Option<String>,
-    /// Persona instructions to include in the system prompt.
-    /// Moved from the user task prompt so they're part of durable identity.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub persona_instructions: Option<String>,
     /// OS name for the `<user_info>` system prompt block.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub os_name: Option<String>,
@@ -157,19 +148,6 @@ fn default_system_prompt_label() -> String {
 fn is_template_override_none(t: &TemplateOverride) -> bool {
     matches!(t, TemplateOverride::None)
 }
-impl PromptContext {
-    /// Normalize this context for persistence based on audience.
-    ///
-    /// For `Subagent` audience, applies the same suppression as the render
-    /// path: persona summaries are cleared. AGENTS.md is delivered in full,
-    /// identical to the primary agent.
-    pub fn normalize_for_persistence(&mut self) {
-        if self.audience != PromptAudience::Subagent {
-            return;
-        }
-        self.persona_summaries.clear();
-    }
-}
 impl Default for PromptContext {
     fn default() -> Self {
         Self {
@@ -179,13 +157,11 @@ impl Default for PromptContext {
             prompt_body: None,
             system_prompt: TemplateOverride::None,
             agents_md_files: vec![],
-            persona_summaries: vec![],
             build_timestamp_utc: chrono::Utc::now().to_rfc3339(),
             memory_enabled: false,
             memory_global_path: None,
             memory_workspace_path: None,
             role_instructions: None,
-            persona_instructions: None,
             os_name: None,
             shell_path: None,
             working_directory: None,
@@ -209,27 +185,6 @@ impl PromptContext {
     pub fn agents_md_user_reminder(&self) -> Option<String> {
         self.format_agents_md_section()
     }
-    /// Personas content for injection as a prepended user message.
-    ///
-    /// Returns the `<system-reminder>` block to prepend as a user message,
-    /// wrapping the `<personas>` section.
-    ///
-    /// - Subagents never get personas (`task` itself is a parent-only tool).
-    pub fn personas_user_reminder(&self) -> Option<String> {
-        if self.audience == PromptAudience::Subagent {
-            return None;
-        }
-        let section = self.format_personas_section()?;
-        Some(format!("<system-reminder>\n{section}</system-reminder>"))
-    }
-    /// Format the personas section content.
-    ///
-    /// Always returns `None` — the `persona` parameter has been removed
-    /// from the task tool input, so persona summaries are no longer
-    /// injected into the conversation.
-    pub fn format_personas_section(&self) -> Option<String> {
-        None
-    }
     /// Build the placeholder JSON for template rendering.
     ///
     /// These are the agent-specific values that get merged with the
@@ -239,8 +194,7 @@ impl PromptContext {
             { "memory_enabled" : self.memory_enabled, "memory_global_path" : self
             .memory_global_path.as_deref().unwrap_or(""), "memory_workspace_path" : self
             .memory_workspace_path.as_deref().unwrap_or(""), "role_instructions" : self
-            .role_instructions.as_deref().unwrap_or(""), "persona_instructions" : self
-            .persona_instructions.as_deref().unwrap_or(""), "os_name" : self.os_name
+            .role_instructions.as_deref().unwrap_or(""), "os_name" : self.os_name
             .as_deref().unwrap_or(""), "shell_path" : self.shell_path.as_deref()
             .unwrap_or(""), "working_directory" : self.working_directory.as_deref()
             .unwrap_or(""), "current_date" : self.current_date.as_deref().unwrap_or(""),
@@ -259,7 +213,7 @@ impl PromptContext {
     /// correctly regardless of prompt mode.
     pub async fn render(&self, tool_bridge: &ToolBridge) -> Option<String> {
         let placeholders = self.placeholders();
-        let prompt = match self.prompt_mode {
+        let mut prompt = match self.prompt_mode {
             PromptMode::Extend => {
                 let decrypted;
                 let base = match &self.system_prompt {
@@ -293,6 +247,26 @@ impl PromptContext {
                 tool_bridge.render_prompt(body, &placeholders).await?
             }
         };
+        if self.audience == PromptAudience::Primary {
+            match atelier_config::runtime_defaults::runtime_context_role_prompt(
+                atelier_config::runtime_defaults::RoleId::Main,
+            ) {
+                Ok(Some(role_context)) if !role_context.trim().is_empty() => {
+                    let rendered = tool_bridge
+                        .render_prompt(&role_context, &placeholders)
+                        .await
+                        .unwrap_or(role_context);
+                    prompt.push_str("\n\n");
+                    prompt.push_str(rendered.trim());
+                    prompt.push('\n');
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    tracing::error!(error = %error, "failed to load MAIN Role Context");
+                    return None;
+                }
+            }
+        }
         Some(prompt)
     }
 }
@@ -309,13 +283,11 @@ mod tests {
             prompt_body: None,
             system_prompt: TemplateOverride::None,
             agents_md_files: vec![],
-            persona_summaries: vec![],
             build_timestamp_utc: TEST_TIMESTAMP.to_string(),
             memory_enabled: false,
             memory_global_path: None,
             memory_workspace_path: None,
             role_instructions: None,
-            persona_instructions: None,
             os_name: None,
             shell_path: None,
             working_directory: None,
@@ -421,7 +393,7 @@ mod tests {
         let p = ctx.placeholders();
         assert_eq!(p["memory_enabled"], false);
         assert!(p.get("role_instructions").is_some());
-        assert!(p.get("persona_instructions").is_some());
+        assert!(p.get("persona_instructions").is_none());
         assert_eq!(p["system_prompt_label"], DEFAULT_SYSTEM_PROMPT_LABEL);
     }
     #[test]
@@ -446,7 +418,6 @@ mod tests {
         ctx.current_date = Some("2026-03-26".into());
         ctx.memory_enabled = true;
         ctx.role_instructions = Some("test role".into());
-        ctx.persona_instructions = Some("test persona".into());
         let p = ctx.placeholders();
         assert_eq!(p["os_name"], "linux");
         assert_eq!(p["shell_path"], "/bin/bash");
@@ -454,7 +425,7 @@ mod tests {
         assert_eq!(p["current_date"], "2026-03-26");
         assert_eq!(p["memory_enabled"], true);
         assert_eq!(p["role_instructions"], "test role");
-        assert_eq!(p["persona_instructions"], "test persona");
+        assert!(p.get("persona_instructions").is_none());
     }
     #[test]
     fn test_placeholders_user_info_defaults_to_empty() {
@@ -541,20 +512,6 @@ mod tests {
         assert!(section.contains("# Instructions"));
         assert!(section.contains("<system-reminder>"));
     }
-    #[test]
-    fn test_format_personas_section_empty() {
-        let ctx = test_context();
-        assert!(ctx.format_personas_section().is_none());
-    }
-    #[test]
-    fn test_format_personas_section_always_none() {
-        let mut ctx = test_context();
-        ctx.persona_summaries = vec!["- **reviewer** [user]: Meticulous code reviewer".to_string()];
-        assert!(
-            ctx.format_personas_section().is_none(),
-            "persona section is disabled — persona param removed from task tool"
-        );
-    }
     /// AGENTS.md must reach the system prompt for the default template even
     /// AGENTS.md user reminder must be present for the default template
     /// when files are present.
@@ -573,15 +530,6 @@ mod tests {
         assert!(section.contains("<system-reminder>"));
         assert!(section.contains("XYZZY_AGENTS_MD_MARKER"));
     }
-    #[test]
-    fn personas_user_reminder_always_none() {
-        let mut ctx = test_context();
-        ctx.persona_summaries = vec!["- **reviewer** [user]: Meticulous code reviewer".to_string()];
-        assert!(
-            ctx.personas_user_reminder().is_none(),
-            "persona reminder is disabled — persona param removed from task tool"
-        );
-    }
     fn child_general_purpose_context() -> PromptContext {
         use crate::prompt::subagent_prompts;
         PromptContext {
@@ -591,16 +539,11 @@ mod tests {
             prompt_body: Some(subagent_prompts::GENERAL_PURPOSE_PROMPT.to_string()),
             system_prompt: TemplateOverride::None,
             agents_md_files: vec![],
-            persona_summaries: vec![
-                "- **reviewer** [user]: Code reviewer".to_string(),
-                "- **implementer** [user]: Code implementer".to_string(),
-            ],
             build_timestamp_utc: TEST_TIMESTAMP.to_string(),
             memory_enabled: true,
             memory_global_path: None,
             memory_workspace_path: None,
             role_instructions: None,
-            persona_instructions: None,
             os_name: None,
             shell_path: None,
             working_directory: None,
@@ -608,12 +551,6 @@ mod tests {
             is_non_interactive: false,
             system_prompt_label: default_system_prompt_label(),
         }
-    }
-    #[test]
-    fn child_prompt_excludes_persona_catalog() {
-        let ctx = child_general_purpose_context();
-        assert!(ctx.format_personas_section().is_none());
-        assert!(ctx.personas_user_reminder().is_none());
     }
     #[test]
     fn child_prompt_uses_subagent_audience() {
@@ -693,13 +630,12 @@ mod tests {
             Some(true)
         );
         assert!(placeholders.get("role_instructions").is_some());
-        assert!(placeholders.get("persona_instructions").is_some());
+        assert!(placeholders.get("persona_instructions").is_none());
     }
     #[test]
-    fn child_prompt_placeholders_include_role_and_persona() {
+    fn child_prompt_placeholders_include_only_fixed_role_context() {
         let mut ctx = child_general_purpose_context();
         ctx.role_instructions = Some("Follow Rust conventions strictly".into());
-        ctx.persona_instructions = Some("You are a meticulous reviewer".into());
         let placeholders = ctx.placeholders();
         assert_eq!(
             placeholders
@@ -707,15 +643,10 @@ mod tests {
                 .and_then(|v| v.as_str()),
             Some("Follow Rust conventions strictly")
         );
-        assert_eq!(
-            placeholders
-                .get("persona_instructions")
-                .and_then(|v| v.as_str()),
-            Some("You are a meticulous reviewer")
-        );
+        assert!(placeholders.get("persona_instructions").is_none());
     }
     #[test]
-    fn child_prompt_placeholders_empty_role_persona_when_unset() {
+    fn child_prompt_placeholders_use_empty_role_when_unset() {
         let ctx = child_general_purpose_context();
         let placeholders = ctx.placeholders();
         assert_eq!(
@@ -724,12 +655,7 @@ mod tests {
                 .and_then(|v| v.as_str()),
             Some("")
         );
-        assert_eq!(
-            placeholders
-                .get("persona_instructions")
-                .and_then(|v| v.as_str()),
-            Some("")
-        );
+        assert!(placeholders.get("persona_instructions").is_none());
     }
     #[test]
     fn child_prompt_has_no_system_prompt_override() {
@@ -745,7 +671,6 @@ mod tests {
         let child = child_general_purpose_context();
         assert_eq!(parent.audience, super::PromptAudience::Primary);
         assert_eq!(child.audience, super::PromptAudience::Subagent);
-        assert!(!child.persona_summaries.is_empty());
         assert!(child.memory_enabled);
         assert!(child.prompt_body.is_some());
         assert!(parent.prompt_body.is_none());
@@ -761,7 +686,7 @@ mod tests {
         let p = ctx.placeholders();
         assert!(p.get("memory_enabled").is_some());
         assert!(p.get("role_instructions").is_some());
-        assert!(p.get("persona_instructions").is_some());
+        assert!(p.get("persona_instructions").is_none());
     }
     fn render_subagent_template(ctx: minijinja::Value) -> String {
         let mut env = minijinja::Environment::new();
@@ -781,7 +706,7 @@ mod tests {
         minijinja::context! {
             os_name => "linux", shell_path => "/bin/bash", working_directory =>
             "/workspace", current_date => "2026-03-26", memory_enabled => true,
-            role_instructions => "", persona_instructions => "", tools =>
+            role_instructions => "", tools =>
             minijinja::context! { by_kind => minijinja::context! { read =>
             "hashline_read", edit => "hashline_edit", search => "hashline_grep", execute
             => "run_terminal_cmd", background_task_action => "get_task_output",
@@ -840,21 +765,19 @@ mod tests {
         assert!(!rendered.contains("## No time estimates"));
     }
     #[test]
-    fn child_rendered_prompt_includes_role_and_persona_sections() {
+    fn child_rendered_prompt_includes_fixed_role_section_only() {
         let ctx = minijinja::context! {
             os_name => "linux", shell_path => "/bin/bash", working_directory =>
             "/workspace", current_date => "2026-03-26", memory_enabled => false,
-            role_instructions => "Follow Rust conventions", persona_instructions =>
-            "You are a code reviewer", tools => minijinja::context! { by_kind =>
-            minijinja::context! { read => "hashline_read", edit => "hashline_edit",
-            search => "hashline_grep", execute => "run_terminal_cmd",
+            role_instructions => "Follow Rust conventions", tools => minijinja::context! {
+            by_kind => minijinja::context! { read => "hashline_read", edit =>
+            "hashline_edit", search => "hashline_grep", execute => "run_terminal_cmd",
             background_task_action => "get_task_output", } },
         };
         let rendered = render_subagent_template(ctx);
         assert!(rendered.contains("<role-instructions>"));
         assert!(rendered.contains("Follow Rust conventions"));
-        assert!(rendered.contains("<persona>"));
-        assert!(rendered.contains("You are a code reviewer"));
+        assert!(!rendered.contains("<persona>"));
         assert!(
             !rendered.contains("<memory>"),
             "memory should be absent when disabled"
@@ -901,7 +824,7 @@ mod tests {
         let ctx = minijinja::context! {
             os_name => "linux", shell_path => "/bin/bash", working_directory =>
             "/workspace", current_date => "2026-03-26", memory_enabled => false,
-            role_instructions => "", persona_instructions => "", tools =>
+            role_instructions => "", tools =>
             minijinja::context! { by_kind => minijinja::context! { read =>
             "hashline_read", edit => "hashline_edit", search => "hashline_grep", } },
         };
@@ -929,7 +852,7 @@ mod tests {
         let ctx = minijinja::context! {
             os_name => "linux", shell_path => "/bin/bash", working_directory =>
             "/workspace", current_date => "2026-03-26", memory_enabled => false,
-            role_instructions => "", persona_instructions => "", tools =>
+            role_instructions => "", tools =>
             minijinja::context! { by_kind => minijinja::context! { read =>
             "hashline_read", search => "hashline_grep", execute => "run_terminal_cmd",
             background_task_action => "get_task_output", } },
@@ -957,7 +880,7 @@ mod tests {
         let ctx = minijinja::context! {
             os_name => "linux", shell_path => "/bin/bash", working_directory =>
             "/workspace", current_date => "2026-03-26", memory_enabled => false,
-            role_instructions => "", persona_instructions => "", tools =>
+            role_instructions => "", tools =>
             minijinja::context! { by_kind => minijinja::context! { read =>
             "hashline_read", search => "hashline_grep", execute => "run_terminal_cmd",
             background_task_action => "get_task_output", } },
@@ -981,7 +904,7 @@ mod tests {
         let ctx = minijinja::context! {
             os_name => "linux", shell_path => "/bin/bash", working_directory =>
             "/workspace", current_date => "2026-03-26", memory_enabled => false,
-            role_instructions => "", persona_instructions => "", tools =>
+            role_instructions => "", tools =>
             minijinja::context! { by_kind => minijinja::context! { read => "read_file",
             search => "grep", execute => "run_terminal_cmd", background_task_action =>
             "get_task_output", } },
@@ -997,7 +920,7 @@ mod tests {
         let ctx = minijinja::context! {
             os_name => "linux", shell_path => "/bin/bash", working_directory =>
             "/workspace", current_date => "2026-03-26", memory_enabled => false,
-            role_instructions => "", persona_instructions => "", tools =>
+            role_instructions => "", tools =>
             minijinja::context! { by_kind => minijinja::context! { read => "read_file",
             edit => "search_replace", search => "grep", } },
         };
@@ -1016,7 +939,7 @@ mod tests {
         let ctx = minijinja::context! {
             os_name => "linux", shell_path => "/bin/bash", working_directory =>
             "/workspace", current_date => "2026-03-26", memory_enabled => false,
-            role_instructions => "", persona_instructions => "", tools =>
+            role_instructions => "", tools =>
             minijinja::context! { by_kind => minijinja::context! { read => "read_file",
             search => "grep", } },
         };
@@ -1284,68 +1207,6 @@ mod tests {
         assert!(
             !gp.contains("READ-ONLY MODE"),
             "general-purpose should not be read-only"
-        );
-    }
-    #[test]
-    fn normalize_clears_persona_summaries_for_subagent() {
-        let mut ctx = child_general_purpose_context();
-        ctx.persona_summaries = vec!["- **reviewer**: Reviews code".to_string()];
-        assert!(!ctx.persona_summaries.is_empty());
-        ctx.normalize_for_persistence();
-        assert!(
-            ctx.persona_summaries.is_empty(),
-            "persona summaries must be cleared for subagent"
-        );
-    }
-    #[test]
-    fn normalize_preserves_full_agents_md_for_subagent() {
-        let mut ctx = child_general_purpose_context();
-        ctx.agents_md_files = vec![super::super::agents_md::AgentConfigFile {
-            file_name: "AGENTS.md".to_string(),
-            file_path: "/repo/AGENTS.md".to_string(),
-            content: "X".repeat(5000),
-        }];
-        ctx.normalize_for_persistence();
-        assert_eq!(
-            ctx.agents_md_files[0].content.chars().count(),
-            5000,
-            "AGENTS content must be preserved in full for subagents (no cap)"
-        );
-    }
-    #[test]
-    fn normalize_preserves_short_agents_md() {
-        let mut ctx = child_general_purpose_context();
-        ctx.agents_md_files = vec![super::super::agents_md::AgentConfigFile {
-            file_name: "AGENTS.md".to_string(),
-            file_path: "/repo/sub/AGENTS.md".to_string(),
-            content: "Short rules".to_string(),
-        }];
-        ctx.normalize_for_persistence();
-        assert_eq!(ctx.agents_md_files[0].content, "Short rules");
-    }
-    #[test]
-    fn normalize_preserves_role_and_persona_instructions() {
-        let mut ctx = child_general_purpose_context();
-        ctx.role_instructions = Some("Follow Rust conventions".to_string());
-        ctx.persona_instructions = Some("You are a code reviewer".to_string());
-        ctx.normalize_for_persistence();
-        assert_eq!(
-            ctx.role_instructions.as_deref(),
-            Some("Follow Rust conventions")
-        );
-        assert_eq!(
-            ctx.persona_instructions.as_deref(),
-            Some("You are a code reviewer")
-        );
-    }
-    #[test]
-    fn normalize_is_noop_for_primary() {
-        let mut ctx = test_context();
-        ctx.persona_summaries = vec!["- **reviewer**: Reviews code".to_string()];
-        ctx.normalize_for_persistence();
-        assert!(
-            !ctx.persona_summaries.is_empty(),
-            "primary must keep persona summaries"
         );
     }
 }

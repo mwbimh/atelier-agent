@@ -365,7 +365,6 @@ pub(super) fn handle_plugin_cta_mcps_loaded(
                     &name,
                 );
                 modal.mcps_data = TabDataState::Loaded(servers);
-                agent.agents_modal = None;
                 agent.extensions_modal = Some(modal);
                 log_event(atelier_telemetry::events::ExtensionsModalOpened {
                     trigger: atelier_telemetry::events::ExtensionsModalTrigger::AuthHandoff,

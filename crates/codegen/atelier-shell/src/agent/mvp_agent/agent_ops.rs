@@ -89,19 +89,48 @@ fn session_filesystem_mode(use_acp_fs: bool, allow_in_process: bool) -> SessionF
 fn load_configured_role(
     path: &std::path::Path,
     role_id: atelier_provider::RoleId,
+    main: &atelier_provider::RoleConfig,
+    require_role: bool,
 ) -> Result<Option<atelier_provider::RoleConfig>, acp::Error> {
     atelier_provider::ProviderRegistry::load_or_create(path)
         .map(|registry| {
-            registry
-                .role(role_id)
-                .filter(|role| role.provider != "default" && role.model != "default")
-                .cloned()
+            let configured = registry.roles().find_inherited(role_id).is_some();
+            (require_role || configured || role_id == atelier_provider::RoleId::Main)
+                .then(|| registry.roles().resolve_inherited(role_id, main).1)
         })
         .map_err(|error| {
             acp::Error::invalid_params().data(format!(
                 "failed to load configured {role_id} role: {error}"
             ))
         })
+}
+
+fn main_role_from_sampling_config(
+    config: &SamplingConfig,
+    model_id: &str,
+) -> Result<atelier_provider::RoleConfig, acp::Error> {
+    let (provider, model) = model_id.split_once('/').or_else(|| {
+        config
+            .provider_id
+            .as_deref()
+            .map(|provider| (provider, config.model.as_str()))
+    })
+    .ok_or_else(|| {
+        acp::Error::invalid_params().data(format!(
+            "MAIN model must use provider/model format: {model_id}"
+        ))
+    })?;
+    let mut main = atelier_provider::RoleConfig::new(provider, model)
+        .map_err(|error| acp::Error::invalid_params().data(error.to_string()))?;
+    main.effort = config.reasoning_effort.map(|effort| effort.to_string());
+    if let Some(fast_mode) = config
+        .request_payload
+        .get("fast_mode")
+        .and_then(serde_json::Value::as_bool)
+    {
+        main.set_fast_mode(fast_mode);
+    }
+    Ok(main)
 }
 
 const LIVE_PROVIDER_MODEL_UNAVAILABLE_PREFIX: &str = "__atelier_live_provider_unavailable__:";
@@ -342,20 +371,53 @@ impl MvpAgent {
     /// absent; ordinary main turns and unconfigured subagent Roles may inherit
     /// the active model, while explicitly Role-owned helper flows can use
     /// [`Self::required_role`] to require a configured assignment.
+    fn current_main_role_config(&self) -> Result<atelier_provider::RoleConfig, acp::Error> {
+        let model_id = self.models_manager.current_model_id();
+        let entry = self.resolve_model_id(&model_id).map_err(|_| {
+            acp::Error::invalid_params().data(format!(
+                "MAIN model is unavailable: {}",
+                model_id.0
+            ))
+        })?;
+        let (provider, model) = model_id.0.split_once('/').ok_or_else(|| {
+            acp::Error::invalid_params().data(format!(
+                "MAIN model must use provider/model format: {}",
+                model_id.0
+            ))
+        })?;
+        let mut main = atelier_provider::RoleConfig::new(provider, model)
+            .map_err(|error| acp::Error::invalid_params().data(error.to_string()))?;
+        main.effort = self
+            .models_manager
+            .current_reasoning_effort()
+            .map(|effort| effort.to_string());
+        if let Some(fast_mode) = entry
+            .request_payload
+            .get("fast_mode")
+            .and_then(serde_json::Value::as_bool)
+        {
+            main.set_fast_mode(fast_mode);
+        }
+        Ok(main)
+    }
+
     pub(crate) fn configured_role(
         &self,
         role_id: atelier_provider::RoleId,
     ) -> Result<Option<atelier_provider::RoleConfig>, acp::Error> {
         let path = atelier_config::atelier_home().join("providers.toml");
-        load_configured_role(&path, role_id)
+        let main = self.current_main_role_config()?;
+        load_configured_role(&path, role_id, &main, false)
     }
 
     pub(crate) fn required_role(
         &self,
         role_id: atelier_provider::RoleId,
     ) -> Result<atelier_provider::RoleConfig, acp::Error> {
-        self.configured_role(role_id)?.ok_or_else(|| {
-            acp::Error::invalid_params().data(format!("role {role_id} is not configured"))
+        let path = atelier_config::atelier_home().join("providers.toml");
+        let main = self.current_main_role_config()?;
+        load_configured_role(&path, role_id, &main, true)?.ok_or_else(|| {
+            acp::Error::invalid_params().data(format!("role {role_id} could not be resolved"))
         })
     }
 
@@ -384,12 +446,29 @@ impl MvpAgent {
         &self,
         primary: &SamplingConfig,
     ) -> Result<(OaiCompatClient, String), acp::Error> {
-        let title_role = self.required_role(atelier_provider::RoleId::Title)?;
+        let role_registry = atelier_provider::ProviderRegistry::load_or_create(
+            atelier_config::atelier_home().join("providers.toml"),
+        )
+        .map_err(|error| acp::Error::invalid_params().data(error.to_string()))?;
+        let main_role = main_role_from_sampling_config(primary, &primary.model)?;
+        let title_role = role_registry
+            .roles()
+            .find_inherited(atelier_provider::RoleId::Title)
+            .map(|_| {
+                role_registry
+                    .roles()
+                    .resolve_inherited(atelier_provider::RoleId::Title, &main_role)
+                    .1
+            });
+        let policy_provider = title_role
+            .as_ref()
+            .map(|role| role.provider.as_str())
+            .or(primary.provider_id.as_deref());
         let policy_decision = crate::extensions::policy::evaluate_runtime_policy(
             &self.policy_engine.read(),
             crate::extensions::policy::PolicyOperation::ProviderRequest,
             Some(atelier_provider::RoleId::Title.as_str()),
-            Some(&title_role.provider),
+            policy_provider,
             None,
             None,
             crate::extensions::policy::PolicyGates::default(),
@@ -410,6 +489,12 @@ impl MvpAgent {
                 ));
             }
         }
+        let Some(title_role) = title_role else {
+            let config = primary.clone();
+            let model = config.model.clone();
+            let client = OaiCompatClient::new(config).map_err(map_sampling_err_to_acp)?;
+            return Ok((client, model));
+        };
         let slug = format!("{}/{}", title_role.provider, title_role.model);
         let session_key = self.auth_manager.current_or_expired().map(|a| a.key.clone());
         let models = self.models_manager.models();
@@ -422,29 +507,34 @@ impl MvpAgent {
                 cfg.client_version.clone(),
             )
         };
-        let config = match crate::agent::config::resolve_aux_model_sampling_config(
-            &slug,
-            &models,
-            &endpoints,
-            session_key.as_deref(),
-            disable_api_key_auth,
-            alpha_test_key,
-            client_version,
-        ) {
-            Some(mut cfg) => {
-                cfg.client_identifier = primary.client_identifier.clone();
-                cfg.attribution_callback = primary.attribution_callback.clone();
-                cfg.bearer_resolver = primary.bearer_resolver.clone();
-                cfg.max_retries = primary.max_retries;
-                cfg
-            }
-            None => {
-                return Err(acp::Error::invalid_params().data(format!(
-                    "configured title role model is unavailable: {slug}"
-                )));
+        let mut config = if title_role.provider == main_role.provider
+            && title_role.model == main_role.model
+        {
+            primary.clone()
+        } else {
+            match crate::agent::config::resolve_aux_model_sampling_config(
+                &slug,
+                &models,
+                &endpoints,
+                session_key.as_deref(),
+                disable_api_key_auth,
+                alpha_test_key,
+                client_version,
+            ) {
+                Some(mut cfg) => {
+                    cfg.client_identifier = primary.client_identifier.clone();
+                    cfg.attribution_callback = primary.attribution_callback.clone();
+                    cfg.bearer_resolver = primary.bearer_resolver.clone();
+                    cfg.max_retries = primary.max_retries;
+                    cfg
+                }
+                None => {
+                    return Err(acp::Error::invalid_params().data(format!(
+                        "configured title role model is unavailable: {slug}"
+                    )));
+                }
             }
         };
-        let mut config = config;
         config.request_payload = title_role.merged_payload(&config.request_payload);
         if let Some(raw_effort) = title_role.effort.as_deref() {
             config.reasoning_effort = Some(raw_effort.parse().map_err(|_| {
@@ -459,7 +549,7 @@ impl MvpAgent {
     }
     fn has_proxy_credentials(&self) -> bool {
         self.cfg.borrow().endpoints.deployment_key.is_some()
-            || self.auth_manager.current_or_expired().is_some_and(|a| a.is_xai_auth())
+            || self.auth_manager.current_or_expired().is_some_and(|a| a.is_configured_refresh_auth())
     }
     /// `true` for session-based ACP auth methods.
     fn is_session_based_auth(&self) -> bool {
@@ -1064,7 +1154,7 @@ impl MvpAgent {
         let user_id = self
             .auth_manager
             .current_or_expired()
-            .filter(|a| a.is_xai_auth())
+            .filter(|a| a.is_configured_refresh_auth())
             .map(|a| a.user_id);
         let mut config = crate::agent::config::sampling_config_for_model(
             model,
@@ -1262,8 +1352,6 @@ impl MvpAgent {
             gateway,
             subagent_model_overrides: cfg.subagent_model_overrides.clone(),
             subagent_toggle: cfg.subagent_toggle.clone(),
-            subagent_roles: cfg.subagent_roles.clone(),
-            subagent_personas: cfg.subagent_personas.clone(),
             launch_cwd: std::env::current_dir()
                 .unwrap_or_else(|_| std::path::PathBuf::from(".")),
             launch_dir_trust: std::cell::OnceCell::new(),
@@ -1272,11 +1360,6 @@ impl MvpAgent {
                 cfg.plugins.cli_plugin_dirs.clone(),
             ),
             plugin_registry_initialized: std::cell::Cell::new(false),
-            persona_io_summaries: cfg
-                .subagent_personas
-                .iter()
-                .map(|(name, p)| p.render_io_summary(name))
-                .collect(),
             models_manager,
             cfg: RefCell::new(cfg.clone()),
             auth_method_id: crate::agent::auth_method::new_shared_auth_method_id(None),
@@ -2098,11 +2181,9 @@ impl MvpAgent {
     ///
     /// Priority (highest to lowest):
     /// 1. Model `agent_type` if it names a strict harness (codex, …).
-    /// 2. `acp_agent_profile` from ACP `_meta.agentProfile` (remote clients).
-    /// 3. `agent_profile_path` from CLI `--agent-profile`.
-    /// 4. `agent_config` from config.toml `[agent]`.
-    /// 5. `ATELIER_AGENT` env var.
-    /// 6. Built-in default agent.
+    /// 2. Built-in `agent_config` name from config.toml `[agent]`.
+    /// 3. Built-in `ATELIER_AGENT` name.
+    /// 4. Built-in default agent.
     ///
     /// `ATELIER_AGENT` and an explicit `[agent] name` bypass step 1.
     /// Strict-harness classification is structural — see
@@ -2112,9 +2193,7 @@ impl MvpAgent {
     /// the caller via [`inherited_harness_template`], not here.
     pub fn resolve_agent_definition(
         cwd: &std::path::Path,
-        agent_profile_path: Option<&std::path::Path>,
         agent_config: &config::AgentSelectionConfig,
-        acp_agent_profile: Option<atelier_agent::AgentDefinition>,
         model_agent_type: Option<&str>,
     ) -> atelier_agent::AgentDefinition {
         use atelier_agent::AgentDefinition;
@@ -2133,82 +2212,25 @@ impl MvpAgent {
             );
             return def;
         }
-        if let Some(def) = acp_agent_profile {
-            tracing::info!(
-                agent_name = % def.name,
-                "Using agent profile from ACP _meta.agentProfile"
-            );
-            return def;
-        }
-        if let Some(path) = agent_profile_path {
-            match AgentDefinition::from_file(path) {
-                Ok(def) => return def,
-                Err(e) => {
-                    tracing::error!(
-                        path = % path.display(), error = % e,
-                        "Failed to load agent profile from --agent-profile path"
-                    );
-                    eprintln!(
-                        "error: failed to load agent profile '{}': {}", path.display(), e
-                    );
-                    crate::instrumentation::finalize_and_exit(1);
-                }
-            }
-        }
-        if let Some(ref path) = agent_config.definition {
-            match AgentDefinition::from_file(path) {
-                Ok(def) => {
-                    tracing::info!(
-                        agent_name = % def.name, path = % path.display(),
-                        "Using agent definition from config.toml [agent] definition"
-                    );
-                    return def;
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        path = % path.display(), error = % e,
-                        "Failed to load agent definition from config.toml [agent] definition, \
-                         falling through to next source"
-                    );
-                }
-            }
-        }
         if let Some(ref name) = agent_config.name {
             tracing::info!(
                 agent_name = % name,
-                "Resolving agent definition from config.toml [agent] name"
+                "Resolving built-in agent definition from config.toml [agent] name"
             );
-            if let Some(def) = atelier_agent::discovery::by_name_in_cwd(name, cwd) {
-                return def;
-            }
-            tracing::warn!(
-                agent_name = % name,
-                "Agent '{}' not found via discovery, falling through to next source",
-                name
-            );
+            return atelier_agent::discovery::by_name(name).unwrap_or_else(|| {
+                panic!("unsupported [agent].name `{name}`; only built-in Agent harnesses are allowed")
+            });
         }
-        let agent_name = std::env::var("ATELIER_AGENT").ok();
-        let resolved = match agent_name.as_deref() {
-            Some("browser-use") | Some("browser_use") => AgentDefinition::browser_use(),
-            Some("atelier-build-concise") | Some("atelier_build_concise") => {
-                AgentDefinition::atelier_build_concise()
-            }
-            Some(path) if std::path::Path::new(path).is_absolute() => {
-                match AgentDefinition::from_file(path) {
-                    Ok(def) => def,
-                    Err(e) => {
-                        tracing::warn!(
-                            path = path, error = % e,
-                            "Failed to load agent definition from file, falling back to default"
-                        );
-                        AgentDefinition::atelier_build_plan()
-                    }
-                }
-            }
-            Some(name) => {
-                atelier_agent::discovery::by_name_in_cwd(name, cwd)
-                    .unwrap_or_else(AgentDefinition::atelier_build_plan)
-            }
+        let agent_name = std::env::var("ATELIER_AGENT")
+            .ok()
+            .map(|name| name.trim().to_string())
+            .filter(|name| !name.is_empty());
+        let resolved = match agent_name {
+            Some(name) => atelier_agent::discovery::by_name(&name).unwrap_or_else(|| {
+                panic!(
+                    "unsupported ATELIER_AGENT value `{name}`; only built-in Agent harnesses are allowed"
+                )
+            }),
             None => AgentDefinition::atelier_build_plan(),
         };
         if !atelier_agent_env_set && !config_agent_explicitly_set
@@ -2461,8 +2483,11 @@ impl MvpAgent {
             }
             None => (atelier_hunk_tracker::HunkTrackerHandle::noop(), None),
         };
-        let has_xai_auth = self.auth_manager.current().is_some_and(|a| a.is_xai_auth());
-        let loc_tracking_enabled = hunk_tracking_enabled && has_xai_auth
+        let has_refresh_auth = self
+            .auth_manager
+            .current()
+            .is_some_and(|auth| auth.is_configured_refresh_auth());
+        let loc_tracking_enabled = hunk_tracking_enabled && has_refresh_auth
             && (self
                 .cfg
                 .borrow()
@@ -2633,19 +2658,21 @@ impl MvpAgent {
         );
         let skills = self.cfg.borrow().skills.clone();
         let compat = self.cfg.borrow().compat_resolved;
-        let acp_agent_profile = parse_agent_profile_from_meta(session_meta);
-        let session_default_agent_profile = acp_agent_profile
-            .as_ref()
-            .map(|d| d.name.clone());
-        let mut agent_definition = {
+        let init_meta = self
+            .initialize_request
+            .get()
+            .and_then(|init| init.meta.as_ref());
+        let session_default_agent_profile = builtin_agent_profile_from_meta(
+            session_meta,
+            init_meta,
+        )
+        .map_err(|message| acp::Error::invalid_params().data(message))?
+        .map(str::to_owned);
+        let mut agent_definition = if let Some(profile) = session_default_agent_profile.as_deref() {
+            atelier_agent::discovery::by_name(profile).expect("validated built-in Agent harness")
+        } else {
             let cfg = self.cfg.borrow();
-            Self::resolve_agent_definition(
-                cwd.as_path(),
-                cfg.agent_profile_path.as_deref(),
-                &cfg.agent,
-                acp_agent_profile,
-                model_agent_type,
-            )
+            Self::resolve_agent_definition(cwd.as_path(), &cfg.agent, model_agent_type)
         };
         {
             let cfg = self.cfg.borrow();
@@ -2788,12 +2815,9 @@ impl MvpAgent {
                 cfg.local_runtime_settings.as_ref(),
             )
         };
-        let model_max_retries = self
-            .models_manager
-            .models()
-            .values()
-            .find(|entry| entry.info.model == sampling_config.model)
-            .and_then(|entry| entry.info.max_retries);
+        // Transport recovery is an operation-level policy, not model metadata.
+        // Unset means the sampler-owned default (currently five retries).
+        let configured_max_retries = self.cfg.borrow().retry.max_retries;
         let origin_client = self.origin_client_info_from_meta(init.meta.as_ref());
         let web_search_sampling_config = self.prepare_web_search_sampling_config();
         let image_gen_config = self.prepare_image_gen_config();
@@ -2848,10 +2872,6 @@ impl MvpAgent {
             let cfg = self.cfg.borrow();
             cfg.resolve_backend_tools().value
         };
-        let init_meta = self
-            .initialize_request
-            .get()
-            .and_then(|init| init.meta.as_ref());
         if let Some(override_prompt) = system_prompt_override_from_meta(
             session_meta,
             init_meta,
@@ -2928,12 +2948,7 @@ impl MvpAgent {
                         tracing::warn!(error = ? e, "hook loading error");
                     }
                     let mut merged = disk_registry;
-                    if folder_trust::agent_inline_hooks_allowed(
-                        agent_definition.scope,
-                        || hooks_trusted,
-                    ) {
-                        merged.append_specs(specs);
-                    }
+                    merged.append_specs(specs);
                     Some(std::sync::Arc::new(merged))
                 });
             let initial_reasoning_effort = chat_history
@@ -3018,7 +3033,7 @@ impl MvpAgent {
                     session_auto_mode,
                     origin_client.as_ref().map(|o| o.product.clone()),
                     inference_idle_timeout_secs,
-                    model_max_retries,
+                    configured_max_retries,
                     web_search_sampling_config,
                     web_fetch_config,
                     image_gen_config,
@@ -3031,9 +3046,7 @@ impl MvpAgent {
                     client_hooks,
                     prompt_display_cwd,
                     subagent_toggle,
-                    self.persona_io_summaries.clone(),
                     atelier_agent::prompt::context::PromptAudience::Primary,
-                    None,
                     None,
                     disable_web_search,
                     backend_tools_enabled,
@@ -3275,8 +3288,14 @@ mod role_sampling_tests {
         let path = directory.path().join("providers.toml");
         std::fs::write(&path, "schema_version = 999\n").unwrap();
 
-        let error = load_configured_role(&path, atelier_provider::RoleId::Main)
-            .expect_err("invalid role registry must fail closed");
+        let main = RoleConfig::new("provider", "model").unwrap();
+        let error = load_configured_role(
+            &path,
+            atelier_provider::RoleId::Main,
+            &main,
+            false,
+        )
+        .expect_err("invalid role registry must fail closed");
 
         assert!(
             error

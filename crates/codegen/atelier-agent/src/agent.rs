@@ -146,14 +146,6 @@ impl Agent {
         self.prompt_context.agents_md_user_reminder()
     }
 
-    /// Personas content formatted for user-message injection.
-    ///
-    /// Returns the `<system-reminder>` block to prepend as a user message,
-    /// respecting audience (suppressed for subagents) and template.
-    pub fn personas_user_reminder(&self) -> Option<String> {
-        self.prompt_context.personas_user_reminder()
-    }
-
     /// The structured prompt context for inspection and re-rendering.
     pub fn prompt_context(&self) -> &PromptContext {
         &self.prompt_context

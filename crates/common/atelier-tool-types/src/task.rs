@@ -215,26 +215,16 @@ pub struct SubagentCompletedOutput {
     pub turns: u32,
     pub duration_ms: u64,
     pub worktree_path: Option<String>,
-    /// Persona used by this subagent, if any.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub persona: Option<String>,
     /// The `subagent_id` to pass as `resume_from` to continue this subagent.
     /// Always equals `subagent_id` — provided as a convenience so programmatic
     /// consumers can extract the resume handle without parsing text.
     pub resume_from_hint: String,
-    /// If the subagent used a persona, the persona name to pass when resuming.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub persona_hint: Option<String>,
 }
 
 impl SubagentCompletedOutput {
     /// Render the resume footer showing the subagent ID and resume hint.
     pub fn resume_footer(&self) -> String {
-        format_resume_footer(
-            &self.subagent_id,
-            &self.subagent_type,
-            self.persona.as_deref(),
-        )
+        format_resume_footer(&self.subagent_id, &self.subagent_type)
     }
 
     /// Render the full model-facing completion block: the answer text, the
@@ -247,7 +237,6 @@ impl SubagentCompletedOutput {
             self.tool_calls,
             self.turns,
             self.duration_ms,
-            self.persona.as_deref(),
         )
     }
 }
@@ -280,9 +269,8 @@ pub fn format_subagent_completed(
     tool_calls: u32,
     turns: u32,
     duration_ms: u64,
-    persona: Option<&str>,
 ) -> String {
-    let footer = format_resume_footer(subagent_id, subagent_type, persona);
+    let footer = format_resume_footer(subagent_id, subagent_type);
     format!(
         "{output}\n\n<subagent_meta>id={subagent_id}, type={subagent_type}, \
          tool_calls={tool_calls}, turns={turns}, duration_ms={duration_ms}</subagent_meta>\n\n\
@@ -292,24 +280,14 @@ pub fn format_subagent_completed(
 
 /// Render a resume footer from bare fields (when [`SubagentCompletedOutput`] is
 /// not available, e.g. in the `get_task_output` path).
-pub fn format_resume_footer(
-    subagent_id: &str,
-    subagent_type: &str,
-    persona: Option<&str>,
-) -> String {
-    let mut footer = format!(
+pub fn format_resume_footer(subagent_id: &str, subagent_type: &str) -> String {
+    format!(
         "<subagent_result>\n\
          subagent_id: {subagent_id}\n\
          subagent_type: {subagent_type}\n\
-         To continue this subagent's conversation, use resume_from=\"{subagent_id}\"."
-    );
-    if let Some(persona) = persona {
-        footer.push_str(&format!(
-            "\nThe subagent used persona=\"{persona}\". Pass the same persona when resuming."
-        ));
-    }
-    footer.push_str("\n</subagent_result>");
-    footer
+         To continue this subagent's conversation, use resume_from=\"{subagent_id}\".\n\
+         </subagent_result>"
+    )
 }
 
 /// Maximum number of task IDs accepted by a single multi-id `get_task_output`

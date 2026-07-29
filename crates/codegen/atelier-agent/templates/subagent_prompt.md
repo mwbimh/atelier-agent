@@ -77,9 +77,3 @@ ${%- if role_instructions %}
 ${{ role_instructions }}
 </role-instructions>
 ${%- endif %}
-${%- if persona_instructions %}
-
-<persona>
-${{ persona_instructions }}
-</persona>
-${%- endif %}

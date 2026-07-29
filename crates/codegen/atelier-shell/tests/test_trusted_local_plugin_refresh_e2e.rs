@@ -1,4 +1,4 @@
-//! E2E: trusted local plugin install snapshot refresh on session start.
+//! E2E: trusted local plugin snapshots refresh without extending fixed Agent discovery.
 //!
 //! Replicates an enterprise feedback scenario:
 //! 1. Install a local plugin (full copy into `installed-plugins/`).
@@ -108,7 +108,7 @@ impl Drop for EnvVarGuard {
 
 #[test]
 #[serial]
-fn trusted_local_refresh_surfaces_new_agent_via_discovery() {
+fn trusted_local_refresh_keeps_runtime_agent_discovery_fixed() {
     // Canonicalize so under-home auto-trust holds where the temp root is a
     // symlink (macOS `/var` -> `/private/var`).
     let home_tmp = TempDir::new().unwrap();
@@ -154,17 +154,17 @@ fn trusted_local_refresh_surfaces_new_agent_via_discovery() {
         "session-spawn refresh must re-copy the new agent into the snapshot"
     );
 
-    // The new agent must surface to discovery (the reported symptom).
+    // Plugin snapshots may still contain legacy `agents/` metadata, but runtime
+    // discovery is intentionally fixed to the three compiled-in Subagent
+    // harnesses. Neither refreshed nor session-scoped plugin files may extend it.
     let agents = atelier_agent::discovery::all_subagents_with_plugins(
         &cwd,
         &HashMap::new(),
         Some(plugin_registry.as_ref()),
     );
-    let names: Vec<&str> = agents.iter().map(|a| a.name.as_str()).collect();
-    assert!(
-        names.contains(&"demo-plugin:new-agent"),
-        "new agent must surface in /agents after session-start refresh; got {names:?}"
-    );
+    let names: Vec<&str> = agents.iter().map(|agent| agent.name.as_str()).collect();
+    assert_eq!(names, ["general-purpose", "explore", "plan"]);
+    assert!(!names.contains(&"demo-plugin:new-agent"));
 
     // Session `_meta.pluginDirs` load. Lives in the same test because
     // atelier_home() caches the first ATELIER_HOME per process; a separate test

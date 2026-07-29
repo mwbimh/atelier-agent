@@ -374,7 +374,6 @@ async fn test_subagent_notifications_round_trip() {
             effective_context_source: None,
             context_normalized: false,
             capability_mode: None,
-            persona: None,
             role: None,
             model: None,
             resumed_from: None,
@@ -489,7 +488,6 @@ async fn test_subagent_spawned_resumed_roundtrip() {
             effective_context_source: Some("resumed".to_string()),
             context_normalized: false,
             capability_mode: None,
-            persona: Some("implementer".to_string()),
             role: None,
             model: None,
             resumed_from: Some("source-agent-id".to_string()),
@@ -505,13 +503,11 @@ async fn test_subagent_spawned_resumed_roundtrip() {
                 ExtensionSessionUpdateType::SubagentSpawned {
                     subagent_id,
                     effective_context_source,
-                    persona,
                     resumed_from,
                     ..
                 } => {
                     assert_eq!(subagent_id, "child-resumed");
                     assert_eq!(effective_context_source.as_deref(), Some("resumed"),);
-                    assert_eq!(persona.as_deref(), Some("implementer"));
                     assert_eq!(
                         resumed_from.as_deref(), Some("source-agent-id"),
                         "resumed_from should round-trip through JSONL persistence"

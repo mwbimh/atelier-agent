@@ -56,7 +56,8 @@ impl AsyncTerminalRunner for LocalTerminalRunner {
         };
         #[cfg(not(unix))]
         let mut cmd = {
-            let inv = atelier_config::shell::shell_command_argv(&request.command);
+            let inv = atelier_config::shell::shell_command_argv(&request.command)
+                .map_err(|error| TerminalError::Other(error.to_string()))?;
             let args: Vec<std::ffi::OsString> = inv
                 .args
                 .iter()

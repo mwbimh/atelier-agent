@@ -175,6 +175,7 @@ mod tests {
             conversation: vec![],
             sampling_config: SamplingConfig {
                 base_url: "https://api.example.com".to_string(),
+                provider_id: None,
                 model: "test-model".to_string(),
                 max_completion_tokens: None,
                 temperature: None,
@@ -218,6 +219,7 @@ mod tests {
             ],
             sampling_config: SamplingConfig {
                 base_url: "https://api.example.com".to_string(),
+                provider_id: Some("provider-test".to_string()),
                 model: "atelier-3".to_string(),
                 max_completion_tokens: Some(4096),
                 temperature: Some(0.7),
@@ -245,6 +247,10 @@ mod tests {
         let json = serde_json::to_string(&snapshot).expect("serialize");
         let deserialized: ChatStateSnapshot = serde_json::from_str(&json).expect("deserialize");
 
+        assert_eq!(
+            deserialized.sampling_config.provider_id.as_deref(),
+            Some("provider-test")
+        );
         assert_eq!(deserialized.prompt_index, 5);
         assert_eq!(deserialized.total_tokens, 1234);
         assert_eq!(deserialized.conversation.len(), 3);

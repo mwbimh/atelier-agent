@@ -331,9 +331,8 @@ pub enum Action {
         tab: crate::views::extensions_modal::ExtensionsTab,
         trigger: atelier_telemetry::events::ExtensionsModalTrigger,
     },
-    /// Open the agents modal (listing all agent definitions).
-    /// Optionally opens directly on a specific tab.
-    OpenConfigAgentsModal(Option<crate::views::agents_modal::AgentsTab>),
+    /// Open the dedicated fixed Runtime Role manager.
+    OpenRolesModal,
     /// Trigger OAuth for an MCP server from the modal.
     McpAuthTrigger {
         server_name: String,
@@ -393,11 +392,6 @@ pub enum Action {
     DemoteToBackground,
     /// Request current bundle cache status via `atelier/bundle/status`.
     RequestBundleStatus,
-    /// View a catalog entry's raw content in the block viewer.
-    ViewCatalogEntry {
-        kind: String,
-        name: String,
-    },
     /// Hide the announcements banner.
     AnnouncementsHide,
     /// Show the announcements banner.
@@ -927,12 +921,6 @@ pub enum Action {
     OpenMemoryModal,
     /// Open the hidden `/gboom` easter egg (DOOM-style raycaster modal).
     OpenGboom,
-    /// Suspend the TUI and open a file in $EDITOR.
-    SuspendForEditor {
-        path: std::path::PathBuf,
-        /// Reload `/config-agents` list after the editor exits (when set).
-        refresh_agents_modal: Option<crate::views::agents_modal::AgentsTab>,
-    },
     /// Toggle the expanded goal detail overlay.
     ToggleGoalDetail,
     Rewind,
@@ -1794,8 +1782,6 @@ pub enum Effect {
     },
     /// Fetch current bundle cache status via `atelier/bundle/status`.
     FetchBundleStatus,
-    /// Fetch a bundled entry's raw content via `atelier/bundle/entry/get`.
-    FetchCatalogEntry { kind: String, name: String },
     /// Send feedback about the current session (fire-and-forget POST).
     SendFeedback {
         agent_id: AgentId,
@@ -2466,25 +2452,10 @@ pub enum TaskResult {
     BundleStatusReady {
         has_cache: bool,
         version: Option<String>,
-        personas: Vec<String>,
-        roles: Vec<String>,
-        agents: Vec<String>,
         skills: Vec<String>,
-        persona_details: Vec<super::bundle::PersonaDetail>,
-        role_details: Vec<super::bundle::RoleDetail>,
     },
     /// Bundle status fetch failed.
     BundleStatusFailed {
-        error: String,
-    },
-    /// Catalog entry content fetched successfully.
-    CatalogEntryReady {
-        kind: String,
-        name: String,
-        content: String,
-    },
-    /// Catalog entry fetch failed.
-    CatalogEntryFailed {
         error: String,
     },
     /// Side question (/btw) response received.

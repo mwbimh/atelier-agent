@@ -60,6 +60,12 @@ rusqlite = { version = "0.37", features = ["bundled"] }
 libc = { workspace = true }
 nix = { version = "0.30", features = ["fs"] }
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_System_Threading",
+] }
+
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = { workspace = true }
 nix = { version = "0.30", features = ["fs"] }

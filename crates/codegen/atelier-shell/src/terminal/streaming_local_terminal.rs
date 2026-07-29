@@ -872,7 +872,7 @@ fn spawn_shell_command(
     }
     #[cfg(not(unix))]
     {
-        let inv = atelier_config::shell::shell_command_argv(command);
+        let inv = atelier_config::shell::shell_command_argv(command)?;
         let args: Vec<std::ffi::OsString> = inv
             .args
             .iter()

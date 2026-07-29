@@ -22,6 +22,7 @@ fn first_run_writes_the_split_atelier_config_tree() {
         "contexts/default/goal/strategist.md",
         "contexts/default/goal/skeptic.md",
         "contexts/default/goal/summary.md",
+        "contexts/default/roles/general.md",
         "contexts/default/roles/explore.md",
         "contexts/default/roles/implement.md",
         "contexts/default/roles/review.md",

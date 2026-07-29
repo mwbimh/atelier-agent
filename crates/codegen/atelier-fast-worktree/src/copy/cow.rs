@@ -76,6 +76,7 @@ mod tests {
         assert_eq!(std::fs::read(&dest).unwrap(), data);
     }
 
+    #[cfg(unix)]
     #[test]
     fn test_clone_preserves_permissions() {
         use std::os::unix::fs::PermissionsExt;
@@ -95,6 +96,23 @@ mod tests {
 
         let dest_perms = std::fs::metadata(&dest).unwrap().permissions();
         assert_eq!(dest_perms.mode() & 0o777, 0o755);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_clone_preserves_readonly_attribute() {
+        let temp = TempDir::new().unwrap();
+        let src = temp.path().join("readonly.txt");
+        let dest = temp.path().join("readonly_copy.txt");
+
+        std::fs::write(&src, "readonly").unwrap();
+        let mut permissions = std::fs::metadata(&src).unwrap().permissions();
+        permissions.set_readonly(true);
+        std::fs::set_permissions(&src, permissions).unwrap();
+
+        clone_file(&src, &dest).unwrap();
+
+        assert!(std::fs::metadata(&dest).unwrap().permissions().readonly());
     }
 
     #[cfg(unix)]

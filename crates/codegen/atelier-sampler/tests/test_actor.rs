@@ -12,6 +12,7 @@ use std::time::Duration;
 
 use axum::Router;
 use axum::http::StatusCode;
+use axum::response::IntoResponse;
 use axum::response::sse::{Event, Sse};
 use axum::routing::post;
 use futures_util::stream::{self, StreamExt};
@@ -72,6 +73,7 @@ fn test_config(base_url: String, model: &str) -> SamplerConfig {
     SamplerConfig {
         api_key: Some("test-key".into()),
         base_url,
+        provider_id: None,
         model: model.into(),
         max_completion_tokens: Some(1024),
         temperature: None,
@@ -115,6 +117,18 @@ fn user_request(text: &str) -> ConversationRequest {
         })],
         ..Default::default()
     }
+}
+
+fn image_request(text: &str) -> ConversationRequest {
+    let mut request = user_request(text);
+    let ConversationItem::User(user) = &mut request.items[0] else {
+        unreachable!("user_request always creates a User item");
+    };
+    user.content
+        .push(atelier_sampling_types::ContentPart::Image {
+            url: std::sync::Arc::<str>::from("data:image/png;base64,iVBORw0KGgo="),
+        });
+    request
 }
 
 // ---------------------------------------------------------------------------
@@ -437,6 +451,284 @@ async fn retries_on_500_then_succeeds() {
     );
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn persistent_5xx_uses_exactly_five_retries() {
+    let counter = Arc::new(AtomicU32::new(0));
+    let counter_handler = Arc::clone(&counter);
+    let app = Router::new().route(
+        "/v1/chat/completions",
+        post(move || {
+            let counter = Arc::clone(&counter_handler);
+            async move {
+                counter.fetch_add(1, Ordering::SeqCst);
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    [("retry-after", "0")],
+                    json!({ "error": { "message": "persistent" } }).to_string(),
+                )
+                    .into_response()
+            }
+        }),
+    );
+    let server = MockServer::spawn(app).await;
+    let (event_tx, _event_rx) = mpsc::unbounded_channel();
+    let mut cfg = test_config(server.base_url(), "test-model");
+    cfg.max_retries = Some(5);
+    let handle = SamplerActor::spawn(cfg, RetryPolicy::default(), event_tx);
+
+    let result = handle
+        .submit_and_collect(RequestId::from("req-five-retries"), user_request("hi"))
+        .await;
+    server.shutdown();
+
+    assert!(result.is_err());
+    assert_eq!(
+        counter.load(Ordering::SeqCst),
+        6,
+        "one initial request plus exactly five retries"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn partial_stream_failure_retries_as_one_logical_operation() {
+    let counter = Arc::new(AtomicU32::new(0));
+    let counter_handler = Arc::clone(&counter);
+    let app = Router::new().route(
+        "/v1/chat/completions",
+        post(move || {
+            let counter = Arc::clone(&counter_handler);
+            async move {
+                let attempt = counter.fetch_add(1, Ordering::SeqCst);
+                if attempt == 0 {
+                    let events = vec![
+                        Ok(text_chunk_event("partial", false)),
+                        Err(std::io::Error::other("connection reset mid-stream")),
+                    ];
+                    Sse::new(stream::iter(events)).into_response()
+                } else {
+                    let events = sse::chat_completion_events("recovered", "test-model");
+                    Sse::new(stream::iter(
+                        events.into_iter().map(Ok::<_, std::convert::Infallible>),
+                    ))
+                    .into_response()
+                }
+            }
+        }),
+    );
+    let server = MockServer::spawn(app).await;
+    let (event_tx, _event_rx) = mpsc::unbounded_channel();
+    let mut cfg = test_config(server.base_url(), "test-model");
+    cfg.max_retries = Some(1);
+    let handle = SamplerActor::spawn(cfg, RetryPolicy::default(), event_tx);
+
+    let (response, metrics) = handle
+        .submit_and_collect(RequestId::from("req-partial-stream"), user_request("hi"))
+        .await
+        .expect("mid-stream transport failure should recover within the same budget");
+    server.shutdown();
+
+    assert_eq!(response.assistant().unwrap().content.as_ref(), "recovered");
+    assert_eq!(metrics.attempts, 2);
+    assert_eq!(counter.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn successful_response_resets_budget_before_the_next_request_id() {
+    let counter = Arc::new(AtomicU32::new(0));
+    let counter_handler = Arc::clone(&counter);
+    let app = Router::new().route(
+        "/v1/chat/completions",
+        post(move || {
+            let counter = Arc::clone(&counter_handler);
+            async move {
+                let attempt = counter.fetch_add(1, Ordering::SeqCst);
+                if attempt % 2 == 0 {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        [("retry-after", "0")],
+                        json!({ "error": { "message": "transient" } }).to_string(),
+                    )
+                        .into_response()
+                } else {
+                    let events = sse::chat_completion_events("ok", "test-model");
+                    Sse::new(stream::iter(
+                        events.into_iter().map(Ok::<_, std::convert::Infallible>),
+                    ))
+                    .into_response()
+                }
+            }
+        }),
+    );
+    let server = MockServer::spawn(app).await;
+    let (event_tx, _event_rx) = mpsc::unbounded_channel();
+    let mut cfg = test_config(server.base_url(), "test-model");
+    cfg.max_retries = Some(1);
+    let handle = SamplerActor::spawn(cfg, RetryPolicy::default(), event_tx);
+
+    handle
+        .submit_and_collect(RequestId::from("req-reset-a"), user_request("a"))
+        .await
+        .expect("first request succeeds after one retry");
+    handle
+        .submit_and_collect(RequestId::from("req-reset-b"), user_request("b"))
+        .await
+        .expect("success must reset the budget for a new request id");
+    server.shutdown();
+
+    assert_eq!(counter.load(Ordering::SeqCst), 4);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn empty_model_responses_consume_the_transport_budget_and_then_recover() {
+    let counter = Arc::new(AtomicU32::new(0));
+    let counter_handler = Arc::clone(&counter);
+    let app = Router::new().route(
+        "/v1/chat/completions",
+        post(move || {
+            let counter = Arc::clone(&counter_handler);
+            async move {
+                let attempt = counter.fetch_add(1, Ordering::SeqCst);
+                let content = if attempt < 2 { "" } else { "recovered" };
+                let events = sse::chat_completion_events(content, "test-model");
+                Sse::new(stream::iter(
+                    events.into_iter().map(Ok::<_, std::convert::Infallible>),
+                ))
+            }
+        }),
+    );
+    let server = MockServer::spawn(app).await;
+    let (event_tx, _event_rx) = mpsc::unbounded_channel();
+    let mut cfg = test_config(server.base_url(), "test-model");
+    cfg.max_retries = Some(2);
+    let handle = SamplerActor::spawn(cfg, RetryPolicy::default(), event_tx);
+
+    let (response, metrics) = handle
+        .submit_and_collect(RequestId::from("req-empty-recovery"), user_request("hi"))
+        .await
+        .expect("two empty responses may use the complete retry budget");
+    server.shutdown();
+
+    assert_eq!(response.assistant().unwrap().content.as_ref(), "recovered");
+    assert_eq!(metrics.attempts, 3);
+    assert_eq!(counter.load(Ordering::SeqCst), 3);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn image_strip_recovery_does_not_consume_transport_retry_budget() {
+    let counter = Arc::new(AtomicU32::new(0));
+    let counter_handler = Arc::clone(&counter);
+    let app = Router::new().route(
+        "/v1/chat/completions",
+        post(move |axum::Json(body): axum::Json<serde_json::Value>| {
+            let counter = Arc::clone(&counter_handler);
+            async move {
+                let attempt = counter.fetch_add(1, Ordering::SeqCst);
+                match attempt {
+                    0 => {
+                        assert!(body.to_string().contains("image_url"));
+                        (
+                            StatusCode::PAYLOAD_TOO_LARGE,
+                            json!({ "error": { "message": "too large" } }).to_string(),
+                        )
+                            .into_response()
+                    }
+                    1 => {
+                        assert!(!body.to_string().contains("image_url"));
+                        (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            [("retry-after", "0")],
+                            json!({ "error": { "message": "transient" } }).to_string(),
+                        )
+                            .into_response()
+                    }
+                    _ => {
+                        assert!(!body.to_string().contains("image_url"));
+                        let events = sse::chat_completion_events("ok", "test-model");
+                        Sse::new(stream::iter(
+                            events.into_iter().map(Ok::<_, std::convert::Infallible>),
+                        ))
+                        .into_response()
+                    }
+                }
+            }
+        }),
+    );
+    let server = MockServer::spawn(app).await;
+    let (event_tx, _event_rx) = mpsc::unbounded_channel();
+    let mut cfg = test_config(server.base_url(), "test-model");
+    cfg.max_retries = Some(1);
+    let handle = SamplerActor::spawn(cfg, RetryPolicy::default(), event_tx);
+
+    handle
+        .submit_and_collect(RequestId::from("req-image-strip"), image_request("inspect"))
+        .await
+        .expect("image strip plus one transport retry must succeed");
+    server.shutdown();
+
+    assert_eq!(counter.load(Ordering::SeqCst), 3);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn terminal_failures_share_budget_across_request_ids_until_explicit_reset() {
+    let counter = Arc::new(AtomicU32::new(0));
+    let counter_handler = Arc::clone(&counter);
+    let app = Router::new().route(
+        "/v1/chat/completions",
+        post(move || {
+            let counter = Arc::clone(&counter_handler);
+            async move {
+                counter.fetch_add(1, Ordering::SeqCst);
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    [("retry-after", "0")],
+                    json!({ "error": { "message": "persistent" } }).to_string(),
+                )
+                    .into_response()
+            }
+        }),
+    );
+    let server = MockServer::spawn(app).await;
+    let (event_tx, _event_rx) = mpsc::unbounded_channel();
+    let mut cfg = test_config(server.base_url(), "test-model");
+    cfg.max_retries = Some(2);
+    let handle = SamplerActor::spawn(cfg, RetryPolicy::default(), event_tx);
+
+    assert!(
+        handle
+            .submit_and_collect(RequestId::from("req-budget-a"), user_request("a"))
+            .await
+            .is_err()
+    );
+    assert_eq!(counter.load(Ordering::SeqCst), 3);
+
+    assert!(
+        handle
+            .submit_and_collect(RequestId::from("req-budget-b"), user_request("b"))
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        counter.load(Ordering::SeqCst),
+        4,
+        "new request id must not replenish a failed operation's budget"
+    );
+
+    handle.reset_retry_budget();
+    assert!(
+        handle
+            .submit_and_collect(RequestId::from("req-budget-c"), user_request("c"))
+            .await
+            .is_err()
+    );
+    server.shutdown();
+
+    assert_eq!(
+        counter.load(Ordering::SeqCst),
+        7,
+        "explicit operation reset restores the full two-retry budget"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Rate limit exhausts threshold
 // ---------------------------------------------------------------------------
@@ -451,17 +743,12 @@ async fn rate_limit_exhausts_at_threshold_and_yields_failed() {
             let counter = Arc::clone(&counter_handler);
             async move {
                 counter.fetch_add(1, Ordering::SeqCst);
-                Err::<
-                    Sse<
-                        futures_util::stream::Iter<
-                            std::vec::IntoIter<Result<Event, std::convert::Infallible>>,
-                        >,
-                    >,
-                    (StatusCode, String),
-                >((
+                (
                     StatusCode::TOO_MANY_REQUESTS,
+                    [("retry-after", "0")],
                     json!({ "error": { "message": "slow down" } }).to_string(),
-                ))
+                )
+                    .into_response()
             }
         }),
     );
@@ -485,11 +772,8 @@ async fn rate_limit_exhausts_at_threshold_and_yields_failed() {
     }
 
     let hits = counter.load(Ordering::SeqCst);
-    // RATE_LIMIT_RETRY_THRESHOLD = 2, so the actor stops after two
-    // attempts (the first attempt + one retry that also 429s = 2
-    // hits). Allow a small slack in case scheduling fires a third
-    // attempt before the threshold check.
-    assert!((1..=3).contains(&hits), "expected 1-3 hits, got {hits}");
+    // One initial request plus exactly two 429 retries.
+    assert_eq!(hits, 3, "429 retry cap must be exact");
 }
 
 // ---------------------------------------------------------------------------

@@ -9,6 +9,10 @@
 //! cargo test -p atelier-pager-pty-harness --test plan_approval_resume -- --nocapture
 //! ```
 
+#[cfg_attr(
+    windows,
+    ignore = "requires an isolated ATELIER_HOME with completed Windows sandbox onboarding"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn plan_approval_restored_after_resume() {
     atelier_pager_pty_harness::scenarios::plan_approval_resume::assert_plan_approval_restored_after_resume()

@@ -1739,6 +1739,10 @@ impl SessionActor {
         req_id: &str,
         json_schema: Option<serde_json::Value>,
     ) -> Result<TurnOutcome, acp::Error> {
+        // A top-level conversation pass is one logical transport-retry
+        // operation. Auth/compaction resubmits inside the loop keep sharing the
+        // budget; a later user turn or semantic recovery pass starts fresh.
+        self.sampler_handle.reset_retry_budget();
         let conv_turn_start = std::time::Instant::now();
         self.maybe_refresh_model_metadata_on_resume().await;
         self.maybe_compact_on_model_switch().await;

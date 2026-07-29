@@ -1557,7 +1557,7 @@ mod tests {
     fn push_subagent(state: &mut ScrollbackState, child_sid: &str) -> EntryId {
         state.push_block(RenderBlock::Subagent(
             crate::scrollback::blocks::SubagentBlock::started(
-                "task", child_sid, "explore", None, None, None, /*is_background=*/ false,
+                "task", child_sid, "explore", None, None, /*is_background=*/ false,
             ),
         ))
     }

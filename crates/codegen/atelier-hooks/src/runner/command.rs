@@ -120,7 +120,12 @@ pub async fn run_command_hook(
         }
         #[cfg(not(unix))]
         {
-            let inv = atelier_config::shell::shell_command_argv(&command_str);
+            let inv = match atelier_config::shell::shell_command_argv(&command_str) {
+                Ok(invocation) => invocation,
+                Err(error) => {
+                    return (HookRunnerResult::Failed(error.to_string()), start.elapsed());
+                }
+            };
             let mut c = tokio::process::Command::new(&inv.program);
             c.args(&inv.args).envs(inv.env);
             c

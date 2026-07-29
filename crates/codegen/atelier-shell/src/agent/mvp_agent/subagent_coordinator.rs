@@ -261,26 +261,15 @@ impl MvpAgent {
         parent_session_id: &str,
     ) -> crate::agent::subagent::SubagentValidationContext {
         let parent_sid = acp::SessionId::new(parent_session_id);
-        let (parent_cwd, allowed_subagent_types) = {
+        let allowed_subagent_types = {
             let sessions = self.sessions.borrow();
             let ps = sessions.get(&parent_sid);
             warn_on_missing_parent_session_for_validate_type(parent_session_id, ps.is_some());
-            (
-                ps.map(|h| std::path::PathBuf::from(&h.info.cwd))
-                    .unwrap_or_default(),
-                ps.and_then(|h| h.allowed_subagent_types.clone()),
-            )
-        };
-        let cli_agent_names: Vec<String> = {
-            let cfg = self.cfg.borrow();
-            cfg.cli_agents.iter().map(|d| d.name.clone()).collect()
+            ps.and_then(|handle| handle.allowed_subagent_types.clone())
         };
         crate::agent::subagent::SubagentValidationContext {
-            parent_cwd,
-            plugin_registry: self.plugin_registry_handle.snapshot(),
             subagent_toggle: self.subagent_toggle.clone(),
             allowed_subagent_types,
-            cli_agent_names,
         }
     }
     /// Build a `SubagentSpawnContext` from the current agent state and the
@@ -468,9 +457,6 @@ impl MvpAgent {
             available_models,
             subagent_model_overrides: self.subagent_model_overrides.clone(),
             subagent_toggle: self.subagent_toggle.clone(),
-            subagent_roles: self.subagent_roles.clone(),
-            subagent_personas: self.subagent_personas.clone(),
-            persona_io_summaries: self.persona_io_summaries.clone(),
             disable_web_search: self.cfg.borrow().disable_web_search,
             todo_gate: self.cfg.borrow().todo_gate,
             local_runtime_settings: self.cfg.borrow().local_runtime_settings.clone(),

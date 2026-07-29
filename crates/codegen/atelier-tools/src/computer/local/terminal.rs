@@ -2797,7 +2797,7 @@ fn spawn_shell_command(
             CREATE_BREAKAWAY_FROM_JOB, CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW,
         };
 
-        let inv = atelier_config::shell::shell_command_argv(command);
+        let inv = atelier_config::shell::shell_command_argv(command)?;
         let mut cmd = if let Some(mode) = atelier_sandbox::windows_child_sandbox_mode() {
             let mode = match mode {
                 "read-only" => atelier_windows_sandbox::SandboxMode::ReadOnly,

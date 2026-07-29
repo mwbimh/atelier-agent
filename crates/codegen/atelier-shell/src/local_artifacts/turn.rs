@@ -129,16 +129,6 @@ pub(crate) async fn complete_prompt_trace(
     Ok(session.is_written())
 }
 
-pub(crate) fn parse_agent_profile_from_meta(
-    meta: Option<&agent_client_protocol::Meta>,
-) -> Option<atelier_agent::AgentDefinition> {
-    let value = meta?.get("agentProfile")?;
-    if value.is_object() {
-        return atelier_agent::AgentDefinition::from_json(value).ok();
-    }
-    value.as_str().and_then(atelier_agent::discovery::by_name)
-}
-
 pub(crate) fn parse_ask_user_question_from_meta(
     meta: Option<&agent_client_protocol::Meta>,
 ) -> Option<bool> {

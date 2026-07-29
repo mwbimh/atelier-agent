@@ -44,7 +44,6 @@ impl SubagentCoordinator {
                     subagent_type: tracker.subagent_type.clone(),
                     started_at_epoch_ms: instant_to_epoch_ms(tracker.started_at),
                     duration_ms: tracker.started_at.elapsed().as_millis() as u64,
-                    persona: tracker.persona.clone(),
                     signals_handle: tracker.child_handle.signals_handle.clone(),
                 }),
             );
@@ -78,7 +77,6 @@ impl SubagentCoordinator {
                     status,
                     started_at_epoch_ms: instant_to_epoch_ms(completed.started_at),
                     duration_ms: completed.result.duration_ms,
-                    persona: completed.persona.clone(),
                 }),
             );
         }
@@ -91,7 +89,6 @@ impl SubagentCoordinator {
                     status: SubagentSnapshotStatus::Initializing,
                     started_at_epoch_ms: instant_to_epoch_ms(pending.started_at),
                     duration_ms: pending.started_at.elapsed().as_millis() as u64,
-                    persona: pending.persona.clone(),
                 }),
             );
         }
@@ -228,7 +225,6 @@ impl SubagentCoordinator {
                 worktree_path: completed.worktree_path.clone(),
                 snapshot_ref: completed.snapshot_ref.clone(),
                 subagent_type: completed.subagent_type.clone(),
-                persona: completed.persona.clone(),
                 model_id: Some(completed.effective_model_id.clone()),
             });
         }
@@ -256,7 +252,6 @@ impl SubagentCoordinator {
             worktree_path: meta.worktree_path.map(PathBuf::from),
             snapshot_ref: meta.snapshot_ref,
             subagent_type: meta.subagent_type,
-            persona: meta.persona,
             model_id: meta.effective_model_id,
         })
     }

@@ -74,7 +74,8 @@ pub async fn create_pty(
         .openpty(size)
         .map_err(|e| TerminalExtError::Internal(format!("failed to open pty: {e}")))?;
 
-    let (shell_path, shell_args) = resolve_pty_shell(shell);
+    let (shell_path, shell_args) =
+        resolve_pty_shell(shell).map_err(|error| TerminalExtError::Internal(error.to_string()))?;
 
     let resolved_cwd = cwd
         .map(std::path::PathBuf::from)
@@ -485,25 +486,55 @@ pub async fn close_all() {
 /// On Windows falls back to the `detect_windows_shell` cascade
 /// (pwsh > powershell.exe > Git Bash > cmd.exe, overridable via
 /// `ATELIER_SHELL`) since `$SHELL` is absent.
-fn resolve_pty_shell(shell: Option<&str>) -> (String, Vec<String>) {
+fn resolve_pty_shell(shell: Option<&str>) -> std::io::Result<(String, Vec<String>)> {
     if let Some(s) = shell {
-        return (s.to_string(), vec![]);
+        #[cfg(unix)]
+        return Ok((s.to_string(), vec![]));
+        #[cfg(not(unix))]
+        {
+            let detected = atelier_config::shell::detect_windows_shell();
+            let detected_path = match detected {
+                atelier_config::shell::WindowsShell::PowerShell7(path)
+                | atelier_config::shell::WindowsShell::WindowsPowerShell51(path) => path,
+                atelier_config::shell::WindowsShell::Unavailable(reason) => {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::NotFound,
+                        reason.clone(),
+                    ));
+                }
+            };
+            if !std::path::Path::new(s).is_absolute() || !s.eq_ignore_ascii_case(detected_path) {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "interactive Windows shell must match the startup-resolved PowerShell runtime",
+                ));
+            }
+            return Ok((s.to_string(), vec![]));
+        }
     }
 
     #[cfg(unix)]
     {
         let path = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
-        (path, vec!["-l".to_string()])
+        Ok((path, vec!["-l".to_string()]))
     }
 
     #[cfg(not(unix))]
     {
         use atelier_config::shell::{WindowsShell, detect_windows_shell};
         match detect_windows_shell() {
-            WindowsShell::GitBash(path) => (path.clone(), vec!["-l".to_string()]),
-            WindowsShell::Pwsh => ("pwsh".to_string(), vec!["-NoLogo".to_string()]),
-            WindowsShell::PowerShell => ("powershell.exe".to_string(), vec!["-NoLogo".to_string()]),
-            WindowsShell::Cmd => ("cmd.exe".to_string(), vec![]),
+            WindowsShell::PowerShell7(path) => Ok((
+                path.clone(),
+                vec!["-NoLogo".to_string(), "-NoProfile".to_string()],
+            )),
+            WindowsShell::WindowsPowerShell51(path) => Ok((
+                path.clone(),
+                vec!["-NoLogo".to_string(), "-NoProfile".to_string()],
+            )),
+            WindowsShell::Unavailable(reason) => Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("Windows shell unavailable: {reason}"),
+            )),
         }
     }
 }

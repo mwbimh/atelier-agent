@@ -192,7 +192,6 @@ Beyond AGENTS.md files, the `.atelier/` directory in your project root can conta
 | `.atelier/config.toml` | Project-scoped MCP servers, plugins, and permission rules (other settings load only from `~/.atelier/config.toml`) |
 | `.atelier/skills/` | Project-scoped skill definitions |
 | `.atelier/plugins/` | Project-scoped plugins |
-| `.atelier/agents/` | Project-scoped agent definitions |
 | `.atelier/hooks/` | Project-scoped lifecycle hooks |
 | `.atelier/lsp.json` | LSP server configuration |
 

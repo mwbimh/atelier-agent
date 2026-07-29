@@ -204,9 +204,6 @@ pub struct AgentArgs {
     /// Auto-approve all tool executions
     #[arg(long = "always-approve", alias = "yolo")]
     pub yolo: bool,
-    /// Path to an agent profile file.
-    #[arg(long = "agent-profile", value_name = "PATH")]
-    pub agent_profile: Option<PathBuf>,
     /// Load a plugin from this directory for this process only (repeatable).
     /// Highest-priority plugin scope; always trusted — hooks and MCP servers
     /// activate without a prompt. Used by the Agent SDKs to inject
@@ -532,12 +529,9 @@ pub struct PagerArgs {
     /// Disable cross-session memory for this session.
     #[arg(long = "no-memory", conflicts_with = "experimental_memory")]
     pub no_memory: bool,
-    /// Agent name or definition file path.
-    #[arg(long = "agent", value_name = "NAME")]
+    /// Compiled built-in Agent harness name.
+    #[arg(long = "agent", value_name = "NAME", value_parser = parse_builtin_agent_name)]
     pub agent: Option<String>,
-    /// Inline subagent definitions as JSON.
-    #[arg(long = "agents", value_name = "JSON")]
-    pub agents_json: Option<String>,
     /// Built-in tools to allow (comma-separated).
     #[arg(long = "tools", value_name = "TOOLS")]
     pub cli_tools: Option<String>,
@@ -809,6 +803,17 @@ impl PagerArgs {
             .filter(|s| !s.is_empty())
     }
 }
+fn parse_builtin_agent_name(value: &str) -> Result<String, String> {
+    value
+        .parse::<atelier_agent::config::BuiltinAgentName>()
+        .map(|_| value.to_string())
+        .map_err(|_| {
+            format!(
+                "unsupported Agent harness `{value}`; only compiled built-in harness names are allowed"
+            )
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -842,6 +847,33 @@ mod tests {
         let err = PagerArgs::try_parse_from(["atelier", "--no-auto-update"]).unwrap_err();
         assert_eq!(err.kind(), clap::error::ErrorKind::UnknownArgument);
     }
+    #[test]
+    fn custom_agent_and_inline_agent_flags_are_not_exposed() {
+        let builtin = PagerArgs::try_parse_from(["ate", "--agent", "codex"])
+            .expect("compiled built-in harness parses");
+        assert_eq!(builtin.agent.as_deref(), Some("codex"));
+
+        for value in ["custom-agent", "./custom-agent.md"] {
+            let err = PagerArgs::try_parse_from(["ate", "--agent", value]).unwrap_err();
+            assert_eq!(err.kind(), clap::error::ErrorKind::ValueValidation);
+        }
+        let err = PagerArgs::try_parse_from(["ate", "--agents", "{}"]).unwrap_err();
+        assert_eq!(err.kind(), clap::error::ErrorKind::UnknownArgument);
+    }
+
+    #[test]
+    fn custom_agent_profile_flag_is_not_exposed() {
+        let err = PagerArgs::try_parse_from([
+            "ate",
+            "agent",
+            "--agent-profile",
+            "custom-agent.md",
+            "stdio",
+        ])
+        .unwrap_err();
+        assert_eq!(err.kind(), clap::error::ErrorKind::UnknownArgument);
+    }
+
     #[test]
     fn vendor_endpoint_flag_is_not_exposed() {
         let err = PagerArgs::try_parse_from([

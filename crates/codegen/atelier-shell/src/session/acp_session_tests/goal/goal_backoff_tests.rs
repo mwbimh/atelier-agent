@@ -3186,7 +3186,6 @@ fn spawn_notif(subagent_id: &str, resumed_from: Option<&str>) -> ExtensionSessio
             effective_context_source: resumed_from.map(|_| "resumed".into()),
             context_normalized: false,
             capability_mode: None,
-            persona: None,
             role: None,
             model: None,
             resumed_from: resumed_from.map(str::to_string),

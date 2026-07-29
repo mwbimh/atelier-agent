@@ -27,37 +27,25 @@ pub(super) fn is_auth_tool_error(err: &atelier_tool_runtime::ToolError) -> bool 
         || lower.contains("invalid_token")
 }
 /// Gate inputs bundled with the composed decision so the 401-recovery log can
-/// report the components.
+/// report the components without deriving auth trust from endpoint hostnames.
 #[derive(Clone, Copy)]
 struct SessionTokenAuthGate {
     is_session_based: bool,
     model_byok: crate::agent::auth_method::ModelByok,
-    /// Whether the request targets a first-party host. Lets an `Unknown`
-    /// BYOK status still refresh against cli-chat-proxy / `*.x.ai` without
-    /// risking a session-token leak to a third-party BYOK endpoint.
-    endpoint_is_first_party: bool,
 }
 impl SessionTokenAuthGate {
-    /// Single place `is_session_based` / `endpoint_is_first_party` are derived,
-    /// so all call sites assemble the gate identically.
     fn new(
         auth_method_id: Option<&acp::AuthMethodId>,
         model_byok: crate::agent::auth_method::ModelByok,
-        base_url: &str,
     ) -> Self {
         Self {
             is_session_based: auth_method_id
                 .is_some_and(crate::agent::auth_method::is_session_based_method),
             model_byok,
-            endpoint_is_first_party: crate::util::is_first_party_xai_url(base_url),
         }
     }
     fn active(self) -> bool {
-        crate::agent::auth_method::session_token_auth_gate(
-            self.is_session_based,
-            self.model_byok,
-            self.endpoint_is_first_party,
-        )
+        crate::agent::auth_method::session_token_auth_gate(self.is_session_based, self.model_byok)
     }
 }
 /// Run a tool call; on an auth-shaped failure, attempt recovery via
@@ -179,50 +167,30 @@ impl SessionActor {
         *self.model_auth_facts.borrow_mut() = Some((model_id.to_string(), fresh.clone()));
         fresh
     }
-    /// Gate inputs for `model_id` routed to `base_url`. See
-    /// [`crate::agent::auth_method::session_token_auth_gate`] for the rationale
-    /// (`base_url` keeps an `Unknown` BYOK status refreshable only
-    /// against first-party xAI hosts).
-    fn auth_gate(&self, model_id: &str, base_url: &str) -> SessionTokenAuthGate {
+    /// Gate inputs for `model_id`. Credential ownership comes from the resolved
+    /// model/Provider configuration, never from the destination hostname.
+    fn auth_gate(&self, model_id: &str) -> SessionTokenAuthGate {
         let byok = self.model_auth_facts(model_id).byok;
         let auth_method = self.auth_method_id.load();
-        SessionTokenAuthGate::new(auth_method.as_deref(), byok, base_url)
+        SessionTokenAuthGate::new(auth_method.as_deref(), byok)
     }
-    /// Emit a unified-log breadcrumb whenever the session-token refresh gate is
-    /// evaluated with an **`Unknown`** per-model BYOK status on a session-based
-    /// method — the condition that (pre-fix) silently demoted live sessions to
-    /// stale-token 401s. The uploaded per-turn unified log then shows whether
-    /// the first-party-endpoint fallback kept refresh active or withheld it, so
-    /// we can confirm the fix works (or catch a residual demotion) per session
-    /// even when server-side metrics only show the aggregate 401. No-op for a
-    /// definite `Byok`/`NotByok`, so steady-state turns stay quiet — a burst of
-    /// these is itself the signal that `Unknown` is being hit in the field.
-    fn log_auth_gate_unknown(&self, site: &str, gate: SessionTokenAuthGate, base_url: &str) {
+    /// Emit a local breadcrumb when auth ownership is unresolved. Unknown
+    /// configuration fails closed and never enables Session-token refresh.
+    fn log_auth_gate_unknown(&self, site: &str, gate: SessionTokenAuthGate) {
         use crate::agent::auth_method::ModelByok;
         if gate.model_byok != ModelByok::Unknown || !gate.is_session_based {
             return;
         }
-        let refresh_active = gate.active();
-        let ctx = serde_json::json!(
-            { "site" : site, "model_byok" : gate.model_byok.as_str(), "is_session_based"
-            : gate.is_session_based, "endpoint_is_first_party" : gate
-            .endpoint_is_first_party, "refresh_active" : refresh_active, "base_url" :
-            base_url, }
+        atelier_telemetry::unified_log::warn(
+            "auth gate: unresolved Provider credential ownership; refresh withheld",
+            Some(self.session_info.id.0.as_ref()),
+            Some(serde_json::json!({
+                "site": site,
+                "model_byok": gate.model_byok.as_str(),
+                "is_session_based": gate.is_session_based,
+                "refresh_active": false,
+            })),
         );
-        let sid = Some(self.session_info.id.0.as_ref());
-        if refresh_active {
-            atelier_telemetry::unified_log::info(
-                "auth gate: Unknown BYOK on first-party endpoint — session-token refresh kept active",
-                sid,
-                Some(ctx),
-            );
-        } else {
-            atelier_telemetry::unified_log::warn(
-                "auth gate: Unknown BYOK on non-first-party endpoint — refresh withheld (may surface stale-token 401)",
-                sid,
-                Some(ctx),
-            );
-        }
     }
     /// Reconstruct a full `SamplerConfig` (with credentials) by combining
     /// the actor's `SamplingConfig` and `Credentials`. Folds in the
@@ -261,10 +229,9 @@ impl SessionActor {
         let creds = self.chat_state_handle.get_credentials().await;
         let model_facts = self.model_auth_facts(cfg.model.as_str());
         let auth_method = self.auth_method_id.load();
-        let gate =
-            SessionTokenAuthGate::new(auth_method.as_deref(), model_facts.byok, &cfg.base_url);
+        let gate = SessionTokenAuthGate::new(auth_method.as_deref(), model_facts.byok);
         let use_bearer_resolver = gate.active();
-        self.log_auth_gate_unknown("reconstruct_full_config", gate, &cfg.base_url);
+        self.log_auth_gate_unknown("reconstruct_full_config", gate);
         let auth_scheme = model_facts.auth_scheme;
         let provider_oauth_resolvers = cfg
             .provider_id
@@ -329,7 +296,7 @@ impl SessionActor {
                 .auth_manager
                 .as_ref()
                 .and_then(|am| am.current_or_expired())
-                .filter(|a| a.is_xai_auth())
+                .filter(|a| a.is_configured_refresh_auth())
                 .map(|a| a.user_id),
             origin_client: self.origin_client.clone(),
             attribution_callback: self.attribution_callback.clone(),
@@ -371,15 +338,57 @@ impl SessionActor {
         };
         #[cfg(not(test))]
         let registry = self.load_live_role_registry(role_id)?;
-        let Some(role) = registry
-            .role(role_id)
-            .filter(|role| role.provider != "default" && role.model != "default")
-            .cloned()
-        else {
-            return Err(
-                acp::Error::invalid_params().data(format!("role {role_id} is not configured"))
-            );
-        };
+        let main_config = self.reconstruct_full_config().await;
+        if main_config.model.trim().is_empty() {
+            return Err(acp::Error::invalid_params().data(format!(
+                "role {role_id} inherits MAIN, but MAIN has no model selected"
+            )));
+        }
+        let provider = main_config.provider_id.clone().or_else(|| {
+            main_config
+                .model
+                .split_once('/')
+                .map(|(provider, _)| provider.to_owned())
+        });
+        // Legacy/internal test models may lack provider_id; the sampler config
+        // itself remains authoritative for routing and Wire API.
+        let provider = provider.unwrap_or_else(|| "main".to_owned());
+        let model = main_config
+            .model
+            .split_once('/')
+            .map_or_else(|| main_config.model.clone(), |(_, model)| model.to_owned());
+        let mut main_role = atelier_provider::RoleConfig::new(provider, model)
+            .map_err(|error| acp::Error::invalid_params().data(error.to_string()))?;
+        main_role.effort = main_config
+            .reasoning_effort
+            .map(|effort| effort.to_string());
+        if let Some(fast_mode) = main_config
+            .request_payload
+            .get("fast_mode")
+            .and_then(serde_json::Value::as_bool)
+        {
+            main_role.set_fast_mode(fast_mode);
+        }
+        let (source_role, role) = registry.roles().resolve_inherited(role_id, &main_role);
+        if source_role == atelier_provider::RoleId::Main {
+            // Missing non-main Role settings inherit the active MAIN execution
+            // profile. This reuses the already-resolved exact model, Wire API,
+            // authentication, payload, and capability metadata.
+            return Ok((main_config, role));
+        }
+        if role.provider == main_role.provider && role.model == main_role.model {
+            let mut config = main_config;
+            config.request_payload = role.merged_payload(&config.request_payload);
+            if let Some(raw_effort) = role.effort.as_deref() {
+                config.reasoning_effort = Some(raw_effort.parse().map_err(|error| {
+                    acp::Error::invalid_params().data(format!(
+                        "configured {} role effort is invalid ({}): {}",
+                        role_id, raw_effort, error
+                    ))
+                })?);
+            }
+            return Ok((config, role));
+        }
         let model_id = acp::ModelId::new(format!("{}/{}", role.provider, role.model));
         let credentials = self.chat_state_handle.get_credentials().await;
         let session_key = self
@@ -434,9 +443,9 @@ impl SessionActor {
         })
     }
 
-    /// Build a client for a fixed helper role. Fixed roles fail closed when
-    /// they are unconfigured or unavailable; they never inherit the active
-    /// session model.
+    /// Build a client for a fixed helper role. Missing Role settings inherit
+    /// the active MAIN execution profile; explicitly configured but invalid or
+    /// unavailable settings fail closed.
     pub(crate) async fn prepare_role_chat_completion(
         &self,
         role_id: atelier_provider::RoleId,
@@ -592,9 +601,8 @@ impl SessionActor {
         );
     }
     /// Resolve a standalone aux-model `SamplerConfig` for `slug` via the shared
-    /// catalog routing (Tier-1 catalog creds / Tier-2 xAI-proxy via session token
-    /// / `XAI_API_KEY` / deployment key), gathering the session-local auth context
-    /// once. Shared by image-describe and the classifier so the gather can't
+    /// catalog routing, gathering the session-local auth context once. Shared
+    /// by image-describe and the classifier so the gather can't
     /// drift. `None` ⇒ caller falls back to the session model.
     pub(super) async fn resolve_aux_sampler_config(
         &self,
@@ -770,20 +778,19 @@ impl SessionActor {
             return Err(acp_err);
         }
         let auth_recovery_eligible = matches!(error.kind, SamplingErrorKind::Auth) && {
-            let (model_id, base_url) = self
+            let model_id = self
                 .chat_state_handle
                 .get_sampling_config()
                 .await
-                .map(|c| (c.model, c.base_url))
+                .map(|config| config.model)
                 .unwrap_or_default();
-            let gate = self.auth_gate(&model_id, &base_url);
+            let gate = self.auth_gate(&model_id);
             let eligible = gate.active();
-            self.log_auth_gate_unknown("handle_sampling_failure", gate, &base_url);
+            self.log_auth_gate_unknown("handle_sampling_failure", gate);
             if !eligible {
                 tracing::warn!(
                     session_id = % self.session_info.id.0, is_session_based = gate
                     .is_session_based, model_byok = gate.model_byok.as_str(),
-                    endpoint_is_first_party = gate.endpoint_is_first_party,
                     "auth recovery: sampler 401 not refreshable (api-key auth) — surfacing 401",
                 );
                 atelier_telemetry::unified_log::warn(
@@ -792,8 +799,7 @@ impl SessionActor {
                     Some(serde_json::json!(
                         { "kind" : error.kind.as_str(), "status_code" : error
                         .status_code, "is_session_based" : gate.is_session_based,
-                        "model_byok" : gate.model_byok.as_str(),
-                        "endpoint_is_first_party" : gate.endpoint_is_first_party, }
+                        "model_byok" : gate.model_byok.as_str(), }
                     )),
                 );
             }
@@ -1043,13 +1049,13 @@ impl SessionActor {
     pub(super) async fn refresh_token_if_expired(&self) {
         if let Some(ref am) = self.auth_manager {
             let creds = self.chat_state_handle.get_credentials().await;
-            let (model_id, base_url) = self
+            let model_id = self
                 .chat_state_handle
                 .get_sampling_config()
                 .await
-                .map(|c| (c.model, c.base_url))
+                .map(|config| config.model)
                 .unwrap_or_default();
-            if self.auth_gate(&model_id, &base_url).active()
+            if self.auth_gate(&model_id).active()
                 && let Ok(key) = am.get_valid_token().await
             {
                 if creds.api_key.as_deref() != Some(&key) {

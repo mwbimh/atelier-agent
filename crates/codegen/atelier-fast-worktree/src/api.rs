@@ -1527,9 +1527,35 @@ pub mod gc {
             let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
             pid_alive_from_kill(ret, errno)
         }
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(windows)]
         {
-            // No libc dependency off Linux; fall back to `kill -0` exit status.
+            use windows_sys::Win32::Foundation::{
+                CloseHandle, ERROR_INVALID_PARAMETER, GetLastError, STILL_ACTIVE,
+            };
+            use windows_sys::Win32::System::Threading::{
+                GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+            };
+
+            if pid == 0 {
+                return false;
+            }
+            let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+            if handle.is_null() {
+                // Invalid PID is the one definitive dead result. Access denied
+                // and other probe errors fail closed as alive so GC cannot
+                // reclaim a worktree still owned by another process.
+                return unsafe { GetLastError() } != ERROR_INVALID_PARAMETER;
+            }
+            let mut exit_code = 0;
+            let queried = unsafe { GetExitCodeProcess(handle, &mut exit_code) } != 0;
+            unsafe {
+                CloseHandle(handle);
+            }
+            !queried || exit_code == STILL_ACTIVE as u32
+        }
+        #[cfg(all(not(target_os = "linux"), not(windows)))]
+        {
+            // Portable fallback for other Unix-like targets.
             let mut cmd = std::process::Command::new("kill");
             atelier_tty_utils::detach_std_command(&mut cmd);
             cmd.stdin(std::process::Stdio::null());

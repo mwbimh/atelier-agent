@@ -1,11 +1,13 @@
 use anyhow::{Context, Result, anyhow};
 use std::path::{Path, PathBuf};
 use std::ptr;
+use std::sync::atomic::{AtomicU64, Ordering};
 use windows_sys::Win32::Security::Cryptography::{
     BCRYPT_SHA256_ALGORITHM, BCryptCloseAlgorithmProvider, BCryptHash, BCryptOpenAlgorithmProvider,
 };
 
 const SHA256_LEN: usize = 32;
+static TEMPORARY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 pub fn runner_source() -> Result<PathBuf> {
     let source = std::env::var_os("ATELIER_SANDBOX_RUNNER")
@@ -34,9 +36,11 @@ pub fn materialize(source: &Path, home: &Path) -> Result<PathBuf> {
         return Ok(destination);
     }
 
+    let temporary_id = TEMPORARY_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     let temporary = destination_dir.join(format!(
-        ".ate-sandbox-{}-{}.tmp",
+        ".ate-sandbox-{}-{}-{}.tmp",
         std::process::id(),
+        temporary_id,
         source_hash_hex
     ));
     std::fs::copy(source, &temporary).with_context(|| {
@@ -196,6 +200,42 @@ mod tests {
 
         assert!(destination.starts_with(home.join(".sandbox-bin")));
         assert_eq!(std::fs::read(destination).unwrap(), b"runner-bytes");
+    }
+
+    #[test]
+    fn concurrent_materialization_does_not_share_a_temporary_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source.exe");
+        std::fs::write(&source, vec![0x5a; 8 * 1024 * 1024]).unwrap();
+        let home = temp.path().join("home");
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(12));
+
+        let workers = (0..12)
+            .map(|_| {
+                let source = source.clone();
+                let home = home.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    materialize(&source, &home)
+                })
+            })
+            .collect::<Vec<_>>();
+        let destinations = workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap())
+            .collect::<Result<Vec<_>, _>>()
+            .expect("concurrent materialization");
+
+        assert!(
+            destinations
+                .iter()
+                .all(|destination| destination == &destinations[0])
+        );
+        assert_eq!(
+            std::fs::read(&destinations[0]).unwrap(),
+            std::fs::read(&source).unwrap()
+        );
     }
 
     #[test]

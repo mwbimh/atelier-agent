@@ -1,7 +1,6 @@
 //! Screen rendering — each screen type has its own rendering module.
 pub mod agent;
 pub mod agent_status;
-pub mod agents_modal;
 pub mod announcements;
 pub mod block_viewer;
 pub mod btw_overlay;
@@ -25,7 +24,6 @@ pub mod new_worktree_dialog;
 pub mod overlay;
 pub mod overlay_list;
 pub mod permission_view;
-pub mod persona_detail;
 pub mod picker;
 pub mod plan_approval_view;
 pub mod progress_bar;
@@ -35,6 +33,7 @@ pub mod provider_wizard;
 pub mod question_view;
 pub mod queue_pane;
 pub mod rewind;
+pub mod roles_modal;
 pub mod scroll_debug_hud;
 pub mod session_picker;
 pub mod session_title;

@@ -564,32 +564,23 @@ async fn no_legacy_hint_for_oidc_auth() {
         .await;
 }
 
-// Regression: a live OIDC session whose `creds.auth_type` has
-// transiently collapsed to `ApiKey` (session-token cache miss + `XAI_API_KEY`)
-// must still drive the live bearer resolver, be eligible for 401 retry, and get
-// its stale `api_key` healed — the gate keys off the stable `auth_method_id`,
-// not the collapsible `auth_type`.
+// Regression: a live OIDC session whose `creds.auth_type` has transiently
+// collapsed to `ApiKey` must still use the stable `auth_method_id` when the
+// resolved model configuration definitively says Session auth owns the token.
 
 #[test]
 fn session_token_auth_gate_truth_table() {
     use crate::agent::auth_method::{ModelByok, session_token_auth_gate as gate};
-    // Non-session methods never refresh, regardless of BYOK status or endpoint.
-    for fp in [false, true] {
-        assert!(!gate(false, ModelByok::NotByok, fp));
-        assert!(!gate(false, ModelByok::Byok, fp));
-        assert!(!gate(false, ModelByok::Unknown, fp));
-        // Session method: a definite classification ignores the endpoint —
-        // NotByok always refreshes (only ever routes to the session endpoint),
-        // a genuine per-model Byok never does.
-        assert!(gate(true, ModelByok::NotByok, fp));
-        assert!(!gate(true, ModelByok::Byok, fp));
-    }
-    // Session method + Unknown BYOK: refresh only against a first-party xAI
-    // host, so a transiently-unclassifiable config can't demote a live session
-    // (the stale-token 401 regression) yet the session token never leaks to a
-    // third-party BYOK endpoint. This arm was unconditionally `false` pre-fix.
-    assert!(gate(true, ModelByok::Unknown, true));
-    assert!(!gate(true, ModelByok::Unknown, false));
+    assert!(!gate(false, ModelByok::NotByok));
+    assert!(!gate(false, ModelByok::Byok));
+    assert!(!gate(false, ModelByok::Unknown));
+
+    assert!(gate(true, ModelByok::NotByok));
+    assert!(!gate(true, ModelByok::Byok));
+    assert!(
+        !gate(true, ModelByok::Unknown),
+        "unresolved Provider credential ownership must fail closed"
+    );
 }
 
 /// Pre-fix, the gate read `auth_type` and skipped recovery here, 401'ing every

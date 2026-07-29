@@ -74,7 +74,7 @@ pub struct SubagentRequest {
 /// precedence over role defaults.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum ModelOverrideProvenance {
-    /// Internal harness, role, persona, or config resolution.
+    /// Internal harness, fixed Role, or config resolution.
     #[default]
     Harness,
     /// A model-facing `Task.model` argument.
@@ -93,12 +93,10 @@ pub struct SubagentRuntimeOverrides {
     pub model_override_provenance: ModelOverrideProvenance,
     /// Override reasoning effort (e.g. "low", "medium", "high").
     pub reasoning_effort: Option<String>,
-    /// Named persona/SOUL template to apply.
-    pub persona: Option<String>,
     /// Capability mode controlling tool access.
     pub capability_mode: Option<SubagentCapabilityMode>,
     /// Isolation mode for child execution environment.
-    /// `None` means "use role/persona default" (which itself defaults to `None`/shared workspace).
+    /// `None` means shared-workspace execution unless the built-in harness requires isolation.
     pub isolation: Option<SubagentIsolationMode>,
     /// `/goal`-only harness override: the `agent_type` (e.g. `"cursor"`,
     /// `"atelier-build-plan"`) whose `AgentDefinition` decides the child's harness
@@ -399,8 +397,6 @@ pub struct SubagentSnapshot {
     pub started_at_epoch_ms: u64,
     /// Elapsed wall-clock time in milliseconds.
     pub duration_ms: u64,
-    /// Persona used by this subagent, if any.
-    pub persona: Option<String>,
 }
 
 /// Status of a subagent snapshot.
@@ -1305,7 +1301,6 @@ mod tests {
                 },
                 started_at_epoch_ms: 1000,
                 duration_ms: 500,
-                persona: None,
             }),
             None,
         ];

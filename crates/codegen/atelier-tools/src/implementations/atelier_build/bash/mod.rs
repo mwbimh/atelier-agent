@@ -3244,11 +3244,10 @@ mod tests {
         // We can test this via the static helper
         assert_eq!(
             BashTool::get_prefixed_command(&Some("source ~/.bashrc".to_string()), "ls"),
-            if cfg!(windows) {
-                "source ~/.bashrc ; ls"
-            } else {
-                "source ~/.bashrc && ls"
-            }
+            format!(
+                "source ~/.bashrc {} ls",
+                atelier_config::shell::chain_separator()
+            )
         );
         assert_eq!(BashTool::get_prefixed_command(&None, "ls"), "ls");
     }

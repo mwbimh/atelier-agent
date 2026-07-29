@@ -260,10 +260,11 @@ fn generic_provider_runtime_has_no_xai_auth_or_first_party_gate() {
 
 #[test]
 fn grok_model_preset_remains_available_for_explicit_providers() {
-    let defaults = include_str!("../../atelier-config/src/defaults.rs");
+    let defaults = include_str!("../../atelier-config/defaults/models/xai.toml");
     assert!(
-        defaults.contains("match = \"grok-*\"")
-            && defaults.contains("wire_api = \"chat_completions\""),
-        "the explicit Grok model preset must remain available"
+        defaults.contains("[models.\"grok-4.3\"]")
+            && defaults.contains("wire_api = \"chat_completions\"")
+            && defaults.contains("[models.\"grok-4.5\"]"),
+        "the explicit Grok model presets must remain available"
     );
 }

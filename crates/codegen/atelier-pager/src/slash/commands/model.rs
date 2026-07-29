@@ -290,12 +290,7 @@ mod tests {
     static EMPTY_BUNDLE: crate::app::bundle::BundleState = crate::app::bundle::BundleState {
         has_cache: false,
         version: String::new(),
-        personas: Vec::new(),
-        roles: Vec::new(),
-        agents: Vec::new(),
         skills: Vec::new(),
-        persona_details: Vec::new(),
-        role_details: Vec::new(),
     };
 
     fn dummy_exec_ctx(models: &ModelState) -> CommandExecCtx<'_> {

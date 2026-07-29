@@ -1,160 +1,257 @@
-//! Windows shell detection for terminal command execution.
+//! Native shell resolution for terminal command execution.
 //!
-//! Default cascade: pwsh → powershell.exe → Git Bash → powershell.exe (fallback).
-//!
-//! PowerShell is preferred over Git Bash because MSYS2/Git Bash performs
-//! POSIX-to-Windows path translation, mangling every flag starting with `/`
-//! (e.g. MSBuild `/t:Build`, cl.exe `/nologo`). This breaks native Windows
-//! C++/C#/.NET builds.
-//!
-//! Set `ATELIER_SHELL` to override auto-detection: `pwsh`, `powershell`,
-//! `bash`, or `cmd`. Result is cached for the process lifetime.
+//! Windows uses an absolute-path, startup-only cascade:
+//! Atelier-managed PowerShell 7 → machine-wide PowerShell 7 → Windows
+//! PowerShell 5.1 → unavailable. WindowsApps aliases, Git Bash, cmd.exe, WSL,
+//! and bare PATH-dependent shell names are never selected automatically.
 
 /// Detected Windows shell and how to invoke it.
 #[cfg(not(unix))]
 #[derive(Clone, Debug)]
 pub enum WindowsShell {
-    GitBash(String),
-    Pwsh,
-    PowerShell,
-    Cmd,
+    PowerShell7(String),
+    WindowsPowerShell51(String),
+    Unavailable(String),
 }
 
-/// Detect the best available shell on Windows.
-///
-/// If `ATELIER_SHELL` is set, it takes precedence over auto-detection.
-/// Otherwise the cascade is: pwsh → powershell.exe → Git Bash → cmd.exe.
-///
-/// Result is cached for the process lifetime.
+/// Command-language capability profile for the startup-resolved Windows shell.
+#[cfg(not(unix))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WindowsShellCapability {
+    PowerShell7,
+    PowerShell51Compatibility,
+    Unavailable,
+}
+
+/// Detect the startup shell once. The returned program is always an absolute,
+/// ordinary filesystem path or `Unavailable`.
 #[cfg(not(unix))]
 pub fn detect_windows_shell() -> &'static WindowsShell {
     use std::sync::OnceLock;
     static CACHED: OnceLock<WindowsShell> = OnceLock::new();
+    CACHED.get_or_init(resolve_windows_shell)
+}
 
-    CACHED.get_or_init(|| {
-        // Explicit override via ATELIER_SHELL.
-        if let Ok(val) = std::env::var("ATELIER_SHELL") {
-            match val.trim().to_ascii_lowercase().as_str() {
-                "pwsh" => {
-                    tracing::info!("Windows shell (ATELIER_SHELL override): pwsh");
-                    return WindowsShell::Pwsh;
-                }
-                "powershell" => {
-                    tracing::info!("Windows shell (ATELIER_SHELL override): powershell.exe");
-                    return WindowsShell::PowerShell;
-                }
-                "bash" | "gitbash" | "git-bash" => {
-                    if let Some(path) = find_git_bash() {
-                        tracing::info!(
-                            shell = path,
-                            "Windows shell (ATELIER_SHELL override): Git Bash"
-                        );
-                        return WindowsShell::GitBash(path);
-                    }
-                    tracing::warn!(
-                        "ATELIER_SHELL={val} but Git Bash not found; falling through to auto-detect"
-                    );
-                }
-                "cmd" | "cmd.exe" => {
-                    tracing::info!("Windows shell (ATELIER_SHELL override): cmd.exe");
-                    return WindowsShell::Cmd;
-                }
-                other => {
-                    tracing::warn!(
-                        "ATELIER_SHELL={other} is not recognized \
-                         (expected pwsh|powershell|bash|cmd); falling through to auto-detect"
-                    );
-                }
+#[cfg(not(unix))]
+fn resolve_windows_shell() -> WindowsShell {
+    if let Ok(override_path) = std::env::var("ATELIER_SHELL") {
+        let path = std::path::PathBuf::from(override_path.trim());
+        if path.is_absolute() && supported_shell_path(&path) {
+            let shell = classify_windows_shell(path);
+            if probe_windows_shell(&shell) {
+                return shell;
+            }
+            return WindowsShell::Unavailable(
+                "ATELIER_SHELL did not pass the PowerShell startup probe".to_owned(),
+            );
+        }
+        return WindowsShell::Unavailable(
+            "ATELIER_SHELL must be an absolute, non-WindowsApps PowerShell path".to_owned(),
+        );
+    }
+
+    if let Some(path) = managed_powershell_path().filter(|path| supported_pwsh7_path(path)) {
+        let shell = WindowsShell::PowerShell7(path.to_string_lossy().into_owned());
+        if probe_windows_shell(&shell) {
+            tracing::info!(shell = %path.display(), "Windows shell: managed PowerShell 7");
+            return shell;
+        }
+        tracing::warn!(shell = %path.display(), "managed PowerShell 7 failed its startup probe");
+    }
+
+    for path in machine_powershell7_candidates() {
+        if supported_pwsh7_path(&path) {
+            let shell = WindowsShell::PowerShell7(path.to_string_lossy().into_owned());
+            if probe_windows_shell(&shell) {
+                tracing::info!(shell = %path.display(), "Windows shell: machine-wide PowerShell 7");
+                return shell;
+            }
+            tracing::warn!(shell = %path.display(), "machine-wide PowerShell 7 failed its startup probe");
+        }
+    }
+
+    let system_root = std::env::var_os("SystemRoot")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from(r"C:\Windows"));
+    let ps51 = system_root.join(r"System32\WindowsPowerShell\v1.0\powershell.exe");
+    if supported_shell_path(&ps51) {
+        let shell = WindowsShell::WindowsPowerShell51(ps51.to_string_lossy().into_owned());
+        if probe_windows_shell(&shell) {
+            tracing::warn!(shell = %ps51.display(), "Windows shell: PowerShell 5.1 compatibility fallback");
+            return shell;
+        }
+        tracing::warn!(shell = %ps51.display(), "PowerShell 5.1 failed its startup probe");
+    }
+
+    WindowsShell::Unavailable("no sandbox-compatible PowerShell runtime is installed".to_owned())
+}
+
+#[cfg(not(unix))]
+fn managed_powershell_path() -> Option<std::path::PathBuf> {
+    #[derive(serde::Deserialize)]
+    struct Manifest {
+        schema_version: u32,
+        path: String,
+    }
+    let program_data = std::env::var_os("ProgramData")?;
+    let runtime_root = std::path::PathBuf::from(program_data).join("Atelier/runtimes/powershell");
+    let manifest_path = runtime_root.join("active.json");
+    let manifest: Manifest =
+        serde_json::from_str(&std::fs::read_to_string(manifest_path).ok()?).ok()?;
+    let path = std::path::PathBuf::from(manifest.path);
+    (manifest.schema_version == 1 && is_managed_pwsh_layout(&runtime_root, &path)).then_some(path)
+}
+
+#[cfg(not(unix))]
+fn is_managed_pwsh_layout(runtime_root: &std::path::Path, path: &std::path::Path) -> bool {
+    path.is_absolute()
+        && path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.eq_ignore_ascii_case("pwsh.exe"))
+        && path
+            .parent()
+            .and_then(std::path::Path::parent)
+            .is_some_and(|parent| parent == runtime_root)
+        && path
+            .parent()
+            .and_then(std::path::Path::file_name)
+            .is_some_and(|version| !version.is_empty())
+}
+
+#[cfg(not(unix))]
+fn machine_powershell7_candidates() -> Vec<std::path::PathBuf> {
+    let mut candidates = Vec::new();
+    for variable in ["ProgramW6432", "ProgramFiles"] {
+        if let Some(root) = std::env::var_os(variable) {
+            let candidate = std::path::PathBuf::from(root).join("PowerShell/7/pwsh.exe");
+            if !candidates.contains(&candidate) {
+                candidates.push(candidate);
             }
         }
+    }
+    candidates
+}
 
-        // Auto-detect: prefer PowerShell over Git Bash. PowerShell
-        // passes `/flag` arguments through unchanged, which is required
-        // for native Windows toolchains (MSBuild, cl.exe, dotnet).
+#[cfg(not(unix))]
+fn classify_windows_shell(path: std::path::PathBuf) -> WindowsShell {
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default();
+    if file_name.eq_ignore_ascii_case("pwsh.exe") {
+        WindowsShell::PowerShell7(path.to_string_lossy().into_owned())
+    } else if file_name.eq_ignore_ascii_case("powershell.exe") {
+        WindowsShell::WindowsPowerShell51(path.to_string_lossy().into_owned())
+    } else {
+        WindowsShell::Unavailable("ATELIER_SHELL must select pwsh.exe or powershell.exe".to_owned())
+    }
+}
 
-        // pwsh (PowerShell 7+).
-        if let Ok(output) = {
-            let mut cmd = std::process::Command::new("where");
-            atelier_tty_utils::detach_std_command(&mut cmd);
-            cmd.arg("pwsh.exe").stdin(std::process::Stdio::null());
-            cmd.output()
-        } {
-            if output.status.success() {
-                tracing::info!("Windows shell: pwsh");
-                return WindowsShell::Pwsh;
+#[cfg(not(unix))]
+fn probe_windows_shell(shell: &WindowsShell) -> bool {
+    let (program, minimum_major) = match shell {
+        WindowsShell::PowerShell7(path) => (path, 7),
+        WindowsShell::WindowsPowerShell51(path) => (path, 5),
+        WindowsShell::Unavailable(_) => return false,
+    };
+    let mut command = std::process::Command::new(program);
+    atelier_tty_utils::detach_std_command(&mut command);
+    let probe = format!("if ($PSVersionTable.PSVersion.Major -lt {minimum_major}) {{ exit 1 }}");
+    command
+        .args(["-NoProfile", "-NonInteractive", "-Command", &probe])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    let Ok(mut child) = command.spawn() else {
+        return false;
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return status.success(),
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+            Ok(None) | Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return false;
             }
         }
+    }
+}
 
-        // powershell.exe (Windows PowerShell 5.1).
-        if std::path::Path::new("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe")
-            .exists()
-        {
-            tracing::info!("Windows shell: powershell.exe");
-            return WindowsShell::PowerShell;
-        }
+#[cfg(not(unix))]
+fn supported_pwsh7_path(path: &std::path::Path) -> bool {
+    supported_shell_path(path)
+        && path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.eq_ignore_ascii_case("pwsh.exe"))
+}
 
-        // Git Bash: available but not preferred (MSYS2 path translation
-        // breaks `/flag` arguments for native toolchains).
-        if let Some(path) = find_git_bash() {
-            tracing::info!(shell = path, "Windows shell: Git Bash");
-            return WindowsShell::GitBash(path);
-        }
-
-        tracing::info!("Windows shell: powershell.exe (fallback)");
-        WindowsShell::PowerShell
+#[cfg(not(unix))]
+fn supported_shell_path(path: &std::path::Path) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+    if !path.is_absolute() || is_windowsapps_path(path) {
+        return false;
+    }
+    std::fs::metadata(path).is_ok_and(|metadata| {
+        metadata.is_file() && metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT == 0
     })
 }
 
-/// Locate Git Bash on disk. Checks common install paths, then falls back
-/// to `where bash.exe` (filtering for Git paths to avoid WSL bash).
 #[cfg(not(unix))]
-fn find_git_bash() -> Option<String> {
-    let candidates = [
-        std::env::var("PROGRAMFILES")
-            .map(|pf| format!("{pf}\\Git\\bin\\bash.exe"))
-            .unwrap_or_default(),
-        std::env::var("PROGRAMFILES(X86)")
-            .map(|pf| format!("{pf}\\Git\\bin\\bash.exe"))
-            .unwrap_or_default(),
-        std::env::var("LOCALAPPDATA")
-            .map(|la| format!("{la}\\Programs\\Git\\bin\\bash.exe"))
-            .unwrap_or_default(),
-    ];
-    for candidate in &candidates {
-        if !candidate.is_empty() && std::path::Path::new(candidate).exists() {
-            return Some(candidate.clone());
-        }
-    }
-    // Fall back to PATH; prefer Git Bash over WSL bash.
-    if let Ok(output) = {
-        let mut cmd = std::process::Command::new("where");
-        atelier_tty_utils::detach_std_command(&mut cmd);
-        cmd.arg("bash.exe").stdin(std::process::Stdio::null());
-        cmd.output()
-    } {
-        if output.status.success() {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            for line in stdout.lines() {
-                let line = line.trim();
-                if line.to_ascii_lowercase().contains("git") {
-                    return Some(line.to_string());
-                }
-            }
-        }
-    }
-    None
+fn is_windowsapps_path(path: &std::path::Path) -> bool {
+    path.to_string_lossy()
+        .replace('/', "\\")
+        .to_ascii_lowercase()
+        .contains("\\windowsapps\\")
 }
 
 #[cfg(not(unix))]
 impl WindowsShell {
-    /// Short display name for user-facing contexts (e.g. "bash", "pwsh").
+    /// Short executable-family name used by shell-aware tool dispatch.
     pub fn name(&self) -> &'static str {
         match self {
-            Self::GitBash(_) => "bash",
-            Self::Pwsh => "pwsh",
-            Self::PowerShell => "powershell",
-            Self::Cmd => "cmd.exe",
+            Self::PowerShell7(_) => "pwsh",
+            Self::WindowsPowerShell51(_) => "powershell",
+            Self::Unavailable(_) => "unavailable",
         }
+    }
+
+    /// Explicit command-language capability profile. Callers must not treat
+    /// Windows PowerShell 5.1 as equivalent to PowerShell 7.
+    pub fn capability(&self) -> WindowsShellCapability {
+        match self {
+            Self::PowerShell7(_) => WindowsShellCapability::PowerShell7,
+            Self::WindowsPowerShell51(_) => WindowsShellCapability::PowerShell51Compatibility,
+            Self::Unavailable(_) => WindowsShellCapability::Unavailable,
+        }
+    }
+
+    /// Human-readable shell description for prompts and diagnostics.
+    pub fn prompt_description(&self) -> &'static str {
+        match self.capability() {
+            WindowsShellCapability::PowerShell7 => "PowerShell 7 (pwsh)",
+            WindowsShellCapability::PowerShell51Compatibility => {
+                "Windows PowerShell 5.1 compatibility mode (no && pipeline chaining)"
+            }
+            WindowsShellCapability::Unavailable => "unavailable",
+        }
+    }
+
+    /// User-facing startup warning for the reduced PS5.1 fallback profile.
+    pub fn compatibility_notice(&self) -> Option<&'static str> {
+        matches!(
+            self.capability(),
+            WindowsShellCapability::PowerShell51Compatibility
+        )
+        .then_some(
+            "Warning: Atelier is using Windows PowerShell 5.1 compatibility mode. Install or repair Atelier-managed PowerShell 7 for full shell and PTY support.",
+        )
     }
 
     /// Whether this shell supports the `&&` pipeline chain operator for
@@ -166,24 +263,23 @@ impl WindowsShell {
     /// - `cmd.exe`: `&&` works but is inconsistent with the `-Command`
     ///   invocation style used elsewhere; use `;` for uniformity.
     pub fn supports_chain_operator(&self) -> bool {
-        matches!(self, Self::Pwsh | Self::GitBash(_))
+        matches!(self, Self::PowerShell7(_))
     }
 
     /// Whether `grep`, `head`, `tail`, `sed`, `awk`, `find` are usable
     /// from this shell. True for Git Bash (MSYS2 bundles them inside the
     /// bash subprocess); false for PowerShell and `cmd.exe`.
     pub fn has_unix_utilities(&self) -> bool {
-        matches!(self, Self::GitBash(_))
+        false
     }
 
     /// How this shell interprets a bare `&` token. Drives the `run_terminal_cmd`
     /// background-operator validation, which must differ per shell.
     pub fn ampersand_semantics(&self) -> AmpersandSemantics {
         match self {
-            Self::GitBash(_) => AmpersandSemantics::PosixBackground,
-            Self::Pwsh => AmpersandSemantics::PowerShellCore,
-            Self::PowerShell => AmpersandSemantics::WindowsPowerShell,
-            Self::Cmd => AmpersandSemantics::CmdSeparator,
+            Self::PowerShell7(_) => AmpersandSemantics::PowerShellCore,
+            Self::WindowsPowerShell51(_) => AmpersandSemantics::WindowsPowerShell,
+            Self::Unavailable(_) => AmpersandSemantics::WindowsPowerShell,
         }
     }
 }
@@ -272,6 +368,7 @@ pub fn ampersand_semantics() -> AmpersandSemantics {
 
 /// How to invoke a command in the detected Windows shell.
 #[cfg(not(unix))]
+#[derive(Debug)]
 pub struct ShellInvocation {
     pub program: String,
     pub args: Vec<String>,
@@ -282,14 +379,14 @@ pub struct ShellInvocation {
 
 /// Build `(program, args, env)` for running `command` in the detected shell.
 #[cfg(not(unix))]
-pub fn shell_command_argv(command: &str) -> ShellInvocation {
+pub fn shell_command_argv(command: &str) -> std::io::Result<ShellInvocation> {
     invocation_for(detect_windows_shell(), command)
 }
 
 /// Pure builder split out of `shell_command_argv` so tests can exercise every
 /// `WindowsShell` variant, not just the one installed on the test host.
 #[cfg(not(unix))]
-fn invocation_for(shell: &WindowsShell, command: &str) -> ShellInvocation {
+fn invocation_for(shell: &WindowsShell, command: &str) -> std::io::Result<ShellInvocation> {
     // Force UTF-8 for descendant tools. Windows' legacy ANSI codepage (cp1252)
     // makes locale-sensitive children mis-decode UTF-8 subprocess output — e.g.
     // Python's text-mode `subprocess` raised `UnicodeDecodeError` on `gh` output.
@@ -302,20 +399,8 @@ fn invocation_for(shell: &WindowsShell, command: &str) -> ShellInvocation {
         ("PYTHONIOENCODING", "utf-8:surrogateescape"),
     ];
     match shell {
-        WindowsShell::GitBash(path) => ShellInvocation {
+        WindowsShell::PowerShell7(path) => Ok(ShellInvocation {
             program: path.clone(),
-            args: vec!["-c".to_string(), command.to_string()],
-            // Disable MSYS2 POSIX-to-Windows path translation so `/flag`
-            // arguments (MSBuild /t:, cl.exe /nologo, etc.) pass through.
-            env: vec![
-                ("MSYS_NO_PATHCONV", "1"),
-                ("MSYS2_ARG_CONV_EXCL", "*"),
-                utf8_env[0],
-                utf8_env[1],
-            ],
-        },
-        WindowsShell::Pwsh => ShellInvocation {
-            program: "pwsh".to_string(),
             args: vec![
                 "-NoProfile".to_string(),
                 "-NonInteractive".to_string(),
@@ -323,22 +408,27 @@ fn invocation_for(shell: &WindowsShell, command: &str) -> ShellInvocation {
                 command.to_string(),
             ],
             env: utf8_env.to_vec(),
-        },
-        WindowsShell::PowerShell => ShellInvocation {
-            program: "powershell.exe".to_string(),
+        }),
+        WindowsShell::WindowsPowerShell51(path) => Ok(ShellInvocation {
+            program: path.clone(),
             args: vec![
                 "-NoProfile".to_string(),
                 "-NonInteractive".to_string(),
+                "-ExecutionPolicy".to_string(),
+                "Bypass".to_string(),
                 "-Command".to_string(),
-                command.to_string(),
+                format!(
+                    "[Console]::InputEncoding = [Text.UTF8Encoding]::new($false); \
+                     [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false); \
+                     $OutputEncoding = [Text.UTF8Encoding]::new($false); {command}"
+                ),
             ],
             env: utf8_env.to_vec(),
-        },
-        WindowsShell::Cmd => ShellInvocation {
-            program: "cmd".to_string(),
-            args: vec!["/C".to_string(), command.to_string()],
-            env: utf8_env.to_vec(),
-        },
+        }),
+        WindowsShell::Unavailable(reason) => Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("Windows shell unavailable: {reason}"),
+        )),
     }
 }
 
@@ -594,89 +684,125 @@ mod tests {
         let _ = detect_unix_shell_kind();
     }
 
-    /// Only Git Bash bundles the Unix utilities; the PowerShell and cmd
-    /// variants do not.
     #[cfg(not(unix))]
     #[test]
-    fn has_unix_utilities_only_true_for_gitbash() {
+    fn windows_shell_capability_profiles_are_explicit() {
+        let ps7 = WindowsShell::PowerShell7(r"C:\PowerShell\pwsh.exe".into());
+        assert_eq!(ps7.capability(), WindowsShellCapability::PowerShell7);
+        assert_eq!(ps7.compatibility_notice(), None);
+        assert!(ps7.prompt_description().contains("PowerShell 7"));
+
+        let ps51 = WindowsShell::WindowsPowerShell51(
+            r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe".into(),
+        );
+        assert_eq!(
+            ps51.capability(),
+            WindowsShellCapability::PowerShell51Compatibility
+        );
+        assert!(ps51.compatibility_notice().is_some());
+        assert!(ps51.prompt_description().contains("compatibility mode"));
+    }
+
+    #[cfg(not(unix))]
+    #[test]
+    fn windows_shells_never_claim_unix_utilities() {
+        assert!(!WindowsShell::PowerShell7(r"C:\PowerShell\pwsh.exe".into()).has_unix_utilities());
         assert!(
-            WindowsShell::GitBash("C:\\Program Files\\Git\\bin\\bash.exe".into())
-                .has_unix_utilities()
-        );
-        assert!(!WindowsShell::Pwsh.has_unix_utilities());
-        assert!(!WindowsShell::PowerShell.has_unix_utilities());
-        assert!(!WindowsShell::Cmd.has_unix_utilities());
-    }
-
-    /// Git Bash backgrounds with a bare `&`; PowerShell uses `&` as the call
-    /// operator; `cmd.exe` uses it as a sequential separator.
-    #[cfg(not(unix))]
-    #[test]
-    fn ampersand_semantics_per_windows_shell() {
-        assert_eq!(
-            WindowsShell::GitBash("C:\\Program Files\\Git\\bin\\bash.exe".into())
-                .ampersand_semantics(),
-            AmpersandSemantics::PosixBackground
-        );
-        assert_eq!(
-            WindowsShell::Pwsh.ampersand_semantics(),
-            AmpersandSemantics::PowerShellCore
-        );
-        assert_eq!(
-            WindowsShell::PowerShell.ampersand_semantics(),
-            AmpersandSemantics::WindowsPowerShell
-        );
-        assert_eq!(
-            WindowsShell::Cmd.ampersand_semantics(),
-            AmpersandSemantics::CmdSeparator
+            !WindowsShell::WindowsPowerShell51(
+                r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe".into()
+            )
+            .has_unix_utilities()
         );
     }
 
-    /// Every Windows shell variant injects the UTF-8 env defaults. Builds all
-    /// four variants directly so it doesn't depend on the test host's shell.
     #[cfg(not(unix))]
     #[test]
-    fn invocation_for_sets_utf8_env_on_every_variant() {
-        let variants = [
-            WindowsShell::GitBash("C:\\Program Files\\Git\\bin\\bash.exe".into()),
-            WindowsShell::Pwsh,
-            WindowsShell::PowerShell,
-            WindowsShell::Cmd,
-        ];
-        for shell in &variants {
-            let inv = invocation_for(shell, "echo hi");
-            assert!(
-                inv.env.contains(&("PYTHONUTF8", "1")),
-                "expected PYTHONUTF8=1 in env for {shell:?}, got {:?}",
-                inv.env
-            );
-            assert!(
-                inv.env
-                    .contains(&("PYTHONIOENCODING", "utf-8:surrogateescape")),
-                "expected PYTHONIOENCODING=utf-8:surrogateescape in env for {shell:?}, got {:?}",
-                inv.env
-            );
+    fn windowsapps_paths_are_rejected() {
+        assert!(is_windowsapps_path(std::path::Path::new(
+            r"C:\Users\u\AppData\Local\Microsoft\WindowsApps\pwsh.exe"
+        )));
+        assert!(is_windowsapps_path(std::path::Path::new(
+            r"C:\Program Files\WindowsApps\Microsoft.PowerShell_7\pwsh.exe"
+        )));
+    }
+
+    #[cfg(not(unix))]
+    #[test]
+    fn managed_manifest_path_must_name_a_direct_versioned_runtime() {
+        let root = std::path::Path::new(r"C:\ProgramData\Atelier\runtimes\powershell");
+        assert!(is_managed_pwsh_layout(
+            root,
+            std::path::Path::new(r"C:\ProgramData\Atelier\runtimes\powershell\7.6.4\pwsh.exe")
+        ));
+        assert!(!is_managed_pwsh_layout(
+            root,
+            std::path::Path::new(r"C:\Program Files\PowerShell\7\pwsh.exe")
+        ));
+        assert!(!is_managed_pwsh_layout(
+            root,
+            std::path::Path::new(
+                r"C:\ProgramData\Atelier\runtimes\powershell\active\nested\pwsh.exe"
+            )
+        ));
+    }
+
+    #[cfg(not(unix))]
+    #[test]
+    fn powershell_invocations_use_absolute_paths_and_utf8_envelopes() {
+        let ps7 = invocation_for(
+            &WindowsShell::PowerShell7(r"C:\Program Files\PowerShell\7\pwsh.exe".into()),
+            "Write-Output ok",
+        )
+        .unwrap();
+        assert!(std::path::Path::new(&ps7.program).is_absolute());
+        assert!(ps7.env.contains(&("PYTHONUTF8", "1")));
+
+        let ps51 = invocation_for(
+            &WindowsShell::WindowsPowerShell51(
+                r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe".into(),
+            ),
+            "Write-Output ok",
+        )
+        .unwrap();
+        assert!(std::path::Path::new(&ps51.program).is_absolute());
+        assert!(ps51.args.last().unwrap().contains("OutputEncoding"));
+    }
+
+    #[cfg(not(unix))]
+    #[test]
+    fn detected_windows_shell_uses_an_absolute_non_windowsapps_path() {
+        let selected = match detect_windows_shell() {
+            WindowsShell::PowerShell7(path) | WindowsShell::WindowsPowerShell51(path) => {
+                assert!(std::path::Path::new(path).is_absolute());
+                assert!(!is_windowsapps_path(std::path::Path::new(path)));
+                path
+            }
+            WindowsShell::Unavailable(reason) => panic!("test host has no PowerShell: {reason}"),
+        };
+
+        // On an installed host, the managed manifest is authoritative ahead
+        // of machine-wide PowerShell 7 and the PS5.1 compatibility fallback.
+        if std::env::var_os("ATELIER_SHELL").is_none()
+            && let Some(program_data) = std::env::var_os("ProgramData")
+        {
+            let manifest_path = std::path::PathBuf::from(program_data)
+                .join("Atelier/runtimes/powershell/active.json");
+            if let Ok(source) = std::fs::read_to_string(manifest_path) {
+                let manifest: serde_json::Value =
+                    serde_json::from_str(&source).expect("parse managed PowerShell manifest");
+                let expected = manifest["path"]
+                    .as_str()
+                    .expect("managed PowerShell manifest path");
+                assert!(selected.eq_ignore_ascii_case(expected));
+            }
         }
     }
 
-    /// GitBash keeps its pre-existing MSYS2 path-translation guards in addition
-    /// to the UTF-8 defaults (the UTF-8 entries are appended, not replacing).
     #[cfg(not(unix))]
     #[test]
-    fn invocation_for_gitbash_keeps_msys_vars() {
-        let inv = invocation_for(
-            &WindowsShell::GitBash("C:\\Program Files\\Git\\bin\\bash.exe".into()),
-            "echo hi",
-        );
-        assert!(
-            inv.env.contains(&("MSYS_NO_PATHCONV", "1")),
-            "{:?}",
-            inv.env
-        );
-        assert!(
-            inv.env.contains(&("MSYS2_ARG_CONV_EXCL", "*")),
-            "{:?}",
-            inv.env
-        );
+    fn unavailable_shell_fails_closed() {
+        let error =
+            invocation_for(&WindowsShell::Unavailable("missing".into()), "echo hi").unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
     }
 }

@@ -160,10 +160,18 @@ impl SandboxManager {
         backend: SandboxBackendKind,
     ) -> Self {
         let net_restricted = profile.restricts_network();
-        let availability = native_sandbox_availability();
         let diagnostics = if profile == ProfileName::Off {
             SandboxDiagnostics::disabled(backend, profile.to_string())
+        } else if backend.is_unsafe() {
+            // Explicit unsafe mode must not launch or probe the native helper.
+            // Besides avoiding unnecessary startup work, this keeps the escape
+            // hatch usable when the native runtime is missing or broken.
+            SandboxDiagnostics::unsafe_backend(
+                profile.to_string(),
+                "explicit unsafe backend selected; native sandbox was not probed",
+            )
         } else {
+            let availability = native_sandbox_availability();
             SandboxDiagnostics::new(
                 backend,
                 profile.to_string(),

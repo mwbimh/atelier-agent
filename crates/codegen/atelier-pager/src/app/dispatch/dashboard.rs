@@ -1365,6 +1365,14 @@ pub(super) fn dispatch_dashboard_dispatch_slash(app: &mut AppView, text: String)
             }
             vec![]
         }
+        CommandResult::Action(Action::OpenRolesModal) => {
+            if let Some(d) = app.dashboard.as_mut() {
+                d.dispatch.set_text("/roles ");
+                d.dispatch.refresh_slash(&app.models);
+                d.error_toast = None;
+            }
+            vec![]
+        }
         CommandResult::Action(Action::OpenSlashCommandInput { command }) => {
             if let Some(d) = app.dashboard.as_mut() {
                 d.dispatch.set_text(&format!("/{command} "));

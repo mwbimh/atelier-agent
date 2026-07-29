@@ -207,7 +207,8 @@ impl AgentView {
                     // args, or arg row chains into a sub-menu).
                     let chains = snap
                         .selection()
-                        .is_some_and(|row| row.insert_text.ends_with(' '));
+                        .is_some_and(|row| row.insert_text.ends_with(' '))
+                        && !self.prompt.slash_exact_optional_command_selected();
 
                     // Commit any live preview before accepting.
                     self.prompt.slash_commit_preview();

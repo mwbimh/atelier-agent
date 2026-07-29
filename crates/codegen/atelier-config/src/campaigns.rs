@@ -271,6 +271,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn effective_config_honors_dismiss() {
         use crate::loader::ConfigLayers;
         // A dismissed campaign id stops overriding; the user's stored value returns.

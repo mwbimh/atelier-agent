@@ -1,6 +1,6 @@
 # Plugins
 
-A plugin bundles skills, slash commands, agents, hooks, MCP server configurations, and LSP server configurations into one installable unit.
+A plugin bundles skills, slash commands, hooks, MCP server configurations, and LSP server configurations into one installable unit. Plugin Agent preset directories are ignored.
 
 ---
 
@@ -10,14 +10,13 @@ A plugin is a directory that holds any combination of these components:
 
 - **Skills** -- a `skills/` directory of SKILL.md files
 - **Slash commands** -- a `commands/` directory of command files
-- **Agents** -- an `agents/` directory of agent definitions
 - **Hooks** -- a `hooks/hooks.json` file of lifecycle hooks. Plugin hooks also receive `ATELIER_PLUGIN_ROOT` and `ATELIER_PLUGIN_DATA` (see the [Hooks guide](10-hooks.md) for every environment variable passed to hooks).
 - **MCP servers** -- a `.mcp.json` file of server configurations
 - **LSP servers** -- a `.lsp.json` file of language server configurations
 
 If a plugin includes a `plugin.json` manifest, the manifest can override paths or add metadata; otherwise components load from the convention directories. The manifest is optional: without one, Atelier discovers the components above from their standard directories.
 
-For example, a `team-tools` plugin might include a deploy skill, a code-review agent, pre-commit hooks, and a Linear MCP server. Install them together in one step.
+For example, a `team-tools` plugin might include a deploy skill, pre-commit hooks, and a Linear MCP server. Install them together in one step.
 
 ## Environment variables in plugin hooks
 

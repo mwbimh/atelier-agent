@@ -182,22 +182,6 @@ pub(crate) fn detected_config_kinds(cwd: &Path) -> Vec<String> {
         .collect()
 }
 
-/// Whether an agent's inline `hooks:` block may be appended to the live hook
-/// registry. A PROJECT/cwd-discovered agent's inline hooks are repo-controlled
-/// code-exec (and a project agent can SHADOW a built-in subagent, e.g. `explore`),
-/// so they require folder trust; user/bundled/built-in agents (not cwd-sourced)
-/// always keep theirs. `trusted` is evaluated LAZILY so non-project agents skip
-/// the (filesystem-walking) trust verdict entirely. SINGLE definition shared by
-/// the primary-session and subagent append sites (and the test) so they cannot
-/// drift. The primary site passes its already-computed `hooks_trusted` verdict;
-/// the subagent site passes `project_scope_allowed(parent_cwd)`.
-pub(crate) fn agent_inline_hooks_allowed(
-    scope: atelier_agent::config::AgentScope,
-    trusted: impl FnOnce() -> bool,
-) -> bool {
-    scope != atelier_agent::config::AgentScope::Project || trusted()
-}
-
 fn record(workspace_key: &Path, allowed: bool) {
     DECISIONS
         .lock()
@@ -718,10 +702,16 @@ mod tests {
         store.set_trusted(&workspace_key(tmp.path())).unwrap();
         assert!(resolve_and_record(tmp.path(), None, false));
         let env = atelier_workspace::envrc::load_envrc_or_empty(tmp.path());
+        #[cfg(unix)]
         assert_eq!(
             env.get("GATED_ENVRC"),
             Some(&"1".to_string()),
             "trusted folder must load `.envrc`"
+        );
+        #[cfg(windows)]
+        assert!(
+            env.is_empty(),
+            "native Windows disables bash-based .envrc execution"
         );
     }
 
@@ -817,57 +807,6 @@ mod tests {
             trusted.get("SUBDIR_REPO_ENV_GATED"),
             Some(&"1".to_string()),
             "trusted folder must merge the subdir repo-tree .claude env"
-        );
-    }
-
-    #[test]
-    #[serial_test::serial]
-    fn project_agent_inline_hooks_gated_when_untrusted_but_user_kept() {
-        let _sim = simulate_release_build();
-        // A cwd-discovered PROJECT agent's inline `hooks:` is gated on folder-trust
-        // (it can SHADOW a built-in subagent => near-auto RCE); a user/built-in
-        // agent's hooks are kept. Exercises real discovery + the exact call-site
-        // predicate used at mvp_agent/subagent. ATELIER_HOME-isolated (empty store).
-        use atelier_agent::config::AgentScope;
-        let home = tempfile::tempdir().unwrap();
-        let _env = EnvGuard::set("ATELIER_HOME", home.path());
-        let _flag = EnvGuard::unset("ATELIER_FOLDER_TRUST");
-        let tmp = repo_tmp();
-        let agents = tmp.path().join(".atelier").join("agents");
-        std::fs::create_dir_all(&agents).unwrap();
-        // Shadows the built-in `explore` subagent and carries a command hook.
-        std::fs::write(
-            agents.join("explore.md"),
-            "---\nname: explore\ndescription: x\nhooks:\n  PreToolUse:\n    - hooks:\n        - type: command\n          command: \"true\"\n---\nbody\n",
-        )
-        .unwrap();
-        let def = atelier_agent::discovery::by_name_in_cwd("explore", tmp.path())
-            .expect("project agent must be discovered");
-        assert_eq!(def.scope, AgentScope::Project);
-        assert!(def.hooks.is_some(), "project agent must carry inline hooks");
-
-        // Exercise the REAL shared predicate both append sites use (not a copy).
-        let allowed = |scope: AgentScope| {
-            agent_inline_hooks_allowed(scope, || project_scope_allowed(tmp.path()))
-        };
-
-        // Untrusted: the project agent's inline hooks are dropped...
-        assert!(
-            !allowed(def.scope),
-            "untrusted project agent inline hooks must be gated"
-        );
-        // ...while user/built-in agents (not cwd-sourced) keep their hooks.
-        assert!(allowed(AgentScope::User));
-        assert!(allowed(AgentScope::BuiltIn));
-
-        // Grant trust + reconcile the cache (as the post-grant reload flow does)
-        // => the project agent's inline hooks are appended.
-        let mut store = TrustStore::load();
-        store.set_trusted(&workspace_key(tmp.path())).unwrap();
-        resolve_and_record(tmp.path(), None, false);
-        assert!(
-            allowed(def.scope),
-            "trusted project agent inline hooks must be appended"
         );
     }
 
@@ -1549,10 +1488,16 @@ mod tests {
         // The gated `.envrc` load (the call-site contract) runs because the gate
         // is inert/trusted, so the var is present with no store grant.
         let env = atelier_workspace::envrc::load_envrc_or_empty(tmp.path());
+        #[cfg(unix)]
         assert_eq!(
             env.get("LOCAL_BUILD_ENVRC"),
             Some(&"1".to_string()),
             "local build: `.envrc` must load without any store grant"
+        );
+        #[cfg(windows)]
+        assert!(
+            env.is_empty(),
+            "native Windows disables bash-based .envrc execution"
         );
     }
 

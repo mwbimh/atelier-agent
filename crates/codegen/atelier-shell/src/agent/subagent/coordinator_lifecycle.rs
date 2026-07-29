@@ -188,7 +188,6 @@ impl SubagentCoordinator {
                 child_session_id: t.child_session_id.0.to_string(),
                 subagent_type: t.subagent_type.clone(),
                 description: t.description.clone(),
-                persona: t.persona.clone(),
                 resumed_from: t.resumed_from.clone(),
             })
             .chain(
@@ -201,7 +200,6 @@ impl SubagentCoordinator {
                         child_session_id: c.child_session_id.clone(),
                         subagent_type: c.subagent_type.clone(),
                         description: c.description.clone(),
-                        persona: c.persona.clone(),
                         resumed_from: c.resumed_from.clone(),
                     }),
             )
@@ -236,7 +234,6 @@ impl SubagentCoordinator {
             description: pending.description,
             parent_prompt_id: pending.parent_prompt_id,
             parent_session_id: pending.parent_session_id,
-            persona: pending.persona,
             started_at: pending.started_at,
             error,
             surface_completion: pending.surface_completion,
@@ -270,7 +267,6 @@ impl SubagentCoordinator {
             description,
             parent_prompt_id,
             parent_session_id,
-            persona: None,
             started_at: std::time::Instant::now(),
             error,
             surface_completion,
@@ -288,7 +284,6 @@ impl SubagentCoordinator {
             description,
             parent_prompt_id,
             parent_session_id,
-            persona,
             started_at,
             error,
             surface_completion,
@@ -312,7 +307,6 @@ impl SubagentCoordinator {
                     child_session_id: String::new(),
                     description: description.clone(),
                     subagent_type: subagent_type.clone(),
-                    persona,
                     started_at,
                     completed_at: std::time::Instant::now(),
                     result,
@@ -369,7 +363,6 @@ impl SubagentCoordinator {
             .map(|t| t.child_session_id.0.to_string())
             .unwrap_or_default();
         let parent_prompt_id = tracker.as_ref().and_then(|t| t.parent_prompt_id.clone());
-        let persona = tracker.as_ref().and_then(|t| t.persona.clone());
         let child_cwd = tracker
             .as_ref()
             .map(|t| t.child_cwd.clone())
@@ -393,7 +386,6 @@ impl SubagentCoordinator {
                     child_session_id,
                     description,
                     subagent_type,
-                    persona,
                     started_at,
                     completed_at: std::time::Instant::now(),
                     result,

@@ -210,10 +210,8 @@ pub(crate) async fn spawn_session_actor(
     client_hooks: crate::extensions::hooks::ClientHooks,
     prompt_display_cwd: Option<String>,
     subagent_toggle: std::collections::HashMap<String, bool>,
-    persona_summaries: Vec<String>,
     prompt_audience: atelier_agent::prompt::context::PromptAudience,
     role_instructions: Option<String>,
-    persona_instructions: Option<String>,
     disable_web_search: bool,
     backend_tools_enabled: bool,
     respect_gitignore: bool,
@@ -884,10 +882,8 @@ pub(crate) async fn spawn_session_actor(
         subagents_enabled,
         subagent_toggle: subagent_toggle.clone(),
         ask_user_question_enabled,
-        persona_summaries: persona_summaries.clone(),
         prompt_audience,
         role_instructions: role_instructions.clone(),
-        persona_instructions: persona_instructions.clone(),
         skills_config: skills_config.clone(),
         compat,
         context_window_tokens,
@@ -962,8 +958,7 @@ pub(crate) async fn spawn_session_actor(
         tracing::warn!(error = % e, "failed to bind local session toolset");
     }
     let system_prompt = agent.system_prompt().to_string();
-    let mut prompt_context = agent.prompt_context().clone();
-    prompt_context.normalize_for_persistence();
+    let prompt_context = agent.prompt_context().clone();
     save_prompt_context(&session_info, &prompt_context);
     let is_subagent_spawn = startup_hints.is_subagent;
     install_system_prompt(
@@ -1778,10 +1773,8 @@ pub(crate) async fn spawn_session_on_thread(
     client_hooks: crate::extensions::hooks::ClientHooks,
     prompt_display_cwd: Option<String>,
     subagent_toggle: std::collections::HashMap<String, bool>,
-    persona_summaries: Vec<String>,
     prompt_audience: atelier_agent::prompt::context::PromptAudience,
     role_instructions: Option<String>,
-    persona_instructions: Option<String>,
     disable_web_search: bool,
     backend_tools_enabled: bool,
     respect_gitignore: bool,
@@ -1925,10 +1918,8 @@ pub(crate) async fn spawn_session_on_thread(
                         client_hooks,
                         prompt_display_cwd,
                         subagent_toggle,
-                        persona_summaries,
                         prompt_audience,
                         role_instructions,
-                        persona_instructions,
                         disable_web_search,
                         backend_tools_enabled,
                         respect_gitignore,

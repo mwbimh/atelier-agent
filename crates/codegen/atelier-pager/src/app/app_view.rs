@@ -679,13 +679,6 @@ pub struct AppView {
     pub welcome_tip_typing_dismissed: bool,
     /// Effects queued by notification handlers (drained by the event loop).
     pub pending_effects: Vec<crate::app::actions::Effect>,
-    /// Path to open in `$EDITOR` after the current event cycle completes.
-    /// Set by `Action::SuspendForEditor`; consumed by the event loop which
-    /// leaves the alternate screen, disables raw mode, spawns the editor,
-    /// waits for it to exit, then restores the TUI.
-    pub pending_editor_path: Option<std::path::PathBuf>,
-    /// After `$EDITOR` exits, refresh the agents modal tab list if still open.
-    pub pending_agents_modal_refresh: Option<crate::views::agents_modal::AgentsTab>,
     /// Path to open in `$PAGER` (default `less`) after the current event cycle.
     /// Set by `Action::OpenTranscriptPager` (`/transcript`); consumed by the
     /// event loop which suspends the inline TUI, spawns the pager, then restores
@@ -1092,8 +1085,6 @@ impl AppView {
             welcome_prompt_focused: true,
             welcome_tip_typing_dismissed: false,
             pending_effects: Vec::new(),
-            pending_editor_path: None,
-            pending_agents_modal_refresh: None,
             pending_pager_path: None,
             pending_pager_ansi: false,
             minimal_state: crate::minimal_api::MinimalState::default(),
@@ -4955,8 +4946,6 @@ pub(crate) mod tests {
             welcome_doc_viewer: None,
             screen_mode: ScreenMode::Inline,
             pending_effects: Vec::new(),
-            pending_editor_path: None,
-            pending_agents_modal_refresh: None,
             pending_pager_path: None,
             pending_pager_ansi: false,
             minimal_state: crate::minimal_api::MinimalState::default(),

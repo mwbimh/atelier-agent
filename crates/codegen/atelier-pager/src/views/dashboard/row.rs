@@ -1078,7 +1078,6 @@ mod tests {
             child_session_id: Arc::from(child_id),
             description: Arc::from("test task"),
             subagent_type: Arc::from("explore"),
-            persona: None,
             role: None,
             model: None,
             context_source: None,

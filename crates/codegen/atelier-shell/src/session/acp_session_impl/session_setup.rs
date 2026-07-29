@@ -145,23 +145,6 @@ impl SessionActor {
                 ConversationItem::project_instructions(agents_md_reminder),
             );
         }
-        if let Some(personas_reminder) = self.agent.borrow().personas_user_reminder() {
-            let personas_at = conversation.len().min(
-                conversation
-                    .iter()
-                    .position(|item| {
-                        matches!(
-                            item, ConversationItem::User(u) if u.synthetic_reason
-                            .is_none()
-                        )
-                    })
-                    .unwrap_or(conversation.len()),
-            );
-            conversation.insert(
-                personas_at,
-                ConversationItem::system_reminder(personas_reminder),
-            );
-        }
         self.chat_state_handle.replace_conversation(conversation);
         tracing::info!(
             session_id = % self.session_info.id.0, source, elapsed_ms = start.elapsed()

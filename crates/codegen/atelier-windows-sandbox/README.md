@@ -16,8 +16,11 @@ The active process chain is:
   for the `AtelierSandboxNoNet` account SID. Setup and status verify the rule
   shape and SID binding; WFP failure leaves setup unavailable (fail-closed).
 - The current `ate.exe` is materialized under `~/.atelier/.sandbox-bin`; the
-  release directory contains the public `ate.exe` and the offline
-  `install-windows.ps1` installer, but no standalone helper executable.
+  release directory contains the public `ate.exe` and
+  `install-windows.ps1`, but no standalone helper executable. The installer
+  can download a verified self-contained PowerShell ZIP or use an explicit
+  offline `-PowerShellArchive` together with the required
+  `-PowerShellArchiveSha256`.
 - The parent starts the materialized binary with `CreateProcessWithLogonW` and
   exchanges the spawn request and raw standard streams through sandbox-user
   scoped named pipes.
@@ -36,6 +39,17 @@ The active process chain is:
 - `ATELIER_HOME` is the only home-directory variable introduced by this
   crate. Telemetry is `None`/no-op and OTEL exporter variables are disabled in
   the child environment.
+- Native Windows shell selection is fixed at Session startup: managed portable
+  PowerShell 7, then machine-wide PowerShell 7, then Windows PowerShell 5.1,
+  otherwise fail closed. WindowsApps/MSIX aliases, Git Bash, cmd.exe, and WSL
+  are not automatic shell candidates. Commands always use the resolved
+  absolute PowerShell path and are never replayed through another shell after
+  a command failure.
+- The installer places managed PowerShell under
+  `C:\ProgramData\Atelier\runtimes\powershell\<version>` and writes
+  `active.json`. Executable roots approved by the installer are recorded in
+  `C:\ProgramData\Atelier\tools\registry.json`; the sandbox child receives a
+  controlled PATH instead of the host user's complete PATH.
 
 The following upstream capability is not implemented here:
 

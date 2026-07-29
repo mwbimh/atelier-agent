@@ -599,7 +599,6 @@ fn format_subagent_snapshot(snap: &SubagentSnapshot) -> TaskOutputOutput {
             output.push_str(&atelier_tool_types::format_resume_footer(
                 &snap.subagent_id,
                 &snap.subagent_type,
-                snap.persona.as_deref(),
             ));
             let raw_output_bytes = output.len();
             TaskOutputOutput::Result(TaskOutputResult {
@@ -1594,7 +1593,6 @@ mod tests {
             subagent_id: "sub-init".to_string(),
             description: "Check PR status".to_string(),
             subagent_type: "general-purpose".to_string(),
-            persona: None,
             status: SubagentSnapshotStatus::Initializing,
             started_at_epoch_ms: 1_700_000_000_000,
             duration_ms: 8_500,
@@ -1632,7 +1630,6 @@ mod tests {
             subagent_id: "sub-abc".to_string(),
             description: "Find all API endpoints".to_string(),
             subagent_type: "explore".to_string(),
-            persona: None,
             status: SubagentSnapshotStatus::Running {
                 turn_count: 3,
                 tool_call_count: 12,
@@ -1700,7 +1697,6 @@ mod tests {
             subagent_id: "sub-new".to_string(),
             description: "just started".to_string(),
             subagent_type: "general-purpose".to_string(),
-            persona: None,
             status: SubagentSnapshotStatus::Running {
                 turn_count: 0,
                 tool_call_count: 0,
@@ -1857,7 +1853,6 @@ mod tests {
                     },
                     started_at_epoch_ms: 1_700_000_000_000,
                     duration_ms: 1500,
-                    persona: None,
                 }))
                 .unwrap();
         });
@@ -1908,7 +1903,6 @@ mod tests {
                     },
                     started_at_epoch_ms: 1_700_000_000_000,
                     duration_ms: 3000,
-                    persona: None,
                 }))
                 .unwrap();
         });

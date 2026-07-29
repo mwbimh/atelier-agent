@@ -10,30 +10,23 @@ fn fixed_runtime_roles_cover_builtin_subagent_types() {
     assert_eq!(fixed_role_for_subagent_type("explore"), Some(RoleId::Explore));
     assert_eq!(
         fixed_role_for_subagent_type("general-purpose"),
-        Some(RoleId::Implement)
+        Some(RoleId::General)
     );
     assert_eq!(
         fixed_role_for_subagent_type("code-reviewer"),
         Some(RoleId::Review)
     );
     assert_eq!(fixed_role_for_subagent_type("test"), Some(RoleId::Test));
-    assert_eq!(fixed_role_for_subagent_type("plan"), None);
-    assert_eq!(fixed_role_for_subagent_type("custom-agent"), None);
+    assert_eq!(fixed_role_for_subagent_type("plan"), Some(RoleId::Planner));
+    assert_eq!(fixed_role_for_subagent_type("custom-agent"), Some(RoleId::General));
 }
 
 #[test]
 fn context_role_names_follow_fixed_role_aliases() {
-    assert_eq!(
-        context_role_name(None, None, "general-purpose"),
-        "implement"
-    );
-    assert_eq!(context_role_name(None, None, "reviewer"), "review");
-    assert_eq!(context_role_name(None, None, "plan"), "planner");
-    assert_eq!(context_role_name(None, Some("custom"), "explore"), "custom");
-    assert_eq!(
-        context_role_name(Some("skeptic"), Some("custom"), "explore"),
-        "skeptic"
-    );
+    assert_eq!(context_role_name(None, "general-purpose"), RoleId::General);
+    assert_eq!(context_role_name(None, "reviewer"), RoleId::Review);
+    assert_eq!(context_role_name(None, "plan"), RoleId::Planner);
+    assert_eq!(context_role_name(Some("skeptic"), "explore"), RoleId::Skeptic);
 }
 
 #[test]
@@ -154,6 +147,9 @@ fn fixed_role_payload_overrides_provider_defaults_without_dropping_them() {
         .insert("shared".into(), json!("provider"));
     let mut ctx = ctx_with_toggle(HashMap::new());
     ctx.role_registry_path = Some(registry_path);
+    ctx.sampling_config.provider_id = Some("parent-provider".into());
+    ctx.sampling_config.model = "parent-model".into();
+    ctx.model_id = acp::ModelId::new("parent-provider/parent-model");
     ctx.available_models
         .insert("provider/role-model".into(), entry);
 
@@ -167,18 +163,74 @@ fn fixed_role_payload_overrides_provider_defaults_without_dropping_them() {
     assert_eq!(config.request_payload["shared"], json!("role"));
     assert_eq!(config.request_payload["fast_mode"], json!(true));
 }
+#[test]
+#[serial_test::serial]
+fn sparse_fixed_role_settings_resolve_per_field_through_general() {
+    use atelier_provider::{ProviderRegistry, RoleConfig};
+    use atelier_test_support::EnvGuard;
+    use serde_json::json;
+
+    let atelier_home = tempfile::tempdir().unwrap();
+    let _home = EnvGuard::set("ATELIER_HOME", atelier_home.path());
+    let registry_path = atelier_home.path().join("providers.toml");
+    let mut registry = ProviderRegistry::load_or_create(&registry_path).unwrap();
+    let general: RoleConfig = toml::from_str(
+        r#"
+        provider = "provider"
+        model = "general-model"
+        effort = "low"
+        fast_mode = true
+        [payload]
+        inherited = true
+        "#,
+    )
+    .unwrap();
+    let explore: RoleConfig = toml::from_str(
+        r#"
+        model = "explore-model"
+        [payload]
+        child = true
+        "#,
+    )
+    .unwrap();
+    registry.update_role(RoleId::General, general).unwrap();
+    registry.update_role(RoleId::Explore, explore).unwrap();
+    registry.save().unwrap();
+
+    let mut entry = crate::agent::config::ModelEntry::fallback(
+        "explore-model",
+        &crate::agent::config::EndpointsConfig::default(),
+    );
+    entry.request_payload.insert("provider".into(), json!(true));
+    let mut ctx = ctx_with_toggle(HashMap::new());
+    ctx.role_registry_path = Some(registry_path);
+    ctx.model_id = acp::ModelId::new("main/main-model");
+    ctx.sampling_config.model = "main-model".into();
+    ctx.available_models
+        .insert("provider/explore-model".into(), entry);
+
+    let (config, model_id) = resolve_fixed_runtime_role("explore", &ctx)
+        .unwrap()
+        .expect("sparse Explore Role must resolve");
+
+    assert_eq!(model_id.0.as_ref(), "provider/explore-model");
+    assert_eq!(
+        config.reasoning_effort,
+        Some(atelier_sampling_types::ReasoningEffort::Low)
+    );
+    assert_eq!(config.request_payload["provider"], json!(true));
+    assert_eq!(config.request_payload["inherited"], json!(true));
+    assert_eq!(config.request_payload["child"], json!(true));
+    assert_eq!(config.request_payload["fast_mode"], json!(true));
+}
+
 /// Invariant: resolving a subagent applies the parent session's
 /// `--tools`/`--disallowed-tools`/`--permission-mode` — driven through
 /// `resolve_agent_definition` so the spawn path can't skip them.
 #[tokio::test]
 async fn subagent_inherits_session_cli_overrides() {
-    use atelier_agent::config::{AgentDefinition, PermissionMode};
-    let mut probe = AgentDefinition::general_purpose();
-    probe.name = "session-override-probe".into();
-    probe.permission_mode = PermissionMode::Plan;
-    probe.disallowed_tools = vec!["write".into()];
+    use atelier_agent::config::PermissionMode;
     let mut config = crate::agent::config::Config::default();
-    config.cli_agents = vec![probe];
     config.cli_agent_overrides = crate::agent::config::CliAgentOverrides {
         tools: Some(vec!["read_file".into(), "grep".into()]),
         disallowed_tools: Some(vec!["web_search".into(), "write".into()]),
@@ -187,8 +239,8 @@ async fn subagent_inherits_session_cli_overrides() {
     };
     let mut ctx = ctx_with_toggle(std::collections::HashMap::new());
     ctx.agent_config = Some(config);
-    let def = resolve_agent_definition("session-override-probe", &ctx)
-        .expect("cli agent resolves");
+    let def = resolve_agent_definition("explore", &ctx)
+        .expect("fixed built-in subagent resolves");
     assert_eq!(
         def.session_tools_allowlist.as_deref(), Some(& ["read_file".into(), "grep"
         .into()] [..])
@@ -197,30 +249,25 @@ async fn subagent_inherits_session_cli_overrides() {
         def.session_tools_denylist.as_deref(), Some(& ["web_search".into(), "write"
         .into()] [..])
     );
-    assert_eq!(def.disallowed_tools, vec!["write"]);
     assert_eq!(def.permission_mode, PermissionMode::AcceptEdits);
 }
 /// `permissionMode: bypassPermissions` is downgraded to `Default` under the
-/// pin and honored without it; other modes and plugin stripping unaffected.
+/// policy pin and honored without it; other modes are unaffected.
 #[test]
 fn subagent_bypass_permission_mode_gated_by_policy_pin() {
     use atelier_agent::config::PermissionMode;
     const PIN: &str = atelier_workspace::permission::resolution::YOLO_PIN_REASON_REQUIREMENTS;
     assert_eq!(
-        resolve_subagent_permission_mode(PermissionMode::BypassPermissions, false, None),
+        resolve_subagent_permission_mode(PermissionMode::BypassPermissions, None),
         PermissionMode::BypassPermissions,
     );
     assert_eq!(
-        resolve_subagent_permission_mode(PermissionMode::BypassPermissions, false,
-        Some(PIN)), PermissionMode::Default,
-    );
-    assert_eq!(
-        resolve_subagent_permission_mode(PermissionMode::Plan, false, Some(PIN)),
-        PermissionMode::Plan,
-    );
-    assert_eq!(
-        resolve_subagent_permission_mode(PermissionMode::BypassPermissions, true, None),
+        resolve_subagent_permission_mode(PermissionMode::BypassPermissions, Some(PIN)),
         PermissionMode::Default,
+    );
+    assert_eq!(
+        resolve_subagent_permission_mode(PermissionMode::Plan, Some(PIN)),
+        PermissionMode::Plan,
     );
 }
 /// Persisted⇒stamped chokepoint for the subagent emitter: the
@@ -399,7 +446,6 @@ async fn resolve_snapshot_returns_ready_unchanged() {
         },
         started_at_epoch_ms: 0,
         duration_ms: 100,
-        persona: None,
     };
     let result = resolve_snapshot(Some(SnapshotLookup::Ready(snap))).await;
     let result = result.expect("Ready should resolve to Some");
@@ -421,7 +467,6 @@ async fn resolve_snapshot_populates_running_from_signals() {
         subagent_type: "general-purpose".to_string(),
         started_at_epoch_ms: 1000,
         duration_ms: 5000,
-        persona: None,
         signals_handle,
     };
     let result = resolve_snapshot(Some(SnapshotLookup::NeedsSignals(seed))).await;
@@ -466,7 +511,6 @@ fn is_running_returns_true_for_running_variant() {
         },
         started_at_epoch_ms: 0,
         duration_ms: 0,
-        persona: None,
     };
     assert!(is_running(& snap));
 }
@@ -484,7 +528,6 @@ fn is_running_returns_false_for_completed_variant() {
         },
         started_at_epoch_ms: 0,
         duration_ms: 0,
-        persona: None,
     };
     assert!(! is_running(& snap));
 }
@@ -496,7 +539,6 @@ fn lookup_returns_initializing_for_pending_subagent() {
             subagent_id: "sub-pending".to_string(),
             subagent_type: "general-purpose".to_string(),
             description: "pending task".to_string(),
-            persona: None,
             parent_prompt_id: None,
             parent_session_id: String::new(),
             started_at: std::time::Instant::now(),
@@ -527,7 +569,6 @@ async fn running_gauge_tracks_pending_and_active() {
             subagent_id: "sub-gauge".to_string(),
             subagent_type: "general-purpose".to_string(),
             description: "gauge task".to_string(),
-            persona: None,
             parent_prompt_id: None,
             parent_session_id: String::new(),
             started_at: std::time::Instant::now(),
@@ -555,7 +596,6 @@ async fn running_gauge_tracks_pending_and_active() {
             subagent_id: "sub-gauge-2".to_string(),
             subagent_type: "general-purpose".to_string(),
             description: "gauge task 2".to_string(),
-            persona: None,
             parent_prompt_id: None,
             parent_session_id: String::new(),
             started_at: std::time::Instant::now(),
@@ -573,7 +613,6 @@ async fn running_gauge_tracks_pending_and_active() {
             subagent_id: "sub-gauge-3".to_string(),
             subagent_type: "general-purpose".to_string(),
             description: "gauge task 3".to_string(),
-            persona: None,
             parent_prompt_id: None,
             parent_session_id: String::new(),
             started_at: std::time::Instant::now(),
@@ -863,7 +902,6 @@ fn fail_pending(coordinator: &mut SubagentCoordinator, id: &str, surface: bool) 
             subagent_id: id.to_string(),
             subagent_type: "explore".to_string(),
             description: "task".to_string(),
-            persona: None,
             parent_prompt_id: None,
             parent_session_id: String::new(),
             started_at: std::time::Instant::now(),
@@ -899,7 +937,6 @@ fn is_running_returns_true_for_initializing_variant() {
         status: SubagentSnapshotStatus::Initializing,
         started_at_epoch_ms: 0,
         duration_ms: 0,
-        persona: None,
     };
     assert!(is_running(& snap));
 }
@@ -911,7 +948,6 @@ fn remove_pending_clears_entry() {
             subagent_id: "sub-1".to_string(),
             subagent_type: "explore".to_string(),
             description: "test".to_string(),
-            persona: None,
             parent_prompt_id: None,
             parent_session_id: String::new(),
             started_at: std::time::Instant::now(),
@@ -935,7 +971,6 @@ fn move_pending_to_failed_creates_completed_entry() {
             subagent_id: "sub-fail".to_string(),
             subagent_type: "explore".to_string(),
             description: "will fail during init".to_string(),
-            persona: None,
             parent_prompt_id: None,
             parent_session_id: String::new(),
             started_at: std::time::Instant::now(),
@@ -973,7 +1008,6 @@ fn move_pending_to_failed_fires_completion_notify() {
             subagent_id: "sub-notify".to_string(),
             subagent_type: "explore".to_string(),
             description: "notify test".to_string(),
-            persona: None,
             parent_prompt_id: None,
             parent_session_id: String::new(),
             started_at: std::time::Instant::now(),
@@ -1002,7 +1036,6 @@ fn move_pending_to_cancelled_creates_cancelled_entry() {
             subagent_id: "sub-killed".to_string(),
             subagent_type: "explore".to_string(),
             description: "killed while initializing".to_string(),
-            persona: None,
             parent_prompt_id: None,
             parent_session_id: String::new(),
             started_at: std::time::Instant::now(),
@@ -1039,7 +1072,6 @@ fn evict_stale_completed_uses_completion_time() {
                 child_session_id: String::new(),
                 description: "long-running".into(),
                 subagent_type: "explore".into(),
-                persona: None,
                 started_at: std::time::Instant::now()
                     - std::time::Duration::from_secs(31 * 60),
                 completed_at: std::time::Instant::now(),
@@ -1071,7 +1103,6 @@ fn cancel_with_outcome_fires_pending_token() {
             subagent_id: "sub-cancel".to_string(),
             subagent_type: "explore".to_string(),
             description: "will be cancelled".to_string(),
-            persona: None,
             parent_prompt_id: None,
             parent_session_id: String::new(),
             started_at: std::time::Instant::now(),
@@ -1129,7 +1160,6 @@ fn cancel_by_parent_prompt_id_fires_matching_pending_token() {
             subagent_id: "sub-p1".to_string(),
             subagent_type: "explore".to_string(),
             description: "child of prompt-A".to_string(),
-            persona: None,
             parent_prompt_id: Some("prompt-A".to_string()),
             parent_session_id: String::new(),
             started_at: std::time::Instant::now(),
@@ -1143,7 +1173,6 @@ fn cancel_by_parent_prompt_id_fires_matching_pending_token() {
             subagent_id: "sub-p2".to_string(),
             subagent_type: "explore".to_string(),
             description: "child of prompt-B".to_string(),
-            persona: None,
             parent_prompt_id: Some("prompt-B".to_string()),
             parent_session_id: String::new(),
             started_at: std::time::Instant::now(),
@@ -1169,7 +1198,6 @@ fn completed_takes_precedence_over_pending_in_lookup() {
             subagent_id: "sub-dup".to_string(),
             subagent_type: "explore".to_string(),
             description: "duplicate".to_string(),
-            persona: None,
             parent_prompt_id: None,
             parent_session_id: String::new(),
             started_at: std::time::Instant::now(),
@@ -1290,7 +1318,6 @@ fn dummy_tracker(
         parent_prompt_id: None,
         child_session_id: acp::SessionId::new(subagent_id),
         subagent_type: subagent_type.into(),
-        persona: None,
         description: description.into(),
         started_at: std::time::Instant::now(),
         child_handle: handle,
@@ -1370,355 +1397,27 @@ async fn resolve_running_list_populates_fields_from_signals() {
     assert!(r.tools_used.contains(& "grep".to_string()));
 }
 #[test]
-fn explicit_override_takes_precedence_over_role() {
+fn fixed_runtime_overrides_have_no_custom_role_or_persona_layer() {
     let overrides = SubagentRuntimeOverrides {
-        model: Some("explicit-model".into()),
-        capability_mode: Some(atelier_tool_types::SubagentCapabilityMode::All),
-        ..Default::default()
-    };
-    let role = atelier_subagent_resolution::config::SubagentRole {
-        description: "test role".into(),
-        model: Some("role-model".into()),
-        default_capability_mode: Some("read-only".into()),
-        ..Default::default()
-    };
-    let resolved = resolve_effective_overrides(
-        &overrides,
-        Some(&role),
-        &HashMap::new(),
-        None,
-        None,
-    );
-    assert_eq!(resolved.model.as_deref(), Some("explicit-model"));
-    assert_eq!(
-        resolved.capability_mode, Some(atelier_tool_types::SubagentCapabilityMode::All)
-    );
-}
-#[test]
-fn role_default_used_when_no_explicit_override() {
-    let overrides = SubagentRuntimeOverrides::default();
-    let role = atelier_subagent_resolution::config::SubagentRole {
-        description: "test role".into(),
-        model: Some("role-model".into()),
-        default_capability_mode: Some("read-only".into()),
-        ..Default::default()
-    };
-    let resolved = resolve_effective_overrides(
-        &overrides,
-        Some(&role),
-        &HashMap::new(),
-        None,
-        None,
-    );
-    assert_eq!(resolved.model.as_deref(), Some("role-model"));
-    assert_eq!(
-        resolved.capability_mode, Some(atelier_tool_types::SubagentCapabilityMode::ReadOnly)
-    );
-}
-#[test]
-fn no_role_no_override_returns_none() {
-    let overrides = SubagentRuntimeOverrides::default();
-    let resolved = resolve_effective_overrides(
-        &overrides,
-        None,
-        &HashMap::new(),
-        None,
-        None,
-    );
-    assert!(resolved.model.is_none());
-    assert!(resolved.capability_mode.is_none());
-    assert!(resolved.reasoning_effort.is_none());
-}
-#[test]
-fn partial_override_fills_from_role() {
-    let overrides = SubagentRuntimeOverrides {
-        model: Some("explicit-model".into()),
-        ..Default::default()
-    };
-    let role = atelier_subagent_resolution::config::SubagentRole {
-        description: "test".into(),
-        default_capability_mode: Some("execute".into()),
-        ..Default::default()
-    };
-    let resolved = resolve_effective_overrides(
-        &overrides,
-        Some(&role),
-        &HashMap::new(),
-        None,
-        None,
-    );
-    assert_eq!(resolved.model.as_deref(), Some("explicit-model"));
-    assert_eq!(
-        resolved.capability_mode, Some(atelier_tool_types::SubagentCapabilityMode::Execute)
-    );
-}
-#[test]
-fn reasoning_effort_explicit_overrides_role() {
-    let overrides = SubagentRuntimeOverrides {
+        fixed_role: Some("review".into()),
+        model: Some("provider/model".into()),
         reasoning_effort: Some("high".into()),
+        capability_mode: Some(atelier_tool_types::SubagentCapabilityMode::ReadOnly),
         ..Default::default()
     };
-    let role = atelier_subagent_resolution::config::SubagentRole {
-        description: "test".into(),
-        reasoning_effort: Some("low".into()),
-        ..Default::default()
-    };
-    let resolved = resolve_effective_overrides(
-        &overrides,
-        Some(&role),
-        &HashMap::new(),
-        None,
-        None,
-    );
+
+    let resolved = resolve_effective_overrides(&overrides);
+
+    assert_eq!(resolved.fixed_role.as_deref(), Some("review"));
+    assert_eq!(resolved.model.as_deref(), Some("provider/model"));
     assert_eq!(resolved.reasoning_effort.as_deref(), Some("high"));
-}
-#[test]
-fn reasoning_effort_falls_back_to_role() {
-    let overrides = SubagentRuntimeOverrides::default();
-    let role = atelier_subagent_resolution::config::SubagentRole {
-        description: "test".into(),
-        reasoning_effort: Some("medium".into()),
-        ..Default::default()
-    };
-    let resolved = resolve_effective_overrides(
-        &overrides,
-        Some(&role),
-        &HashMap::new(),
-        None,
-        None,
+    assert_eq!(
+        resolved.capability_mode,
+        Some(atelier_tool_types::SubagentCapabilityMode::ReadOnly)
     );
-    assert_eq!(resolved.reasoning_effort.as_deref(), Some("medium"));
+    assert!(resolved.context_prompt.is_none());
 }
-#[test]
-fn invalid_role_capability_mode_ignored() {
-    let overrides = SubagentRuntimeOverrides::default();
-    let role = atelier_subagent_resolution::config::SubagentRole {
-        description: "test".into(),
-        default_capability_mode: Some("invalid-mode".into()),
-        ..Default::default()
-    };
-    let resolved = resolve_effective_overrides(
-        &overrides,
-        Some(&role),
-        &HashMap::new(),
-        None,
-        None,
-    );
-    assert!(
-        resolved.capability_mode.is_none(),
-        "invalid role mode should not produce a capability_mode"
-    );
-}
-#[test]
-fn persona_resolved_from_config() {
-    let overrides = SubagentRuntimeOverrides {
-        persona: Some("researcher".into()),
-        ..Default::default()
-    };
-    let mut personas = HashMap::new();
-    personas
-        .insert(
-            "researcher".to_string(),
-            atelier_subagent_resolution::config::SubagentPersona {
-                instructions: Some("Be thorough.".into()),
-                ..Default::default()
-            },
-        );
-    let resolved = resolve_effective_overrides(&overrides, None, &personas, None, None);
-    assert_eq!(resolved.persona.as_deref(), Some("researcher"));
-    assert_eq!(resolved.persona_instructions.as_deref(), Some("Be thorough."));
-}
-#[test]
-fn unknown_persona_produces_no_instructions() {
-    let overrides = SubagentRuntimeOverrides {
-        persona: Some("nonexistent".into()),
-        ..Default::default()
-    };
-    let resolved = resolve_effective_overrides(
-        &overrides,
-        None,
-        &HashMap::new(),
-        None,
-        None,
-    );
-    assert_eq!(resolved.persona.as_deref(), Some("nonexistent"));
-    assert!(resolved.persona_instructions.is_none());
-}
-#[test]
-fn persona_inline_plus_file_merged_in_order() {
-    let tmp = tempfile::TempDir::new().unwrap();
-    std::fs::write(tmp.path().join("extra.md"), "File-based content.").unwrap();
-    let overrides = SubagentRuntimeOverrides {
-        persona: Some("combo".into()),
-        ..Default::default()
-    };
-    let mut personas = HashMap::new();
-    personas
-        .insert(
-            "combo".to_string(),
-            atelier_subagent_resolution::config::SubagentPersona {
-                instructions: Some("Inline first.".into()),
-                instructions_file: Some("extra.md".into()),
-                ..Default::default()
-            },
-        );
-    let resolved = resolve_effective_overrides(
-        &overrides,
-        None,
-        &personas,
-        Some(tmp.path()),
-        None,
-    );
-    let pi = resolved.persona_instructions.as_deref().unwrap();
-    assert!(pi.starts_with("Inline first."), "inline should come first: {pi}");
-    assert!(pi.contains("File-based content."), "file content should be included: {pi}");
-}
-#[test]
-fn model_precedence_explicit_over_role_over_persona() {
-    let mut personas = HashMap::new();
-    personas
-        .insert(
-            "dev".to_string(),
-            atelier_subagent_resolution::config::SubagentPersona {
-                model: Some("persona-model".into()),
-                ..Default::default()
-            },
-        );
-    let role = atelier_subagent_resolution::config::SubagentRole {
-        description: "test".into(),
-        model: Some("role-model".into()),
-        ..Default::default()
-    };
-    let overrides = SubagentRuntimeOverrides {
-        persona: Some("dev".into()),
-        model: Some("explicit-model".into()),
-        ..Default::default()
-    };
-    let r = resolve_effective_overrides(&overrides, Some(&role), &personas, None, None);
-    assert_eq!(r.model.as_deref(), Some("explicit-model"));
-    let overrides = SubagentRuntimeOverrides {
-        persona: Some("dev".into()),
-        ..Default::default()
-    };
-    let r = resolve_effective_overrides(&overrides, Some(&role), &personas, None, None);
-    assert_eq!(r.model.as_deref(), Some("role-model"));
-    let role_no_model = atelier_subagent_resolution::config::SubagentRole {
-        description: "test".into(),
-        ..Default::default()
-    };
-    let r = resolve_effective_overrides(
-        &overrides,
-        Some(&role_no_model),
-        &personas,
-        None,
-        None,
-    );
-    assert_eq!(r.model.as_deref(), Some("persona-model"));
-    let overrides = SubagentRuntimeOverrides::default();
-    let r = resolve_effective_overrides(&overrides, None, &HashMap::new(), None, None);
-    assert!(r.model.is_none());
-}
-#[test]
-fn reasoning_effort_precedence_explicit_over_role_over_persona() {
-    let mut personas = HashMap::new();
-    personas
-        .insert(
-            "dev".to_string(),
-            atelier_subagent_resolution::config::SubagentPersona {
-                reasoning_effort: Some("low".into()),
-                ..Default::default()
-            },
-        );
-    let role = atelier_subagent_resolution::config::SubagentRole {
-        description: "test".into(),
-        reasoning_effort: Some("medium".into()),
-        ..Default::default()
-    };
-    let overrides = SubagentRuntimeOverrides {
-        persona: Some("dev".into()),
-        reasoning_effort: Some("high".into()),
-        ..Default::default()
-    };
-    let r = resolve_effective_overrides(&overrides, Some(&role), &personas, None, None);
-    assert_eq!(r.reasoning_effort.as_deref(), Some("high"));
-    let overrides = SubagentRuntimeOverrides {
-        persona: Some("dev".into()),
-        ..Default::default()
-    };
-    let r = resolve_effective_overrides(&overrides, Some(&role), &personas, None, None);
-    assert_eq!(r.reasoning_effort.as_deref(), Some("medium"));
-    let role_no_re = atelier_subagent_resolution::config::SubagentRole {
-        description: "test".into(),
-        ..Default::default()
-    };
-    let r = resolve_effective_overrides(
-        &overrides,
-        Some(&role_no_re),
-        &personas,
-        None,
-        None,
-    );
-    assert_eq!(r.reasoning_effort.as_deref(), Some("low"));
-    let overrides = SubagentRuntimeOverrides::default();
-    let r = resolve_effective_overrides(&overrides, None, &HashMap::new(), None, None);
-    assert!(r.reasoning_effort.is_none());
-}
-#[test]
-fn persona_not_found_produces_error() {
-    let overrides = SubagentRuntimeOverrides {
-        persona: Some("missing".into()),
-        ..Default::default()
-    };
-    let resolved = resolve_effective_overrides(
-        &overrides,
-        None,
-        &HashMap::new(),
-        None,
-        None,
-    );
-    assert!(resolved.persona_error.is_some());
-    assert!(resolved.persona_error.as_deref().unwrap().contains("not found"),);
-}
-#[test]
-fn prompt_assembly_ordering() {
-    let role_prompt = Some(
-        "<role-instructions>\nRole content\n</role-instructions>".to_string(),
-    );
-    let persona_instructions = Some(
-        "<persona>\nPersona content\n</persona>".to_string(),
-    );
-    let task = "Do the task";
-    let mut sections = Vec::new();
-    sections.push("<fork-context>...</fork-context>".to_string());
-    if let Some(ref rp) = role_prompt {
-        sections.push(rp.clone());
-    }
-    if let Some(ref pi) = persona_instructions {
-        sections.push(pi.clone());
-    }
-    sections.push(task.to_string());
-    let assembled = sections.join("\n\n");
-    let fork_pos = assembled.find("<fork-context>").unwrap();
-    let role_pos = assembled.find("<role-instructions>").unwrap();
-    let persona_pos = assembled.find("<persona>").unwrap();
-    let task_pos = assembled.find("Do the task").unwrap();
-    assert!(fork_pos < role_pos, "fork before role");
-    assert!(role_pos < persona_pos, "role before persona");
-    assert!(persona_pos < task_pos, "persona before task");
-}
-#[test]
-fn no_persona_produces_none() {
-    let overrides = SubagentRuntimeOverrides::default();
-    let resolved = resolve_effective_overrides(
-        &overrides,
-        None,
-        &HashMap::new(),
-        None,
-        None,
-    );
-    assert!(resolved.persona.is_none());
-    assert!(resolved.persona_instructions.is_none());
-}
+
 #[test]
 fn initial_context_source_new_is_default() {
     let source = InitialContextSource::New;
@@ -2372,7 +2071,6 @@ async fn handle_subagent_request_quoted_cwd_passes_validation() {
 }
 fn make_validation_ctx(toggle: HashMap<String, bool>) -> SubagentValidationContext {
     SubagentValidationContext {
-        parent_cwd: PathBuf::from("/tmp"),
         subagent_toggle: toggle,
         ..Default::default()
     }
@@ -2429,93 +2127,45 @@ fn validate_subagent_type_returns_not_allowed_when_outside_allow_list() {
 }
 #[test]
 fn validate_subagent_type_allow_list_is_case_insensitive() {
-    for (requested, allowed) in [
-        ("explore", vec!["EXPLORE".to_string()]),
-        ("EXPLORE", vec!["explore".to_string()]),
-        ("Explore", vec!["eXpLoRe".to_string()]),
-        ("explore", vec!["plan".to_string(), "EXPLORE".to_string()]),
+    for allowed in [
+        vec!["EXPLORE".to_string()],
+        vec!["eXpLoRe".to_string()],
+        vec!["plan".to_string(), "EXPLORE".to_string()],
     ] {
         let mut ctx = make_validation_ctx(HashMap::new());
-        ctx.cli_agent_names = vec![requested.to_string()];
         ctx.allowed_subagent_types = Some(allowed.clone());
         assert!(
-            matches!(validate_subagent_type(requested, & ctx),
-            SubagentValidateTypeOutcome::Ok,),
-            "{requested:?} should be permitted by allow-list {allowed:?}",
+            matches!(
+                validate_subagent_type("explore", &ctx),
+                SubagentValidateTypeOutcome::Ok
+            ),
+            "explore should be permitted by allow-list {allowed:?}",
         );
     }
 }
+
 #[test]
-fn validate_subagent_type_unknown_includes_cli_agents_in_available() {
-    let mut ctx = make_validation_ctx(HashMap::new());
-    ctx.cli_agent_names = vec!["user-defined-agent".to_string()];
-    match validate_subagent_type("invented", &ctx) {
+fn custom_agent_names_are_rejected_even_when_supplied_by_legacy_cli_state() {
+    let ctx = make_validation_ctx(HashMap::new());
+    match validate_subagent_type("user-defined", &ctx) {
         SubagentValidateTypeOutcome::Unknown { available } => {
-            assert!(
-                available.iter().any(| n | n == "user-defined-agent"),
-                "cli agent name missing from available list: {available:?}",
-            );
+            assert_eq!(available, vec!["explore", "general-purpose", "plan"]);
         }
         other => panic!("expected Unknown, got {other:?}"),
     }
 }
-#[test]
-fn validate_subagent_type_unknown_dedupes_cli_against_builtins() {
-    let mut ctx = make_validation_ctx(HashMap::new());
-    ctx.cli_agent_names = vec!["explore".to_string()];
-    match validate_subagent_type("invented", &ctx) {
-        SubagentValidateTypeOutcome::Unknown { available } => {
-            let count = available.iter().filter(|n| n.as_str() == "explore").count();
-            assert_eq!(count, 1, "explore must appear once: {available:?}");
-        }
-        other => panic!("expected Unknown, got {other:?}"),
-    }
-}
+
 #[test]
 fn validate_subagent_type_unknown_omits_disabled_types_from_available_list() {
     let toggle = HashMap::from([("explore".to_string(), false)]);
     let ctx = make_validation_ctx(toggle);
     match validate_subagent_type("explor", &ctx) {
         SubagentValidateTypeOutcome::Unknown { available } => {
-            assert!(
-                ! available.iter().any(| n | n == "explore"),
-                "disabled type must not appear in available: {available:?}",
-            );
-            assert!(
-                available.iter().any(| n | n == "general-purpose"),
-                "non-disabled built-ins must still appear: {available:?}",
-            );
+            assert!(!available.iter().any(|name| name == "explore"));
+            assert!(available.iter().any(|name| name == "general-purpose"));
         }
         other => panic!("expected Unknown, got {other:?}"),
     }
-}
-#[test]
-fn validate_subagent_type_unknown_omits_disabled_cli_agents_from_available_list() {
-    let toggle = HashMap::from([("custom".to_string(), false)]);
-    let mut ctx = make_validation_ctx(toggle);
-    ctx.cli_agent_names = vec!["custom".to_string(), "user-defined".to_string()];
-    match validate_subagent_type("invented", &ctx) {
-        SubagentValidateTypeOutcome::Unknown { available } => {
-            assert!(
-                ! available.iter().any(| n | n == "custom"),
-                "disabled cli agent must not appear: {available:?}",
-            );
-            assert!(
-                available.iter().any(| n | n == "user-defined"),
-                "enabled cli agent must appear: {available:?}",
-            );
-        }
-        other => panic!("expected Unknown, got {other:?}"),
-    }
-}
-#[test]
-fn validate_subagent_type_recognizes_cli_agent_by_name() {
-    let mut ctx = make_validation_ctx(HashMap::new());
-    ctx.cli_agent_names = vec!["user-defined".to_string()];
-    assert!(
-        matches!(validate_subagent_type("user-defined", & ctx),
-        SubagentValidateTypeOutcome::Ok,)
-    );
 }
 #[test]
 #[serial_test::serial]
@@ -2905,7 +2555,6 @@ async fn cancel_pending_subagent_at_promote_emits_exactly_one_cancelled_finish()
             subagent_id: subagent_id.clone(),
             subagent_type: "explore".to_string(),
             description: "killed while pending".to_string(),
-            persona: None,
             parent_prompt_id: None,
             parent_session_id: ctx.parent_session_id.clone(),
             started_at: std::time::Instant::now(),
@@ -2992,7 +2641,6 @@ async fn run_promote_cancel_with_worktree(
             subagent_id: subagent_id.clone(),
             subagent_type: "explore".to_string(),
             description: "killed while pending".to_string(),
-            persona: None,
             parent_prompt_id: None,
             parent_session_id: ctx.parent_session_id.clone(),
             started_at: std::time::Instant::now(),
@@ -3182,7 +2830,6 @@ fn record_pre_spawn_failure_clears_stale_pending_entry() {
             subagent_id: "sub-z".to_string(),
             subagent_type: "invented".to_string(),
             description: "stale".to_string(),
-            persona: None,
             parent_prompt_id: Some("prompt-X".to_string()),
             parent_session_id: "parent-1".to_string(),
             started_at: std::time::Instant::now(),

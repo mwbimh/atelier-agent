@@ -96,6 +96,10 @@ const RESETTABLE_DEFAULT_FILES: &[DefaultFile] = &[
         content: include_str!("../defaults/contexts/roles/main.md"),
     },
     DefaultFile {
+        relative: "contexts/default/roles/general.md",
+        content: include_str!("../defaults/contexts/roles/general.md"),
+    },
+    DefaultFile {
         relative: "contexts/default/roles/explore.md",
         content: include_str!("../defaults/contexts/roles/explore.md"),
     },

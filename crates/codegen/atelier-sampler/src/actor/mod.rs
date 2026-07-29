@@ -117,12 +117,14 @@ impl SamplerActor {
                     .unwrap_or_else(|| self.state.config.clone());
                 let event_tx = self.event_tx.clone();
                 let retry_policy = self.state.retry_policy.clone();
+                let consecutive_retry_budget = self.state.consecutive_retry_budget.clone();
                 let request_inner = *request;
                 self.tasks.spawn(request_task::run_request_task(
                     request_id,
                     request_inner,
                     effective_config,
                     retry_policy,
+                    consecutive_retry_budget,
                     event_tx,
                     cancel_token,
                     completion_tx,
@@ -133,6 +135,9 @@ impl SamplerActor {
             }
             SamplerCommand::UpdateConfig { config } => {
                 self.state.update_config(*config);
+            }
+            SamplerCommand::ResetRetryBudget => {
+                self.state.reset_retry_budget();
             }
             SamplerCommand::IsActive { request_id, reply } => {
                 let _ = reply.send(self.state.active_requests.contains_key(&request_id));

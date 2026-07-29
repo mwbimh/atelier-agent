@@ -1506,15 +1506,6 @@ pub(super) mod paste_key_tests {
         ));
         assert_refused(&mut agent, &mut counts, "extensions modal");
         agent.extensions_modal = None;
-        agent.agents_modal = Some(crate::views::agents_modal::AgentsModalState::new(
-            std::path::Path::new("/nonexistent"),
-            &HashMap::new(),
-            &crate::app::bundle::BundleState::default(),
-            None,
-            None,
-        ));
-        assert_refused(&mut agent, &mut counts, "agents modal");
-        agent.agents_modal = None;
         agent.show_goal_detail = true;
         agent.goal_state = Some(crate::app::agent::GoalDisplayState::test_stub());
         assert_refused(&mut agent, &mut counts, "goal detail overlay");

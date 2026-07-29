@@ -1523,6 +1523,81 @@ async fn test_compact_on_error_noop_without_model_metadata() {
         })
         .await;
 }
+#[tokio::test(flavor = "current_thread")]
+async fn unconfigured_compact_role_inherits_active_main_model_and_wire_api() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (gateway_tx, _g) = mpsc::unbounded_channel();
+            let (persistence_tx, _p) = mpsc::unbounded_channel();
+            let mut actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
+            let registry_home = tempfile::tempdir().unwrap();
+            let providers_path = registry_home.path().join("providers.toml");
+            std::fs::write(&providers_path, "schema_version = 3\n\n[providers]\n").unwrap();
+            actor.role_registry_override =
+                Some(atelier_provider::ProviderRegistry::load_or_create(&providers_path).unwrap());
+
+            let main = actor.reconstruct_full_config().await;
+            let (compact, synthetic_role) = actor
+                .reconstruct_role_config(atelier_provider::RoleId::Compact)
+                .await
+                .expect("unconfigured compact inherits MAIN execution settings");
+
+            assert_eq!(compact.model, main.model);
+            assert_eq!(compact.api_backend, main.api_backend);
+            assert_eq!(compact.provider_id, main.provider_id);
+            assert_eq!(synthetic_role.model, main.model);
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn sparse_compact_role_overrides_effort_without_replacing_main_transport() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (gateway_tx, _g) = mpsc::unbounded_channel();
+            let (persistence_tx, _p) = mpsc::unbounded_channel();
+            let mut actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
+            let registry_home = tempfile::tempdir().unwrap();
+            let providers_path = registry_home.path().join("providers.toml");
+            std::fs::write(&providers_path, "schema_version = 3\n\n[providers]\n").unwrap();
+            let mut registry =
+                atelier_provider::ProviderRegistry::load_or_create(&providers_path).unwrap();
+            let compact: atelier_provider::RoleConfig = toml::from_str(
+                r#"
+                effort = "high"
+                [payload]
+                compact_only = true
+                "#,
+            )
+            .unwrap();
+            registry
+                .update_role(atelier_provider::RoleId::Compact, compact)
+                .unwrap();
+            actor.role_registry_override = Some(registry);
+
+            let main = actor.reconstruct_full_config().await;
+            let (compact, _) = actor
+                .reconstruct_role_config(atelier_provider::RoleId::Compact)
+                .await
+                .expect("sparse Compact Role inherits MAIN transport");
+
+            assert_eq!(compact.model, main.model);
+            assert_eq!(compact.api_backend, main.api_backend);
+            assert_eq!(compact.provider_id, main.provider_id);
+            assert_eq!(
+                compact.reasoning_effort,
+                Some(atelier_sampling_types::ReasoningEffort::High)
+            );
+            assert_eq!(
+                compact.request_payload["compact_only"],
+                serde_json::json!(true)
+            );
+        })
+        .await;
+}
+
 /// A fresh session emits `x-compactions-remaining: 1`; once the chat-state
 /// reflects a compaction, the next reconstructed config emits `0`.
 #[tokio::test(flavor = "current_thread")]

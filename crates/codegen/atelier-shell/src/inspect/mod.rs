@@ -1115,10 +1115,10 @@ fn describe_config_file(path: &Path) -> Option<(String, Option<String>)> {
     }
 }
 
-/// Classify a requirements file against the real loader. `load_config_file`
-/// catches both syntax errors and invalid `[[version_overrides]]` (the loader
-/// rejects the latter too), so those read "(parse error)"; contribution is
-/// then sourced from `requirements_layers()` via `requirements_layer_contributes`.
+/// Classify a requirements file against the real config-file parser. Syntax
+/// errors and invalid `[[version_overrides]]` read "(parse error)"; contribution
+/// is then sourced from `requirements_layers()` via
+/// `requirements_layer_contributes`.
 fn describe_requirements_file(path: &Path) -> Option<(String, Option<String>)> {
     if !path.exists() {
         return None;
@@ -1676,9 +1676,12 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn describe_requirements_file_flags_invalid_version_overrides_as_parse_error() {
-        // Valid TOML but invalid `[[version_overrides]]` is rejected by the real
-        // loader, so it must read "parse error", not "empty".
+        // Pin the process version because version-override validation is
+        // version-dependent and other tests mutate the test-version override.
+        let _version =
+            atelier_test_support::EnvGuard::set(atelier_version::TEST_VERSION_ENV, "0.1.0");
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("requirements.toml");
         std::fs::write(&path, "[[version_overrides]]\nminimum_version = \"nope\"\n").unwrap();

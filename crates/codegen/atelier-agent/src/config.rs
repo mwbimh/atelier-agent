@@ -1,4 +1,5 @@
 //! Agent definition types — parsed from `.atelier/agents/*.md` files.
+#[cfg(test)]
 use crate::error::AgentBuildError;
 use crate::prompt::context::TemplateOverride;
 use crate::prompt::user_message::UserMessageTemplate;
@@ -12,7 +13,6 @@ use atelier_tools::implementations::use_tool;
 use atelier_tools::registry::types::{ToolConfig, ToolServerConfig};
 use serde::Deserialize;
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use strum::{AsRefStr, Display, EnumIter, EnumString, IntoStaticStr};
 /// Process-global registry of externally-provided toolset presets.
@@ -697,20 +697,15 @@ impl BuiltinAgentName {
         &[Self::GeneralPurpose, Self::Explore, Self::Plan]
     }
 }
-/// Portable agent identity — parsed from .atelier/agents/*.md.
-/// Usable as both a top-level agent and a subagent definition.
+/// Compile-time Agent harness definition used by primary and Subagent sessions.
 ///
-/// This is the stable, version-controllable contract. It does NOT
-/// contain session-level policies (compaction, system reminders).
-/// Those are provided by the AgentBuilder at build time.
+/// Session-level policies such as compaction and system reminders are applied
+/// by `AgentBuilder` at build time.
 #[derive(Debug, Clone, Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentDefinition {
     pub name: String,
     pub description: String,
-    /// Plugin namespace for plugin-backed agents only.
-    #[serde(skip)]
-    pub plugin_name: Option<String>,
     #[serde(default = "default_prompt_mode")]
     pub prompt_mode: PromptMode,
     #[serde(default = "default_atelier_build_toolset")]
@@ -802,12 +797,6 @@ pub struct AgentDefinition {
     /// prefix; `Custom` uses a caller-supplied template string.
     #[serde(default)]
     pub user_message_template: UserMessageTemplate,
-    /// Where this definition was loaded from, optional if built in agent definition
-    #[serde(skip)]
-    pub source_path: Option<PathBuf>,
-    /// Discovery scope (project vs user).
-    #[serde(skip)]
-    pub scope: AgentScope,
 }
 /// Declares that the agent must call a specific tool before the turn ends.
 #[derive(Debug, Clone, Deserialize, serde::Serialize)]
@@ -858,34 +847,6 @@ pub enum PromptMode {
 }
 fn default_prompt_mode() -> PromptMode {
     PromptMode::Extend
-}
-/// Where the agent definition was discovered.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum AgentScope {
-    /// .atelier/agents/ (project-level, highest priority)
-    Project,
-    /// ~/.atelier/agents/ (user-level)
-    User,
-    /// ~/.atelier/bundled/agents/ (lowest-priority bundled cache)
-    Bundled,
-    /// Built-in agent (e.g., default_atelier_build(), browser_use()).
-    #[default]
-    BuiltIn,
-}
-impl AgentScope {
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Project => "project",
-            Self::User => "user",
-            Self::Bundled => "bundled",
-            Self::BuiltIn => "built-in",
-        }
-    }
-}
-impl std::fmt::Display for AgentScope {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.label())
-    }
 }
 /// Controls which parent MCP servers a subagent inherits.
 ///
@@ -1228,53 +1189,9 @@ pub(crate) fn tool_id_matches(list: &[String], id: &str) -> bool {
     list.iter().any(|e| tool_id_eq(e, id))
 }
 impl AgentDefinition {
-    /// Parse an agent definition from a Markdown file with YAML frontmatter.
-    ///
-    /// File format:
-    /// ```text
-    /// ---
-    /// name: my-agent
-    /// description: A custom agent
-    /// # ... other fields
-    /// ---
-    ///
-    /// System prompt body goes here...
-    /// ```
-    pub fn from_file(path: impl AsRef<Path>) -> Result<Self, AgentBuildError> {
-        let path = path.as_ref();
-        let content = std::fs::read_to_string(path).map_err(AgentBuildError::IoError)?;
-        let mut def = Self::parse(&content)?;
-        def.source_path = Some(path.to_path_buf());
-        def.plugin_name = None;
-        def.scope = Self::scope_from_path(path);
-        Ok(def)
-    }
-    /// Parse only YAML frontmatter from an agent file, leaving prompt_body unset.
-    pub fn from_file_frontmatter_only(path: impl AsRef<Path>) -> Result<Self, AgentBuildError> {
-        let path = path.as_ref();
-        let content = std::fs::read_to_string(path).map_err(AgentBuildError::IoError)?;
-        let trimmed = content.trim_start();
-        if !trimmed.starts_with("---") {
-            return Err(AgentBuildError::ParseError(
-                "missing frontmatter delimiters".to_string(),
-            ));
-        }
-        let after_opening = &trimmed[3..];
-        let closing_idx = after_opening.find("\n---").ok_or_else(|| {
-            AgentBuildError::ParseError("missing closing frontmatter delimiter".to_string())
-        })?;
-        let yaml_content = &after_opening[..closing_idx];
-        let mut def: AgentDefinition = serde_yaml::from_str(yaml_content)
-            .map_err(|e| AgentBuildError::ParseError(e.to_string()))?;
-        def.prompt_body = None;
-        def.system_prompt = TemplateOverride::None;
-        def.source_path = Some(path.to_path_buf());
-        def.plugin_name = None;
-        def.scope = Self::scope_from_path(path);
-        Ok(def)
-    }
-    /// Parse from string content (for testing and inline definitions).
-    pub fn parse(content: &str) -> Result<Self, AgentBuildError> {
+    /// Parse frontmatter in unit tests for the built-in definition schema.
+    #[cfg(test)]
+    fn parse(content: &str) -> Result<Self, AgentBuildError> {
         let trimmed = content.trim_start();
         if !trimmed.starts_with("---") {
             return Err(AgentBuildError::ParseError(
@@ -1297,28 +1214,7 @@ impl AgentDefinition {
         let mut def: AgentDefinition = serde_yaml::from_str(yaml_content)
             .map_err(|e| AgentBuildError::ParseError(e.to_string()))?;
         def.prompt_body = prompt_body;
-        def.plugin_name = None;
         Ok(def)
-    }
-    /// Determine the scope of a definition file based on its path.
-    fn scope_from_path(path: &Path) -> AgentScope {
-        let path_str = path.to_string_lossy();
-        let atelier = atelier_config::user_atelier_home();
-        let home = dirs::home_dir();
-        for (dir, scope) in crate::discovery::user_agent_dirs(home.as_deref(), atelier.as_deref()) {
-            if path.starts_with(&dir) {
-                return scope;
-            }
-        }
-        if path_str.contains(".atelier/agents/") || path_str.contains(".atelier\\agents\\") {
-            return AgentScope::Project;
-        }
-        if path_str.contains(".atelier/bundled/agents/")
-            || path_str.contains(".atelier\\bundled\\agents\\")
-        {
-            return AgentScope::Bundled;
-        }
-        AgentScope::BuiltIn
     }
 }
 impl AgentDefinition {
@@ -1424,7 +1320,6 @@ impl AgentDefinition {
         Self {
             name: name.to_owned(),
             description: description.to_string(),
-            plugin_name: None,
             prompt_mode: PromptMode::Extend,
             tool_config: default_atelier_build_toolset(),
             capability_mode: None,
@@ -1453,9 +1348,7 @@ impl AgentDefinition {
             completion_requirement: None,
             prompt_body: None,
             system_prompt: TemplateOverride::None,
-            source_path: None,
             user_message_template: UserMessageTemplate::Default,
-            scope: AgentScope::BuiltIn,
         }
     }
     pub fn default_atelier_build() -> Self {
@@ -1590,45 +1483,6 @@ impl AgentDefinition {
                 "AtelierBuild orchestrator that delegates coding to specialized subagents",
             )
         }
-    }
-    /// Deserialize an agent definition from a JSON value (e.g. from ACP `_meta.agentProfile`).
-    ///
-    /// Unlike `parse()` (which reads YAML frontmatter + Markdown body from a file),
-    /// this method accepts a flat JSON object where `promptBody` is an explicit
-    /// string field rather than the body below `---` delimiters.
-    ///
-    /// ```json
-    /// {
-    ///   "name": "my-agent",
-    ///   "description": "A custom agent profile.",
-    ///   "promptMode": "extend",
-    ///   "permissionMode": "dontAsk",
-    ///   "promptBody": "You are a specialized coding assistant..."
-    /// }
-    /// ```
-    pub fn from_json(value: &serde_json::Value) -> Result<Self, AgentBuildError> {
-        let mut def: AgentDefinition = serde_json::from_value(value.clone())
-            .map_err(|e| AgentBuildError::ParseError(e.to_string()))?;
-        if let Some(body) = value.get("promptBody").and_then(|v| v.as_str()) {
-            let trimmed = body.trim();
-            if !trimmed.is_empty() {
-                def.prompt_body = Some(trimmed.to_string());
-            }
-        }
-        if !value.get("toolConfig").is_some_and(|v| v.is_object()) {
-            def.tool_config = default_atelier_build_toolset();
-        }
-        def.scope = AgentScope::BuiltIn;
-        Ok(def)
-    }
-    /// Serialize to a JSON value suitable for `from_json` roundtrip.
-    /// Handles `prompt_body` which is `#[serde(skip)]` on the struct.
-    pub fn to_json_value(&self) -> serde_json::Value {
-        let mut value = serde_json::to_value(self).expect("AgentDefinition is always serializable");
-        if let Some(ref body) = self.prompt_body {
-            value["promptBody"] = serde_json::Value::String(body.clone());
-        }
-        value
     }
 }
 #[cfg(test)]
@@ -2213,140 +2067,6 @@ description: Test default tool config
         }
     }
     #[test]
-    fn test_from_file_sets_scope_and_path() {
-        let tmp = tempfile::tempdir().unwrap();
-        let file_path = tmp.path().join("test-agent.md");
-        std::fs::write(
-            &file_path,
-            "---\nname: file-test\ndescription: From file\n---\n",
-        )
-        .unwrap();
-        let def = AgentDefinition::from_file(&file_path).unwrap();
-        assert_eq!(def.name, "file-test");
-        assert_eq!(def.source_path, Some(file_path));
-    }
-    #[test]
-    fn test_scope_from_path_detects_bundled_agents() {
-        let tmp = tempfile::tempdir().unwrap();
-        let bundled = tmp
-            .path()
-            .join("nested")
-            .join(".atelier")
-            .join("bundled")
-            .join("agents")
-            .join("bundled-agent.md");
-        std::fs::create_dir_all(bundled.parent().unwrap()).unwrap();
-        std::fs::write(
-            &bundled,
-            "---\nname: bundled-agent\ndescription: Bundled agent\n---\n",
-        )
-        .unwrap();
-        let def = AgentDefinition::from_file(&bundled).unwrap();
-        assert_eq!(def.scope, AgentScope::Bundled);
-        assert_eq!(AgentScope::Bundled.label(), "bundled");
-        assert_eq!(AgentScope::BuiltIn.label(), "built-in");
-    }
-    #[test]
-    fn test_from_json_minimal() {
-        let json = serde_json::json!(
-            { "name" : "acp-agent", "description" : "An agent from ACP" }
-        );
-        let def = AgentDefinition::from_json(&json).unwrap();
-        assert_eq!(def.name, "acp-agent");
-        assert_eq!(def.description, "An agent from ACP");
-        assert_eq!(def.prompt_mode, PromptMode::Extend);
-        assert!(def.agents_md);
-        assert!(def.prompt_body.is_none());
-        assert_eq!(def.scope, AgentScope::BuiltIn);
-    }
-    #[test]
-    fn test_from_json_has_default_toolset_with_task_tool() {
-        let json = serde_json::json!(
-            { "name" : "atelier-build", "description" : "Multi-surface coding agent.",
-            "promptMode" : "extend", "permissionMode" : "dontAsk", "agentsMd" : true,
-            "promptBody" : "You are a coding assistant." }
-        );
-        let def = AgentDefinition::from_json(&json).unwrap();
-        let task_tool_id = "AtelierBuild:task";
-        assert!(
-            def.tool_config.tools.iter().any(|tc| tc.id == task_tool_id),
-            "from_json() without toolConfig should include TaskTool in default toolset, \
-             got tool IDs: {:?}",
-            def.tool_config
-                .tools
-                .iter()
-                .map(|tc| &tc.id)
-                .collect::<Vec<_>>()
-        );
-    }
-    #[test]
-    fn test_from_json_with_prompt_body() {
-        let json = serde_json::json!(
-            { "name" : "custom-agent", "description" : "Agent with prompt body",
-            "promptBody" : "You are a specialized coding assistant.\n\nFocus on Rust." }
-        );
-        let def = AgentDefinition::from_json(&json).unwrap();
-        assert_eq!(def.name, "custom-agent");
-        assert_eq!(
-            def.prompt_body.as_deref(),
-            Some("You are a specialized coding assistant.\n\nFocus on Rust.")
-        );
-    }
-    #[test]
-    fn test_from_json_with_permission_mode() {
-        let json = serde_json::json!(
-            { "name" : "auto-accept-agent", "description" :
-            "Agent with dontAsk permission mode", "permissionMode" : "dontAsk",
-            "promptBody" : "## Auto-accept Mode" }
-        );
-        let def = AgentDefinition::from_json(&json).unwrap();
-        assert_eq!(def.permission_mode, PermissionMode::DontAsk);
-        assert_eq!(def.prompt_body.as_deref(), Some("## Auto-accept Mode"));
-    }
-    #[test]
-    fn test_from_json_empty_prompt_body_is_none() {
-        let json = serde_json::json!(
-            { "name" : "test", "description" : "Test", "promptBody" : "   " }
-        );
-        let def = AgentDefinition::from_json(&json).unwrap();
-        assert!(
-            def.prompt_body.is_none(),
-            "Whitespace-only promptBody should be None"
-        );
-    }
-    #[test]
-    fn test_from_json_missing_required_fields() {
-        let json = serde_json::json!({ "description" : "Missing name" });
-        let result = AgentDefinition::from_json(&json);
-        assert!(result.is_err());
-    }
-    #[test]
-    fn test_from_json_ignores_unknown_fields() {
-        let json = serde_json::json!(
-            { "name" : "test", "description" : "Test", "unknownField" : "value",
-            "futureFeature" : true }
-        );
-        let def = AgentDefinition::from_json(&json).unwrap();
-        assert_eq!(def.name, "test");
-    }
-    #[test]
-    fn to_json_value_roundtrips_through_from_json() {
-        let mut original = AgentDefinition::parse(
-                "---\nname: test-agent\ndescription: A test\npermissionMode: dontAsk\n---\nYou are a helper.",
-            )
-            .unwrap();
-        original.tools = vec!["read_file".to_string(), "grep".to_string()];
-        original.disallowed_tools = vec!["web_search".to_string()];
-        let json = original.to_json_value();
-        let recovered = AgentDefinition::from_json(&json).unwrap();
-        assert_eq!(recovered.name, "test-agent");
-        assert_eq!(recovered.description, "A test");
-        assert_eq!(recovered.prompt_body.as_deref(), Some("You are a helper."));
-        assert_eq!(recovered.permission_mode, PermissionMode::DontAsk);
-        assert_eq!(recovered.tools, vec!["read_file", "grep"]);
-        assert_eq!(recovered.disallowed_tools, vec!["web_search"]);
-    }
-    #[test]
     fn test_model_override_default_is_inherit() {
         assert_eq!(ModelOverride::default(), ModelOverride::Inherit);
     }
@@ -2400,17 +2120,6 @@ description: Test default tool config
         let content = "---\nname: test\ndescription: Test\n---\n";
         let def = AgentDefinition::parse(content).unwrap();
         assert_eq!(def.model, ModelOverride::Inherit);
-    }
-    #[test]
-    fn test_model_override_in_json() {
-        let json = serde_json::json!(
-            { "name" : "test", "description" : "Test", "model" : "atelier-code-fast-1" }
-        );
-        let def = AgentDefinition::from_json(&json).unwrap();
-        assert_eq!(
-            def.model,
-            ModelOverride::Override("atelier-code-fast-1".to_string())
-        );
     }
     #[test]
     fn test_builtin_agent_name_strum_round_trip() {
@@ -2514,21 +2223,6 @@ description: Test default tool config
             def.mcp_inheritance,
             McpInheritance::Except(vec!["internal".into()])
         );
-    }
-    #[test]
-    fn mcp_inheritance_round_trips_via_json() {
-        let json = serde_json::json!(
-            { "name" : "t", "description" : "t", "mcpInheritance" : { "named" : ["a",
-            "b"] } }
-        );
-        let def = AgentDefinition::from_json(&json).unwrap();
-        assert_eq!(
-            def.mcp_inheritance,
-            McpInheritance::Named(vec!["a".into(), "b".into()])
-        );
-        let serialized = def.to_json_value();
-        let recovered = AgentDefinition::from_json(&serialized).unwrap();
-        assert_eq!(recovered.mcp_inheritance, def.mcp_inheritance);
     }
     fn def_with_template(tpl: crate::prompt::context::TemplateOverride) -> AgentDefinition {
         let mut def = AgentDefinition::default_atelier_build();

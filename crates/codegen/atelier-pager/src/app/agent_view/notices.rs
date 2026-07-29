@@ -159,12 +159,10 @@ impl AgentView {
             || self.block_viewer.is_some()
             // /gboom dims the same down-to-shortcuts region as the video viewer.
             || self.gboom.is_some()
-            // Extensions/agents modals are centered popups (render_modal_window)
-            // that capture all input and early-return out of draw; distinct
-            // from active_modal. persona_detail only renders atop the agents
-            // modal. A tip could at most peek beside the modal, so refuse.
+            // The extensions modal captures all input and early-returns out of
+            // draw; distinct from active_modal. A tip could at most peek beside
+            // the modal, so refuse.
             || self.extensions_modal.is_some()
-            || self.agents_modal.is_some()
             // Goal-detail is a vertically-centered overlay painted after the
             // tip; its box only reaches the banner row for tall/content-rich
             // goals, but kept unconditional as a safe over-refusal (like the

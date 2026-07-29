@@ -92,7 +92,6 @@ use crate::local_artifacts::turn::{
 };
 use crate::local_artifacts::turn::{
     apply_yolo_mode_to_matching_sessions, lookup_session_model,
-    parse_agent_profile_from_meta,
 };
 use tokio_util::sync::CancellationToken;
 use atelier_paths::AbsPathBuf;
@@ -795,14 +794,6 @@ pub struct MvpAgent {
     /// Per-subagent enable/disable toggles from config.toml `[subagents.toggle]`.
     /// Populated from `SubagentsConfig.toggle` during `with_models()`.
     subagent_toggle: std::collections::HashMap<String, bool>,
-    subagent_roles: std::collections::HashMap<
-        String,
-        atelier_subagent_resolution::config::SubagentRole,
-    >,
-    subagent_personas: std::collections::HashMap<
-        String,
-        atelier_subagent_resolution::config::SubagentPersona,
-    >,
     /// The process launch directory, captured once at construction so the
     /// deferred launch-dir init paths share one source of truth instead of each
     /// re-calling `std::env::current_dir()` (which could drift if the process
@@ -822,7 +813,6 @@ pub struct MvpAgent {
     /// the first session-creating call via [`Self::ensure_plugin_registry`];
     /// this flag keeps that to a single discovery walk.
     plugin_registry_initialized: std::cell::Cell<bool>,
-    persona_io_summaries: Vec<String>,
     /// Single-flight guard for [`spawn_post_unblock_jwt_and_catalog_retry`].
     ///
     /// After free→paid unblock the JWT may still lack a `tier` claim for
@@ -975,8 +965,8 @@ pub(crate) fn inherited_harness_template(
 /// When a zero-turn switch rebuilds the harness (`did_rebuild`), the handle
 /// must adopt the rebuilt harness's agent type. Otherwise the name is left
 /// unchanged — compatible stock switches (e.g. `atelier-build` →
-/// `atelier-build-plan`) intentionally preserve the session's original ACP
-/// `agentProfile`.
+/// `atelier-build-plan`) intentionally preserve the session's explicitly
+/// selected built-in ACP harness.
 pub(crate) fn agent_name_after_model_switch(
     did_rebuild: bool,
     rebuilt_agent_type: &str,
@@ -992,8 +982,8 @@ pub(crate) fn agent_name_after_model_switch(
 ///
 /// Two stock (non-strict) agents are interchangeable — they share the
 /// default wire format and toolset, so switching e.g. `atelier-build` →
-/// `atelier-build-plan` doesn't require rebuilding the harness and would
-/// destroy a client-supplied `_meta.agentProfile` if it did.
+/// `atelier-build-plan` doesn't require rebuilding the explicitly selected
+/// built-in harness.
 ///
 /// Strict harnesses (`codex`, …) are only compatible with
 /// themselves. Strict↔stock transitions are never compatible.
@@ -1021,6 +1011,33 @@ fn read_session_or_init_meta_str<'a>(
         m.and_then(|m| m.get(key)).and_then(|v| v.as_str())
     };
     read(session_meta).or_else(|| read(init_meta))
+}
+
+/// Resolve an optional built-in Agent harness from ACP metadata.
+///
+/// Session metadata takes precedence over initialize metadata. Presence is
+/// authoritative: objects, empty strings, and unknown names fail closed rather
+/// than falling back to another source.
+fn builtin_agent_profile_from_meta<'a>(
+    session_meta: Option<&'a acp::Meta>,
+    init_meta: Option<&'a acp::Meta>,
+) -> Result<Option<&'a str>, String> {
+    let value = session_meta
+        .and_then(|meta| meta.get("agentProfile"))
+        .or_else(|| init_meta.and_then(|meta| meta.get("agentProfile")));
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let name = value
+        .as_str()
+        .ok_or_else(|| "agentProfile must be a built-in Agent harness name".to_string())?
+        .trim();
+    if name.is_empty() {
+        return Err("agentProfile must not be empty".to_string());
+    }
+    name.parse::<atelier_agent::config::BuiltinAgentName>()
+        .map_err(|_| format!("unsupported agentProfile `{name}`; only built-in Agent harnesses are allowed"))?;
+    Ok(Some(name))
 }
 use atelier_chat_state::conversation_util::replace_or_insert_system_head;
 /// Non-empty `systemPromptOverride` from session meta (preferred) or init meta.
@@ -1875,7 +1892,7 @@ async fn handle_synthetic_turn_trace(
         let auth = this.auth_manager.current();
         let user_id = auth
             .as_ref()
-            .filter(|a| a.is_xai_auth())
+            .filter(|a| a.is_configured_refresh_auth())
             .map(|a| a.user_id.clone());
         let user_email = auth.as_ref().and_then(|a| a.email.clone());
         let init_meta = this.initialize_request.get().and_then(|req| req.meta.as_ref());

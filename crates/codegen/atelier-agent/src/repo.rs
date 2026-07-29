@@ -42,6 +42,11 @@ pub struct RepoDirChain {
 impl RepoDirChain {
     /// Resolve the chain for `cwd`: ONE `git2` discovery + ONE upward walk.
     pub fn resolve(cwd: &Path) -> Self {
+        let home = dirs::home_dir();
+        Self::resolve_with_home(cwd, home.as_deref())
+    }
+
+    fn resolve_with_home(cwd: &Path, home: Option<&Path>) -> Self {
         let git_root = git2::Repository::discover(cwd)
             .ok()
             .and_then(|repo| repo.workdir().map(|p| p.to_path_buf()))
@@ -50,7 +55,7 @@ impl RepoDirChain {
             // home-level `.atelier`/`.mcp.json`/plugins would look repo-local. Drop
             // it so cwd is handled as no-repo (probe cwd only). Home is compared
             // canonically to match the symlink handling in the walk below.
-            .filter(|root| !is_home_dir(root));
+            .filter(|root| !is_home_dir(root, home));
 
         let mut dirs = Vec::new();
         if let Some(ref root) = git_root {
@@ -84,12 +89,12 @@ impl RepoDirChain {
 /// Whether `path` canonicalizes to the user's home directory. Local (not reused
 /// from `atelier-workspace`, which depends on THIS crate) to keep the dep edge
 /// one-way; backs the home-is-dotfiles guard in [`RepoDirChain::resolve`].
-fn is_home_dir(path: &Path) -> bool {
-    let Some(home) = dirs::home_dir() else {
+fn is_home_dir(path: &Path, home: Option<&Path>) -> bool {
+    let Some(home) = home else {
         return false;
     };
     let canon = |p: &Path| dunce::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
-    canon(path) == canon(&home)
+    canon(path) == canon(home)
 }
 
 /// Existing `<dir>/<subdir>` directories under each dir of a precomputed
@@ -195,7 +200,7 @@ mod tests {
         let sub = home.join("proj");
         std::fs::create_dir_all(&sub).unwrap();
 
-        let chain = RepoDirChain::resolve(&sub);
+        let chain = RepoDirChain::resolve_with_home(&sub, Some(&home));
         assert_eq!(chain.git_root, None, "a home-dir git root must be dropped");
         assert_eq!(chain.dirs, vec![sub]);
     }
@@ -212,7 +217,7 @@ mod tests {
         let sub = repo.path().join("pkg");
         std::fs::create_dir_all(&sub).unwrap();
 
-        let chain = RepoDirChain::resolve(&sub);
+        let chain = RepoDirChain::resolve_with_home(&sub, Some(home.path()));
         let root = chain.git_root.expect("a non-home git root must be kept");
         assert_eq!(
             dunce::canonicalize(&root).unwrap(),

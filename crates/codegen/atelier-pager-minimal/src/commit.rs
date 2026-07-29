@@ -1236,6 +1236,11 @@ mod tests {
     #[test]
     fn committed_edit_keeps_diff_line_backgrounds() {
         use atelier_pager::diff::DiffLine;
+        use atelier_pager::theme::cache as theme_cache;
+
+        let _guard = theme_cache::test_lock()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         use ratatui::buffer::Buffer;
         use ratatui::layout::Rect;
         use similar::ChangeTag;

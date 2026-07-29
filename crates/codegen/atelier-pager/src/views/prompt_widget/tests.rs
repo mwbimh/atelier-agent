@@ -1710,6 +1710,27 @@
     }
 
     #[test]
+    fn exact_optional_command_selection_executes_without_a_second_enter() {
+        let models = crate::acp::model_state::ModelState::default();
+
+        for command in ["/compact", "/roles"] {
+            let mut pw = PromptWidget::new();
+            pw.textarea.insert_str(command);
+            pw.refresh_slash(&models);
+            assert!(pw.slash_open(), "{command} command row should be open");
+            assert!(
+                pw.slash_exact_optional_command_selected(),
+                "{command} should execute immediately in the Agent view"
+            );
+        }
+
+        let mut required = PromptWidget::new();
+        required.textarea.insert_str("/rename");
+        required.refresh_slash(&models);
+        assert!(!required.slash_exact_optional_command_selected());
+    }
+
+    #[test]
     fn compact_completable_with_no_args() {
         let mut pw = PromptWidget::new();
         let models = crate::acp::model_state::ModelState::default();

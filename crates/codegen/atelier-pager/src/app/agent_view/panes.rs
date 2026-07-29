@@ -453,17 +453,6 @@ impl AgentView {
             }
             return overlay_action_to_outcome(action);
         }
-        if key.code == crossterm::event::KeyCode::Enter
-            && key.modifiers == crossterm::event::KeyModifiers::NONE
-        {
-            if let Some((kind, name)) = self.catalog.selected_entry() {
-                return InputOutcome::Action(Action::ViewCatalogEntry {
-                    kind: kind.to_owned(),
-                    name: name.to_owned(),
-                });
-            }
-            return InputOutcome::Unchanged;
-        }
         if self.catalog.handle_key(key) {
             InputOutcome::Changed
         } else {
