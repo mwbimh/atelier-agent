@@ -42,7 +42,7 @@ Atelier processes the prompt, runs any necessary tools, and prints the result to
 | `--verbatim`            | Send prompt exactly as given                          |
 | `--sandbox <PROFILE>`   | Sandbox profile for filesystem/network access         |
 
-> **Note:** `--tools`, `--disallowed-tools`, `--max-turns`, and `--agents` are headless-only flags. If used in the interactive TUI, a warning is printed and the flag is ignored. `--reasoning-effort`/`--effort`, `--permission-mode`, `--allow`, and `--deny` work in both modes. For more flags (agents, verification, worktrees), see [Additional Headless Flags](#additional-headless-flags).
+> **Note:** `--tools`, `--disallowed-tools`, and `--max-turns` are headless-only flags. If used in the interactive TUI, a warning is printed and the flag is ignored. `--agent` accepts only compiled built-in harness names. `--reasoning-effort`/`--effort`, `--permission-mode`, `--allow`, and `--deny` work in both modes. For more flags, see [Additional Headless Flags](#additional-headless-flags).
 
 ### Tool Filtering
 
@@ -537,7 +537,6 @@ Atelier stores data in `~/.atelier` (override with `ATELIER_HOME`; see [Environm
 | `logs/`                  | Internal log files (for example `unified.jsonl`) |
 | `logs/mcp/`              | MCP server logs                       |
 | `skills/`                | User skill definitions                |
-| `personas/`              | User-scoped agent personas            |
 | `crash/`                 | Crash reports                         |
 | `trace-exports/`         | Session trace exports                 |
 | `worktrees/`             | Git worktree metadata                 |
@@ -561,8 +560,7 @@ These flags supplement the [Command-Line Options](#command-line-options) table a
 
 | Flag                          | Description                                       |
 | ----------------------------- | ------------------------------------------------- |
-| `--agent <NAME>`              | Agent name or definition file path                |
-| `--agents <JSON>`             | Inline subagent definitions as JSON               |
+| `--agent <NAME>`              | Compiled built-in Agent harness name              |
 | `--system-prompt-override`    | Override the agent's system prompt                |
 | `--check` / `--self-verify`   | Append verification loop (headless only)          |
 | `--best-of-n <N>`             | Run task N ways, pick best (headless only)         |

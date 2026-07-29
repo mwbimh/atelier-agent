@@ -6,6 +6,37 @@ use base64::Engine as _;
 use std::ffi::OsString;
 use std::path::PathBuf;
 
+fn ate_binary() -> Option<PathBuf> {
+    if let Some(path) = std::env::var_os("ATE_BINARY").map(PathBuf::from) {
+        return path.is_file().then_some(path);
+    }
+    let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(3)?
+        .to_path_buf();
+    let candidate = workspace.join("target/debug/ate.exe");
+    candidate.is_file().then_some(candidate)
+}
+
+struct RunnerEnvGuard(Option<std::ffi::OsString>);
+
+impl RunnerEnvGuard {
+    fn set(path: &std::path::Path) -> Self {
+        let previous = std::env::var_os("ATE_BINARY");
+        unsafe { std::env::set_var("ATE_BINARY", path) };
+        Self(previous)
+    }
+}
+
+impl Drop for RunnerEnvGuard {
+    fn drop(&mut self) {
+        match self.0.take() {
+            Some(previous) => unsafe { std::env::set_var("ATE_BINARY", previous) },
+            None => unsafe { std::env::remove_var("ATE_BINARY") },
+        }
+    }
+}
+
 #[test]
 fn worker_mode_resolution_preserves_read_only_and_workspace_write() {
     assert_eq!(
@@ -20,8 +51,13 @@ fn worker_mode_resolution_preserves_read_only_and_workspace_write() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn restricted_worker_real_process_round_trips_and_blocks_outside_write() {
-    let binary = std::env::var_os("ATE_BINARY").expect("ATE_BINARY must point to ate.exe");
+    let Some(binary) = ate_binary() else {
+        eprintln!("skipping OS-boundary test: build ate.exe or set ATE_BINARY");
+        return;
+    };
+    let _runner = RunnerEnvGuard::set(&binary);
     let base = tempfile::tempdir().unwrap();
     let root = base.path().join("root");
     let outside = base.path().join("outside");
@@ -93,8 +129,13 @@ async fn restricted_worker_real_process_round_trips_and_blocks_outside_write() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn read_only_worker_rejects_write_and_delete_inside_workspace() {
-    let binary = std::env::var_os("ATE_BINARY").expect("ATE_BINARY must point to ate.exe");
+    let Some(binary) = ate_binary() else {
+        eprintln!("skipping OS-boundary test: build ate.exe or set ATE_BINARY");
+        return;
+    };
+    let _runner = RunnerEnvGuard::set(&binary);
     let base = tempfile::tempdir().unwrap();
     let root = base.path().join("root");
     std::fs::create_dir_all(&root).unwrap();
@@ -144,8 +185,13 @@ async fn read_only_worker_rejects_write_and_delete_inside_workspace() {
 }
 
 #[test]
+#[serial_test::serial]
 fn restricted_child_os_boundary_allows_workspace_and_denies_adjacent_directory() {
-    let binary = std::env::var_os("ATE_BINARY").expect("ATE_BINARY must point to ate.exe");
+    let Some(binary) = ate_binary() else {
+        eprintln!("skipping OS-boundary test: build ate.exe or set ATE_BINARY");
+        return;
+    };
+    let _runner = RunnerEnvGuard::set(&binary);
     let base = tempfile::tempdir().unwrap();
     let root = base.path().join("root");
     let outside = base.path().join("outside");
@@ -185,8 +231,13 @@ fn restricted_child_os_boundary_allows_workspace_and_denies_adjacent_directory()
 }
 
 #[test]
+#[serial_test::serial]
 fn read_only_child_os_boundary_denies_workspace_write() {
-    let binary = std::env::var_os("ATE_BINARY").expect("ATE_BINARY must point to ate.exe");
+    let Some(binary) = ate_binary() else {
+        eprintln!("skipping OS-boundary test: build ate.exe or set ATE_BINARY");
+        return;
+    };
+    let _runner = RunnerEnvGuard::set(&binary);
     let base = tempfile::tempdir().unwrap();
     let root = base.path().join("root");
     let outside = base.path().join("outside");

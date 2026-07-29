@@ -38,7 +38,6 @@ These options belong to the `ate agent` command and apply to every mode. Pass th
 | -------------------------- | ---------------------------------------------------------------- |
 | `-m, --model <MODEL>`      | Set a configured model key (for example, `example/deepseek-v4-flash`). |
 | `--always-approve`         | Auto-approve every tool execution. (Alias: `--yolo`.)            |
-| `--agent-profile <PATH>`   | Load an agent profile from a file.                               |
 
 ---
 
@@ -143,7 +142,7 @@ The `session/new` request accepts these optional `_meta` fields:
 | ---------------------- | ---------------------------------------------- |
 | `rules`                | Extra rules appended to the system prompt.     |
 | `systemPromptOverride` | A replacement system prompt.                   |
-| `agentProfile`         | An agent profile, as a name or a JSON object.  |
+| `agentProfile`         | A compiled built-in Agent harness name. Custom names and JSON objects are rejected. |
 
 ---
 

@@ -110,12 +110,7 @@ mod tests {
         crate::app::bundle::BundleState {
             has_cache: false,
             version: String::new(),
-            personas: Vec::new(),
-            roles: Vec::new(),
-            agents: Vec::new(),
             skills: Vec::new(),
-            persona_details: Vec::new(),
-            role_details: Vec::new(),
         };
 
     fn make_ctx<'a>(models: &'a ModelState) -> CommandExecCtx<'a> {

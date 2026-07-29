@@ -78,8 +78,6 @@ pub(crate) struct SubagentSpawnedRef {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub(crate) description: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) persona: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) resumed_from: Option<String>,
 }
 

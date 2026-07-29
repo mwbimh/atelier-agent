@@ -95,10 +95,7 @@ pub struct ExportedMetadata {
     /// Subagent type (e.g., "general-purpose", "explore", "plan").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subagent_type: Option<String>,
-    /// Named persona applied to this session.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub subagent_persona: Option<String>,
-    /// Named role applied to this session.
+    /// Fixed Role applied to this session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subagent_role: Option<String>,
     /// Effective context source ("new" or "resumed").
@@ -122,7 +119,6 @@ impl ExportedMetadata {
             parent_session_id: summary.parent_session_id.clone(),
             session_kind: None,
             subagent_type: None,
-            subagent_persona: None,
             subagent_role: None,
             fork_context_source: None,
             subagent_depth: None,

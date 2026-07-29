@@ -19,6 +19,35 @@ use crate::theme::Theme;
 use crate::views::modal::{self, ActiveModal};
 
 impl AgentView {
+    fn open_role_config_picker(&mut self, role_id: String) -> InputOutcome {
+        let (command, args_query) = if role_id == "main" {
+            ("model", String::new())
+        } else {
+            ("roles", format!("set {role_id} "))
+        };
+        let Some(cmd) = self.prompt.slash_controller.registry().get(command) else {
+            return InputOutcome::Unchanged;
+        };
+        let ctx = self.prompt.slash_controller.app_ctx(&self.session.models);
+        let Some(items) = cmd.suggest_args(&ctx, &args_query) else {
+            return InputOutcome::Unchanged;
+        };
+        if items.is_empty() {
+            self.show_toast("No configured models are available for this Role");
+            return InputOutcome::Changed;
+        }
+        self.active_modal = Some(ActiveModal::ArgPicker {
+            command: command.to_owned(),
+            args_query,
+            items: items.clone(),
+            original_items: items,
+            state: crate::views::picker::PickerState::input_active(),
+            previous_palette: None,
+            window: crate::views::modal_window::ModalWindowState::new(),
+        });
+        InputOutcome::Changed
+    }
+
     /// Step the model ArgPicker from effort phase back to the model list.
     /// Returns `true` if the modal was updated (caller should not fully close).
     fn try_arg_picker_step_back_from_effort(&mut self) -> bool {
@@ -347,6 +376,46 @@ impl AgentView {
             }
         }
 
+        if let ActiveModal::Roles { state } = modal {
+            let outcome = crate::views::roles_modal::handle_roles_key(state, key);
+            return match outcome {
+                crate::views::roles_modal::RolesModalOutcome::Close => {
+                    self.active_modal = None;
+                    InputOutcome::Changed
+                }
+                crate::views::roles_modal::RolesModalOutcome::Changed => InputOutcome::Changed,
+                crate::views::roles_modal::RolesModalOutcome::Configure(role_id) => {
+                    self.open_role_config_picker(role_id)
+                }
+                crate::views::roles_modal::RolesModalOutcome::Reset(role_id) => {
+                    state.begin_reload(format!("Resetting {role_id}…"));
+                    InputOutcome::Action(Action::RuntimeExtension {
+                        method: "_atelier/role/delete".into(),
+                        params: serde_json::json!({ "roleId": role_id }),
+                    })
+                }
+                crate::views::roles_modal::RolesModalOutcome::Test(role_id) => {
+                    state.begin_reload(format!("Testing {role_id}…"));
+                    InputOutcome::Action(Action::RuntimeExtension {
+                        method: "_atelier/role/test".into(),
+                        params: serde_json::json!({ "roleId": role_id }),
+                    })
+                }
+                crate::views::roles_modal::RolesModalOutcome::ToggleFast { role_id, enabled } => {
+                    state.begin_reload(format!("Updating {role_id} fast mode…"));
+                    InputOutcome::Action(Action::RuntimeExtension {
+                        method: "_atelier/role/set_fast_mode".into(),
+                        params: serde_json::json!({
+                            "roleId": role_id,
+                            "sessionId": self.session.session_id.as_ref().map(|id| id.0.as_ref()),
+                            "enabled": enabled,
+                        }),
+                    })
+                }
+                crate::views::roles_modal::RolesModalOutcome::Unchanged => InputOutcome::Unchanged,
+            };
+        }
+
         // Provider wizard owns text entry, choices, back, and cancellation.
         if let ActiveModal::ProviderWizard { state } = modal {
             return match crate::views::provider_wizard::handle_provider_wizard_key(state, key) {
@@ -478,6 +547,7 @@ impl AgentView {
             | ActiveModal::ShortcutsHelp { .. }
             | ActiveModal::MemoryBrowser { .. }
             | ActiveModal::ProviderWizard { .. }
+            | ActiveModal::Roles { .. }
             | ActiveModal::Settings { .. }
             | ActiveModal::ResetSettingsConfirm { .. }
             | ActiveModal::RememberNoteReview { .. } => unreachable!(),
@@ -770,10 +840,6 @@ impl AgentView {
                             PaletteCommand::OpenSettings => {
                                 self.active_modal = None;
                                 InputOutcome::Action(Action::OpenSettings)
-                            }
-                            PaletteCommand::OpenAgentsModal => {
-                                self.active_modal = None;
-                                InputOutcome::Action(Action::OpenConfigAgentsModal(None))
                             }
                             PaletteCommand::SlashCommand(text) => {
                                 let trimmed = text
@@ -1477,6 +1543,18 @@ impl AgentView {
                 }
                 _ => return InputOutcome::Changed,
             }
+        }
+
+        if let Some(ActiveModal::Roles { state }) = &mut self.active_modal {
+            let outcome =
+                mw::handle_modal_mouse(&mut state.window, mouse.kind, mouse.column, mouse.row);
+            return match outcome {
+                ModalWindowOutcome::CloseRequested => {
+                    self.active_modal = None;
+                    InputOutcome::Changed
+                }
+                _ => InputOutcome::Changed,
+            };
         }
 
         // Provider wizard: only modal chrome mouse actions are interactive.
@@ -2270,6 +2348,8 @@ impl AgentView {
                 crate::views::provider_wizard::render_provider_wizard(
                     buf, area, state, compact, &theme,
                 );
+            } else if let modal::ActiveModal::Roles { state } = active_modal {
+                crate::views::roles_modal::render_roles_modal(buf, area, state, compact, &theme);
             } else if let modal::ActiveModal::Settings {
                 state: settings_state,
             } = active_modal

@@ -102,7 +102,7 @@ impl SessionActor {
         if let Some(ref def) = agent_def {
             tracing::info!(
                 session_id = % self.session_info.id.0, agent_name = % def.name,
-                agent_scope = % def.scope, prompt_mode = ? def.prompt_mode,
+                prompt_mode = ? def.prompt_mode,
                 has_completion_req = def.completion_requirement.is_some(), tool_configs =
                 def.tool_config.tools.len(), "Resolved AgentDefinition for session mode"
             );

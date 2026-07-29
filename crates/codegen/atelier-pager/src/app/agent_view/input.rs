@@ -568,30 +568,6 @@ impl AgentView {
                 _ => InputOutcome::Changed,
             };
         }
-        if self.persona_detail.is_some() {
-            return match ev {
-                Event::Key(key) if key.kind != KeyEventKind::Release => {
-                    if registry.lookup(key, When::Always).is_some() {
-                        return InputOutcome::Unchanged;
-                    }
-                    self.handle_persona_detail_key(key)
-                }
-                Event::Mouse(mouse) => self.handle_persona_detail_mouse(mouse),
-                _ => InputOutcome::Changed,
-            };
-        }
-        if self.agents_modal.is_some() {
-            return match ev {
-                Event::Key(key) if key.kind != KeyEventKind::Release => {
-                    if registry.lookup(key, When::Always).is_some() {
-                        return InputOutcome::Unchanged;
-                    }
-                    self.handle_agents_modal_key(key)
-                }
-                Event::Mouse(mouse) => self.handle_agents_modal_mouse(mouse),
-                _ => InputOutcome::Changed,
-            };
-        }
         if self.block_viewer.is_some() {
             return match ev {
                 Event::Key(key) if key.kind != KeyEventKind::Release => {

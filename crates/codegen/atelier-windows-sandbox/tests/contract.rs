@@ -1,6 +1,7 @@
 #![cfg(windows)]
 
 use atelier_windows_sandbox::CommandRequest;
+use atelier_windows_sandbox::NetworkPolicy;
 use atelier_windows_sandbox::SandboxMode;
 use atelier_windows_sandbox::SandboxSession;
 use atelier_windows_sandbox::run_command;
@@ -139,6 +140,171 @@ fn restricted_token_runner_executes_a_command() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(String::from_utf8_lossy(&output.stdout).contains("atelier"));
+}
+
+#[test]
+fn managed_powershell_7_starts_under_both_persistent_sandbox_accounts() {
+    if !restricted_token_supported_or_skip() {
+        return;
+    }
+    let Some(program_data) = std::env::var_os("ProgramData") else {
+        eprintln!("skipping managed PowerShell sandbox probe: ProgramData is unset");
+        return;
+    };
+    let manifest_path = PathBuf::from(program_data)
+        .join("Atelier")
+        .join("runtimes")
+        .join("powershell")
+        .join("active.json");
+    let Ok(manifest_source) = std::fs::read_to_string(&manifest_path) else {
+        eprintln!(
+            "skipping managed PowerShell sandbox probe: missing {}",
+            manifest_path.display()
+        );
+        return;
+    };
+    let manifest: serde_json::Value =
+        serde_json::from_str(&manifest_source).expect("parse managed PowerShell manifest");
+    assert_eq!(manifest["schema_version"], 1);
+    let pwsh = PathBuf::from(
+        manifest["path"]
+            .as_str()
+            .expect("managed PowerShell manifest path"),
+    );
+    assert!(pwsh.is_file(), "missing managed runtime {}", pwsh.display());
+
+    for (policy, marker) in [
+        (NetworkPolicy::Disabled, "MANAGED_PWSH_NONET_OK"),
+        (NetworkPolicy::AllowAll, "MANAGED_PWSH_NETWORK_OK"),
+    ] {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mut request = command_request(SandboxMode::ReadOnly, temp.path());
+        request.program = pwsh.clone();
+        request.network_policy = policy;
+        request.args = vec![
+            OsString::from("-NoLogo"),
+            OsString::from("-NoProfile"),
+            OsString::from("-NonInteractive"),
+            OsString::from("-Command"),
+            OsString::from(format!(
+                "if ($PSVersionTable.PSVersion.Major -lt 7) {{ exit 41 }}; Write-Output '{marker}'"
+            )),
+        ];
+        request.timeout = Some(std::time::Duration::from_secs(10));
+
+        let output = run_command(request)
+            .unwrap_or_else(|error| panic!("managed PowerShell failed for {policy:?}: {error:#}"));
+        assert_eq!(
+            output.exit_code,
+            0,
+            "policy={policy:?} stdout={:?} stderr={:?}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains(marker),
+            "policy={policy:?} stdout={:?}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+    }
+}
+
+#[test]
+fn controlled_path_resolves_managed_powershell_from_the_toolchain_registry() {
+    if !restricted_token_supported_or_skip() {
+        return;
+    }
+    let Some(program_data) = std::env::var_os("ProgramData") else {
+        eprintln!("skipping Toolchain Registry probe: ProgramData is unset");
+        return;
+    };
+    let manifest_path = PathBuf::from(program_data)
+        .join("Atelier")
+        .join("runtimes")
+        .join("powershell")
+        .join("active.json");
+    let Ok(manifest_source) = std::fs::read_to_string(&manifest_path) else {
+        eprintln!(
+            "skipping Toolchain Registry probe: missing {}",
+            manifest_path.display()
+        );
+        return;
+    };
+    let manifest: serde_json::Value =
+        serde_json::from_str(&manifest_source).expect("parse managed PowerShell manifest");
+    let expected = PathBuf::from(
+        manifest["path"]
+            .as_str()
+            .expect("managed PowerShell manifest path"),
+    );
+
+    let temp = tempfile::tempdir().expect("tempdir");
+    let system_root = std::env::var_os("SystemRoot")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(r"C:\Windows"));
+    let mut request = command_request(SandboxMode::ReadOnly, temp.path());
+    request.program = system_root.join("System32/cmd.exe");
+    request.args = vec![
+        OsString::from("/D"),
+        OsString::from("/S"),
+        OsString::from("/C"),
+        OsString::from("where.exe pwsh.exe"),
+    ];
+    request.timeout = Some(std::time::Duration::from_secs(10));
+
+    let output = run_command(request).expect("resolve managed PowerShell from controlled PATH");
+    assert_eq!(
+        output.exit_code,
+        0,
+        "stdout={:?} stderr={:?}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let resolved = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        resolved.lines().any(|line| line
+            .trim()
+            .eq_ignore_ascii_case(&expected.to_string_lossy())),
+        "controlled PATH did not resolve {}: {resolved:?}",
+        expected.display()
+    );
+    assert!(!resolved.to_ascii_lowercase().contains("windowsapps"));
+}
+
+#[test]
+fn windows_powershell_51_executes_inside_the_real_sandbox_boundary() {
+    if !restricted_token_supported_or_skip() {
+        return;
+    }
+    let temp = tempfile::tempdir().expect("tempdir");
+    let system_root = std::env::var_os("SystemRoot")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(r"C:\Windows"));
+    let powershell = system_root.join(r"System32\WindowsPowerShell\v1.0\powershell.exe");
+    assert!(powershell.is_file(), "missing {}", powershell.display());
+    let mut request = command_request(SandboxMode::WorkspaceWrite, temp.path());
+    request.program = powershell;
+    request.args = vec![
+        OsString::from("-NoProfile"),
+        OsString::from("-NonInteractive"),
+        OsString::from("-ExecutionPolicy"),
+        OsString::from("Bypass"),
+        OsString::from("-Command"),
+        OsString::from(
+            "[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false); Write-Output 'PS51_SANDBOX_OK'",
+        ),
+    ];
+
+    let output = run_command(request).expect("sandboxed Windows PowerShell 5.1");
+
+    assert_eq!(
+        output.exit_code,
+        0,
+        "stdout={:?} stderr={:?}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("PS51_SANDBOX_OK"));
 }
 
 #[test]

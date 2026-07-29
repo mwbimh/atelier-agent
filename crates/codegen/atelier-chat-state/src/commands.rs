@@ -365,6 +365,7 @@ mod tests {
         let _ = ChatStateCommand::UpdateSamplingConfig {
             config: SamplingConfig {
                 base_url: String::new(),
+                provider_id: None,
                 model: String::new(),
                 max_completion_tokens: None,
                 temperature: None,

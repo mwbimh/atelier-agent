@@ -682,14 +682,11 @@ mod tests {
     }
 
     /// `ATELIER_CAMPAIGNS=0` disables campaign application regardless of config.
-    /// `ATELIER_CAMPAIGNS` is process-global, so this test serializes itself with a
-    /// module-local mutex and save/restores the prior value. (This crate has no
-    /// `serial_test` dev-dep and no other test reads this var, so a local guard
-    /// is sufficient.)
+    /// The variable is process-global, so every test that reads or mutates it
+    /// uses the shared `serial_test` lock.
     #[test]
+    #[serial_test::serial]
     fn kill_switch_env_var_disables() {
-        static ENV_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _g = ENV_GUARD.lock().unwrap_or_else(|p| p.into_inner());
         let prior = std::env::var_os("ATELIER_CAMPAIGNS");
         let empty = toml::Value::Table(Default::default());
 

@@ -307,7 +307,6 @@ impl atelier_tool_runtime::Tool for TaskTool {
                 model,
                 model_override_provenance: ModelOverrideProvenance::Tool,
                 reasoning_effort: None,
-                persona: None,
                 capability_mode: input.capability_mode,
                 isolation: input.isolation,
                 // Model-issued `task` spawns never override the harness; the
@@ -401,7 +400,6 @@ impl atelier_tool_runtime::Tool for TaskTool {
         // 6. Return result
         if result.success {
             let resume_from_hint = result.subagent_id.clone();
-            let persona_hint: Option<String> = None;
             Ok(ToolOutput::SubagentCompleted(SubagentCompletedOutput {
                 // SubagentCompletedOutput.output is `String` (serde-visible
                 // boundary). One allocation per completion; cheaper paths
@@ -413,9 +411,7 @@ impl atelier_tool_runtime::Tool for TaskTool {
                 turns: result.turns,
                 duration_ms: result.duration_ms,
                 worktree_path: result.worktree_path,
-                persona: None,
                 resume_from_hint,
-                persona_hint,
             }))
         } else {
             Err(atelier_tool_runtime::ToolError::invalid_arguments(
@@ -1184,7 +1180,6 @@ mod tests {
         let overrides = SubagentRuntimeOverrides::default();
         assert!(overrides.model.is_none());
         assert!(overrides.reasoning_effort.is_none());
-        assert!(overrides.persona.is_none());
         assert!(overrides.capability_mode.is_none());
     }
 
@@ -2294,7 +2289,6 @@ mod tests {
                 ModelOverrideProvenance::Tool,
             );
             assert!(request.runtime_overrides.reasoning_effort.is_none());
-            assert!(request.runtime_overrides.persona.is_none());
             request
                 .result_tx
                 .send(SubagentResult {
@@ -2460,7 +2454,6 @@ mod tests {
                 ModelOverrideProvenance::Tool,
             );
             assert!(request.runtime_overrides.reasoning_effort.is_none());
-            assert!(request.runtime_overrides.persona.is_none());
             request
                 .result_tx
                 .send(SubagentResult {

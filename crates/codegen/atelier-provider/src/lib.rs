@@ -9,7 +9,10 @@ pub mod auth;
 pub mod roles;
 mod storage_v2;
 
-pub use roles::{RoleConfig, RoleError, RoleId, RoleRegistry, merge_payloads};
+pub use roles::{
+    ResolvedRoleConfig, RoleConfig, RoleError, RoleFieldSources, RoleId, RoleRegistry,
+    merge_payloads,
+};
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
 use std::fmt;

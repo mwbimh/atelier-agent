@@ -251,9 +251,11 @@ parallel_tool_calls = true
 
     let quoted_default_model =
         serde_json::to_string(&default_model.id).context("quote default mock model ID")?;
+    let quoted_main_model = serde_json::to_string(&format!("mock/{}", default_model.id))
+        .context("quote canonical Main model key")?;
     let mut roles = String::from("schema_version = 1\n");
     for role in [
-        "main",
+        "general",
         "explore",
         "implement",
         "review",
@@ -277,11 +279,9 @@ model = {quoted_default_model}
 
     std::fs::write(
         atelier_home.join("config.toml"),
-        r#"context = "default"
-request_agent = "atelier"
-
-sandbox = { profile = "off", backend = "unsafe" }
-"#,
+        format!(
+            "model = {quoted_main_model}\ncontext = \"default\"\nrequest_agent = \"atelier\"\n\nsandbox = {{ profile = \"off\", backend = \"unsafe\" }}\n"
+        ),
     )
     .context("write mock config.toml")?;
 
@@ -377,6 +377,7 @@ mod tests {
 
         let atelier_home = content.home().join(".atelier");
         let config = std::fs::read_to_string(atelier_home.join("config.toml")).unwrap();
+        assert!(config.contains("model = \"mock/test-model\""));
         assert!(config.contains("sandbox = { profile = \"off\", backend = \"unsafe\" }"));
 
         let providers = std::fs::read_to_string(atelier_home.join("providers.toml")).unwrap();
@@ -391,7 +392,8 @@ mod tests {
         assert!(models.contains("tool_calls = true"));
 
         let roles = std::fs::read_to_string(atelier_home.join("roles.toml")).unwrap();
-        assert!(roles.contains("[roles.main]"));
+        assert!(!roles.contains("[roles.main]"));
+        assert!(roles.contains("[roles.general]"));
         assert!(roles.contains("provider = \"mock\""));
         assert!(roles.contains("model = \"test-model\""));
     }

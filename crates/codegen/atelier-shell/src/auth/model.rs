@@ -87,8 +87,8 @@ pub struct AtelierAuth {
 
     /// Issuer URL that issued this token. For OIDC credentials it drives
     /// refresh via discovery; for external-provider credentials it is the
-    /// provider's `issuer` claim. In both modes an x.ai issuer marks the
-    /// credential first-party (`is_xai_auth`).
+    /// provider's `issuer` claim. Refresh eligibility requires this issuer to
+    /// match the explicitly configured OAuth2 issuer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub oidc_issuer: Option<String>,
 
@@ -123,15 +123,10 @@ impl AtelierAuth {
             .num_seconds()
     }
 
-    /// `true` when the token comes from a first-party xAI account —
-    /// either an OIDC login against https://auth.x.ai (or the local-dev
-    /// equivalent), or an external auth provider that declared an xAI
-    /// issuer for its token.
-    ///
-    /// The issuer is a client-side hint, not a trust assertion: everything
-    /// it unlocks still authenticates the actual token server-side, and it
-    /// never influences endpoints.
-    pub fn is_xai_auth(&self) -> bool {
+    /// `true` when an OIDC or external-provider token was issued by the
+    /// explicitly configured OAuth2 issuer. The issuer is a client-side hint,
+    /// never an endpoint trust inference.
+    pub fn is_configured_refresh_auth(&self) -> bool {
         match self.auth_mode {
             AuthMode::Oidc | AuthMode::External => self
                 .oidc_issuer
@@ -143,19 +138,19 @@ impl AtelierAuth {
 
     /// `true` when this auth can access atelier.invalid managed MCP connectors.
     pub fn is_managed_mcp_eligible(&self) -> bool {
-        self.is_xai_auth() || self.auth_mode == AuthMode::WebLogin
+        self.is_configured_refresh_auth() || self.auth_mode == AuthMode::WebLogin
     }
 
     /// Whether this credential can access `supported_in_api: false` models.
     ///
     /// Session logins (WebLogin, OIDC — including enterprise issuers) always
-    /// qualify; external-provider credentials qualify only when first-party
-    /// (`is_xai_auth`), matching the built-in devbox login they replace.
+    /// qualify; external-provider credentials qualify only when their issuer
+    /// matches the configured OAuth2 issuer.
     /// Plain API keys never do.
     pub fn is_session_auth(&self) -> bool {
         match self.auth_mode {
             AuthMode::WebLogin | AuthMode::Oidc => true,
-            AuthMode::External => self.is_xai_auth(),
+            AuthMode::External => self.is_configured_refresh_auth(),
             AuthMode::ApiKey => false,
         }
     }
@@ -397,7 +392,7 @@ mod tests {
 
     #[cfg(any())] // xAI first-party session classification was removed with vendor authentication.
     #[test]
-    fn is_xai_auth_matrix() {
+    fn is_configured_refresh_auth_matrix() {
         use crate::auth::TEST_OIDC_ISSUER;
         let with_issuer = |mode: AuthMode, issuer: Option<&str>| AtelierAuth {
             oidc_issuer: issuer.map(str::to_owned),
@@ -405,16 +400,28 @@ mod tests {
         };
 
         // Only Oidc/External qualify, and only with an x.ai issuer.
-        assert!(with_issuer(AuthMode::Oidc, Some(TEST_OIDC_ISSUER)).is_xai_auth());
-        assert!(with_issuer(AuthMode::External, Some(TEST_OIDC_ISSUER)).is_xai_auth());
-        assert!(!with_issuer(AuthMode::Oidc, None).is_xai_auth());
-        assert!(!with_issuer(AuthMode::External, None).is_xai_auth());
-        assert!(!with_issuer(AuthMode::Oidc, Some("https://idp.acme.example")).is_xai_auth());
-        assert!(!with_issuer(AuthMode::External, Some("https://idp.acme.example")).is_xai_auth());
+        assert!(with_issuer(AuthMode::Oidc, Some(TEST_OIDC_ISSUER)).is_configured_refresh_auth());
+        assert!(
+            with_issuer(AuthMode::External, Some(TEST_OIDC_ISSUER)).is_configured_refresh_auth()
+        );
+        assert!(!with_issuer(AuthMode::Oidc, None).is_configured_refresh_auth());
+        assert!(!with_issuer(AuthMode::External, None).is_configured_refresh_auth());
+        assert!(
+            !with_issuer(AuthMode::Oidc, Some("https://idp.acme.example"))
+                .is_configured_refresh_auth()
+        );
+        assert!(
+            !with_issuer(AuthMode::External, Some("https://idp.acme.example"))
+                .is_configured_refresh_auth()
+        );
 
         // ApiKey / WebLogin stay false even with an x.ai issuer set.
-        assert!(!with_issuer(AuthMode::ApiKey, Some(TEST_OIDC_ISSUER)).is_xai_auth());
-        assert!(!with_issuer(AuthMode::WebLogin, Some(TEST_OIDC_ISSUER)).is_xai_auth());
+        assert!(
+            !with_issuer(AuthMode::ApiKey, Some(TEST_OIDC_ISSUER)).is_configured_refresh_auth()
+        );
+        assert!(
+            !with_issuer(AuthMode::WebLogin, Some(TEST_OIDC_ISSUER)).is_configured_refresh_auth()
+        );
     }
 
     #[cfg(any())] // xAI first-party session classification was removed with vendor authentication.

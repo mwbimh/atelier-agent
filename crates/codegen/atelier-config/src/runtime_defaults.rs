@@ -1,5 +1,6 @@
 //! Runtime selection for editable context, branding, and request-agent presets.
 
+pub use atelier_provider::RoleId;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::io;
@@ -213,11 +214,21 @@ pub fn load_context_prompt_at(
     kind: ContextPrompt,
 ) -> io::Result<String> {
     validate_component("context preset", preset)?;
-    std::fs::read_to_string(
-        home.join("contexts")
-            .join(preset)
-            .join(kind.relative_path()),
-    )
+    let selected = home
+        .join("contexts")
+        .join(preset)
+        .join(kind.relative_path());
+    match std::fs::read_to_string(&selected) {
+        Ok(prompt) => Ok(prompt),
+        Err(error) if error.kind() == io::ErrorKind::NotFound && preset != "default" => {
+            std::fs::read_to_string(
+                home.join("contexts")
+                    .join("default")
+                    .join(kind.relative_path()),
+            )
+        }
+        Err(error) => Err(error),
+    }
 }
 
 pub fn runtime_context_prompt(kind: ContextPrompt, embedded_default: &str) -> String {
@@ -225,8 +236,26 @@ pub fn runtime_context_prompt(kind: ContextPrompt, embedded_default: &str) -> St
         return embedded_default.to_owned();
     };
     let path = directory.join(kind.relative_path());
-    std::fs::read_to_string(&path)
-        .unwrap_or_else(|error| panic!("failed to load context prompt {}: {error}", path.display()))
+    match std::fs::read_to_string(&path) {
+        Ok(prompt) => prompt,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            let Some(home) = RUNTIME_HOME.get() else {
+                return embedded_default.to_owned();
+            };
+            let fallback = home
+                .join("contexts")
+                .join("default")
+                .join(kind.relative_path());
+            std::fs::read_to_string(&fallback).unwrap_or_else(|fallback_error| {
+                panic!(
+                    "failed to load context prompt {} ({error}) and fallback {} ({fallback_error})",
+                    path.display(),
+                    fallback.display()
+                )
+            })
+        }
+        Err(error) => panic!("failed to load context prompt {}: {error}", path.display()),
+    }
 }
 
 pub fn load_context_role_prompt_at(
@@ -248,17 +277,74 @@ pub fn load_context_role_prompt_at(
     }
 }
 
-pub fn runtime_context_role_prompt(role: &str) -> io::Result<Option<String>> {
-    validate_component("context role", role)?;
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedRoleContext {
+    pub package: String,
+    pub role: atelier_provider::RoleId,
+    pub path: PathBuf,
+    pub prompt: String,
+}
+
+/// Resolve a fixed Role's Context through the selected package first and the
+/// `default` package second. Non-main ancestry is supplied by `RoleId` and
+/// deliberately never reaches MAIN. An existing empty file is authoritative.
+pub fn load_resolved_context_role_prompt_source_at(
+    home: &Path,
+    preset: &str,
+    role: atelier_provider::RoleId,
+) -> io::Result<Option<ResolvedRoleContext>> {
+    validate_component("context preset", preset)?;
+    let mut packages = vec![preset];
+    if preset != "default" {
+        packages.push("default");
+    }
+    for package in packages {
+        for candidate in role.context_ancestry() {
+            let path = home
+                .join("contexts")
+                .join(package)
+                .join("roles")
+                .join(format!("{}.md", candidate.as_str()));
+            match std::fs::read_to_string(&path) {
+                Ok(prompt) => {
+                    return Ok(Some(ResolvedRoleContext {
+                        package: package.to_owned(),
+                        role: *candidate,
+                        path,
+                        prompt,
+                    }));
+                }
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
+            }
+        }
+    }
+    Ok(None)
+}
+
+pub fn load_resolved_context_role_prompt_at(
+    home: &Path,
+    preset: &str,
+    role: atelier_provider::RoleId,
+) -> io::Result<Option<String>> {
+    Ok(
+        load_resolved_context_role_prompt_source_at(home, preset, role)?
+            .map(|resolved| resolved.prompt),
+    )
+}
+
+pub fn runtime_context_role_prompt(role: RoleId) -> io::Result<Option<String>> {
+    let Some(home) = RUNTIME_HOME.get() else {
+        return Ok(None);
+    };
     let Some(directory) = RUNTIME_CONTEXT_DIR.get() else {
         return Ok(None);
     };
-    let path = directory.join("roles").join(format!("{role}.md"));
-    match std::fs::read_to_string(path) {
-        Ok(prompt) => Ok(Some(prompt)),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(error),
-    }
+    let preset = directory
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| invalid_data("active context preset has no valid name"))?;
+    load_resolved_context_role_prompt_at(home, preset, role)
 }
 
 pub fn merge_role_prompts(

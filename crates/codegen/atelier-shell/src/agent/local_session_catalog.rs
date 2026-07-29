@@ -19,7 +19,6 @@ pub struct RegisterRequest {
     pub parent_session_id: Option<String>,
     pub session_kind: Option<String>,
     pub subagent_type: Option<String>,
-    pub subagent_persona: Option<String>,
     pub subagent_role: Option<String>,
     pub fork_context_source: Option<String>,
     pub subagent_depth: Option<u32>,

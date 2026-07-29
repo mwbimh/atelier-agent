@@ -558,7 +558,6 @@ mod tests {
             description: "find files".into(),
             started_at_epoch_ms: 1000,
             duration_ms: 5000,
-            persona: None,
             status: SubagentSnapshotStatus::Running {
                 turn_count: 3,
                 tool_call_count: 12,
@@ -597,7 +596,6 @@ mod tests {
             description: "refactor auth".into(),
             started_at_epoch_ms: 2000,
             duration_ms: 15_000,
-            persona: None,
             status: SubagentSnapshotStatus::Completed {
                 output: "Done, refactored 3 files.".into(),
                 tool_calls: 8,
@@ -625,7 +623,6 @@ mod tests {
             description: "plan feature".into(),
             started_at_epoch_ms: 0,
             duration_ms: 100,
-            persona: None,
             status: SubagentSnapshotStatus::Failed {
                 error: "sampling error".into(),
             },
@@ -645,7 +642,6 @@ mod tests {
             description: "search".into(),
             started_at_epoch_ms: 0,
             duration_ms: 50,
-            persona: None,
             status: SubagentSnapshotStatus::Cancelled {
                 reason: Some("user cancelled".into()),
             },
@@ -665,7 +661,6 @@ mod tests {
             description: "search".into(),
             started_at_epoch_ms: 0,
             duration_ms: 50,
-            persona: None,
             status: SubagentSnapshotStatus::Cancelled { reason: None },
         };
         let dto =
@@ -690,7 +685,6 @@ mod tests {
             description: "search".into(),
             started_at_epoch_ms: 1000,
             duration_ms: 5000,
-            persona: None,
             status: SubagentSnapshotStatus::Running {
                 turn_count: 2,
                 tool_call_count: 5,
@@ -729,7 +723,6 @@ mod tests {
             description: "refactor".into(),
             started_at_epoch_ms: 0,
             duration_ms: 10_000,
-            persona: None,
             status: SubagentSnapshotStatus::Completed {
                 output: "Refactored 3 files.".into(),
                 tool_calls: 7,
@@ -794,7 +787,6 @@ mod tests {
             description: "d".into(),
             started_at_epoch_ms: 0,
             duration_ms: 100,
-            persona: None,
             status: SubagentSnapshotStatus::Completed {
                 output: "done".into(),
                 tool_calls: 1,
@@ -819,7 +811,6 @@ mod tests {
             description: "d".into(),
             started_at_epoch_ms: 0,
             duration_ms: 100,
-            persona: None,
             status: SubagentSnapshotStatus::Running {
                 turn_count: 1,
                 tool_call_count: 2,
@@ -847,7 +838,6 @@ mod tests {
             description: "d".into(),
             started_at_epoch_ms: 0,
             duration_ms: 100,
-            persona: None,
             status: SubagentSnapshotStatus::Running {
                 turn_count: 1,
                 tool_call_count: 2,
@@ -877,7 +867,6 @@ mod tests {
             description: "d".into(),
             started_at_epoch_ms: 0,
             duration_ms: 500,
-            persona: None,
             status: SubagentSnapshotStatus::Completed {
                 output: "found it".into(),
                 tool_calls: 3,
@@ -901,7 +890,6 @@ mod tests {
             description: "d".into(),
             started_at_epoch_ms: 0,
             duration_ms: 100,
-            persona: None,
             status: SubagentSnapshotStatus::Running {
                 turn_count: 1,
                 tool_call_count: 1,
@@ -930,7 +918,6 @@ mod tests {
             description: "fix review".into(),
             started_at_epoch_ms: 2000,
             duration_ms: 3000,
-            persona: None,
             status: SubagentSnapshotStatus::Running {
                 turn_count: 1,
                 tool_call_count: 2,

@@ -60,7 +60,6 @@ pub(crate) struct SubagentTracker {
     pub parent_prompt_id: Option<String>,
     pub child_session_id: acp::SessionId,
     pub subagent_type: String,
-    pub persona: Option<String>,
     pub description: String,
     pub started_at: std::time::Instant,
     pub child_handle: SessionHandle,
@@ -242,15 +241,6 @@ pub(crate) struct SubagentSpawnContext {
     pub parent_cmd_tx: Option<mpsc::UnboundedSender<SessionCommand>>,
     /// Parent session info — used to locate parent session directory.
     pub parent_session_info: Option<SessionInfo>,
-    /// Subagent roles config for role-based config layering.
-    pub subagent_roles:
-        std::collections::HashMap<String, atelier_subagent_resolution::config::SubagentRole>,
-    /// Subagent personas config for persona/SOUL layering.
-    pub subagent_personas:
-        std::collections::HashMap<String, atelier_subagent_resolution::config::SubagentPersona>,
-    /// Pre-rendered persona IO summaries for the task tool description.
-    /// Threaded through to child sessions for recursive persona discovery.
-    pub persona_io_summaries: Vec<String>,
     /// Parent session's ChatStateHandle — used to read the actual live
     /// sampling config and credentials from the parent session actor (async).
     /// Cheap Clone (mpsc sender). `None` when parent SessionHandle not found.
@@ -472,7 +462,6 @@ pub(crate) struct CompletedSubagent {
     pub child_session_id: String,
     pub description: String,
     pub subagent_type: String,
-    pub persona: Option<String>,
     pub started_at: std::time::Instant,
     /// When the subagent moved to the completed map. Used for TTL eviction.
     pub completed_at: std::time::Instant,
@@ -500,7 +489,6 @@ pub(crate) struct PendingSubagent {
     pub subagent_id: String,
     pub subagent_type: String,
     pub description: String,
-    pub persona: Option<String>,
     pub parent_prompt_id: Option<String>,
     pub parent_session_id: String,
     pub started_at: std::time::Instant,
@@ -523,7 +511,6 @@ struct FailureCompletion<'a> {
     description: String,
     parent_prompt_id: Option<String>,
     parent_session_id: String,
-    persona: Option<String>,
     started_at: std::time::Instant,
     error: &'a str,
     surface_completion: bool,
@@ -612,7 +599,6 @@ pub(crate) struct RunningSnapshotSeed {
     pub(crate) subagent_type: String,
     pub(crate) started_at_epoch_ms: u64,
     pub(crate) duration_ms: u64,
-    pub(crate) persona: Option<String>,
     pub(crate) signals_handle: crate::session::signals::SessionSignalsHandle,
 }
 /// Resolve an `Option<SnapshotLookup>` into `Option<SubagentSnapshot>`.
@@ -635,7 +621,6 @@ pub(crate) async fn resolve_snapshot(lookup: Option<SnapshotLookup>) -> Option<S
                 subagent_type: seed.subagent_type,
                 started_at_epoch_ms: seed.started_at_epoch_ms,
                 duration_ms: seed.duration_ms,
-                persona: seed.persona,
                 status: SubagentSnapshotStatus::Running {
                     turn_count: signals.turn_count,
                     tool_call_count: signals.tool_call_count,
@@ -765,7 +750,7 @@ use atelier_subagent_resolution::resolve_effective_overrides;
 /// pin references an unknown model it is ignored (with a `tracing::warn!`)
 /// and resolution falls through to the next priority.
 ///
-/// NOTE: the persona/role/runtime override (`effective_runtime.model`) is
+/// NOTE: the fixed Role runtime override (`effective_runtime.model`) is
 /// applied by the caller (`handle_subagent_request`) BEFORE this function
 /// runs, so it is not handled here.
 ///
@@ -828,11 +813,11 @@ async fn resolve_subagent_sampling_config(
 /// Resolve a subagent's effective sampling config + model id, honoring the
 /// model-resolution precedence (Key Decision #16).
 ///
-/// An explicit `runtime_override_model` — the goal role model or a persona
-/// override carried on `effective_runtime.model` — is resolved HERE, BEFORE
+/// An explicit fixed Role `runtime_override_model` carried on
+/// `effective_runtime.model` is resolved HERE, BEFORE
 /// [`resolve_subagent_sampling_config`] (where the user `[subagents.models]`
-/// pin and `AgentDefinition.model` apply). So a goal/persona override WINS
-/// over a user per-agent pin. An override that does not resolve to a known
+/// pin and `AgentDefinition.model` apply). The fixed Role override wins over
+/// a user per-agent pin. An override that does not resolve to a known
 /// model fails closed. A configured fixed Role overrides the active model;
 /// an unconfigured Role is absent and therefore follows the normal inherited
 /// model path.
@@ -868,38 +853,32 @@ async fn resolve_effective_model_config(
 
 /// Map the built-in subagent kinds to Atelier's fixed model roles.
 ///
-/// This is deliberately an exact-name mapping, not a classifier. Custom
-/// subagent names retain their existing resolution behavior unless they are
-/// explicitly wired to one of the built-in names below.
+/// This is deliberately an exact-name mapping, not a classifier. Known aliases
+/// select their fixed Role; every other supported generic Subagent uses
+/// `general`. Custom Runtime Roles are not created from arbitrary names.
 fn fixed_role_for_subagent_type(subagent_type: &str) -> Option<atelier_provider::RoleId> {
-    match subagent_type {
-        "explore" | "explorer" => Some(atelier_provider::RoleId::Explore),
-        "implement" | "implementer" | "general-purpose" => {
-            Some(atelier_provider::RoleId::Implement)
-        }
-        "review" | "reviewer" | "code-reviewer" => Some(atelier_provider::RoleId::Review),
-        "test" | "tester" | "testing" => Some(atelier_provider::RoleId::Test),
-        _ => None,
-    }
+    Some(match subagent_type {
+        "explore" | "explorer" => atelier_provider::RoleId::Explore,
+        "implement" | "implementer" => atelier_provider::RoleId::Implement,
+        "review" | "reviewer" | "code-reviewer" => atelier_provider::RoleId::Review,
+        "test" | "tester" | "testing" => atelier_provider::RoleId::Test,
+        "plan" | "planner" => atelier_provider::RoleId::Planner,
+        "strategy" | "strategist" => atelier_provider::RoleId::Strategist,
+        "skeptic" | "verify" | "verifier" => atelier_provider::RoleId::Skeptic,
+        _ => atelier_provider::RoleId::General,
+    })
 }
 
-fn context_role_name(
-    explicit_role: Option<&str>,
-    configured_role_name: Option<&str>,
-    subagent_type: &str,
-) -> String {
-    if let Some(role) = explicit_role.or(configured_role_name) {
+fn context_role_name(explicit_role: Option<&str>, subagent_type: &str) -> atelier_provider::RoleId {
+    if let Some(role) = explicit_role {
         return match role {
-            "plan" => "planner".to_owned(),
-            other => other.to_owned(),
+            "plan" => atelier_provider::RoleId::Planner,
+            other => other
+                .parse::<atelier_provider::RoleId>()
+                .unwrap_or(atelier_provider::RoleId::General),
         };
     }
-    fixed_role_for_subagent_type(subagent_type)
-        .map(|role| role.as_str().to_owned())
-        .unwrap_or_else(|| match subagent_type {
-            "plan" => "planner".to_owned(),
-            other => other.to_owned(),
-        })
+    fixed_role_for_subagent_type(subagent_type).unwrap_or(atelier_provider::RoleId::General)
 }
 
 fn fixed_role_for_request(
@@ -949,10 +928,42 @@ fn resolve_fixed_runtime_role_id(
         .unwrap_or_else(|| atelier_config::atelier_home().join("providers.toml"));
     let registry = atelier_provider::ProviderRegistry::load_or_create(registry_path)
         .map_err(|error| format!("failed to load {role_id} role configuration: {error}"))?;
-    let Some(role) = registry.role(role_id) else {
+    let Some((_source_role, _)) = registry.roles().find_inherited(role_id) else {
         return Ok(None);
     };
+    let main_model_key = ctx.model_id.0.as_ref();
+    let (main_provider, main_model) = main_model_key.split_once('/').unwrap_or_else(|| {
+        (
+            ctx.sampling_config.provider_id.as_deref().unwrap_or("main"),
+            ctx.sampling_config.model.as_str(),
+        )
+    });
+    let mut main = atelier_provider::RoleConfig::new(main_provider, main_model)
+        .map_err(|error| error.to_string())?;
+    main.effort = ctx
+        .sampling_config
+        .reasoning_effort
+        .map(|effort| effort.to_string());
+    if let Some(fast_mode) = ctx
+        .sampling_config
+        .request_payload
+        .get("fast_mode")
+        .and_then(serde_json::Value::as_bool)
+    {
+        main.set_fast_mode(fast_mode);
+    }
+    let (_, role) = registry.roles().resolve_inherited(role_id, &main);
     let model_key = format!("{}/{}", role.provider, role.model);
+    if role.provider == main.provider && role.model == main.model {
+        let mut config = ctx.sampling_config.clone();
+        config.request_payload = role.merged_payload(&config.request_payload);
+        if let Some(raw_effort) = role.effort.as_deref() {
+            config.reasoning_effort = Some(raw_effort.parse().map_err(|error| {
+                format!("configured {role_id} role effort is invalid ({raw_effort}): {error}")
+            })?);
+        }
+        return Ok(Some((config, ctx.model_id.clone())));
+    }
     let Some((mut config, model_id)) = resolve_model_override_to_config(&model_key, ctx) else {
         return Err(format!(
             "configured {role_id} role model is unavailable: {model_key}"
@@ -1671,34 +1682,35 @@ fn filter_pool_by_inheritance(
 /// session's CLI tool/permission overrides already applied (so the spawn path
 /// can never obtain a definition that skips them).
 fn resolve_agent_definition(
-    subagent_type: &str,
+    agent_type: &str,
     ctx: &SubagentSpawnContext,
 ) -> Option<atelier_agent::config::AgentDefinition> {
-    let mut def = atelier_agent::discovery::by_name_in_cwd_with_plugins(
-        subagent_type,
-        &ctx.parent_cwd,
-        ctx.plugin_registry.as_deref(),
-    )
-    .or_else(|| {
-        ctx.agent_config.as_ref().and_then(|cfg| {
-            cfg.cli_agents
-                .iter()
-                .find(|d| d.name == subagent_type)
-                .cloned()
-        })
-    })?;
-    ctx.apply_session_cli_overrides(&mut def);
-    Some(def)
+    use std::str::FromStr;
+    let builtin = atelier_agent::config::BuiltinAgentName::from_str(agent_type).ok()?;
+    let mut definition = builtin.definition();
+    ctx.apply_session_cli_overrides(&mut definition);
+    Some(definition)
+}
+
+fn fixed_subagent_names(toggle: &HashMap<String, bool>) -> Vec<String> {
+    atelier_agent::config::BuiltinAgentName::subagent_variants()
+        .iter()
+        .map(ToString::to_string)
+        .filter(|name| toggle.get(name).copied().unwrap_or(true))
+        .collect()
+}
+
+fn is_fixed_subagent_type(name: &str) -> bool {
+    atelier_agent::config::BuiltinAgentName::subagent_variants()
+        .iter()
+        .any(|builtin| builtin.to_string() == name)
 }
 /// Minimal per-session context for `validate_subagent_type`.
 /// Avoids the heavy `SubagentSpawnContext` clone on the validation hot path.
 #[derive(Default)]
 pub(crate) struct SubagentValidationContext {
-    pub parent_cwd: PathBuf,
-    pub plugin_registry: Option<Arc<atelier_agent::plugins::PluginRegistry>>,
     pub subagent_toggle: HashMap<String, bool>,
     pub allowed_subagent_types: Option<Vec<String>>,
-    pub cli_agent_names: Vec<String>,
 }
 impl SubagentValidationContext {
     /// Toggle lookup; absent keys default to enabled.
@@ -1712,31 +1724,8 @@ pub(crate) fn validate_subagent_type(
     subagent_type: &str,
     ctx: &SubagentValidationContext,
 ) -> SubagentValidateTypeOutcome {
-    let resolves = ctx.cli_agent_names.iter().any(|n| n == subagent_type)
-        || atelier_agent::discovery::by_name_in_cwd_with_plugins(
-            subagent_type,
-            &ctx.parent_cwd,
-            ctx.plugin_registry.as_deref(),
-        )
-        .is_some();
-    if !resolves {
-        let mut available: Vec<String> = atelier_agent::discovery::all_subagents_with_plugins(
-            &ctx.parent_cwd,
-            &ctx.subagent_toggle,
-            ctx.plugin_registry.as_deref(),
-        )
-        .into_iter()
-        .map(|e| e.name)
-        .collect();
-        let mut seen: std::collections::HashSet<String> = available.iter().cloned().collect();
-        for name in &ctx.cli_agent_names {
-            if !ctx.is_subagent_enabled(name) {
-                continue;
-            }
-            if seen.insert(name.clone()) {
-                available.push(name.clone());
-            }
-        }
+    if !is_fixed_subagent_type(subagent_type) {
+        let mut available = fixed_subagent_names(&ctx.subagent_toggle);
         available.sort();
         return SubagentValidateTypeOutcome::Unknown { available };
     }
@@ -1882,26 +1871,17 @@ pub(crate) fn describe_subagent_type(
     if let Some(harness) = harness_agent_type
         && resolve_agent_definition(harness, ctx).is_none()
     {
-        let mut available: Vec<String> = atelier_agent::discovery::all_subagents_with_plugins(
-            &ctx.parent_cwd,
-            &ctx.subagent_toggle,
-            ctx.plugin_registry.as_deref(),
-        )
-        .into_iter()
-        .map(|e| e.name)
-        .collect();
+        let mut available = fixed_subagent_names(&ctx.subagent_toggle);
+        available.sort();
+        return SubagentDescribeOutcome::Unknown { available };
+    }
+    if !is_fixed_subagent_type(subagent_type) {
+        let mut available = fixed_subagent_names(&ctx.subagent_toggle);
         available.sort();
         return SubagentDescribeOutcome::Unknown { available };
     }
     let Some(mut definition) = resolve_agent_definition(subagent_type, ctx) else {
-        let mut available: Vec<String> = atelier_agent::discovery::all_subagents_with_plugins(
-            &ctx.parent_cwd,
-            &ctx.subagent_toggle,
-            ctx.plugin_registry.as_deref(),
-        )
-        .into_iter()
-        .map(|e| e.name)
-        .collect();
+        let mut available = fixed_subagent_names(&ctx.subagent_toggle);
         available.sort();
         return SubagentDescribeOutcome::Unknown { available };
     };
@@ -1955,18 +1935,14 @@ fn parent_source_cwd(ctx: &SubagentSpawnContext) -> std::path::PathBuf {
         .map(|i| std::path::PathBuf::from(&i.cwd))
         .unwrap_or_else(|| std::path::PathBuf::from(&ctx.parent_cwd))
 }
-/// Effective permission mode for a spawned subagent. Plugin agents never honor a
-/// non-default mode; under the pin, `bypassPermissions` downgrades to `Default`
-/// so a repo/profile/`--agents` def can't restore auto-approve. Caller logs it.
+/// Effective permission mode for a spawned built-in Subagent. Under the policy
+/// pin, `bypassPermissions` downgrades to `Default` so runtime overrides cannot
+/// restore auto-approve. Caller logs the downgrade.
 fn resolve_subagent_permission_mode(
     requested: atelier_agent::config::PermissionMode,
-    is_plugin: bool,
     policy_block: Option<&'static str>,
 ) -> atelier_agent::config::PermissionMode {
     use atelier_agent::config::PermissionMode;
-    if is_plugin {
-        return PermissionMode::Default;
-    }
     if policy_block.is_some() && requested == PermissionMode::BypassPermissions {
         return PermissionMode::Default;
     }
@@ -2520,9 +2496,6 @@ pub(crate) struct SubagentMeta {
     /// Error message if fork-copy failed and fell back to fresh.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fork_copy_error: Option<String>,
-    /// Named persona applied to this subagent.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub persona: Option<String>,
     /// ID of the source subagent this session was resumed from.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resumed_from: Option<String>,

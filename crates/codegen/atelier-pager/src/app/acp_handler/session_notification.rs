@@ -297,7 +297,6 @@ pub(super) fn handle_session_notification(notif: &acp::ExtNotification, app: &mu
             child_session_id,
             subagent_type,
             description,
-            persona,
             role,
             model,
             effective_context_source,
@@ -317,7 +316,6 @@ pub(super) fn handle_session_notification(notif: &acp::ExtNotification, app: &mu
                 .task_tool_background
                 .remove(&subagent_id)
                 .unwrap_or(false);
-            let persona_display = persona.clone();
             let role_display = role.clone();
             let model_display = model.clone();
             agent.subagent_sessions.insert(
@@ -327,7 +325,6 @@ pub(super) fn handle_session_notification(notif: &acp::ExtNotification, app: &mu
                     child_session_id: Arc::from(child_session_id.clone()),
                     description: Arc::from(description.clone()),
                     subagent_type: Arc::from(subagent_type.clone()),
-                    persona: persona.map(Arc::from),
                     role: role.map(Arc::from),
                     model: model.map(Arc::from),
                     context_source: effective_context_source.map(Arc::from),
@@ -481,7 +478,6 @@ pub(super) fn handle_session_notification(notif: &acp::ExtNotification, app: &mu
                 &description,
                 &child_session_id,
                 &subagent_type,
-                persona_display,
                 role_display,
                 model_display,
                 is_background,

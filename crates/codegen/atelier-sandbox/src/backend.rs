@@ -597,6 +597,20 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn manager_is_preview_or_fails_closed_when_helper_is_missing() {
+        // A Rust test-harness executable does not implement Atelier's hidden
+        // `--internal-windows-sandbox-runner` mode. Probing it would recursively
+        // launch the test harness under the sandbox account instead of testing
+        // the production runner. The real `ate.exe` launch chain is covered by
+        // the Windows sandbox contract/E2E tests.
+        let current_exe = std::env::current_exe().expect("current test executable");
+        if current_exe
+            .file_stem()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with("atelier_sandbox-"))
+        {
+            return;
+        }
+
         let workspace = std::path::Path::new(".");
         let mut manager = crate::SandboxManager::new(crate::ProfileName::Workspace, workspace);
         match native_sandbox_availability() {

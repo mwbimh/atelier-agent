@@ -66,23 +66,6 @@ fn apply_agent_endpoint_args(agent_args: &atelier_pager::app::AgentArgs, config:
         config.endpoints.cli_chat_proxy_base_url = Some(v.clone());
     }
 }
-/// Resolve --agent-profile path: canonicalize and verify the file exists.
-fn resolve_agent_profile_path(path: &std::path::Path) -> std::path::PathBuf {
-    match dunce::canonicalize(path) {
-        Ok(abs) if abs.is_file() => abs,
-        Ok(abs) => {
-            eprintln!(
-                "error: --agent-profile path is not a file: {}",
-                abs.display()
-            );
-            std::process::exit(1);
-        }
-        Err(e) => {
-            eprintln!("error: --agent-profile path '{}': {}", path.display(), e);
-            std::process::exit(1);
-        }
-    }
-}
 /// Print startup information for the serve command.
 fn print_serve_startup_info(bind_addr: SocketAddr, secret: &str) {
     eprintln!();
@@ -846,10 +829,6 @@ async fn run_agent_command(
         permission_mode_flag.as_deref(),
         None,
     );
-    agent_config.agent_profile_path = agent_args
-        .agent_profile
-        .as_deref()
-        .map(resolve_agent_profile_path);
     agent_config.client_version = Some(PAGER_CLIENT_VERSION.to_string());
     if is_leader && !agent_args.plugin_dirs.is_empty() {
         eprintln!("{PLUGIN_DIR_LEADER_WARNING}");
@@ -1619,6 +1598,10 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
         is_interactive,
         sandbox_profile_arg.as_deref(),
     )?;
+    #[cfg(windows)]
+    if let Some(notice) = atelier_config::shell::detect_windows_shell().compatibility_notice() {
+        eprintln!("{notice}");
+    }
     atelier_shell::config::apply_sandbox(None, sandbox_profile_arg.as_deref(), args.cwd.as_deref())
         .map_err(|error| anyhow::anyhow!(error))?;
     flag_dashboard_at_startup_if_requested(&mut args)?;
@@ -1810,7 +1793,6 @@ async fn legacy_async_command_loop(mut args: PagerArgs) -> Result<()> {
                 worktree: args.worktree,
                 restore_code: args.restore_code,
                 agent: args.agent.clone(),
-                agents_json: args.agents_json.clone(),
                 cli_tools: args.cli_tools.clone(),
                 cli_disallowed_tools: args.cli_disallowed_tools.clone(),
                 disable_web_search: args.disable_web_search,

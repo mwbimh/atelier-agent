@@ -507,8 +507,6 @@ pub struct SubagentLaunched {
     pub subagent_id: String,
     pub parent_session_id: String,
     pub subagent_type: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub persona: Option<String>,
     pub fork_context: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resume_from: Option<String>,

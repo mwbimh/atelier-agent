@@ -56,8 +56,8 @@ pub use handle::SamplerHandle;
 pub use image_generation::{GeneratedImage, ImageGenerationClient, ImageGenerationRequest};
 pub use metrics::{InferenceLatencyStats, compute_percentiles};
 pub use retry::{
-    DEFAULT_MAX_RETRIES, RATE_LIMIT_RETRY_THRESHOLD, RetryDecision, classify_error,
-    format_sampling_error, resolve_max_retries, retry_backoff_with_jitter,
+    DEFAULT_MAX_RETRIES, MAX_CONFIGURED_RETRIES, RATE_LIMIT_RETRY_THRESHOLD, RetryDecision,
+    classify_error, format_sampling_error, resolve_max_retries, retry_backoff_with_jitter,
 };
 pub use sampling_log::AuthInfo;
 pub use stream::{collect_response, stream_chat_completions, stream_messages, stream_responses};

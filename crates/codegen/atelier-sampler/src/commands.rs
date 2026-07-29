@@ -36,6 +36,11 @@ pub(crate) enum SamplerCommand {
     /// Update the default sampling config (model switch, auth refresh).
     UpdateConfig { config: Box<SamplerConfig> },
 
+    /// Start a new logical sampling operation. This prevents a terminally
+    /// failed turn from leaking its retry debit into the next turn while
+    /// preserving the budget across request IDs within one operation.
+    ResetRetryBudget,
+
     /// Query: is a specific request still in flight?
     IsActive {
         request_id: RequestId,

@@ -329,7 +329,6 @@ fn resumable_source_returns_info_for_completed_subagent() {
                 child_session_id: "child-resume".into(),
                 description: "resumable task".into(),
                 subagent_type: "general-purpose".into(),
-                persona: Some("implementer".into()),
                 started_at: std::time::Instant::now(),
                 completed_at: std::time::Instant::now(),
                 result: SubagentResult {
@@ -356,7 +355,6 @@ fn resumable_source_returns_info_for_completed_subagent() {
     assert_eq!(info.child_cwd, "/workspace");
     assert_eq!(info.worktree_path.as_deref(), Some(Path::new("/tmp/worktree-1")));
     assert_eq!(info.subagent_type, "general-purpose");
-    assert_eq!(info.persona.as_deref(), Some("implementer"));
 }
 #[test]
 fn resumable_source_survives_move_to_completed_with_metadata() {
@@ -400,7 +398,6 @@ fn resumed_from_field_in_meta_roundtrips() {
         effective_context_source: None,
         context_normalized: false,
         fork_copy_error: None,
-        persona: None,
         resumed_from: Some("prev-subagent-id".into()),
         child_cwd: None,
         worktree_path: None,
@@ -432,7 +429,6 @@ fn resumed_from_none_not_serialized_in_meta() {
         effective_context_source: None,
         context_normalized: false,
         fork_copy_error: None,
-        persona: None,
         resumed_from: None,
         child_cwd: None,
         worktree_path: None,
@@ -476,7 +472,6 @@ fn snapshot_ref_field_in_meta_roundtrips() {
         effective_context_source: None,
         context_normalized: false,
         fork_copy_error: None,
-        persona: None,
         resumed_from: None,
         child_cwd: None,
         worktree_path: Some("/tmp/atelier-wt/sa-snap".into()),
@@ -525,7 +520,6 @@ fn snapshot_test_meta(id: &str) -> SubagentMeta {
         effective_context_source: None,
         context_normalized: false,
         fork_copy_error: None,
-        persona: None,
         resumed_from: None,
         child_cwd: None,
         worktree_path: Some("/tmp/atelier-wt/subagent-x".into()),
@@ -927,7 +921,6 @@ fn resume_source_worktree_reuse() {
         ),
         snapshot_ref: None,
         subagent_type: "general-purpose".into(),
-        persona: None,
         model_id: None,
     };
     let worktree = source_with_worktree.worktree_path.clone();
@@ -943,7 +936,6 @@ fn resume_source_worktree_reuse() {
         worktree_path: None,
         snapshot_ref: None,
         subagent_type: "general-purpose".into(),
-        persona: None,
         model_id: None,
     };
     assert!(source_without_worktree.worktree_path.is_none(), "no worktree to reuse");
@@ -984,7 +976,6 @@ fn resume_inherited_cwd_requires_existing_non_worktree_dir() {
         worktree_path: None,
         snapshot_ref: None,
         subagent_type: "general-purpose".into(),
-        persona: None,
         model_id: None,
     };
     assert_eq!(resume_inherited_cwd(Some(& present)), Some(existing.as_str()));
@@ -1012,7 +1003,6 @@ fn select_override_cwd_resume_never_falls_through_to_request_cwd() {
         ),
         snapshot_ref: None,
         subagent_type: "general-purpose".into(),
-        persona: None,
         model_id: None,
     };
     assert_eq!(select_override_cwd(Some(& source), Some("/x")), None);
@@ -1035,7 +1025,6 @@ fn resumable_source_rejects_cross_session_lookup() {
                 child_session_id: "child-other".into(),
                 description: "other task".into(),
                 subagent_type: "explore".into(),
-                persona: None,
                 started_at: std::time::Instant::now(),
                 completed_at: std::time::Instant::now(),
                 result: SubagentResult {
@@ -1140,7 +1129,6 @@ fn durable_fallback_roundtrips_child_cwd_and_worktree() {
         effective_context_source: None,
         context_normalized: false,
         fork_copy_error: None,
-        persona: Some("implementer".into()),
         resumed_from: None,
         child_cwd: Some("/workspace/project".into()),
         worktree_path: Some("/tmp/atelier-wt/sa-dur".into()),
@@ -1179,7 +1167,6 @@ fn durable_fallback_rejects_running_status() {
         effective_context_source: None,
         context_normalized: false,
         fork_copy_error: None,
-        persona: None,
         resumed_from: None,
         child_cwd: Some("/workspace".into()),
         worktree_path: None,
@@ -1260,7 +1247,6 @@ fn running_test_meta(id: &str, parent_session_id: &str) -> SubagentMeta {
         effective_context_source: None,
         context_normalized: false,
         fork_copy_error: None,
-        persona: None,
         resumed_from: None,
         child_cwd: Some("/workspace".into()),
         worktree_path: None,
@@ -1324,7 +1310,6 @@ fn reconcile_orphan_skips_pending_ids_in_live_registry() {
             subagent_id: id.to_string(),
             subagent_type: "explore".to_string(),
             description: "task".to_string(),
-            persona: None,
             parent_prompt_id: None,
             parent_session_id: "parent-x".to_string(),
             started_at: std::time::Instant::now(),
@@ -1632,29 +1617,12 @@ fn resume_rejects_conflicting_subagent_type() {
         worktree_path: None,
         snapshot_ref: None,
         subagent_type: "general-purpose".into(),
-        persona: None,
         model_id: None,
     };
     let request_type = "explore";
     assert_ne!(
         request_type, source.subagent_type, "conflicting types should be detected"
     );
-}
-#[test]
-fn resume_rejects_conflicting_persona() {
-    let source = ResumeSourceData {
-        subagent_id: "sub-impl".into(),
-        child_session_id: "child-impl".into(),
-        child_cwd: "/workspace".into(),
-        worktree_path: None,
-        snapshot_ref: None,
-        subagent_type: "general-purpose".into(),
-        persona: Some("implementer".into()),
-        model_id: None,
-    };
-    let request_persona = Some("reviewer".to_string());
-    let conflict = request_persona.as_deref() != source.persona.as_deref();
-    assert!(conflict, "different persona should be detected as conflict");
 }
 #[test]
 fn resume_allows_matching_identity() {
@@ -1665,11 +1633,9 @@ fn resume_allows_matching_identity() {
         worktree_path: None,
         snapshot_ref: None,
         subagent_type: "general-purpose".into(),
-        persona: Some("implementer".into()),
         model_id: Some("atelier-3".into()),
     };
     assert_eq!("general-purpose", source.subagent_type);
-    assert_eq!(Some("implementer"), source.persona.as_deref());
     assert_eq!(Some("atelier-3"), source.model_id.as_deref());
 }
 #[test]
@@ -1681,12 +1647,10 @@ fn resume_identity_does_not_gate_on_model() {
         worktree_path: None,
         snapshot_ref: None,
         subagent_type: "general-purpose".into(),
-        persona: None,
         model_id: Some("atelier-3".into()),
     };
     assert!(
-        atelier_subagent_resolution::validate_resume_identity("general-purpose", None, &
-        source,).is_ok()
+        atelier_subagent_resolution::validate_resume_identity("general-purpose", &source).is_ok()
     );
     assert_eq!(
         source.model_id.as_deref(), Some("atelier-3"),
@@ -1716,7 +1680,6 @@ fn durable_meta_roundtrips_effective_model_id() {
         effective_context_source: None,
         context_normalized: false,
         fork_copy_error: None,
-        persona: None,
         resumed_from: None,
         child_cwd: Some("/workspace".into()),
         worktree_path: None,
@@ -1779,7 +1742,6 @@ fn notification_subagent_spawned_includes_resumed_from() {
         effective_context_source: Some("resumed".into()),
         context_normalized: false,
         capability_mode: None,
-        persona: Some("implementer".into()),
         role: None,
         model: None,
         resumed_from: Some("prev-agent-id".into()),
@@ -1799,7 +1761,6 @@ fn notification_subagent_spawned_includes_resumed_from() {
         effective_context_source: Some("new".into()),
         context_normalized: false,
         capability_mode: None,
-        persona: None,
         role: None,
         model: None,
         resumed_from: None,
@@ -1823,7 +1784,6 @@ fn completed_subagent_propagates_resumed_from() {
                 child_session_id: "child-prov".into(),
                 description: "provenance test".into(),
                 subagent_type: "general-purpose".into(),
-                persona: None,
                 started_at: std::time::Instant::now(),
                 completed_at: std::time::Instant::now(),
                 result: SubagentResult {
@@ -1948,7 +1908,6 @@ async fn outstanding_for_prompt_includes_pending_and_active() {
             subagent_id: "sub-p1".to_string(),
             subagent_type: "explore".to_string(),
             description: "pending for X".to_string(),
-            persona: None,
             parent_prompt_id: Some("prompt-X".to_string()),
             parent_session_id: String::new(),
             started_at: std::time::Instant::now(),
@@ -2058,7 +2017,6 @@ fn outstanding_for_prompt_returns_sorted_ids() {
             subagent_id: "zzz".to_string(),
             subagent_type: "explore".to_string(),
             description: "z".to_string(),
-            persona: None,
             parent_prompt_id: Some("p".to_string()),
             parent_session_id: String::new(),
             started_at: std::time::Instant::now(),
@@ -2072,7 +2030,6 @@ fn outstanding_for_prompt_returns_sorted_ids() {
             subagent_id: "aaa".to_string(),
             subagent_type: "explore".to_string(),
             description: "a".to_string(),
-            persona: None,
             parent_prompt_id: Some("p".to_string()),
             parent_session_id: String::new(),
             started_at: std::time::Instant::now(),
@@ -2525,85 +2482,6 @@ async fn resolve_subagent_agent_definition_unknown_model_falls_through_to_inheri
     assert_eq!(config.model, "atelier-4.5");
     assert_eq!(model_id.0.as_ref(), "atelier-4.5");
 }
-#[test]
-fn non_cursor_persona_injected_as_system_reminder() {
-    use atelier_sampling_types::conversation::{ConversationItem, SyntheticReason};
-    let persona = "You are a pragmatic implementer.";
-    let mut conv = vec![
-        ConversationItem::system("sys"), ConversationItem::user("task"),
-    ];
-    let mut prefix_len: usize = 2;
-    let reminder = ConversationItem::system_reminder(
-        format!("<system-reminder>\n{persona}\n</system-reminder>"),
-    );
-    let insert_at = prefix_len.min(conv.len());
-    conv.insert(insert_at, reminder);
-    prefix_len += 1;
-    assert_eq!(conv.len(), 3, "conversation should have 3 items");
-    assert_eq!(prefix_len, 3, "prefix_len should be incremented");
-    if let ConversationItem::User(ref u) = conv[2] {
-        assert_eq!(u.synthetic_reason, Some(SyntheticReason::SystemReminder));
-        let text = u
-            .content
-            .first()
-            .map(|c| match c {
-                atelier_sampling_types::conversation::ContentPart::Text { text } => {
-                    text.as_ref()
-                }
-                _ => "",
-            });
-        assert!(
-            text.unwrap_or("").contains("<system-reminder>"),
-            "should use hyphen tag format"
-        );
-        assert!(
-            text.unwrap_or("").contains(persona),
-            "should contain the persona instructions"
-        );
-    } else {
-        panic!("expected User variant for system_reminder");
-    }
-}
-#[test]
-fn persona_injection_skipped_for_resumed() {
-    use atelier_sampling_types::conversation::ConversationItem;
-    let persona_instructions = Some("Be thorough.".to_string());
-    let context_source = InitialContextSource::Resumed;
-    let mut conv = vec![
-        ConversationItem::system("sys"), ConversationItem::user("old turn"),
-    ];
-    let original_len = conv.len();
-    let mut prefix_len = original_len;
-    if context_source != InitialContextSource::Resumed
-        && let Some(ref pi) = persona_instructions
-    {
-        let reminder = ConversationItem::system_reminder(
-            format!("<system-reminder>\n{pi}\n</system-reminder>"),
-        );
-        let insert_at = prefix_len.min(conv.len());
-        conv.insert(insert_at, reminder);
-        prefix_len += 1;
-    }
-    assert_eq!(
-        conv.len(), original_len, "resumed session should not get persona injected"
-    );
-    assert_eq!(prefix_len, original_len, "prefix_len should be unchanged");
-}
-#[test]
-fn persona_injection_into_empty_conversation() {
-    use atelier_sampling_types::conversation::ConversationItem;
-    let mut conv: Vec<ConversationItem> = vec![];
-    let mut prefix_len: usize = 0;
-    let reminder = ConversationItem::system_reminder(
-        "<system-reminder>\nDo X.\n</system-reminder>".to_string(),
-    );
-    let insert_at = prefix_len.min(conv.len());
-    conv.insert(insert_at, reminder);
-    prefix_len += 1;
-    assert_eq!(conv.len(), 1);
-    assert_eq!(prefix_len, 1);
-    assert!(matches!(& conv[0], ConversationItem::User(_)));
-}
 mod cancellation_error_message_tests {
     use super::super::cancellation_error_message;
     use crate::session::commands::CancellationContext;
@@ -2830,7 +2708,6 @@ fn make_test_skill(
         scope: atelier_tools::implementations::skills::types::SkillScope::Local,
         enabled: true,
         user_invocable: true,
-        plugin_name: plugin.map(Into::into),
         when_to_use: None,
         short_description: None,
         author: None,
@@ -2839,6 +2716,7 @@ fn make_test_skill(
         compatibility: None,
         metadata: None,
         config_source: None,
+        plugin_name: plugin.map(Into::into),
         plugin_version: None,
         plugin_root: None,
         plugin_data: None,

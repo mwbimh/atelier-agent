@@ -276,6 +276,7 @@ fn prepare_spawn(
 fn ensure_user_derived_role(role_id: atelier_provider::RoleId) -> Result<(), acp::Error> {
     match role_id {
         atelier_provider::RoleId::Main
+        | atelier_provider::RoleId::General
         | atelier_provider::RoleId::Explore
         | atelier_provider::RoleId::Implement
         | atelier_provider::RoleId::Review

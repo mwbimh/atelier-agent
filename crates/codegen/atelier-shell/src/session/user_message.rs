@@ -75,7 +75,7 @@ fn resolve_shell_display() -> String {
     #[cfg(not(unix))]
     {
         atelier_config::shell::detect_windows_shell()
-            .name()
+            .prompt_description()
             .to_string()
     }
 }

@@ -1460,22 +1460,6 @@ fn chat_mode_allows_conversation_entry_even_if_local_path() {
         }]
     ));
 }
-#[test]
-fn view_catalog_entry_emits_fetch_effect() {
-    let mut app = test_app_with_agent();
-    let effects = dispatch(
-        Action::ViewCatalogEntry {
-            kind: "persona".into(),
-            name: "researcher".into(),
-        },
-        &mut app,
-    );
-    assert_eq!(effects.len(), 1);
-    assert!(
-        matches!(& effects[0], Effect::FetchCatalogEntry { kind, name } if kind ==
-        "persona" && name == "researcher")
-    );
-}
 /// End-to-end regression test for the "always re-asks" requirement.
 ///
 /// Drives the full user-visible production pipeline twice, with no

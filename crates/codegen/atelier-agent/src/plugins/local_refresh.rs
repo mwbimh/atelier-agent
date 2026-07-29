@@ -68,6 +68,16 @@ fn refresh_local_installs(
     trust: &TrustStore,
     force: bool,
 ) -> RefreshSummary {
+    let home = dirs::home_dir();
+    refresh_local_installs_with_home(registry, trust, force, home.as_deref())
+}
+
+fn refresh_local_installs_with_home(
+    registry: &mut InstallRegistry,
+    trust: &TrustStore,
+    force: bool,
+    home: Option<&Path>,
+) -> RefreshSummary {
     let mut summary = RefreshSummary::default();
     let targets: Vec<RefreshTarget> = registry
         .list()
@@ -95,8 +105,8 @@ fn refresh_local_installs(
         expected,
     } in targets
     {
-        let refreshable =
-            TrustStore::is_config_path_auto_trusted(&source_path) || trust.is_trusted(&source_path);
+        let refreshable = TrustStore::is_config_path_auto_trusted_in(&source_path, home)
+            || trust.is_trusted(&source_path);
         if !source_path.is_dir() || !refreshable {
             summary.skipped += 1;
             continue;
@@ -512,7 +522,7 @@ mod tests {
 
         std::fs::write(source.join("extra.txt"), "x").unwrap();
         let trust = TrustStore::load_from(home.join("trusted-plugins"));
-        let summary = refresh_local_installs(&mut registry, &trust, false);
+        let summary = refresh_local_installs_with_home(&mut registry, &trust, false, Some(&home));
         assert_eq!(summary.skipped, 1, "{summary:?}");
         assert_eq!(summary.refreshed, 0, "{summary:?}");
         assert!(!installed.repo_path.join("extra.txt").exists());

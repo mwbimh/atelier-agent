@@ -1747,36 +1747,14 @@ fn bundle_status_ready_populates_state() {
         Action::TaskComplete(TaskResult::BundleStatusReady {
             has_cache: true,
             version: Some("v2".into()),
-            personas: vec!["researcher".into(), "auditor".into()],
-            roles: vec!["reviewer".into()],
-            agents: vec!["default".into()],
             skills: vec!["commit".into(), "code-review".into()],
-            persona_details: vec![crate::app::bundle::PersonaDetail {
-                name: "researcher".into(),
-                description: Some("thorough researcher".into()),
-                has_inputs: true,
-                has_outputs: false,
-                source_path: None,
-                scope_label: None,
-            }],
-            role_details: vec![crate::app::bundle::RoleDetail {
-                name: "reviewer".into(),
-                description: "code reviewer".into(),
-            }],
         }),
         &mut app,
     );
 
     assert!(app.bundle_state.has_cache);
     assert_eq!(app.bundle_state.version, "v2");
-    assert_eq!(app.bundle_state.personas, vec!["researcher", "auditor"]);
-    assert_eq!(app.bundle_state.roles, vec!["reviewer"]);
-    assert_eq!(app.bundle_state.agents, vec!["default"]);
     assert_eq!(app.bundle_state.skills, vec!["commit", "code-review"]);
-    assert_eq!(app.bundle_state.persona_details.len(), 1);
-    assert_eq!(app.bundle_state.persona_details[0].name, "researcher");
-    assert_eq!(app.bundle_state.role_details.len(), 1);
-    assert_eq!(app.bundle_state.role_details[0].name, "reviewer");
 }
 
 #[test]
@@ -1794,57 +1772,6 @@ fn bundle_status_failed_logs_but_keeps_state() {
 
     assert!(app.bundle_state.has_cache);
     assert_eq!(app.bundle_state.version, "keep-me");
-}
-
-#[test]
-fn catalog_entry_ready_opens_viewer() {
-    let mut app = test_app_with_agent();
-
-    dispatch(
-        Action::TaskComplete(TaskResult::CatalogEntryReady {
-            kind: "persona".into(),
-            name: "researcher".into(),
-            content: "instructions = \"deep research\"".into(),
-        }),
-        &mut app,
-    );
-
-    let ActiveView::Agent(id) = app.active_view else {
-        panic!("expected agent view");
-    };
-    let agent = app.agents.get(&id).unwrap();
-    assert!(agent.block_viewer.is_some());
-    let viewer = agent.block_viewer.as_ref().unwrap();
-    assert_eq!(
-        viewer.kind,
-        crate::views::block_viewer::ViewerKind::PlainText
-    );
-}
-
-#[test]
-fn catalog_entry_failed_shows_system_message() {
-    let mut app = test_app_with_agent();
-    let initial_len = {
-        let ActiveView::Agent(id) = app.active_view else {
-            panic!("expected agent view");
-        };
-        app.agents[&id].scrollback.len()
-    };
-
-    let effects = dispatch(
-        Action::TaskComplete(TaskResult::CatalogEntryFailed {
-            error: "not found".into(),
-        }),
-        &mut app,
-    );
-
-    assert!(effects.is_empty());
-    let ActiveView::Agent(id) = app.active_view else {
-        panic!("expected agent view");
-    };
-    let agent = app.agents.get(&id).unwrap();
-    assert!(agent.block_viewer.is_none());
-    assert!(agent.scrollback.len() > initial_len);
 }
 
 #[test]

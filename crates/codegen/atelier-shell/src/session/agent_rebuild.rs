@@ -102,10 +102,8 @@ pub(crate) struct AgentRebuildSpec {
     pub subagents_enabled: bool,
     pub subagent_toggle: HashMap<String, bool>,
     pub ask_user_question_enabled: bool,
-    pub persona_summaries: Vec<String>,
     pub prompt_audience: PromptAudience,
     pub role_instructions: Option<String>,
-    pub persona_instructions: Option<String>,
     pub skills_config: SkillsConfig,
     /// Resolved vendor-compat config (from `Config::compat_resolved`), threaded
     /// into skills / rules / AGENTS.md discovery via the builder.
@@ -198,10 +196,8 @@ impl AgentRebuildSpec {
             subagents_enabled,
             subagent_toggle,
             ask_user_question_enabled,
-            persona_summaries,
             prompt_audience,
             role_instructions,
-            persona_instructions,
             skills_config,
             compat,
             context_window_tokens,
@@ -261,10 +257,8 @@ impl AgentRebuildSpec {
                 .collect::<Vec<_>>(),
         )
         .with_ask_user_question_enabled(*ask_user_question_enabled)
-        .with_persona_summaries(persona_summaries.clone())
         .with_prompt_audience(*prompt_audience)
         .with_role_instructions(role_instructions.clone())
-        .with_persona_instructions(persona_instructions.clone())
         .with_skills_config(skills_config.clone())
         .with_compat_config(*compat)
         .with_context_window(*context_window_tokens)
@@ -400,10 +394,8 @@ pub(crate) fn test_rebuild_spec_default() -> Arc<AgentRebuildSpec> {
         subagents_enabled: false,
         subagent_toggle: HashMap::new(),
         ask_user_question_enabled: true,
-        persona_summaries: vec![],
         prompt_audience: PromptAudience::Primary,
         role_instructions: None,
-        persona_instructions: None,
         skills_config: SkillsConfig::default(),
         compat: CompatConfig::default(),
         context_window_tokens: 256_000,

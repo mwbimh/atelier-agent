@@ -208,7 +208,7 @@ async fn pattern3_dropped_folder_with_display_remap() {
     // Suggestion must show the display path, not the resolved path.
     let (_tmp, root) = setup_fs(&["worktree/project/src"], &[]);
     let resolved_cwd = root.join("worktree/project");
-    let display_cwd = PathBuf::from("/home/user/project");
+    let display_cwd = root.join("display/project");
 
     // Model asks for /home/user/src (dropped "project" folder from display path).
     // But try_suggest_under_cwd works on resolved paths, so we need the resolved
@@ -221,8 +221,9 @@ async fn pattern3_dropped_folder_with_display_remap() {
         // Suggestion must be in display space, not resolved space.
         let s = suggestion.display().to_string();
         assert!(
-            s.contains("/home/user/project/"),
-            "suggestion should use display path, got: {s}"
+            suggestion.starts_with(&display_cwd),
+            "suggestion should use display path {}, got: {s}",
+            display_cwd.display()
         );
         assert!(
             !s.contains("worktree"),

@@ -646,6 +646,35 @@ pub struct DiagnosticsConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub crash_handler: Option<bool>,
 }
+
+/// Global transport/API retry policy. The default is owned by
+/// `atelier-sampler`; this section only records an explicit user override.
+pub const MAX_CONFIGURED_RETRIES: u32 = atelier_sampler::MAX_CONFIGURED_RETRIES;
+
+fn deserialize_retry_count<'de, D>(deserializer: D) -> Result<Option<u32>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<u32>::deserialize(deserializer)?;
+    if value.is_some_and(|count| count > MAX_CONFIGURED_RETRIES) {
+        return Err(serde::de::Error::custom(format!(
+            "max_retries must be between 0 and {MAX_CONFIGURED_RETRIES}"
+        )));
+    }
+    Ok(value)
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct RetryConfig {
+    #[serde(
+        default,
+        deserialize_with = "deserialize_retry_count",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub max_retries: Option<u32>,
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ModelsConfig {
@@ -976,6 +1005,9 @@ pub struct Config {
     /// `[goal]` section: canonical `/goal` configuration. See [`GoalConfig`].
     #[serde(default)]
     pub goal: GoalConfig,
+    /// `[retry]` controls consecutive transport/API retries.
+    #[serde(default)]
+    pub retry: RetryConfig,
     /// `[doom_loop_recovery]` section: the shared settings struct — ONE type
     /// serves this TOML table and the remote remote settings `doom_loop_recovery`
     /// object. See [`crate::util::config::DoomLoopRecoverySettings`].
@@ -1008,9 +1040,9 @@ pub struct Config {
     /// Session behavior configuration.
     #[serde(default)]
     pub session: SessionConfig,
-    /// Agent definition selection configuration.
-    /// Set in `config.toml` under `[agent]` to choose which agent definition
-    /// is used for all sessions (unless overridden by CLI flag or ACP meta).
+    /// Built-in Agent harness selection configuration.
+    /// Set in `config.toml` under `[agent]`; an ACP session may explicitly
+    /// select another compiled built-in harness.
     #[serde(default)]
     pub agent: AgentSelectionConfig,
     /// Skills discovery configuration.
@@ -1129,9 +1161,6 @@ pub struct Config {
     /// Resolved by [`RuntimeResolutionContext`] in [`Config::resolve_runtime_fields`].
     #[serde(skip)]
     pub memory_config: Option<crate::config::MemoryConfig>,
-    /// CLI override: path to an agent profile (.md file with YAML frontmatter).
-    #[serde(skip)]
-    pub agent_profile_path: Option<PathBuf>,
     /// Client version string (e.g., "0.1.77 (abc1234)").
     /// Set by the TUI/CLI launcher and used as fallback when clients don't provide clientVersion.
     #[serde(skip)]
@@ -1144,8 +1173,6 @@ pub struct Config {
     /// Used for upload limits (replaces on-demand /v1/storage/limits fetch).
     #[serde(skip)]
     pub local_runtime_settings: Option<crate::util::config::LocalRuntimeSettings>,
-    #[serde(skip)]
-    pub cli_agents: Vec<atelier_agent::config::AgentDefinition>,
     #[serde(skip)]
     pub cli_agent_overrides: CliAgentOverrides,
     /// Whether subagent (task tool) support is enabled. Enabled by default;
@@ -1162,14 +1189,6 @@ pub struct Config {
     /// Keys are agent names, values are booleans. Omitted agents default to enabled.
     #[serde(skip)]
     pub subagent_toggle: std::collections::HashMap<String, bool>,
-    /// Per-subagent role definitions from `[subagents.roles]` in config.toml
-    /// and `.atelier/roles/*.toml` file discovery.
-    #[serde(skip)]
-    pub subagent_roles:
-        std::collections::HashMap<String, atelier_subagent_resolution::config::SubagentRole>,
-    #[serde(skip)]
-    pub subagent_personas:
-        std::collections::HashMap<String, atelier_subagent_resolution::config::SubagentPersona>,
     /// Whether web search is force-disabled via `--disable-web-search` CLI flag.
     /// When true, the web search tool is never added to the agent toolset
     /// regardless of available credentials.
@@ -1285,9 +1304,7 @@ impl CliAgentOverrides {
     pub fn apply_to_subagent_definition(&self, def: &mut atelier_agent::config::AgentDefinition) {
         def.session_tools_allowlist = self.tools.clone();
         def.session_tools_denylist = self.disallowed_tools.clone();
-        if let Some(ref parent_mode) = self.permission_mode
-            && def.plugin_name.is_none()
-        {
+        if let Some(ref parent_mode) = self.permission_mode {
             def.permission_mode =
                 resolve_subagent_permission_mode(def.permission_mode.clone(), parent_mode);
         }
@@ -1313,38 +1330,47 @@ pub use atelier_agent::config::AgentDefinition;
 pub use atelier_agent::config::Effort;
 pub use atelier_agent::config::PermissionMode;
 pub use atelier_shared::ui_config::{ContextualHints, UiConfig};
-/// Configuration for selecting the agent definition.
+/// Configuration for selecting a compiled built-in Agent harness.
 ///
 /// Set in `config.toml` under `[agent]`:
 ///
 /// ```toml
 /// [agent]
-/// # Use a named agent (looked up via discovery: .atelier/agents/, ~/.atelier/agents/, built-ins)
-/// name = "my-custom-agent"
-///
-/// # OR: path to an agent definition file (.md with YAML frontmatter)
-/// definition = "/path/to/my-agent.md"
+/// name = "atelier-build-plan"
 /// ```
 ///
-/// Priority (highest to lowest):
-/// 1. ACP session-level `_meta.agentProfile`
-/// 2. CLI `--agent-profile` flag
-/// 3. `[agent]` config.toml section (this config)
-/// 4. `ATELIER_AGENT` env var
-/// 5. Default `atelier-build` agent
+/// Custom names and definition paths are rejected. Runtime priority is:
+/// 1. ACP session `_meta.agentProfile` built-in name.
+/// 2. `[agent].name`.
+/// 3. `ATELIER_AGENT` built-in name.
+/// 4. A strict harness required by the selected model.
+/// 5. The default compiled harness.
+fn deserialize_builtin_agent_name<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use std::str::FromStr;
+    let value = Option::<String>::deserialize(deserializer)?;
+    if let Some(name) = value.as_deref()
+        && atelier_agent::config::BuiltinAgentName::from_str(name).is_err()
+    {
+        return Err(serde::de::Error::custom(format!(
+            "unknown built-in Agent harness: {name}"
+        )));
+    }
+    Ok(value)
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct AgentSelectionConfig {
-    /// Name of a built-in or discovered agent definition.
-    /// Looked up via `atelier_agent::discovery::by_name_in_cwd()`.
-    /// Examples: "atelier-build", "browser-use", or a custom agent name.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// Name of a compiled built-in Agent harness.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_builtin_agent_name",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub name: Option<String>,
-    /// Path to an agent definition file (.md with YAML frontmatter).
-    /// When set, the agent is loaded from this file.
-    /// Supports environment variable expansion (e.g., `$HOME/.atelier/agents/my-agent.md`).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub definition: Option<PathBuf>,
     /// Global system-prompt identity label. Per-model override wins.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub system_prompt_label: Option<String>,
@@ -1381,6 +1407,7 @@ impl Default for Config {
             context: None,
             request_agent: None,
             goal: GoalConfig::default(),
+            retry: RetryConfig::default(),
             doom_loop_recovery: crate::util::config::DoomLoopRecoverySettings::default(),
             auto_mode: AutoModeConfig::default(),
             config_models: IndexMap::new(),
@@ -1431,17 +1458,13 @@ impl Default for Config {
             session_summary_model_override: None,
             default_yolo_mode: false,
             default_auto_mode: false,
-            agent_profile_path: None,
             client_version: Some(atelier_version::VERSION.to_string()),
             mode: AgentMode::default(),
             local_runtime_settings: None,
-            cli_agents: Vec::new(),
             cli_agent_overrides: CliAgentOverrides::default(),
             subagents_enabled: true,
             subagent_model_overrides: std::collections::HashMap::new(),
             subagent_toggle: std::collections::HashMap::new(),
-            subagent_roles: std::collections::HashMap::new(),
-            subagent_personas: std::collections::HashMap::new(),
             disable_web_search: false,
             todo_gate: false,
             laziness_debug_log: None,
@@ -1590,8 +1613,6 @@ impl Config {
         self.subagents_enabled = sa.enabled;
         self.subagent_model_overrides = sa.models;
         self.subagent_toggle = sa.toggle;
-        self.subagent_roles = sa.roles;
-        self.subagent_personas = sa.personas;
     }
     /// Resolve all `#[serde(skip)]` runtime fields that have resolver functions.
     ///
@@ -6201,53 +6222,28 @@ reasoning_effort = "low"
     fn agent_selection_config_defaults_to_none() {
         let cfg = Config::default();
         assert!(cfg.agent.name.is_none());
-        assert!(cfg.agent.definition.is_none());
     }
     #[test]
-    fn parses_agent_selection_name() {
+    fn parses_builtin_agent_selection_name() {
         let raw_config: toml::Value = toml::from_str(
             r#"
             [agent]
-            name = "my-custom-agent"
+            name = "atelier-build"
             "#,
         )
         .unwrap();
         let cfg = Config::new_from_toml_cfg(&raw_config).expect("config should parse");
-        assert_eq!(cfg.agent.name.as_deref(), Some("my-custom-agent"));
-        assert!(cfg.agent.definition.is_none());
+        assert_eq!(cfg.agent.name.as_deref(), Some("atelier-build"));
     }
     #[test]
-    fn parses_agent_selection_definition_path() {
-        let raw_config: toml::Value = toml::from_str(
-            r#"
-            [agent]
-            definition = "/path/to/my-agent.md"
-            "#,
-        )
-        .unwrap();
-        let cfg = Config::new_from_toml_cfg(&raw_config).expect("config should parse");
-        assert!(cfg.agent.name.is_none());
-        assert_eq!(
-            cfg.agent.definition.as_deref(),
-            Some(std::path::Path::new("/path/to/my-agent.md"))
-        );
-    }
-    #[test]
-    fn parses_agent_selection_both_name_and_definition() {
-        let raw_config: toml::Value = toml::from_str(
-            r#"
-            [agent]
-            name = "fallback-agent"
-            definition = "/path/to/primary-agent.md"
-            "#,
-        )
-        .unwrap();
-        let cfg = Config::new_from_toml_cfg(&raw_config).expect("config should parse");
-        assert_eq!(cfg.agent.name.as_deref(), Some("fallback-agent"));
-        assert_eq!(
-            cfg.agent.definition.as_deref(),
-            Some(std::path::Path::new("/path/to/primary-agent.md"))
-        );
+    fn rejects_custom_agent_names_and_definition_paths() {
+        for source in [
+            "[agent]\nname = \"my-custom-agent\"\n",
+            "[agent]\ndefinition = \"/path/to/my-agent.md\"\n",
+        ] {
+            let raw_config: toml::Value = toml::from_str(source).unwrap();
+            assert!(Config::new_from_toml_cfg(&raw_config).is_err());
+        }
     }
     #[test]
     fn agent_selection_not_specified_uses_defaults() {
@@ -6260,7 +6256,6 @@ reasoning_effort = "low"
         .unwrap();
         let cfg = Config::new_from_toml_cfg(&raw_config).expect("config should parse");
         assert!(cfg.agent.name.is_none());
-        assert!(cfg.agent.definition.is_none());
     }
     #[test]
     fn parses_model_with_agent_type() {
@@ -7927,6 +7922,46 @@ reasoning_effort = "low"
         assert_eq!(p.max_threshold, 12);
         assert_eq!(p.max_retries, 1);
     }
+    #[test]
+    fn retry_section_parses_from_toml() {
+        let raw: toml::Value = toml::from_str(
+            r#"
+            [retry]
+            max_retries = 8
+            "#,
+        )
+        .unwrap();
+        let cfg = Config::new_from_toml_cfg(&raw).unwrap();
+        assert_eq!(cfg.retry.max_retries, Some(8));
+    }
+
+    #[test]
+    fn retry_section_rejects_values_above_the_safety_limit() {
+        let raw: toml::Value = toml::from_str(
+            r#"
+            [retry]
+            max_retries = 101
+            "#,
+        )
+        .unwrap();
+        let error = Config::new_from_toml_cfg(&raw).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("max_retries must be between 0 and 100")
+        );
+    }
+
+    #[test]
+    fn retry_section_accepts_zero_and_the_safety_limit() {
+        for max_retries in [0, 100] {
+            let raw: toml::Value =
+                toml::from_str(&format!("[retry]\nmax_retries = {max_retries}\n")).unwrap();
+            let cfg = Config::new_from_toml_cfg(&raw).unwrap();
+            assert_eq!(cfg.retry.max_retries, Some(max_retries));
+        }
+    }
+
     /// Out-of-range tunables clamp instead of being honored or dropped.
     #[test]
     #[serial]
@@ -8994,7 +9029,7 @@ agent_type = "cursor"
             [telemetry]
             enabled = true
             [agent]
-            name = "custom"
+            name = "atelier-build"
             [skills]
             paths = ["~/skills"]
             [plugins]

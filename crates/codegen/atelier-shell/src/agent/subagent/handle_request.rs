@@ -101,7 +101,6 @@ pub(crate) async fn handle_subagent_request(
             subagent_id: request.id.clone(),
             subagent_type: request.subagent_type.clone(),
             description: request.description.clone(),
-            persona: request.runtime_overrides.persona.clone(),
             parent_prompt_id: request.parent_prompt_id.clone(),
             parent_session_id: ctx.parent_session_id.clone(),
             started_at: start,
@@ -122,51 +121,24 @@ pub(crate) async fn handle_subagent_request(
         &ctx,
         &mut definition,
     );
-    let (role, role_key) = {
-        let by_type = ctx.subagent_roles.get(&request.subagent_type);
-        if by_type.is_some() {
-            (by_type, Some(request.subagent_type.clone()))
-        } else {
-            let by_persona = request
-                .runtime_overrides
-                .persona
-                .as_deref()
-                .and_then(|p| ctx.subagent_roles.get(p));
-            let key = if by_persona.is_some() {
-                request.runtime_overrides.persona.clone()
-            } else {
-                None
-            };
-            (by_persona, key)
-        }
-    };
-    let cwd = ctx.parent_session_info.as_ref().map(|i| std::path::Path::new(&i.cwd));
-    let effective_runtime = resolve_effective_overrides(
-        &request.runtime_overrides,
-        role,
-        &ctx.subagent_personas,
-        cwd,
-        role_key,
-    );
+    let effective_runtime = resolve_effective_overrides(&request.runtime_overrides);
     let mut effective_runtime = effective_runtime;
     let context_role_name = context_role_name(
         effective_runtime.fixed_role.as_deref(),
-        effective_runtime.role_name.as_deref(),
         &request.subagent_type,
     );
-    match atelier_config::runtime_defaults::runtime_context_role_prompt(&context_role_name) {
+    match atelier_config::runtime_defaults::runtime_context_role_prompt(context_role_name) {
         Ok(context_role_prompt) => {
-            effective_runtime.role_prompt = atelier_config::runtime_defaults::merge_role_prompts(
-                context_role_prompt.as_deref(),
-                effective_runtime.role_prompt.as_deref(),
-            );
+            effective_runtime.context_prompt = context_role_prompt;
         }
         Err(error) => {
-            tracing::warn!(
-                role = %context_role_name,
-                error = %error,
-                "Failed to load Context role prompt; continuing without it"
+            let msg = format!(
+                "Failed to load {} Role Context: {error}",
+                context_role_name
             );
+            tracing::error!(role = %context_role_name, error = %error, "{msg}");
+            send_pre_spawn_failure(request, &msg, coordinator, &ctx, gateway);
+            return;
         }
     }
     if effective_runtime.reasoning_effort.is_none() {
@@ -184,21 +156,6 @@ pub(crate) async fn handle_subagent_request(
         }
     }
     let prompt = request.prompt.clone();
-    if let Some(ref err) = effective_runtime.persona_error {
-        tracing::error!(
-            subagent_id = % request.id, error = err,
-            "Persona resolution failed, aborting subagent spawn"
-        );
-        pending_guard.set_error(err.clone());
-        send_failure(request, err);
-        return;
-    }
-    if let Some(ref warn) = effective_runtime.role_prompt_warning {
-        tracing::warn!(
-            subagent_id = % request.id, warning = warn,
-            "Role prompt_file degraded, continuing without role prompt"
-        );
-    }
     let resume_source = if let Some(resume_id) = request
         .resume_from
         .as_deref()
@@ -244,7 +201,6 @@ pub(crate) async fn handle_subagent_request(
         effective_runtime.model = None;
         if let Err(e) = atelier_subagent_resolution::validate_resume_identity(
             &request.subagent_type,
-            request.runtime_overrides.persona.as_deref(),
             source,
         ) {
             send_failure(request, &e.to_string());
@@ -590,18 +546,6 @@ pub(crate) async fn handle_subagent_request(
         forked_conversation,
         inherited_prefix_len.unwrap_or(0),
     );
-    if crate::session::is_cursor_user_template(&definition.user_message_template)
-        && context_source != InitialContextSource::Resumed && !verbatim_mirror_fork
-    {} else if context_source != InitialContextSource::Resumed && !verbatim_mirror_fork {
-        if let Some(ref pi) = effective_runtime.persona_instructions {
-            let reminder = atelier_sampling_types::conversation::ConversationItem::system_reminder(
-                format!("<system-reminder>\n{pi}\n</system-reminder>"),
-            );
-            let insert_at = inherited_prefix_len.min(forked_conversation.len());
-            forked_conversation.insert(insert_at, reminder);
-            inherited_prefix_len += 1;
-        }
-    }
     let effective_source_str = match &context_source {
         InitialContextSource::New => "new",
         InitialContextSource::Forked => "forked",
@@ -627,7 +571,6 @@ pub(crate) async fn handle_subagent_request(
             context_verbatim_fork,
         ),
         fork_copy_error: fork_copy_error.clone(),
-        persona: effective_runtime.persona.clone(),
         resumed_from: request.resume_from.clone(),
         child_cwd: Some(child_session_info.cwd.clone()),
         worktree_path: worktree_path.as_ref().map(|p| p.to_string_lossy().to_string()),
@@ -654,8 +597,7 @@ pub(crate) async fn handle_subagent_request(
                 .capability_mode
                 .and_then(|m| serde_json::to_value(m).ok())
                 .and_then(|v| v.as_str().map(String::from)),
-            persona: effective_runtime.persona.clone(),
-            role: effective_runtime.role_name.clone(),
+            role: effective_runtime.fixed_role.clone(),
             model: Some(effective_model_id.0.to_string()),
             resumed_from: request.resume_from.clone(),
         },
@@ -789,25 +731,14 @@ pub(crate) async fn handle_subagent_request(
     let tracker_color = definition.color;
     let agent_memory_scope = definition.memory;
     let agent_name_for_memory = definition.name.clone();
-    let is_plugin_agent = definition.plugin_name.is_some();
     let yolo_policy_block = atelier_workspace::permission::resolution::yolo_disabled_by_policy();
-    let agent_permission_mode = resolve_subagent_permission_mode(
-        definition.permission_mode.clone(),
-        is_plugin_agent,
-        yolo_policy_block,
-    );
+    let agent_permission_mode =
+        resolve_subagent_permission_mode(definition.permission_mode.clone(), yolo_policy_block);
     if agent_permission_mode != definition.permission_mode {
-        if is_plugin_agent {
-            tracing::warn!(
-                agent = % definition.name, plugin = ? definition.plugin_name,
-                "ignoring permissionMode on plugin agent (not supported for security)"
-            );
-        } else {
-            tracing::warn!(
-                agent = % definition.name,
-                "ignoring subagent permissionMode=bypassPermissions: always-approve disabled by managed policy"
-            );
-        }
+        tracing::warn!(
+            agent = % definition.name,
+            "ignoring subagent permissionMode=bypassPermissions: always-approve disabled by managed policy"
+        );
     }
     if let Some(scope) = agent_memory_scope {
         use atelier_tools::implementations::atelier_build;
@@ -848,23 +779,8 @@ pub(crate) async fn handle_subagent_request(
             }
         }
     }
-    let is_plugin_agent = definition.plugin_name.is_some();
     if let Some(ref hooks_config) = definition.hooks {
-        if is_plugin_agent {
-            tracing::warn!(
-                agent = % definition.name, plugin = ? definition.plugin_name,
-                "ignoring hooks on plugin agent (not supported for security)"
-            );
-        } else if !crate::agent::folder_trust::agent_inline_hooks_allowed(
-            definition.scope,
-            || crate::agent::folder_trust::project_scope_allowed(&ctx.parent_cwd),
-        ) {
-            tracing::warn!(
-                agent = % definition.name,
-                "ignoring hooks on untrusted project agent (folder not trusted; re-run with --trust)"
-            );
-        } else {
-            let hooks_val = hooks_config.as_value();
+        let hooks_val = hooks_config.as_value();
             let (specs, errors) = atelier_hooks::config::parse_hooks_from_value_with_dir(
                 &hooks_val,
                 &format!("agent:{}", definition.name),
@@ -875,36 +791,26 @@ pub(crate) async fn handle_subagent_request(
                     agent = % definition.name, error = ? e, "agent hook parse error"
                 );
             }
-            if !specs.is_empty() {
-                let specs: Vec<_> = specs
-                    .into_iter()
-                    .map(|mut s| {
-                        if s.event == atelier_hooks::event::HookEventName::Stop {
-                            s.event = atelier_hooks::event::HookEventName::SubagentStop;
-                        }
-                        s
-                    })
-                    .collect();
-                let mut registry = ctx
-                    .hook_registry
-                    .as_ref()
-                    .map(|r| (**r).clone())
-                    .unwrap_or_default();
-                registry.append_specs(specs);
-                ctx.hook_registry = Some(std::sync::Arc::new(registry));
-            }
+        if !specs.is_empty() {
+            let specs: Vec<_> = specs
+                .into_iter()
+                .map(|mut s| {
+                    if s.event == atelier_hooks::event::HookEventName::Stop {
+                        s.event = atelier_hooks::event::HookEventName::SubagentStop;
+                    }
+                    s
+                })
+                .collect();
+            let mut registry = ctx
+                .hook_registry
+                .as_ref()
+                .map(|r| (**r).clone())
+                .unwrap_or_default();
+            registry.append_specs(specs);
+            ctx.hook_registry = Some(std::sync::Arc::new(registry));
         }
     }
-    let agent_mcp_servers: Vec<_> = if is_plugin_agent {
-        if !definition.mcp_servers.is_empty() {
-            tracing::warn!(
-                agent = % definition.name, plugin = ? definition.plugin_name,
-                "ignoring mcpServers on plugin agent (not supported for security)"
-            );
-        }
-        vec![]
-    } else {
-        definition
+    let agent_mcp_servers: Vec<_> = definition
                 .mcp_servers
                 .iter()
                 .filter_map(|entry| match entry {
@@ -961,24 +867,11 @@ pub(crate) async fn handle_subagent_request(
                         None
                     }
                 })
-                .collect()
-    };
-    let parent_mcp_pool = if is_plugin_agent {
-        if ctx.parent_mcp_pool.is_some() {
-            tracing::debug!(
-                agent = % definition.name,
-                "skipping MCP pool inheritance for plugin agent"
-            );
-        }
-        None
-    } else {
-        ctx.parent_mcp_pool
-                .take()
-                .and_then(|pool| filter_pool_by_inheritance(
-                    pool,
-                    &definition.mcp_inheritance,
-                ))
-    };
+                .collect();
+    let parent_mcp_pool = ctx
+        .parent_mcp_pool
+        .take()
+        .and_then(|pool| filter_pool_by_inheritance(pool, &definition.mcp_inheritance));
     let mcp_inherited_count = parent_mcp_pool
         .as_ref()
         .map(|p| p.len() as u32)
@@ -1018,7 +911,6 @@ pub(crate) async fn handle_subagent_request(
         subagent_id: request.id.clone(),
         parent_session_id: request.parent_session_id.clone(),
         subagent_type: request.subagent_type.clone(),
-        persona: request.runtime_overrides.persona.clone(),
         fork_context: matches!(context_source, InitialContextSource::Forked),
         resume_from: request.resume_from.clone(),
         isolated_worktree: worktree_path.is_some(),
@@ -1147,10 +1039,8 @@ pub(crate) async fn handle_subagent_request(
             ctx.client_hooks.clone(),
             None,
             std::collections::HashMap::new(),
-            ctx.persona_io_summaries.clone(),
             atelier_agent::prompt::context::PromptAudience::Subagent,
-            effective_runtime.role_prompt.clone(),
-            None,
+            effective_runtime.context_prompt.clone(),
             ctx.disable_web_search,
             ctx.backend_tools_enabled,
             ctx.respect_gitignore,
@@ -1220,7 +1110,6 @@ pub(crate) async fn handle_subagent_request(
             parent_prompt_id: request.parent_prompt_id.clone(),
             child_session_id: child_session_id.clone(),
             subagent_type: request.subagent_type.clone(),
-            persona: effective_runtime.persona.clone(),
             description: request.description.clone(),
             started_at: start,
             child_handle: child_handle.clone(),

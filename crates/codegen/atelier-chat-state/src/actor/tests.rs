@@ -18,6 +18,7 @@ fn test_config() -> SamplingConfig {
 fn test_config_with_window(context_window: u64) -> SamplingConfig {
     SamplingConfig {
         base_url: "https://api.example.com".to_string(),
+        provider_id: None,
         model: "test-model".to_string(),
         max_completion_tokens: None,
         temperature: None,
@@ -908,6 +909,7 @@ async fn update_sampling_config_is_queryable() {
     let h = TestHarness::new();
     let new_config = SamplingConfig {
         base_url: "https://new.example.com".to_string(),
+        provider_id: Some("provider-new".to_string()),
         model: "atelier-3".to_string(),
         max_completion_tokens: Some(4096),
         temperature: Some(0.5),
@@ -921,6 +923,7 @@ async fn update_sampling_config_is_queryable() {
     h.handle.update_sampling_config(new_config.clone());
 
     let config = h.handle.get_sampling_config().await.unwrap();
+    assert_eq!(config.provider_id.as_deref(), Some("provider-new"));
     assert_eq!(config.model, "atelier-3");
     assert_eq!(config.context_window, NonZeroU64::new(200_000).unwrap());
 }
@@ -1293,6 +1296,7 @@ async fn build_request_with_tool_definitions() {
 async fn build_request_uses_sampling_config() {
     let config = SamplingConfig {
         base_url: "https://api.example.com".to_string(),
+        provider_id: Some("provider-test".to_string()),
         model: "atelier-3".to_string(),
         max_completion_tokens: Some(8192),
         temperature: Some(0.7),
@@ -3396,6 +3400,7 @@ async fn sampling_config_survives_compaction_replacement() {
 
     let config = SamplingConfig {
         base_url: "https://api.example.com".to_string(),
+        provider_id: None,
         model: "atelier-build".to_string(),
         max_completion_tokens: None,
         temperature: Some(0.7),
@@ -3479,6 +3484,7 @@ async fn sampling_config_survives_compaction_replacement() {
 async fn model_metadata_lost_after_compaction_then_recovered_on_next_turn() {
     let config = SamplingConfig {
         base_url: "https://api.example.com".to_string(),
+        provider_id: None,
         model: "atelier-build".to_string(),
         max_completion_tokens: None,
         temperature: Some(0.7),
@@ -3567,6 +3573,7 @@ async fn context_window_downgrade_triggers_auto_compact() {
     // Initial config: 500k context, Responses backend (matches atelier-4.5)
     let config = SamplingConfig {
         base_url: "https://api.atelier/v1".to_string(),
+        provider_id: None,
         model: "atelier-4.5".to_string(),
         max_completion_tokens: None,
         temperature: Some(0.7),

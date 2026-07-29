@@ -174,7 +174,7 @@ Aliases: `/providers`
 
 Configure the fixed `main`, `explore`, `implement`, `review`, `test`,
 `compact`, `summary`, `title`, `planner`, `strategist`, and `skeptic` Runtime
-Roles. Bare `/roles` opens the interactive picker.
+Roles. Bare `/roles` opens the dedicated fixed Runtime Role manager. It shows exact overrides, effective model and source, field sources, Context source, payload keys, effort, and fast mode without exposing payload values. MAIN model edits open `/model`; MAIN effort and fast mode remain Session controls.
 
 ```text
 /roles list
@@ -518,28 +518,6 @@ Open the Claude settings import modal to bring over `~/.claude` settings: permis
 
 ```
 /import-claude
-```
-
----
-
-## Agents and Personas
-
-### `/config-agents`
-
-Open the agents modal to view and manage agent definitions, set the default agent, and switch the active one.
-
-```
-/config-agents
-```
-
-Aliases: `/agents`
-
-### `/personas`
-
-Manage personas -- create, edit, and delete personas. A subagent can apply a persona to shape its behavior.
-
-```
-/personas
 ```
 
 ---

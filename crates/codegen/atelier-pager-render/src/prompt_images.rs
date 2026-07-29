@@ -2215,6 +2215,7 @@ mod tests {
 
     // ----- try_read_image_from_path ----------------------------------------
 
+    #[cfg(unix)]
     #[test]
     fn try_read_image_with_escaped_parens() {
         let dir = tempfile::tempdir().unwrap();
@@ -2237,6 +2238,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn try_read_image_with_escaped_spaces() {
         let dir = tempfile::tempdir().unwrap();
@@ -2599,6 +2601,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn quoted_path_with_internal_backslash_escape() {
         let dir = tempfile::tempdir().unwrap();
@@ -2624,8 +2627,10 @@ mod tests {
 
         // `file://localhost/...` is accepted by the `url` crate and
         // yields the same local path as `file:///...`. Pins behavior.
-        let pasted = format!("file://localhost{}", p.display());
-        assert!(try_read_image_from_path(&pasted).is_some());
+        let mut url = url::Url::from_file_path(&p).expect("absolute file path URL");
+        url.set_host(Some("localhost"))
+            .expect("localhost is valid for a file URL");
+        assert!(try_read_image_from_path(url.as_str()).is_some());
     }
 
     #[test]
@@ -2933,6 +2938,7 @@ mod tests {
         assert_eq!(non_images[0], canon(&txt));
     }
 
+    #[cfg(unix)]
     #[test]
     fn dropped_path_percent_encoded_question_round_trips() {
         // `%3F` decodes to `?`. The URL parser must not treat the

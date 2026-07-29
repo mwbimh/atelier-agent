@@ -225,65 +225,9 @@ fn resolve_bash_program() -> Option<PathBuf> {
 
 #[cfg(windows)]
 fn resolve_bash_program() -> Option<PathBuf> {
-    use atelier_config::shell::WindowsShell;
-
-    if let WindowsShell::GitBash(path) = atelier_config::shell::detect_windows_shell() {
-        let path = PathBuf::from(path);
-        if path.is_file() {
-            return Some(path);
-        }
-    }
-
-    let mut candidates = Vec::new();
-    let mut git = Command::new("git.exe");
-    git.arg("--exec-path").stdin(std::process::Stdio::null());
-    atelier_tools::util::detach_std_command(&mut git);
-    if let Ok(output) = git.output()
-        && output.status.success()
-    {
-        let exec_path = PathBuf::from(String::from_utf8_lossy(&output.stdout).trim());
-        if let Some(git_root) = exec_path.ancestors().find(|path| {
-            path.file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| name.eq_ignore_ascii_case("Git"))
-        }) {
-            candidates.push(git_root.join("bin").join("bash.exe"));
-        }
-    }
-
-    for env_name in ["PROGRAMFILES", "PROGRAMFILES(X86)", "LOCALAPPDATA"] {
-        if let Some(root) = std::env::var_os(env_name) {
-            let root = PathBuf::from(root);
-            candidates.push(if env_name == "LOCALAPPDATA" {
-                root.join("Programs")
-                    .join("Git")
-                    .join("bin")
-                    .join("bash.exe")
-            } else {
-                root.join("Git").join("bin").join("bash.exe")
-            });
-        }
-    }
-
-    let mut where_git = Command::new("where.exe");
-    where_git.arg("git.exe").stdin(std::process::Stdio::null());
-    atelier_tools::util::detach_std_command(&mut where_git);
-    if let Ok(output) = where_git.output()
-        && output.status.success()
-    {
-        for line in String::from_utf8_lossy(&output.stdout).lines() {
-            let git = PathBuf::from(line.trim());
-            if git.parent().and_then(Path::parent).is_some_and(|root| {
-                root.file_name()
-                    .is_some_and(|name| name.eq_ignore_ascii_case("Git"))
-            }) && let Some(root) = git.parent().and_then(Path::parent)
-            {
-                candidates.push(root.join("bin").join("bash.exe"));
-            }
-        }
-    }
-
-    candidates.into_iter().find(|path| path.is_file())
+    // Git Bash cannot reliably cross the dedicated Windows sandbox account
+    // boundary, so .envrc evaluation is disabled on native Windows.
+    None
 }
 
 /// Load .envrc and return the environment, or empty HashMap on failure.
@@ -310,6 +254,7 @@ mod tests {
     use std::fs;
     use tempfile::TempDir;
 
+    #[cfg(unix)]
     #[test]
     fn test_simple_export() {
         let dir = TempDir::new().unwrap();
@@ -319,6 +264,7 @@ mod tests {
         assert_eq!(env.get("FOO"), Some(&"bar".to_string()));
     }
 
+    #[cfg(unix)]
     #[test]
     fn test_variable_expansion() {
         let dir = TempDir::new().unwrap();
@@ -337,6 +283,7 @@ mod tests {
         assert!(load_envrc(dir.path()).is_none());
     }
 
+    #[cfg(unix)]
     #[test]
     fn test_path_add() {
         let dir = TempDir::new().unwrap();
@@ -350,6 +297,7 @@ mod tests {
         assert!(path.contains(&expected));
     }
 
+    #[cfg(unix)]
     #[test]
     fn test_conditional() {
         let dir = TempDir::new().unwrap();
@@ -371,21 +319,10 @@ fi
 
     #[cfg(windows)]
     #[test]
-    fn windows_bash_resolver_finds_real_git_bash_not_wsl_alias() {
-        let bash = resolve_bash_program().expect("Git Bash must be resolved on Windows");
-        let normalized = bash
-            .to_string_lossy()
-            .replace('\\', "/")
-            .to_ascii_lowercase();
-        assert!(
-            normalized.ends_with("/git/bin/bash.exe"),
-            "must resolve Git Bash, not the System32/WindowsApps WSL alias: {}",
-            bash.display()
-        );
-        let output = Command::new(&bash)
-            .arg("--version")
-            .output()
-            .expect("resolved Git Bash must be executable");
-        assert!(output.status.success());
+    fn windows_disables_bash_based_envrc_execution() {
+        assert!(resolve_bash_program().is_none());
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join(".envrc"), "export FOO=bar\n").unwrap();
+        assert!(load_envrc(dir.path()).is_none());
     }
 }

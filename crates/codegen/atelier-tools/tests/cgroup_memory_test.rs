@@ -394,6 +394,7 @@ print('Finished all allocations (should not reach here)', flush=True)
 
 /// Test 6: No memory config → no cgroup enforcement, large alloc succeeds.
 /// This verifies the no-op path works correctly.
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn test_no_config_no_enforcement() {
     eprintln!("\n=== Test: no_config_no_enforcement ===");

@@ -5,7 +5,7 @@
 //!
 //! # Retry behavior summary
 //!
-//! **Retried** (up to [`DEFAULT_MAX_RETRIES`] = 15, ~6 min with 30s backoff cap):
+//! **Retried** (up to [`DEFAULT_MAX_RETRIES`] = 5, about one minute before jitter):
 //! - 500, 502, 503, 504, 520 (server errors)
 //! - Connection errors (timeout, refused, reset)
 //! - `EventStreamError` / `StreamError` (mid-stream failures)
@@ -33,6 +33,7 @@
 //! on merge. The header enables future CCP-side refinements (e.g.
 //! marking content-caused 500s as non-retryable) without client updates.
 
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 use atelier_sampling_types::SamplingError;
@@ -42,11 +43,49 @@ use atelier_sampling_types::SamplingError;
 /// no point burning a long backoff just to be rate-limited again.
 pub const RATE_LIMIT_RETRY_THRESHOLD: u32 = 2;
 
-/// Default max retries when no env or model override is set.
-/// With 30s backoff cap this gives ~6 min of retry budget:
-/// retries 1-4 are exponential (2s+4s+8s+16s ≈ 30s), retries
-/// 5-15 are flat at ~30s each (≈ 5.5 min).
-pub const DEFAULT_MAX_RETRIES: u32 = 15;
+/// Default max retries when no env or config override is set.
+/// Retries 1-5 use 2s, 4s, 8s, 16s, and 30s nominal delays. If a user
+/// configures more than five retries, every later delay remains at 30s.
+pub const DEFAULT_MAX_RETRIES: u32 = 5;
+/// Hard safety limit for explicit retry overrides.
+pub const MAX_CONFIGURED_RETRIES: u32 = 100;
+
+/// Retry budget shared by consecutive requests handled by one sampler actor.
+/// A complete successful response resets the budget; request IDs do not.
+#[derive(Debug, Default)]
+pub(crate) struct ConsecutiveRetryBudget {
+    retries: AtomicU32,
+}
+
+impl ConsecutiveRetryBudget {
+    pub(crate) fn current(&self) -> u32 {
+        self.retries.load(Ordering::Acquire)
+    }
+
+    /// Consume one retry slot and return the one-based retry number.
+    pub(crate) fn consume(&self, max_retries: u32) -> Option<u32> {
+        let mut current = self.current();
+        loop {
+            if current >= max_retries {
+                return None;
+            }
+            let next = current + 1;
+            match self.retries.compare_exchange_weak(
+                current,
+                next,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return Some(next),
+                Err(observed) => current = observed,
+            }
+        }
+    }
+
+    pub(crate) fn reset(&self) {
+        self.retries.store(0, Ordering::Release);
+    }
+}
 
 /// Resolve max API retries from an optional env override, model config,
 /// or default ([`DEFAULT_MAX_RETRIES`]).
@@ -56,7 +95,8 @@ pub(crate) fn resolve_max_retries_with_env(
 ) -> u32 {
     env_override
         .and_then(|value| value.parse::<u32>().ok())
-        .or(model_max_retries)
+        .filter(|value| *value <= MAX_CONFIGURED_RETRIES)
+        .or(model_max_retries.filter(|value| *value <= MAX_CONFIGURED_RETRIES))
         .unwrap_or(DEFAULT_MAX_RETRIES)
 }
 
@@ -209,7 +249,7 @@ pub fn classify_error(
     if err.is_rate_limited() {
         let next_attempt = retry_count + 1;
         let effective_cap = max_retries.min(rate_limit_threshold);
-        if next_attempt >= effective_cap {
+        if next_attempt > effective_cap {
             return RetryDecision::Fatal(clone_error(err));
         }
         let backoff = err
@@ -227,7 +267,7 @@ pub fn classify_error(
     // later retries just back off.
     if err.is_retryable() {
         let next_attempt = retry_count + 1;
-        if next_attempt >= max_retries {
+        if next_attempt > max_retries {
             return RetryDecision::Fatal(clone_error(err));
         }
         let backoff = err
@@ -471,15 +511,15 @@ mod tests {
 
     #[test]
     fn resolve_max_retries_default() {
-        assert_eq!(
-            resolve_max_retries_with_env(None, None),
-            DEFAULT_MAX_RETRIES
-        );
+        assert_eq!(resolve_max_retries_with_env(None, None), 5);
+        assert_eq!(DEFAULT_MAX_RETRIES, 5);
     }
 
     #[test]
     fn resolve_max_retries_invalid_env_falls_through() {
         assert_eq!(resolve_max_retries_with_env(Some("abc"), Some(4)), 4);
+        assert_eq!(resolve_max_retries_with_env(Some("101"), Some(4)), 4);
+        assert_eq!(resolve_max_retries_with_env(None, Some(101)), 5);
     }
 
     #[test]
@@ -494,14 +534,20 @@ mod tests {
     }
 
     #[test]
-    fn backoff_doubles_then_caps_at_thirty_seconds() {
-        // retry_count=2: base 4s
+    fn backoff_doubles_for_five_retries_then_stays_flat() {
         let r2 = retry_backoff_with_jitter(2);
         assert!(r2 >= Duration::from_millis(3200) && r2 <= Duration::from_millis(4800));
 
-        // retry_count=10: base would be 2^10 * 2000 = 2.048s but capped to 30s
+        let r5 = retry_backoff_with_jitter(5);
+        assert!(r5 >= Duration::from_millis(24_000) && r5 <= Duration::from_millis(36_000));
+
+        let r6 = retry_backoff_with_jitter(6);
         let r10 = retry_backoff_with_jitter(10);
-        assert!(r10 >= Duration::from_millis(24_000) && r10 <= Duration::from_millis(36_000));
+        for delay in [r6, r10] {
+            assert!(
+                delay >= Duration::from_millis(24_000) && delay <= Duration::from_millis(36_000)
+            );
+        }
     }
 
     #[test]
@@ -608,14 +654,17 @@ mod tests {
     }
 
     #[test]
-    fn classify_rate_limited_capped_at_threshold() {
+    fn classify_rate_limited_allows_exactly_two_retries() {
         let err = api_err(StatusCode::TOO_MANY_REQUESTS, "slow");
-        // retry_count=1, threshold=2 -> next_attempt=2 >= 2 -> Fatal.
-        match classify_error(&err, 1, 5, RATE_LIMIT_RETRY_THRESHOLD) {
+        assert!(matches!(
+            classify_error(&err, 1, 5, RATE_LIMIT_RETRY_THRESHOLD),
+            RetryDecision::RetryWithBackoff { .. }
+        ));
+        match classify_error(&err, 2, 5, RATE_LIMIT_RETRY_THRESHOLD) {
             RetryDecision::Fatal(SamplingError::Api { status, .. }) => {
                 assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
             }
-            other => panic!("expected Fatal at threshold, got {other:?}"),
+            other => panic!("expected Fatal after two retries, got {other:?}"),
         }
     }
 
@@ -642,12 +691,16 @@ mod tests {
     }
 
     #[test]
-    fn classify_5xx_exhausted_retries_is_fatal() {
+    fn classify_5xx_allows_exactly_five_retries() {
         let err = api_err(StatusCode::SERVICE_UNAVAILABLE, "boom");
-        match classify_error(&err, 4, 5, RATE_LIMIT_RETRY_THRESHOLD) {
-            RetryDecision::Fatal(SamplingError::Api { .. }) => {}
-            other => panic!("expected Fatal, got {other:?}"),
-        }
+        assert!(matches!(
+            classify_error(&err, 4, 5, RATE_LIMIT_RETRY_THRESHOLD),
+            RetryDecision::Retry { .. }
+        ));
+        assert!(matches!(
+            classify_error(&err, 5, 5, RATE_LIMIT_RETRY_THRESHOLD),
+            RetryDecision::Fatal(SamplingError::Api { .. })
+        ));
     }
 
     #[test]

@@ -40,6 +40,10 @@ fn any_marker(s: &str, range: std::ops::Range<usize>) -> bool {
         .any(|i| s.contains(&format!("scroll-marker-{i:04}")))
 }
 
+#[cfg_attr(
+    windows,
+    ignore = "requires an isolated ATELIER_HOME with completed Windows sandbox onboarding"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn scroll_up_from_follow_bottom_then_back_down() -> Result<()> {
     let binary = pager_binary().context("resolve pager binary")?;

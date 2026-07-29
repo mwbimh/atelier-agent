@@ -97,7 +97,7 @@ mod tests {
     #[test]
     fn default_stt_ws_uses_wss() {
         let cfg = VoiceConfig::default();
-        assert_eq!(cfg.stt_ws_url().unwrap(), "wss://api.atelier/v1/stt");
+        assert_eq!(cfg.stt_ws_url().unwrap(), "wss://api.x.ai/v1/stt");
     }
 
     #[test]
@@ -106,7 +106,7 @@ mod tests {
             api_base: "api.x.ai".into(),
             ..VoiceConfig::default()
         };
-        assert_eq!(cfg.stt_ws_url().unwrap(), "wss://api.atelier/v1/stt");
+        assert_eq!(cfg.stt_ws_url().unwrap(), "wss://api.x.ai/v1/stt");
     }
 
     #[test]
@@ -115,7 +115,7 @@ mod tests {
             api_base: "wss://api.x.ai".into(),
             ..VoiceConfig::default()
         };
-        assert_eq!(cfg.stt_ws_url().unwrap(), "wss://api.atelier/v1/stt");
+        assert_eq!(cfg.stt_ws_url().unwrap(), "wss://api.x.ai/v1/stt");
     }
 
     #[test]

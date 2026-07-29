@@ -48,7 +48,9 @@ fn format_runtime_extension_response(method: &str, response: &str) -> String {
         "atelier/role/get" | "atelier/role/update" | "atelier/role/update_payload" => {
             format_role_response(result)
         }
+        "atelier/role/delete" => format_status_response("Role override reset", result),
         "atelier/role/test" => format_status_response("Role check", result),
+        "atelier/role/set_fast_mode" => format_status_response("Role fast mode updated", result),
         "atelier/model/update_wire_api" => format_status_response("Wire API updated", result),
         "atelier/model_provider_override/set" => {
             format_status_response("Model override updated", result)
@@ -152,6 +154,49 @@ fn format_wire_api_model_response(result: &serde_json::Value) -> String {
     lines.join("\n")
 }
 
+fn role_model(config: Option<&serde_json::Value>) -> Option<String> {
+    let config = config?;
+    let provider = runtime_string(config, &["provider"])?;
+    let model = runtime_string(config, &["model"])?;
+    Some(format!("{provider}/{model}"))
+}
+
+fn role_context_label(role: &serde_json::Value) -> Option<String> {
+    let source = role
+        .get("contextSource")
+        .or_else(|| role.get("context_source"))?;
+    let package = runtime_string(source, &["package"])?;
+    let context_role = runtime_string(source, &["role"])?;
+    let empty = source
+        .get("empty")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    Some(if empty {
+        format!("Context {package}/{context_role} (empty)")
+    } else {
+        format!("Context {package}/{context_role}")
+    })
+}
+
+fn exact_role_override_fields(config: Option<&serde_json::Value>) -> Vec<&'static str> {
+    let Some(config) = config else {
+        return Vec::new();
+    };
+    let mut fields = Vec::new();
+    for (key, label) in [
+        ("provider", "provider"),
+        ("model", "model"),
+        ("effort", "effort"),
+        ("fast_mode", "fast mode"),
+        ("payload", "payload"),
+    ] {
+        if config.get(key).is_some() {
+            fields.push(label);
+        }
+    }
+    fields
+}
+
 fn format_role_list_response(result: &serde_json::Value) -> String {
     let Some(roles) = result.get("roles").and_then(serde_json::Value::as_array) else {
         return "Roles\nCould not read Role configuration.".to_owned();
@@ -159,23 +204,48 @@ fn format_role_list_response(result: &serde_json::Value) -> String {
     let mut lines = vec!["Roles".to_owned()];
     for role in roles {
         let role_id = runtime_string(role, &["roleId", "role_id"]).unwrap_or("unknown");
+        let display_role = if role_id == "main" { "MAIN" } else { role_id };
         let configured = role
             .get("configured")
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(false);
-        if !configured {
-            lines.push(format!("- {role_id} | not configured"));
-            continue;
+        let exact = role.get("config").filter(|value| !value.is_null());
+        let effective = role
+            .get("effectiveConfig")
+            .or_else(|| role.get("effective_config"))
+            .filter(|value| !value.is_null());
+        let mut details = Vec::new();
+        if role_id == "main" {
+            details.push(
+                runtime_string(role, &["model"])
+                    .map(str::to_owned)
+                    .or_else(|| role_model(effective))
+                    .unwrap_or_else(|| "not selected".to_owned()),
+            );
+            details.push("config.toml".to_owned());
+        } else {
+            if let Some(model) = role_model(effective) {
+                details.push(model);
+            }
+            if !configured {
+                let source = runtime_string(role, &["effectiveSource", "effective_source"])
+                    .unwrap_or("main");
+                let source = if source == "main" { "MAIN" } else { source };
+                details.push(format!("inherits {source}"));
+            } else {
+                let fields = exact_role_override_fields(exact);
+                if !fields.is_empty() {
+                    details.push(format!("overrides {}", fields.join(", ")));
+                }
+            }
+            if let Some(effort) = effective.and_then(|config| runtime_string(config, &["effort"])) {
+                details.push(format!("effort {effort}"));
+            }
         }
-        let config = role.get("config").unwrap_or(role);
-        let provider = runtime_string(config, &["provider"]).unwrap_or("unknown");
-        let model = runtime_string(config, &["model"]).unwrap_or("unknown");
-        let effort = runtime_string(config, &["effort"]);
-        let mut details = format!("{provider}/{model}");
-        if let Some(effort) = effort {
-            details.push_str(&format!(" · {effort}"));
+        if let Some(context) = role_context_label(role) {
+            details.push(context);
         }
-        lines.push(format!("- {role_id} | {details}"));
+        lines.push(format!("- {display_role} | {}", details.join(" · ")));
     }
     lines.push("Configure a Role with /roles set.".to_owned());
     lines.join("\n")
@@ -183,22 +253,29 @@ fn format_role_list_response(result: &serde_json::Value) -> String {
 
 fn format_role_response(result: &serde_json::Value) -> String {
     let role_id = runtime_string(result, &["roleId", "role_id"]).unwrap_or("Role");
-    let config = result.get("config").unwrap_or(result);
-    let provider = runtime_string(config, &["provider"]);
-    let model = runtime_string(config, &["model"]);
-    match (provider, model) {
-        (Some(provider), Some(model)) => {
-            let mut lines = vec![
-                format!("Role {role_id}"),
-                format!("Model: {provider}/{model}"),
-            ];
-            if let Some(effort) = runtime_string(config, &["effort"]) {
-                lines.push(format!("Effort: {effort}"));
-            }
-            lines.join("\n")
-        }
-        _ => format!("Role {role_id} updated."),
+    let exact = result.get("config").filter(|value| !value.is_null());
+    let effective = result
+        .get("effectiveConfig")
+        .or_else(|| result.get("effective_config"))
+        .filter(|value| !value.is_null());
+    let mut lines = vec![format!("Role {role_id}")];
+    if let Some(model) = role_model(effective).or_else(|| role_model(exact)) {
+        lines.push(format!("Effective model: {model}"));
     }
+    let fields = exact_role_override_fields(exact);
+    if !fields.is_empty() {
+        lines.push(format!("Exact overrides: {}", fields.join(", ")));
+    }
+    if let Some(source) = runtime_string(result, &["effectiveSource", "effective_source"]) {
+        lines.push(format!("Execution source: {source}"));
+    }
+    if let Some(context) = role_context_label(result) {
+        lines.push(context);
+    }
+    if lines.len() == 1 {
+        lines.push("No effective model is configured.".to_owned());
+    }
+    lines.join("\n")
 }
 
 fn format_status_response(title: &str, result: &serde_json::Value) -> String {
@@ -450,20 +527,36 @@ mod runtime_task_format_tests {
     fn role_list_is_rendered_as_a_human_readable_summary() {
         let rendered = format_runtime_extension_response(
             "_atelier/role/list",
-            r#"{"roles":[{"roleId":"main","configured":true,"config":{"provider":"example","model":"alpha","effort":"high","fast_mode":false,"payload":{"secret":"redacted"}}},{"roleId":"review","configured":false,"config":null}]}"#,
+            r#"{"roles":[{"roleId":"main","displayName":"MAIN","source":"config.toml","configured":true,"model":"example/alpha","config":null},{"roleId":"review","configured":false,"inherited":true,"effectiveSource":"general","config":null}]}"#,
         );
 
         assert!(rendered.contains("Roles"));
-        assert!(rendered.contains("main"));
+        assert!(rendered.contains("MAIN"));
         assert!(rendered.contains("example/alpha"));
         assert!(rendered.contains("review"));
-        assert!(rendered.contains("not configured"));
+        assert!(rendered.contains("inherits general"));
         for forbidden in ["_atelier/", "payload", "secret", "{", "\""] {
             assert!(
                 !rendered.contains(forbidden),
                 "leaked {forbidden}: {rendered}"
             );
         }
+    }
+
+    #[test]
+    fn sparse_role_list_shows_exact_effective_and_context_sources_without_payload_values() {
+        let rendered = format_runtime_extension_response(
+            "_atelier/role/list",
+            r#"{"roles":[{"roleId":"review","configured":true,"inherited":false,"effectiveSource":"review","config":{"effort":"high","payload":{"secret":"must-not-render"}},"effectiveConfig":{"provider":"example","model":"alpha","effort":"high","fast_mode":false,"payload":{"secret":"[REDACTED]"}},"contextSource":{"package":"custom","role":"general","empty":false}}]}"#,
+        );
+
+        assert!(rendered.contains("review"));
+        assert!(rendered.contains("example/alpha"));
+        assert!(rendered.contains("overrides effort, payload"));
+        assert!(rendered.contains("Context custom/general"));
+        assert!(!rendered.contains("must-not-render"));
+        assert!(!rendered.contains("[REDACTED]"));
+        assert!(!rendered.contains('{'));
     }
 
     #[test]
@@ -1429,10 +1522,7 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             agent_name,
         } => {
             if let Some(agent) = app.agents.get_mut(&agent_id) {
-                agent.session_agent_name = agent_name.clone();
-                if let Some(modal) = agent.agents_modal.as_mut() {
-                    modal.active_agent = agent_name;
-                }
+                agent.session_agent_name = agent_name;
             }
             vec![]
         }
@@ -1442,10 +1532,7 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             text,
         } => {
             if let Some(agent) = app.agents.get_mut(&agent_id) {
-                agent.session_agent_name = info.data.agent_name.clone();
-                if let Some(modal) = agent.agents_modal.as_mut() {
-                    modal.active_agent = info.data.agent_name.clone();
-                }
+                agent.session_agent_name = info.data.agent_name;
                 agent.apply_full_context_info(info.data.context);
                 agent
                     .scrollback
@@ -1551,51 +1638,15 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
         TaskResult::BundleStatusReady {
             has_cache,
             version,
-            personas,
-            roles,
-            agents,
             skills,
-            persona_details,
-            role_details,
         } => {
             app.bundle_state.has_cache = has_cache;
             app.bundle_state.version = version.unwrap_or_default();
-            app.bundle_state.personas = personas;
-            app.bundle_state.roles = roles;
-            app.bundle_state.agents = agents;
             app.bundle_state.skills = skills;
-            app.bundle_state.persona_details = persona_details;
-            app.bundle_state.role_details = role_details;
             vec![]
         }
         TaskResult::BundleStatusFailed { error } => {
             tracing::warn!(error = % error, "bundle status fetch failed");
-            vec![]
-        }
-        TaskResult::CatalogEntryReady {
-            kind,
-            name,
-            content,
-        } => {
-            if let ActiveView::Agent(id) = app.active_view
-                && let Some(agent) = app.agents.get_mut(&id)
-            {
-                let title = format!("{kind}: {name}");
-                agent.block_viewer = Some(
-                    crate::views::block_viewer::BlockViewerPane::for_plain_text(&title, &content),
-                );
-            }
-            vec![]
-        }
-        TaskResult::CatalogEntryFailed { error } => {
-            tracing::warn!(error = % error, "catalog entry fetch failed");
-            if let ActiveView::Agent(id) = app.active_view
-                && let Some(agent) = app.agents.get_mut(&id)
-            {
-                agent
-                    .scrollback
-                    .push_block(RenderBlock::system(format!("Couldn't load entry: {error}")));
-            }
             vec![]
         }
         TaskResult::BtwResponse { agent_id, result } => handle_btw_response(app, agent_id, result),
@@ -1604,6 +1655,16 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             method,
             error,
         } => {
+            if method.starts_with("_atelier/role/") || method.starts_with("atelier/role/") {
+                if let Some(agent_id) = agent_id
+                    && let Some(agent) = app.agents.get_mut(&agent_id)
+                    && let Some(crate::views::modal::ActiveModal::Roles { state }) =
+                        agent.active_modal.as_mut()
+                {
+                    state.fail(error);
+                    return vec![];
+                }
+            }
             if matches!(
                 method.as_str(),
                 "_atelier/provider/create"
@@ -1649,6 +1710,56 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             let attach_replay = is_task_attach
                 .then(|| format_runtime_task_attach_response(&response))
                 .flatten();
+            let is_role_list =
+                matches!(method.as_str(), "_atelier/role/list" | "atelier/role/list");
+            if is_role_list
+                && let Some(agent_id) = agent_id
+                && let Some(agent) = app.agents.get_mut(&agent_id)
+                && let Some(crate::views::modal::ActiveModal::Roles { state }) =
+                    agent.active_modal.as_mut()
+            {
+                if let Err(error) = state.apply_response(&response) {
+                    state.fail(error);
+                }
+                return vec![];
+            }
+            let is_role_modal_action = matches!(
+                method.as_str(),
+                "_atelier/role/delete"
+                    | "atelier/role/delete"
+                    | "_atelier/role/test"
+                    | "atelier/role/test"
+                    | "_atelier/role/set_fast_mode"
+                    | "atelier/role/set_fast_mode"
+            );
+            if is_role_modal_action
+                && let Some(agent_id) = agent_id
+                && let Some(agent) = app.agents.get_mut(&agent_id)
+                && let Some(crate::views::modal::ActiveModal::Roles { state }) =
+                    agent.active_modal.as_mut()
+            {
+                let status = format_runtime_extension_response(&method, &response);
+                if matches!(
+                    method.as_str(),
+                    "_atelier/role/set_fast_mode" | "atelier/role/set_fast_mode"
+                ) && result
+                    .and_then(|value| value.get("roleId"))
+                    .and_then(|value| value.as_str())
+                    == Some("main")
+                    && let Some(enabled) = result
+                        .and_then(|value| value.get("enabled"))
+                        .and_then(serde_json::Value::as_bool)
+                {
+                    state.apply_fast_mode("main", enabled, status);
+                    return vec![];
+                }
+                state.begin_reload(status);
+                return vec![Effect::RuntimeExtension {
+                    agent_id: Some(agent_id),
+                    method: "_atelier/role/list".into(),
+                    params: serde_json::json!({}),
+                }];
+            }
             if matches!(
                 method.as_str(),
                 "_atelier/provider/create"

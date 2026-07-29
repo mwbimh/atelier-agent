@@ -327,11 +327,15 @@ async fn hook_receives_stdin_envelope() {
     let dir = tempfile::tempdir().unwrap();
 
     // Inline command: read stdin, check it contains expected fields, allow if valid.
-    write_hook(
-        dir.path(),
-        "check.json",
-        r#"{"hooks":{"PreToolUse":[{"hooks":[{"type":"command","command":"INPUT=$(cat); echo \"$INPUT\" | grep -q '\"hookEventName\"' && echo \"$INPUT\" | grep -q '\"toolName\"' && echo \"$INPUT\" | grep -q '\"sessionId\"' && echo '{\"decision\":\"allow\"}' || echo '{\"decision\":\"deny\",\"reason\":\"missing fields\"}'"}]}]}}"#,
-    );
+    let command = if cfg!(windows) {
+        r#"$value = [Console]::In.ReadToEnd(); if ($value.Contains('"hookEventName"') -and $value.Contains('"toolName"') -and $value.Contains('"sessionId"')) { '{"decision":"allow"}' } else { '{"decision":"deny","reason":"missing fields"}' }"#
+    } else {
+        r#"INPUT=$(cat); echo "$INPUT" | grep -q '"hookEventName"' && echo "$INPUT" | grep -q '"toolName"' && echo "$INPUT" | grep -q '"sessionId"' && echo '{"decision":"allow"}' || echo '{"decision":"deny","reason":"missing fields"}'"#
+    };
+    let hook_json = serde_json::json!({
+        "hooks": {"PreToolUse": [{"hooks": [{"type": "command", "command": command}]}]}
+    });
+    write_hook(dir.path(), "check.json", &hook_json.to_string());
 
     let (registry, errors) = load_hooks(Some(dir.path()), None);
     assert!(errors.is_empty());

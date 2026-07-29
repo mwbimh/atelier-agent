@@ -349,39 +349,6 @@ fn run_pending_suspends(
     last_draw_at: &mut Instant,
     draw_scheduled_at: &mut Option<Instant>,
 ) {
-    // $EDITOR suspend: leave alt screen, disable raw mode, spawn
-    // editor, wait for exit, then restore.
-    if let Some(path) = app.pending_editor_path.take() {
-        let editor = std::env::var("VISUAL")
-            .or_else(|_| std::env::var("EDITOR"))
-            .unwrap_or_else(|_| "vi".to_string());
-        let writer_sync = terminal.backend_mut().writer_mut().writer_sync().clone();
-        let moved_cursor = suspend_for_child(
-            app.screen_mode,
-            &writer_sync,
-            input_paused,
-            reader_parked,
-            input_rx,
-            || {
-                let _ = std::process::Command::new(&editor).arg(&path).status();
-            },
-        );
-        if let Some(tab) = app.pending_agents_modal_refresh.take()
-            && let ActiveView::Agent(id) = app.active_view
-            && let Some(agent) = app.agents.get_mut(&id)
-            && let Some(ref mut modal) = agent.agents_modal
-        {
-            modal.refresh_after_editor(tab);
-        }
-        // The child owned the screen; re-anchor if it printed inline, and
-        // repaint the full viewport rather than diffing against a screen
-        // state we can no longer vouch for.
-        restore_after_child(terminal, app.screen_mode, moved_cursor);
-        app.draw(terminal);
-        *last_draw_at = Instant::now();
-        *draw_scheduled_at = None;
-    }
-
     // /transcript suspend: open the rendered transcript in $PAGER,
     // then restore and delete the temp file. Shares the editor's
     // suspend/restore dance (reader park, raw mode, alt screen).
@@ -556,22 +523,9 @@ pub(crate) async fn run(
     app.chat_mode = args.chat();
     app.restore_code = args.restore_code.then_some(true);
     if let Some(ref agent) = args.agent {
-        match crate::headless::resolve_agent_arg(agent) {
-            crate::headless::ResolvedAgent::FilePath(path) => {
-                match atelier_shell::agent::config::AgentDefinition::from_file(&path) {
-                    Ok(def) => app.agent_override = Some(def.to_json_value()),
-                    Err(e) => {
-                        tracing::warn!("--agent: failed to load agent file: {e}");
-                    }
-                }
-            }
-            crate::headless::ResolvedAgent::Name(name) => {
-                app.agent_override = Some(serde_json::Value::String(name));
-            }
-        }
+        app.agent_override = Some(serde_json::Value::String(agent.clone()));
     }
     let headless_only: &[(&str, bool)] = &[
-        ("--agents", args.agents_json.is_some()),
         ("--tools", args.cli_tools.is_some()),
         ("--disallowed-tools", args.cli_disallowed_tools.is_some()),
         ("--max-turns", args.max_turns.is_some()),

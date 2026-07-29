@@ -24,7 +24,8 @@ use crate::config::{RetryPolicy, SamplerConfig};
 use crate::events::{SamplingErrorInfo, SamplingErrorKind, SamplingEvent};
 use crate::metrics::InferenceLatencyStats;
 use crate::retry::{
-    self as retry_mod, RetryDecision, classify_error, clone_error, resolve_max_retries,
+    self as retry_mod, ConsecutiveRetryBudget, RetryDecision, classify_error, clone_error,
+    resolve_max_retries,
 };
 use crate::stream::{stream_chat_completions, stream_messages, stream_responses};
 use crate::types::RequestId;
@@ -79,6 +80,7 @@ pub(crate) async fn run_request_task(
     request: ConversationRequest,
     config: SamplerConfig,
     retry_policy: RetryPolicy,
+    consecutive_retry_budget: Arc<ConsecutiveRetryBudget>,
     event_tx: mpsc::UnboundedSender<SamplingEvent>,
     cancel_token: CancellationToken,
     completion_tx: Option<oneshot::Sender<CompletionResult>>,
@@ -115,6 +117,7 @@ pub(crate) async fn run_request_task(
 
     let mut request = request;
     let mut retry_count: u32 = 0;
+    let mut rate_limit_retry_count: u32 = 0;
     // Doom-loop recovery keeps its own resample budget, independent of the
     // transport/empty budget above.
     let doom_policy = config.doom_loop_recovery;
@@ -160,6 +163,9 @@ pub(crate) async fn run_request_task(
                         );
                     }
                 }
+                // Request IDs do not reset transport recovery. A complete,
+                // valid response does.
+                consecutive_retry_budget.reset();
                 // Surface token usage on the sampling span alongside effort.
                 if let Some(usage) = response.usage.as_ref() {
                     sampling_span.record("output_tokens", usage.completion_tokens);
@@ -196,8 +202,10 @@ pub(crate) async fn run_request_task(
                 if !apply_retry_decision(
                     &err,
                     &mut retry_count,
+                    &mut rate_limit_retry_count,
                     max_retries,
                     &retry_policy,
+                    &consecutive_retry_budget,
                     &event_tx,
                     &request_id,
                     &mut request,
@@ -238,8 +246,10 @@ pub(crate) async fn run_request_task(
                 if !apply_retry_decision(
                     &error,
                     &mut retry_count,
+                    &mut rate_limit_retry_count,
                     max_retries,
                     &retry_policy,
+                    &consecutive_retry_budget,
                     &event_tx,
                     &request_id,
                     &mut request,
@@ -260,8 +270,10 @@ pub(crate) async fn run_request_task(
                 if !apply_retry_decision(
                     &error,
                     &mut retry_count,
+                    &mut rate_limit_retry_count,
                     max_retries,
                     &retry_policy,
+                    &consecutive_retry_budget,
                     &event_tx,
                     &request_id,
                     &mut request,
@@ -287,8 +299,10 @@ pub(crate) async fn run_request_task(
 async fn apply_retry_decision(
     err: &SamplingError,
     retry_count: &mut u32,
+    rate_limit_retry_count: &mut u32,
     max_retries: u32,
     retry_policy: &RetryPolicy,
+    consecutive_retry_budget: &ConsecutiveRetryBudget,
     event_tx: &mpsc::UnboundedSender<SamplingEvent>,
     request_id: &RequestId,
     request: &mut ConversationRequest,
@@ -301,7 +315,18 @@ async fn apply_retry_decision(
     } else {
         retry_policy.rate_limit_retry_threshold
     };
-    let decision = classify_error(err, *retry_count, max_retries, rate_limit_threshold);
+    let consecutive_retry_count = consecutive_retry_budget.current();
+    let classification_retry_count = if err.is_rate_limited() {
+        *rate_limit_retry_count
+    } else {
+        consecutive_retry_count
+    };
+    let decision = classify_error(
+        err,
+        classification_retry_count,
+        max_retries,
+        rate_limit_threshold,
+    );
 
     // Connection-reset / broken-pipe on body upload often means nginx
     // rejected an oversized payload before responding 413. Strip
@@ -317,34 +342,58 @@ async fn apply_retry_decision(
         }
     }
 
+    let consume_retry = || consecutive_retry_budget.consume(max_retries);
     match decision {
         RetryDecision::Retry { backoff } => {
+            let Some(retry_number) = consume_retry() else {
+                emit_failed(event_tx, request_id, err);
+                send_completion(completion_tx, Err(clone_error(err)));
+                return false;
+            };
             *retry_count += 1;
-            emit_retrying(event_tx, request_id, *retry_count, max_retries, err);
+            emit_retrying(event_tx, request_id, retry_number, max_retries, err);
             tokio::time::sleep(backoff).await;
             true
         }
-        RetryDecision::RetryWithBackoff { backoff, .. } => {
+        RetryDecision::RetryWithBackoff {
+            backoff,
+            is_rate_limited,
+        } => {
+            let Some(retry_number) = consume_retry() else {
+                emit_failed(event_tx, request_id, err);
+                send_completion(completion_tx, Err(clone_error(err)));
+                return false;
+            };
             *retry_count += 1;
-            emit_retrying(event_tx, request_id, *retry_count, max_retries, err);
+            if is_rate_limited {
+                *rate_limit_retry_count += 1;
+            }
+            emit_retrying(event_tx, request_id, retry_number, max_retries, err);
             tokio::time::sleep(backoff).await;
             true
         }
         RetryDecision::RetryWithImageStrip => {
             let stripped = request.strip_images();
             if stripped == 0 {
-                // Nothing left to strip; upgrade to fatal.
                 emit_failed(event_tx, request_id, err);
                 send_completion(completion_tx, Err(clone_error(err)));
                 return false;
             }
+            // Image stripping is a one-shot payload recovery, not a transport
+            // retry debit. A second image failure sees no images and fails
+            // above, so it cannot form an unbounded retry loop.
             *retry_count += 1;
-            emit_retrying(event_tx, request_id, *retry_count, max_retries, err);
+            emit_retrying(event_tx, request_id, 1, 1, err);
             true
         }
         RetryDecision::RetryWithClientRebuild { backoff } => {
+            let Some(retry_number) = consume_retry() else {
+                emit_failed(event_tx, request_id, err);
+                send_completion(completion_tx, Err(clone_error(err)));
+                return false;
+            };
             *retry_count += 1;
-            emit_retrying(event_tx, request_id, *retry_count, max_retries, err);
+            emit_retrying(event_tx, request_id, retry_number, max_retries, err);
             tokio::time::sleep(backoff).await;
 
             // Rebuild client with HTTP/1.1 fallback to escape poisoned
@@ -371,22 +420,20 @@ async fn apply_retry_decision(
             false
         }
         RetryDecision::Fatal(fatal_err) => {
-            // Emit only on true budget exhaustion (hit the retry / rate-limit
-            // cap), mirroring `classify_error`'s Fatal conditions — NOT on a
-            // server `x-should-retry: false` or a non-retryable error, which
-            // are also Fatal but are not "exhausted".
-            let next_attempt = *retry_count + 1;
+            // Emit only on true budget exhaustion, not on deterministic or
+            // server-suppressed failures.
+            let retries_used = consecutive_retry_budget.current();
             let server_said_stop = matches!(err.should_retry_header(), Some(false));
             let budget_exhausted = !server_said_stop
                 && if err.is_rate_limited() {
-                    next_attempt >= max_retries.min(rate_limit_threshold)
+                    retries_used >= max_retries.min(rate_limit_threshold)
                 } else {
-                    err.is_retryable() && next_attempt >= max_retries
+                    err.is_retryable() && retries_used >= max_retries
                 };
             if budget_exhausted {
                 let exhausted_span = tracing::info_span!(
                     "http.retries_exhausted",
-                    total_attempts = next_attempt as i64,
+                    total_attempts = (retries_used + 1) as i64,
                     model = %config.model,
                     error = %err,
                     status_code = tracing::field::Empty,

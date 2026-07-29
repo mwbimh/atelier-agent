@@ -167,12 +167,17 @@ impl TrustStore {
     /// is under the user's home directory.  Otherwise it requires explicit
     /// trust via `~/.atelier/trusted-plugins`.
     pub fn is_config_path_auto_trusted(plugin_root: &Path) -> bool {
-        let Some(home) = dirs::home_dir() else {
+        let home = dirs::home_dir();
+        Self::is_config_path_auto_trusted_in(plugin_root, home.as_deref())
+    }
+
+    pub(crate) fn is_config_path_auto_trusted_in(plugin_root: &Path, home: Option<&Path>) -> bool {
+        let Some(home) = home else {
             return false;
         };
-        match dunce::canonicalize(plugin_root) {
-            Ok(canonical) => canonical.starts_with(&home),
-            Err(_) => false,
+        match (dunce::canonicalize(plugin_root), dunce::canonicalize(home)) {
+            (Ok(canonical), Ok(home)) => canonical.starts_with(home),
+            _ => false,
         }
     }
 

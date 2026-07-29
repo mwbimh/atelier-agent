@@ -29,13 +29,22 @@ If the file does not exist, Atelier uses built-in defaults. Specify only the val
 model = "provider/model" # optional; omit it until a Provider/model is selected
 context = "default"
 request_agent = "atelier"
+
+[retry]
+max_retries = 5 # 0 disables transport/API Retry
 ```
 
 `model` is a top-level Provider/model composite key. Selecting a model through
 `/model` writes this value automatically; Atelier never selects the first
 discovered model on its own. Context selection and Request Agent
 selection are also top-level runtime settings; they do not belong in
-`providers.toml`, `roles.toml`, or a `[models]` table.
+`providers.toml`, `roles.toml`, or a `[models]` table. Retry delays are
+approximately 2s, 4s, 8s, 16s, and 30s with jitter. Configured retries after
+the fifth remain near 30s instead of continuing exponential growth. Explicit
+values must be between `0` and `100`. Consecutive failures share the budget
+across request IDs inside one logical sampling operation; a complete valid model
+response resets it, and the next top-level turn starts a fresh operation. Image
+stripping and semantic resampling use separate one-shot/bounded recovery budgets.
 
 ### General Settings
 
@@ -81,10 +90,13 @@ model and experimental endpoint settings live under
 `cache/providers/<provider>/`. Use `/provider`, `/model`, `/wire-api`, and
 `/roles` for normal runtime changes.
 
-Each Context always supplies `subagent.md` as the generic subagent system
-prompt. Optional `contexts/<preset>/roles/<role>.md` files add Context-specific
-Role instructions; a configured subagent Role `prompt_file` is appended after
-the Context Role prompt. Goal harness prompts remain under `goal/`.
+Each Context supplies `subagent.md` as the generic Subagent protocol. Context
+packages may provide files for the fixed Runtime Roles under
+`contexts/<preset>/roles/`. Resolution searches the selected package first and
+then `default`. `explore`, `implement`, `review`, and `test` may fall back to
+`general`; no non-Main Role can inherit `roles/main.md`. An existing empty file
+is an explicit empty Context and stops fallback. Custom Roles, personas, and
+agent presets are unsupported. Goal harness prompts remain under `goal/`.
 
 #### Input Mode
 
@@ -713,7 +725,7 @@ In that example, only `EXAMPLE_API_KEY` is read for Provider `example`.
 | `ATELIER_MEMORY` | Enable (`1`) or disable (`0`) cross-session memory |
 | `ATELIER_SUBAGENTS` | Enable (`1`) or disable (`0`) subagents |
 | `ATELIER_WEB_FETCH` | Enable (`1`) or disable (`0`) the web_fetch tool |
-| `ATELIER_AGENT` | Custom agent definition path or name |
+| `ATELIER_AGENT` | Compiled built-in Agent harness name; unknown names fail closed |
 | `ATELIER_SANDBOX` | Sandbox profile (off, workspace, devbox, read-only, strict; or a custom profile name) |
 
 ### Logging
@@ -746,7 +758,7 @@ In that example, only `EXAMPLE_API_KEY` is read for Provider `example`.
 |------|-------------|
 | `$ATELIER_HOME/config.toml` | Main configuration file |
 | `$ATELIER_HOME/providers.toml` | Provider API/OAuth connection registry |
-| `$ATELIER_HOME/roles.toml` | Fixed Role to Provider/model assignments |
+| `$ATELIER_HOME/roles.toml` | Non-Main fixed Role assignments; MAIN remains in `config.toml` |
 | `$ATELIER_HOME/request-agents.toml` | Selectable outbound identities with explicit User-Agent strings |
 | `$ATELIER_HOME/models/default/` | Exact model-ID defaults: effort, fast mode, context window, capabilities, and Wire API |
 | `$ATELIER_HOME/models/providers/<provider>/` | Provider-specific model overrides and experimental endpoints |
@@ -760,14 +772,12 @@ In that example, only `EXAMPLE_API_KEY` is read for Provider `example`.
 | `$ATELIER_HOME/memory/` | Cross-session memory files and index |
 | `$ATELIER_HOME/skills/` | User-scoped skill definitions |
 | `$ATELIER_HOME/plugins/` | User-scoped plugins |
-| `$ATELIER_HOME/agents/` | User-scoped agent definitions |
 | `$ATELIER_HOME/lsp.json` | LSP server configuration (user-scoped) |
 | `$ATELIER_HOME/logs/` | Local log files (for example `unified.jsonl`, MCP server logs) |
 | `~/.atelier/bin/ate` | Installed executable (`ate.exe` on Windows); independent of a custom Runtime `ATELIER_HOME` |
 | `.atelier/config.toml` | Project-scoped MCP servers, plugins, and permission rules |
 | `.atelier/skills/` | Project-scoped skill definitions |
 | `.atelier/plugins/` | Project-scoped plugins |
-| `.atelier/agents/` | Project-scoped agent definitions |
 | `.atelier/hooks/` | Project-scoped hooks |
 | `.atelier/lsp.json` | LSP server configuration |
 
@@ -782,7 +792,6 @@ Some configuration can be set per-project by placing files in `.atelier/` within
 | `.atelier/config.toml` | MCP servers, plugins, permission rules, and the `[mcp] max_output_bytes` tool-result cap (other sections load only from `~/.atelier/config.toml`) |
 | `.atelier/skills/` | Project-specific skills |
 | `.atelier/hooks/` | Project-specific lifecycle hooks |
-| `.atelier/agents/` | Project-specific agent definitions |
 | `.atelier/lsp.json` | LSP server configuration |
 | `.atelier/sandbox.toml` | Custom sandbox profiles |
 | `AGENTS.md` | Project instructions (system prompt) |

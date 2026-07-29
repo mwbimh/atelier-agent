@@ -578,10 +578,7 @@ pub enum SessionUpdate {
         /// Capability mode applied to this subagent (e.g. "read-only").
         #[serde(default, skip_serializing_if = "Option::is_none")]
         capability_mode: Option<String>,
-        /// Named persona applied to this subagent.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        persona: Option<String>,
-        /// Role that supplied defaults for this subagent (e.g. "researcher").
+        /// Fixed Role that supplied defaults for this subagent.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         role: Option<String>,
         /// Effective model ID used by the subagent (may differ from the parent).
@@ -1422,7 +1419,6 @@ mod tests {
             effective_context_source: None,
             context_normalized: false,
             capability_mode: None,
-            persona: None,
             role: None,
             model: None,
             resumed_from: None,

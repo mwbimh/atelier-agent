@@ -572,7 +572,10 @@ mod tests {
         git_commit_all(&repo_path, "initial");
 
         // Modify one file to make it dirty
-        std::fs::write(repo_path.join("will_be_dirty.txt"), "modified").unwrap();
+        // Use a different size as well as different bytes. On filesystems with
+        // coarse timestamp resolution, same-size rewrites within one tick can
+        // otherwise look clean to Git's stat cache.
+        std::fs::write(repo_path.join("will_be_dirty.txt"), "modified content").unwrap();
 
         // Create worktree
         let worktree_path = temp.path().join("worktree");

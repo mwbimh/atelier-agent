@@ -24,7 +24,7 @@ pub(crate) struct ExternalAuthOutput {
     #[serde(default)]
     pub expires_in: Option<u64>,
     /// Token issuer. An xAI issuer marks the credential as first-party;
-    /// see [`AtelierAuth::is_xai_auth`].
+    /// see [`AtelierAuth::is_configured_refresh_auth`].
     #[serde(default)]
     pub issuer: Option<String>,
 }
@@ -230,7 +230,7 @@ mod tests {
         ))
         .unwrap();
         assert_eq!(auth.oidc_issuer.as_deref(), Some("https://auth.x.ai"));
-        assert!(auth.is_xai_auth());
+        assert!(auth.is_configured_refresh_auth());
 
         // Non-x.ai issuer is stored but stays third-party.
         let auth = parse_output(&ok(
@@ -241,19 +241,19 @@ mod tests {
             auth.oidc_issuer.as_deref(),
             Some("https://idp.acme.example")
         );
-        assert!(!auth.is_xai_auth());
+        assert!(!auth.is_configured_refresh_auth());
 
         // Missing / empty / whitespace issuer → None.
         let auth = parse_output(&ok(r#"{"access_token":"t"}"#)).unwrap();
         assert_eq!(auth.oidc_issuer, None);
-        assert!(!auth.is_xai_auth());
+        assert!(!auth.is_configured_refresh_auth());
         let auth = parse_output(&ok(r#"{"access_token":"t","issuer":"  "}"#)).unwrap();
         assert_eq!(auth.oidc_issuer, None);
 
         // Bare-token output never carries an issuer.
         let auth = parse_output(&ok("bare-token")).unwrap();
         assert_eq!(auth.oidc_issuer, None);
-        assert!(!auth.is_xai_auth());
+        assert!(!auth.is_configured_refresh_auth());
     }
 
     #[test]

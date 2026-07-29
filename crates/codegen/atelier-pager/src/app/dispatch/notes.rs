@@ -316,6 +316,24 @@ pub(super) fn dispatch_send_btw(app: &mut AppView, question: String) -> Vec<Effe
     }]
 }
 
+pub(super) fn dispatch_open_roles_modal(app: &mut AppView) -> Vec<Effect> {
+    let ActiveView::Agent(agent_id) = app.active_view else {
+        app.show_toast("Open a session to manage Runtime Roles");
+        return vec![];
+    };
+    let Some(agent) = app.agents.get_mut(&agent_id) else {
+        return vec![];
+    };
+    agent.active_modal = Some(crate::views::modal::ActiveModal::Roles {
+        state: Box::new(crate::views::roles_modal::RolesModalState::loading()),
+    });
+    vec![Effect::RuntimeExtension {
+        agent_id: Some(agent_id),
+        method: "_atelier/role/list".into(),
+        params: serde_json::json!({}),
+    }]
+}
+
 /// Dispatch a slash command backed by an Atelier control-plane extension.
 /// The slash layer stays transport-neutral; this helper adds the active
 /// session id for object-shaped requests before the effect crosses ACP.
@@ -396,6 +414,12 @@ fn is_btw_persist_method(method: &str) -> bool {
 }
 
 fn runtime_extension_requires_session(method: &str) -> bool {
+    if matches!(
+        method,
+        "_atelier/role/set_fast_mode" | "atelier/role/set_fast_mode"
+    ) {
+        return true;
+    }
     !method.starts_with("_atelier/provider/")
         && !method.starts_with("atelier/provider/")
         && !method.starts_with("_atelier/model/")

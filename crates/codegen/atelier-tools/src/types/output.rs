@@ -1826,9 +1826,7 @@ mod tests {
             turns: 2,
             duration_ms: 3000,
             worktree_path: None,
-            persona: None,
             resume_from_hint: "019e0000-0000-7000-8000-0000000000bb".into(),
-            persona_hint: None,
         });
         let rendered = output.to_prompt_format();
         assert!(
@@ -1857,34 +1855,6 @@ mod tests {
         );
     }
     #[test]
-    fn subagent_completed_prompt_format_includes_persona_hint() {
-        let output = ToolOutput::SubagentCompleted(SubagentCompletedOutput {
-            output: "Done implementing.".into(),
-            subagent_id: "abc-123".into(),
-            subagent_type: "general-purpose".into(),
-            tool_calls: 10,
-            turns: 3,
-            duration_ms: 5000,
-            worktree_path: None,
-            persona: Some("implementer".into()),
-            resume_from_hint: "abc-123".into(),
-            persona_hint: Some("implementer".into()),
-        });
-        let rendered = output.to_prompt_format();
-        assert!(
-            rendered.contains("resume_from=\"abc-123\""),
-            "resume hint present"
-        );
-        assert!(
-            rendered.contains("persona=\"implementer\""),
-            "persona hint present"
-        );
-        assert!(
-            rendered.contains("Pass the same persona when resuming"),
-            "persona instruction present"
-        );
-    }
-    #[test]
     fn subagent_completed_prompt_format_with_worktree() {
         let output = ToolOutput::SubagentCompleted(SubagentCompletedOutput {
             output: "Changes committed.".into(),
@@ -1894,9 +1864,7 @@ mod tests {
             turns: 1,
             duration_ms: 2000,
             worktree_path: Some("/tmp/atelier-worktree/wt-agent".into()),
-            persona: None,
             resume_from_hint: "wt-agent".into(),
-            persona_hint: None,
         });
         let rendered = output.to_prompt_format();
         assert!(
@@ -1909,7 +1877,7 @@ mod tests {
         );
     }
     #[test]
-    fn subagent_completed_structured_hints_serialize() {
+    fn subagent_completed_structured_resume_hint_serializes_without_persona_metadata() {
         let output = SubagentCompletedOutput {
             output: "done".into(),
             subagent_id: "sub-abc-123".into(),
@@ -1918,14 +1886,13 @@ mod tests {
             turns: 2,
             duration_ms: 3000,
             worktree_path: None,
-            persona: Some("implementer".into()),
             resume_from_hint: "sub-abc-123".into(),
-            persona_hint: Some("implementer".into()),
         };
         let json = serde_json::to_value(&output).unwrap();
         assert_eq!(json["resume_from_hint"], "sub-abc-123");
-        assert_eq!(json["persona_hint"], "implementer");
         assert_eq!(json["subagent_id"], json["resume_from_hint"]);
+        assert!(json.get("persona").is_none());
+        assert!(json.get("persona_hint").is_none());
     }
     #[test]
     fn enter_plan_mode_tool_hints_default() {
@@ -2182,7 +2149,7 @@ mod tests {
         );
     }
     #[test]
-    fn subagent_completed_hints_absent_when_no_persona() {
+    fn subagent_completed_schema_has_no_persona_fields() {
         let output = SubagentCompletedOutput {
             output: "done".into(),
             subagent_id: "sub-xyz".into(),
@@ -2191,16 +2158,12 @@ mod tests {
             turns: 1,
             duration_ms: 500,
             worktree_path: None,
-            persona: None,
             resume_from_hint: "sub-xyz".into(),
-            persona_hint: None,
         };
         let json = serde_json::to_value(&output).unwrap();
         assert_eq!(json["resume_from_hint"], "sub-xyz");
-        assert!(
-            json.get("persona_hint").is_none(),
-            "persona_hint should be absent when None"
-        );
+        assert!(json.get("persona").is_none());
+        assert!(json.get("persona_hint").is_none());
     }
     fn make_pdf_page_images(
         page_numbers: &[usize],

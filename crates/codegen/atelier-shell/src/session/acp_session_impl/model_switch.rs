@@ -224,8 +224,7 @@ impl SessionActor {
                 ))
             })?;
         let new_system_prompt = new_agent.system_prompt().to_string();
-        let mut new_prompt_context = new_agent.prompt_context().clone();
-        new_prompt_context.normalize_for_persistence();
+        let new_prompt_context = new_agent.prompt_context().clone();
         if let Some(handle) = self.compaction.prefire.take_handle() {
             handle.abort();
             let _ = handle.await;

@@ -946,6 +946,17 @@ impl SessionActor {
         auto_continue: Option<crate::extensions::notification::AutoContinueInfo>,
         trigger: atelier_telemetry::events::CompactionTrigger,
     ) -> Result<(), acp::Error> {
+        let compact_role_context = atelier_config::runtime_defaults::runtime_context_role_prompt(
+            atelier_provider::RoleId::Compact,
+        )
+        .map_err(|error| {
+            acp::Error::invalid_params()
+                .data(format!("failed to load Compact Role Context: {error}"))
+        })?;
+        let user_context = atelier_config::runtime_defaults::merge_role_prompts(
+            compact_role_context.as_deref(),
+            user_context.as_deref(),
+        );
         let tokens_before = self.chat_state_handle.get_total_tokens().await;
         tracing::Span::current().record("compaction_tokens_before", tokens_before as i64);
         self.signals_handle().record_compaction(tokens_before);

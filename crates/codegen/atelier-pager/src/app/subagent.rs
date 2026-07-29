@@ -17,7 +17,6 @@ pub struct SubagentInfo {
     pub child_session_id: Arc<str>,
     pub description: Arc<str>,
     pub subagent_type: Arc<str>,
-    pub persona: Option<Arc<str>>,
     pub role: Option<Arc<str>>,
     pub model: Option<Arc<str>>,
     /// "new" or "resumed".
@@ -321,40 +320,6 @@ fn join_meta_parts(parts: &[Option<&str>]) -> String {
         non_empty.join(" \u{00b7} ")
     }
 }
-/// Collapse `(persona, role)` to a single label when both refer to the same
-/// title. Comparison is case-insensitive after trimming surrounding whitespace.
-///
-/// Behavior:
-/// - Either side that is `Some(s)` where `s.trim().is_empty()` is treated as
-///   `None` first, so a stray empty/whitespace-only string never sneaks into
-///   the joined output as a leading separator.
-/// - Both present and titles match -> returns `(Some(persona), None)` so
-///   callers render only the persona once.
-/// - Both present and titles differ -> returns the inputs unchanged.
-/// - Either or both absent -> returns the inputs unchanged.
-///
-/// ASCII-only comparison is intentional: persona/role identifiers in this
-/// codebase are ASCII slugs (lowercase names from the bundle registry).
-/// `eq_ignore_ascii_case` is allocation-free; switching to Unicode case
-/// folding would allocate per render and is not needed here.
-///
-/// Lifetimes on `persona` and `role` are independent (`'a`, `'b`) so the two
-/// inputs do not need to share a borrow scope.
-///
-/// This is the single source of truth for the role/persona dedup in subagent
-/// metadata strings; the scrollback `(persona · role · model)` parenthetical
-/// funnels through it via [`format_subagent_meta`].
-fn dedup_persona_role<'a, 'b>(
-    persona: Option<&'a str>,
-    role: Option<&'b str>,
-) -> (Option<&'a str>, Option<&'b str>) {
-    let persona = persona.filter(|s| !s.trim().is_empty());
-    let role = role.filter(|s| !s.trim().is_empty());
-    match (persona, role) {
-        (Some(p), Some(r)) if p.trim().eq_ignore_ascii_case(r.trim()) => (Some(p), None),
-        _ => (persona, role),
-    }
-}
 pub(crate) fn format_type_label(subagent_type: &str) -> &str {
     match subagent_type {
         "general-purpose" => "general",
@@ -386,33 +351,19 @@ fn parse_tag_prefix(description: &str) -> (Option<&str>, &str) {
 /// Single consolidated label + display description for a subagent row.
 ///
 /// Precedence for the label (highest first):
-/// 1. `persona` — semantic, parent-supplied at spawn time.
-/// 2. `role`    — config-defined preset.
-/// 3. `subagent_type` (only when **not** `general-purpose`) — `explore`,
-///    `plan`, or any custom type carries real signal.
-/// 4. `[tag]` parsed from the description — fallback when nothing above
-///    identifies the agent and `subagent_type` is the meaningless default.
-/// 5. `"general"` — final fallback when `subagent_type == "general-purpose"`
-///    and no persona / role / tag is present.
+/// 1. fixed Runtime `role`.
+/// 2. `subagent_type` when it is not `general-purpose`.
+/// 3. a leading `[tag]` parsed from the description.
+/// 4. `"general"` as the final fallback.
 ///
-/// The returned label has its first character capitalized for display
-/// (e.g. `explore` → `Explore`, `implementer` → `Implementer`). Personas,
-/// roles, and tags are conventionally lowercase ASCII slugs, so callers
-/// expect the rendering to do the title-casing.
+/// The returned label has its first character capitalized for display.
 ///
 /// The returned description always has any leading `[tag]` prefix stripped,
 /// regardless of whether the tag was used as the label, so callers never
 /// render `[tag]` bracket noise inline.
 pub(crate) fn format_subagent_label(info: &SubagentInfo) -> (String, String) {
     let (tag, clean_desc) = parse_tag_prefix(&info.description);
-    let raw_label = if let Some(p) = info
-        .persona
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-    {
-        p.to_string()
-    } else if let Some(r) = info
+    let raw_label = if let Some(r) = info
         .role
         .as_deref()
         .map(str::trim)
@@ -433,13 +384,9 @@ pub(crate) fn format_subagent_label(info: &SubagentInfo) -> (String, String) {
     };
     (label, clean_desc.to_string())
 }
-pub(crate) fn format_subagent_meta(
-    persona: Option<&str>,
-    role: Option<&str>,
-    model: Option<&str>,
-) -> String {
-    let (persona, role) = dedup_persona_role(persona, role);
-    let bare = join_meta_parts(&[persona, role, model]);
+pub(crate) fn format_subagent_meta(role: Option<&str>, model: Option<&str>) -> String {
+    let role = role.filter(|value| !value.trim().is_empty());
+    let bare = join_meta_parts(&[role, model]);
     if bare.is_empty() {
         bare
     } else {
@@ -512,7 +459,6 @@ mod tests {
             child_session_id: "cs-1".into(),
             description: "test task".into(),
             subagent_type: "explore".into(),
-            persona: None,
             role: None,
             model: None,
             context_source: None,
@@ -768,20 +714,20 @@ mod tests {
     }
     #[test]
     fn subagent_meta_empty() {
-        assert_eq!(format_subagent_meta(None, None, None), "");
+        assert_eq!(format_subagent_meta(None, None), "");
     }
     #[test]
-    fn subagent_meta_all_fields() {
+    fn subagent_meta_includes_fixed_role_and_model() {
         assert_eq!(
-            format_subagent_meta(Some("researcher"), Some("analyst"), Some("atelier-3")),
-            " (researcher \u{00b7} analyst \u{00b7} atelier-3)"
+            format_subagent_meta(Some("review"), Some("atelier-3")),
+            " (review \u{00b7} atelier-3)"
         );
     }
     #[test]
-    fn subagent_meta_partial_skips_nones() {
+    fn subagent_meta_skips_absent_role() {
         assert_eq!(
-            format_subagent_meta(Some("researcher"), None, Some("atelier-3")),
-            " (researcher \u{00b7} atelier-3)"
+            format_subagent_meta(None, Some("atelier-3")),
+            " (atelier-3)"
         );
     }
     #[test]
@@ -820,52 +766,14 @@ mod tests {
         assert_eq!(format_context_badge(&make_info()), "");
     }
     #[test]
-    fn subagent_meta_collapses_duplicate_persona_role() {
+    fn subagent_meta_drops_empty_role() {
         assert_eq!(
-            format_subagent_meta(Some("reviewer"), Some("reviewer"), Some("atelier-3")),
-            " (reviewer \u{00b7} atelier-3)"
-        );
-    }
-    #[test]
-    fn subagent_meta_keeps_distinct_persona_role() {
-        assert_eq!(
-            format_subagent_meta(Some("researcher"), Some("analyst"), None),
-            " (researcher \u{00b7} analyst)"
-        );
-    }
-    #[test]
-    fn subagent_meta_only_role_when_persona_absent() {
-        assert_eq!(
-            format_subagent_meta(None, Some("reviewer"), None),
-            " (reviewer)"
-        );
-    }
-    #[test]
-    fn subagent_meta_only_persona_when_role_absent() {
-        assert_eq!(
-            format_subagent_meta(Some("reviewer"), None, None),
-            " (reviewer)"
-        );
-    }
-    #[test]
-    fn subagent_meta_drops_both_empty_persona_role() {
-        assert_eq!(
-            format_subagent_meta(Some(""), Some(" "), Some("atelier-3")),
+            format_subagent_meta(Some(" "), Some("atelier-3")),
             " (atelier-3)"
         );
     }
     #[test]
-    fn label_uses_persona_when_set() {
-        let mut info = make_info();
-        info.persona = Some("implementer".into());
-        info.role = Some("any".into());
-        info.subagent_type = "general-purpose".into();
-        let (label, desc) = format_subagent_label(&info);
-        assert_eq!(label, "Implementer");
-        assert_eq!(desc, "test task");
-    }
-    #[test]
-    fn label_falls_back_to_role_when_no_persona() {
+    fn label_uses_fixed_role_when_present() {
         let mut info = make_info();
         info.role = Some("analyst".into());
         info.subagent_type = "general-purpose".into();
@@ -900,23 +808,14 @@ mod tests {
         assert_eq!(desc, "do a thing");
     }
     #[test]
-    fn label_strips_tag_prefix_even_when_unused() {
+    fn label_strips_tag_prefix_even_when_role_is_used() {
         let mut info = make_info();
-        info.persona = Some("reviewer".into());
+        info.role = Some("review".into());
         info.subagent_type = "general-purpose".into();
         info.description = "[review] check the diff".into();
         let (label, desc) = format_subagent_label(&info);
-        assert_eq!(label, "Reviewer");
+        assert_eq!(label, "Review");
         assert_eq!(desc, "check the diff");
-    }
-    #[test]
-    fn label_treats_whitespace_persona_as_absent() {
-        let mut info = make_info();
-        info.persona = Some("   ".into());
-        info.role = Some("analyst".into());
-        info.subagent_type = "general-purpose".into();
-        let (label, _) = format_subagent_label(&info);
-        assert_eq!(label, "Analyst");
     }
     #[test]
     fn label_treats_empty_tag_as_absent() {
@@ -942,13 +841,6 @@ mod tests {
         info.subagent_type = "custom-agent".into();
         let (label, _) = format_subagent_label(&info);
         assert_eq!(label, "Custom-agent");
-    }
-    #[test]
-    fn label_preserves_already_capitalized_persona() {
-        let mut info = make_info();
-        info.persona = Some("Reviewer".into());
-        let (label, _) = format_subagent_label(&info);
-        assert_eq!(label, "Reviewer");
     }
     fn write_meta_json(dir: &std::path::Path, subagent_id: &str, json: &str) {
         let meta_dir = dir.join("subagents").join(subagent_id);

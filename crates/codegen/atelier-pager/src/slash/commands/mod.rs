@@ -13,7 +13,6 @@ pub mod btw;
 pub mod cd;
 pub mod compact;
 pub mod compact_mode;
-pub mod config_agents;
 pub mod context;
 pub mod copy;
 pub mod dashboard;
@@ -41,7 +40,6 @@ pub mod model_config;
 pub mod multiline;
 pub mod new;
 pub mod parallel;
-pub mod personas;
 pub mod plan;
 pub mod plugin;
 pub mod provider;
@@ -143,8 +141,6 @@ pub fn builtin_commands() -> Vec<Arc<dyn SlashCommand>> {
         Arc::new(queue::QueueCommand),
         Arc::new(tasks::TasksCommand),
         Arc::new(release_notes::ReleaseNotesCommand),
-        Arc::new(config_agents::ConfigAgentsCommand),
-        Arc::new(personas::PersonasCommand),
         Arc::new(gboom::GboomCommand),
         Arc::new(scroll_debug::ScrollDebugCommand),
         Arc::new(debug::DebugCommand),
@@ -178,13 +174,19 @@ mod tests {
         crate::app::bundle::BundleState {
             has_cache: false,
             version: String::new(),
-            personas: Vec::new(),
-            roles: Vec::new(),
-            agents: Vec::new(),
             skills: Vec::new(),
-            persona_details: Vec::new(),
-            role_details: Vec::new(),
         };
+    #[test]
+    fn custom_agent_and_persona_management_commands_are_not_registered() {
+        let names = builtin_commands()
+            .into_iter()
+            .map(|command| command.name().to_owned())
+            .collect::<Vec<_>>();
+        assert!(!names.iter().any(|name| name == "config-agents"));
+        assert!(!names.iter().any(|name| name == "personas"));
+        assert!(names.iter().any(|name| name == "roles"));
+    }
+
     pub(crate) fn make_ctx(models: &ModelState) -> CommandExecCtx<'_> {
         CommandExecCtx {
             models,

@@ -62,19 +62,6 @@ pub fn is_cli_chat_proxy_url(url: &str) -> bool {
     }
     false
 }
-/// True for first-party xAI endpoints (`*.x.ai`, cli-chat-proxy, and optional
-/// non-production first-party hosts when that feature is enabled).
-/// `disable_api_key_auth` refuses keys only for these; other hosts are BYOK and
-/// exempt. Safe against invalid URLs and suffix attacks (`evil-x.ai.example`).
-pub fn is_first_party_xai_url(url: &str) -> bool {
-    if is_cli_chat_proxy_url(url) {
-        return true;
-    }
-    reqwest::Url::parse(url)
-        .ok()
-        .and_then(|u| u.host_str().map(|h| h.to_owned()))
-        .is_some_and(|host| host == "x.ai" || host.ends_with(".x.ai"))
-}
 /// Truncate a string to at most `max_chars` characters.
 /// Slices at char boundaries so multi-byte UTF-8 never panics.
 pub fn truncate(s: &str, max_chars: usize) -> &str {
@@ -208,8 +195,8 @@ pub fn is_atelier_process(pid: u32) -> bool {
 mod tests {
     use super::*;
     #[test]
-    fn test_is_cli_chat_proxy_url_accepts_proxy_subpath() {
-        assert!(is_cli_chat_proxy_url(
+    fn test_is_cli_chat_proxy_url_has_no_compiled_vendor_default() {
+        assert!(!is_cli_chat_proxy_url(
             "https://cli-chat-proxy.atelier.com/v1/chat/completions"
         ));
     }
@@ -228,27 +215,6 @@ mod tests {
         assert!(!is_cli_chat_proxy_url(
             "https://cli-chat-proxy.atelier.com/v11/chat/completions"
         ));
-    }
-    #[test]
-    fn test_is_first_party_xai_url() {
-        assert!(is_first_party_xai_url("https://api.atelier/v1"));
-        assert!(is_first_party_xai_url(
-            "https://api.atelier/v1/chat/completions"
-        ));
-        assert!(is_first_party_xai_url("https://x.ai"));
-        assert!(is_first_party_xai_url(
-            "https://cli-chat-proxy.atelier.com/v1/chat/completions"
-        ));
-        assert!(!is_first_party_xai_url("https://api.openai.com/v1"));
-        assert!(!is_first_party_xai_url("https://api.anthropic.com/v1"));
-        assert!(!is_first_party_xai_url(
-            "https://generativelanguage.googleapis.com"
-        ));
-        assert!(!is_first_party_xai_url("https://api.x.ai.evil.example/v1"));
-        assert!(!is_first_party_xai_url("https://evil-x.ai.attacker.com/v1"));
-        assert!(!is_first_party_xai_url("https://prefixatelier/v1"));
-        assert!(!is_first_party_xai_url("not-a-url"));
-        assert!(!is_first_party_xai_url(""));
     }
     #[test]
     fn test_truncate() {

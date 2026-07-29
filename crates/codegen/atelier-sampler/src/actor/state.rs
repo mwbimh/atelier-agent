@@ -6,10 +6,12 @@
 //! discipline matching the hunk-tracker pattern.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use tokio_util::sync::CancellationToken;
 
 use crate::config::{RetryPolicy, SamplerConfig};
+use crate::retry::ConsecutiveRetryBudget;
 use crate::types::RequestId;
 
 /// In-flight request bookkeeping.
@@ -26,6 +28,9 @@ pub(crate) struct ActorState {
     pub(crate) active_requests: HashMap<RequestId, ActiveRequest>,
     pub(crate) config: SamplerConfig,
     pub(crate) retry_policy: RetryPolicy,
+    /// Shared across request IDs created by one logical sampler operation.
+    /// Successful complete responses reset it in the request task.
+    pub(crate) consecutive_retry_budget: Arc<ConsecutiveRetryBudget>,
 }
 
 impl ActorState {
@@ -34,6 +39,7 @@ impl ActorState {
             active_requests: HashMap::new(),
             config,
             retry_policy,
+            consecutive_retry_budget: Arc::new(ConsecutiveRetryBudget::default()),
         }
     }
 
@@ -69,6 +75,11 @@ impl ActorState {
     /// an override will use this.
     pub(crate) fn update_config(&mut self, config: SamplerConfig) {
         self.config = config;
+    }
+
+    /// Reset transport recovery at an explicit logical-operation boundary.
+    pub(crate) fn reset_retry_budget(&self) {
+        self.consecutive_retry_budget.reset();
     }
 }
 
@@ -148,5 +159,59 @@ mod tests {
         };
         assert!(state.register(id.clone(), first).is_none());
         assert!(state.register(id.clone(), second).is_some());
+    }
+
+    #[test]
+    fn consecutive_retry_budget_is_shared_and_success_resets_it() {
+        let state = ActorState::new(cfg(), RetryPolicy::default());
+        let budget = state.consecutive_retry_budget.clone();
+
+        assert_eq!(budget.current(), 0);
+        assert_eq!(budget.consume(5), Some(1));
+        assert_eq!(budget.consume(5), Some(2));
+        assert_eq!(budget.current(), 2);
+
+        budget.reset();
+        assert_eq!(budget.current(), 0);
+        assert_eq!(budget.consume(5), Some(1));
+    }
+
+    #[test]
+    fn consecutive_retry_budget_refuses_more_than_configured_retries() {
+        let state = ActorState::new(cfg(), RetryPolicy::default());
+        let budget = state.consecutive_retry_budget;
+
+        for expected in 1..=5 {
+            assert_eq!(budget.consume(5), Some(expected));
+        }
+        assert_eq!(budget.consume(5), None);
+        assert_eq!(budget.current(), 5);
+    }
+
+    #[test]
+    fn independent_sampler_actors_never_share_retry_budget_state() {
+        let first = ActorState::new(cfg(), RetryPolicy::default());
+        let second = ActorState::new(cfg(), RetryPolicy::default());
+
+        assert!(!Arc::ptr_eq(
+            &first.consecutive_retry_budget,
+            &second.consecutive_retry_budget
+        ));
+        assert_eq!(first.consecutive_retry_budget.consume(5), Some(1));
+        assert_eq!(first.consecutive_retry_budget.consume(5), Some(2));
+        assert_eq!(second.consecutive_retry_budget.current(), 0);
+        assert_eq!(second.consecutive_retry_budget.consume(5), Some(1));
+    }
+
+    #[test]
+    fn explicit_operation_boundary_clears_prior_terminal_failure_debit() {
+        let state = ActorState::new(cfg(), RetryPolicy::default());
+        assert_eq!(state.consecutive_retry_budget.consume(5), Some(1));
+        assert_eq!(state.consecutive_retry_budget.consume(5), Some(2));
+
+        state.reset_retry_budget();
+
+        assert_eq!(state.consecutive_retry_budget.current(), 0);
+        assert_eq!(state.consecutive_retry_budget.consume(5), Some(1));
     }
 }

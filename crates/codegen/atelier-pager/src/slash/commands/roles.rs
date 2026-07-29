@@ -31,10 +31,16 @@ impl SlashCommand for RolesCommand {
     }
 
     fn suggest_args(&self, ctx: &AppCtx, args_query: &str) -> Option<Vec<ArgItem>> {
+        // Exact `/roles` is executable and opens the dedicated manager. Do not
+        // let the generic argument picker intercept Enter before `run()` sees
+        // the empty argument string. Typing a space still offers subcommands.
+        if args_query.is_empty() {
+            return None;
+        }
         let trailing_space = args_query.chars().last().is_some_and(char::is_whitespace);
         let tokens = args_query.split_whitespace().collect::<Vec<_>>();
         let subcommands = || {
-            ["list", "get ", "set ", "payload ", "test "]
+            ["list", "get ", "set ", "reset ", "payload ", "test "]
                 .into_iter()
                 .map(|command| ArgItem {
                     display: command.trim().into(),
@@ -50,7 +56,7 @@ impl SlashCommand for RolesCommand {
         if tokens.len() == 1 && !trailing_space {
             return Some(subcommands());
         }
-        if !["get", "set", "payload", "test"].contains(&command) {
+        if !["get", "set", "reset", "payload", "test"].contains(&command) {
             return (command != "list").then(subcommands);
         }
         if tokens.len() == 1 {
@@ -133,9 +139,7 @@ impl SlashCommand for RolesCommand {
 
     fn run(&self, _ctx: &mut CommandExecCtx, args: &str) -> CommandResult {
         if args.trim().is_empty() {
-            return CommandResult::Action(Action::OpenSlashArgPicker {
-                command: self.name().to_owned(),
-            });
+            return CommandResult::Action(Action::OpenRolesModal);
         }
         let mut parts = args.split_whitespace();
         let command = parts.next().unwrap_or("list");
@@ -165,7 +169,7 @@ impl SlashCommand for RolesCommand {
             "set" => {
                 let Some(role_name) = parts.next() else {
                     return CommandResult::Error(
-                        "Usage: /roles set <role> <provider> <model> [effort] [fast_mode]".into(),
+                        "Usage: /roles set <role> (<provider/model> [effort] [fast_mode] | <field=value>...)".into(),
                     );
                 };
                 let fields: Vec<_> = parts.collect();
@@ -184,6 +188,27 @@ impl SlashCommand for RolesCommand {
                         "config": config,
                         "preservePayload": true,
                     }),
+                )
+            }
+            "reset" => {
+                let Some(role_name) = parts.next() else {
+                    return CommandResult::Error("Usage: /roles reset <role>".into());
+                };
+                let role_id = match parse_role_id(role_name) {
+                    Ok(RoleId::Main) => {
+                        return CommandResult::Error(
+                            "MAIN is managed by /model and cannot be reset in roles.toml".into(),
+                        );
+                    }
+                    Ok(role_id) => role_id,
+                    Err(error) => return CommandResult::Error(error),
+                };
+                if parts.next().is_some() {
+                    return CommandResult::Error("Usage: /roles reset <role>".into());
+                }
+                extension(
+                    "_atelier/role/delete",
+                    serde_json::json!({ "roleId": role_id }),
                 )
             }
             "payload" => {
@@ -239,6 +264,9 @@ fn parse_role_id(value: &str) -> Result<RoleId, String> {
 }
 
 fn parse_role_set(_role_name: &str, fields: &[&str]) -> Result<RoleConfig, String> {
+    if fields.iter().any(|field| field.contains('=')) {
+        return parse_sparse_role_set(fields);
+    }
     let (provider, model, options) = if let Some((provider, model)) = fields
         .first()
         .and_then(|model_key| model_key.split_once('/'))
@@ -247,10 +275,16 @@ fn parse_role_set(_role_name: &str, fields: &[&str]) -> Result<RoleConfig, Strin
     } else if fields.len() >= 2 {
         (fields[0], fields[1], &fields[2..])
     } else {
-        return Err("Usage: /roles set <role> <provider> <model> [effort] [fast_mode]".to_owned());
+        return Err(
+            "Usage: /roles set <role> (<provider/model> [effort] [fast_mode] | <field=value>...)"
+                .to_owned(),
+        );
     };
     if options.len() > 2 {
-        return Err("Usage: /roles set <role> <provider> <model> [effort] [fast_mode]".to_owned());
+        return Err(
+            "Usage: /roles set <role> (<provider/model> [effort] [fast_mode] | <field=value>...)"
+                .to_owned(),
+        );
     }
     let effort = options.first().and_then(|value| match *value {
         "-" => None,
@@ -267,6 +301,42 @@ fn parse_role_set(_role_name: &str, fields: &[&str]) -> Result<RoleConfig, Strin
     config.fast_mode = fast_mode;
     config.validate().map_err(|error| error.to_string())?;
     Ok(config)
+}
+
+fn parse_sparse_role_set(fields: &[&str]) -> Result<RoleConfig, String> {
+    let mut object = serde_json::Map::new();
+    for field in fields {
+        let (key, value) = field
+            .split_once('=')
+            .ok_or_else(|| "Sparse Role settings must use key=value syntax".to_owned())?;
+        if object.contains_key(key) {
+            return Err(format!("duplicate Role setting: {key}"));
+        }
+        match key {
+            "provider" | "effort" => {
+                object.insert(key.to_owned(), Value::String(value.to_owned()));
+            }
+            "model" => {
+                if let Some((provider, model)) = value.split_once('/') {
+                    if object.contains_key("provider") {
+                        return Err("provider is configured more than once".to_owned());
+                    }
+                    object.insert("provider".into(), Value::String(provider.to_owned()));
+                    object.insert("model".into(), Value::String(model.to_owned()));
+                } else {
+                    object.insert("model".into(), Value::String(value.to_owned()));
+                }
+            }
+            "fast_mode" => {
+                let enabled = value
+                    .parse::<bool>()
+                    .map_err(|_| "fast_mode must be true or false".to_owned())?;
+                object.insert("fast_mode".into(), Value::Bool(enabled));
+            }
+            _ => return Err(format!("unknown Role setting: {key}")),
+        }
+    }
+    serde_json::from_value(Value::Object(object)).map_err(|error| error.to_string())
 }
 
 #[cfg(test)]
@@ -326,12 +396,29 @@ mod tests {
     }
 
     #[test]
-    fn empty_roles_command_opens_interactive_picker() {
+    fn empty_roles_command_opens_dedicated_role_manager() {
         let mut ctx = empty_ctx();
         assert!(matches!(
             super::RolesCommand.run(&mut ctx, ""),
-            CommandResult::Action(Action::OpenSlashArgPicker { command }) if command == "roles"
+            CommandResult::Action(Action::OpenRolesModal)
         ));
+    }
+
+    #[test]
+    fn exact_roles_command_is_not_intercepted_by_argument_suggestions() {
+        let models = crate::acp::model_state::ModelState::default();
+        let ctx = crate::slash::command::AppCtx {
+            models: &models,
+            cwd: std::path::Path::new("."),
+            has_session_announcements: false,
+            screen_mode: crate::app::ScreenMode::Inline,
+        };
+        assert!(super::RolesCommand.suggest_args(&ctx, "").is_none());
+        assert!(
+            super::RolesCommand
+                .suggest_args(&ctx, " ")
+                .is_some_and(|items| items.iter().any(|item| item.display == "list"))
+        );
     }
 
     #[test]
@@ -358,12 +445,31 @@ mod tests {
     #[test]
     fn role_commands_report_usage_when_required_fields_are_missing() {
         let mut ctx = empty_ctx();
-        for args in ["get", "set", "payload", "test"] {
+        for args in ["get", "set", "reset", "payload", "test"] {
             assert!(
                 matches!(super::RolesCommand.run(&mut ctx, args), CommandResult::Error(error) if error.starts_with("Usage:")),
                 "{args} must fail with Usage"
             );
         }
+    }
+
+    #[test]
+    fn role_reset_restores_fixed_parent_inheritance() {
+        let mut ctx = empty_ctx();
+        let result = super::RolesCommand.run(&mut ctx, "reset review");
+        let CommandResult::Action(Action::RuntimeExtension { method, params }) = result else {
+            panic!("role reset must use the live runtime service");
+        };
+        assert_eq!(method, "_atelier/role/delete");
+        assert_eq!(params["roleId"], "review");
+
+        assert!(
+            matches!(
+                super::RolesCommand.run(&mut ctx, "reset main"),
+                CommandResult::Error(error) if error.contains("/model")
+            ),
+            "MAIN must remain config.toml-managed"
+        );
     }
 
     #[test]
@@ -430,6 +536,38 @@ mod tests {
         assert_eq!(parse_role_id("main").unwrap(), RoleId::Main);
         assert_eq!(parse_role_id("title").unwrap(), RoleId::Title);
         assert!(parse_role_id("custom").is_err());
+    }
+
+    #[test]
+    fn role_set_accepts_sparse_per_field_overrides() {
+        let effort = parse_role_set("review", &["effort=high"]).unwrap();
+        assert_eq!(effort.provider_override(), None);
+        assert_eq!(effort.model_override(), None);
+        assert_eq!(effort.effort.as_deref(), Some("high"));
+        assert_eq!(effort.fast_mode_override(), None);
+
+        let fast = parse_role_set("compact", &["fast_mode=false"]).unwrap();
+        assert_eq!(fast.fast_mode_override(), Some(false));
+        assert_eq!(
+            serde_json::to_value(fast).unwrap(),
+            json!({"fast_mode": false})
+        );
+
+        let model = parse_role_set("explore", &["model=provider/child-model"]).unwrap();
+        assert_eq!(model.provider_override(), Some("provider"));
+        assert_eq!(model.model_override(), Some("child-model"));
+        assert_eq!(model.fast_mode_override(), None);
+    }
+
+    #[test]
+    fn role_set_rejects_unknown_or_duplicate_sparse_fields() {
+        assert!(parse_role_set("review", &["custom=value"]).is_err());
+        assert!(parse_role_set("review", &["effort=low", "effort=high"]).is_err());
+        assert!(
+            parse_role_set("review", &["provider=a", "model=b/c"])
+                .unwrap_err()
+                .contains("provider")
+        );
     }
 
     #[test]

@@ -169,7 +169,6 @@ pub struct HeadlessOptions {
     pub worktree: Option<String>,
     pub restore_code: bool,
     pub agent: Option<String>,
-    pub agents_json: Option<String>,
     pub cli_tools: Option<String>,
     pub cli_disallowed_tools: Option<String>,
     pub disable_web_search: bool,
@@ -264,54 +263,18 @@ pub(crate) fn parse_permission_rules_inner(
     (rules, errors)
 }
 
-pub(crate) enum ResolvedAgent {
-    FilePath(PathBuf),
-    Name(String),
-}
-
-pub(crate) fn resolve_agent_arg(agent: &str) -> ResolvedAgent {
-    let path = std::path::Path::new(agent);
-    if path.exists() && path.is_file() {
-        ResolvedAgent::FilePath(dunce::canonicalize(path).unwrap_or_else(|_| path.to_path_buf()))
-    } else {
-        ResolvedAgent::Name(agent.to_string())
+fn apply_agent_flag(
+    agent: &Option<String>,
+    config: &mut atelier_shell::agent::config::Config,
+) -> anyhow::Result<()> {
+    if let Some(name) = agent {
+        name.parse::<atelier_agent::config::BuiltinAgentName>()
+            .map_err(|_| anyhow::anyhow!(
+                "unsupported Agent harness `{name}`; only compiled built-in harness names are allowed"
+            ))?;
+        config.agent.name = Some(name.clone());
     }
-}
-
-fn parse_cli_agents(
-    json: &str,
-) -> anyhow::Result<Vec<atelier_shell::agent::config::AgentDefinition>> {
-    let map: std::collections::HashMap<String, serde_json::Value> =
-        serde_json::from_str(json).map_err(|e| anyhow::anyhow!("--agents: invalid JSON: {e}"))?;
-    let mut agents = Vec::with_capacity(map.len());
-    for (name, mut value) in map {
-        if let serde_json::Value::Object(ref mut obj) = value {
-            // Accept "prompt" as an alias for "promptBody".
-            if !obj.contains_key("promptBody")
-                && let Some(prompt) = obj.remove("prompt")
-            {
-                obj.insert("promptBody".to_string(), prompt);
-            }
-            obj.entry("name".to_string())
-                .or_insert_with(|| serde_json::Value::String(name.clone()));
-            obj.entry("description".to_string())
-                .or_insert_with(|| serde_json::Value::String(name.clone()));
-        }
-        let mut def = atelier_shell::agent::config::AgentDefinition::from_json(&value)
-            .map_err(|e| anyhow::anyhow!("--agents: failed to parse '{name}': {e}"))?;
-        def.name = name;
-        agents.push(def);
-    }
-    Ok(agents)
-}
-
-fn apply_agent_flag(agent: &Option<String>, config: &mut atelier_shell::agent::config::Config) {
-    if let Some(agent) = agent {
-        match resolve_agent_arg(agent) {
-            ResolvedAgent::FilePath(path) => config.agent_profile_path = Some(path),
-            ResolvedAgent::Name(name) => config.agent.name = Some(name),
-        }
-    }
+    Ok(())
 }
 
 // ── Emitter ──────────────────────────────────────────────────────────────
@@ -894,11 +857,7 @@ pub async fn run_single_turn(
     // No agent-level hub client URL (gateway-only cloud; workspace provider
     // hub_url lives on `atelier workspace` / WorkspaceStartArgs only).
 
-    apply_agent_flag(&options.agent, &mut agent_config);
-
-    if let Some(ref json) = options.agents_json {
-        agent_config.cli_agents = parse_cli_agents(json)?;
-    }
+    apply_agent_flag(&options.agent, &mut agent_config)?;
 
     agent_config.cli_agent_overrides = atelier_shell::agent::config::CliAgentOverrides {
         tools: parse_comma_list(options.cli_tools.as_deref()),

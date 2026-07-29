@@ -15,9 +15,7 @@ pub enum ContextSource {
     Resumed,
 }
 
-/// Resolved effective runtime configuration for a child agent.
-///
-/// Precedence: explicit spawn-time override > role default > persona default > parent inheritance (None).
+/// Resolved explicit runtime configuration for a child agent.
 #[derive(Debug, Clone, Default)]
 pub struct EffectiveRuntimeConfig {
     /// Explicit fixed Atelier runtime Role selected by an internal harness.
@@ -30,19 +28,8 @@ pub struct EffectiveRuntimeConfig {
     pub reasoning_effort: Option<String>,
     /// Resolved capability mode controlling tool access.
     pub capability_mode: Option<atelier_tool_types::SubagentCapabilityMode>,
-    /// Resolved persona name (for metadata/observability).
-    pub persona: Option<String>,
-    /// Resolved persona instructions text (for prompt assembly).
-    pub persona_instructions: Option<String>,
-    /// Role prompt_file content (loaded at resolve time).
-    pub role_prompt: Option<String>,
-    /// Warning when role prompt_file failed to load (soft degradation).
-    pub role_prompt_warning: Option<String>,
-    /// Resolved role name (the key that matched in subagent_roles lookup).
-    pub role_name: Option<String>,
-    /// Error from persona resolution (file unreadable, not found, empty).
-    /// Unlike role prompts, persona errors are fatal: spawn is aborted.
-    pub persona_error: Option<String>,
+    /// Fixed Role Context prompt loaded by the shell.
+    pub context_prompt: Option<String>,
     /// Isolation mode for the child execution environment.
     pub isolation: atelier_tool_types::SubagentIsolationMode,
 }
@@ -56,9 +43,6 @@ pub struct ResumeSourceData {
     /// Source subagent type (e.g. "general-purpose", "explore").
     /// Used by `validate_resume_identity` to check type match.
     pub subagent_type: String,
-    /// Source subagent persona, if any.
-    /// Used by `validate_resume_identity` to check persona match.
-    pub persona: Option<String>,
     /// Effective model ID used by the source child session.
     /// Used by the shell for resume model pinning (model overrides on
     /// resume are soft-ignored, not identity-gated).
@@ -84,10 +68,6 @@ pub struct ResumeSourceData {
 /// Errors that can occur during subagent resolution.
 #[derive(Debug, thiserror::Error)]
 pub enum ResolutionError {
-    /// Persona was explicitly requested but could not be resolved.
-    #[error("persona resolution failed: {0}")]
-    PersonaResolution(String),
-
     /// Resume identity validation failed.
     #[error("resume validation failed: {0}")]
     ResumeValidation(#[from] ResumeValidationError),
@@ -105,22 +85,8 @@ mod tests {
         assert!(config.model.is_none());
         assert!(config.reasoning_effort.is_none());
         assert!(config.capability_mode.is_none());
-        assert!(config.persona.is_none());
-        assert!(config.persona_instructions.is_none());
-        assert!(config.role_prompt.is_none());
-        assert!(config.role_prompt_warning.is_none());
-        assert!(config.role_name.is_none());
-        assert!(config.persona_error.is_none());
+        assert!(config.context_prompt.is_none());
         assert_eq!(config.isolation, SubagentIsolationMode::None);
-    }
-
-    #[test]
-    fn resolution_error_persona_display() {
-        let err = ResolutionError::PersonaResolution("persona \"x\" not found".into());
-        assert_eq!(
-            err.to_string(),
-            "persona resolution failed: persona \"x\" not found",
-        );
     }
 
     #[test]

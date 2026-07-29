@@ -428,7 +428,11 @@ mod tests {
 
     #[test]
     fn test_rel_path_buf_new_absolute_fails() {
-        let result = RelPathBuf::new("/absolute/path");
+        #[cfg(unix)]
+        let absolute = "/absolute/path";
+        #[cfg(windows)]
+        let absolute = r"C:\absolute\path";
+        let result = RelPathBuf::new(absolute);
         assert!(result.is_err());
     }
 
@@ -539,8 +543,11 @@ mod tests {
 
     #[test]
     fn test_rel_path_buf_serde_absolute_fails() {
-        let json = "\"/absolute/path\"";
-        let result: Result<RelPathBuf, _> = serde_json::from_str(json);
+        #[cfg(unix)]
+        let json = "\"/absolute/path\"".to_owned();
+        #[cfg(windows)]
+        let json = serde_json::to_string(r"C:\absolute\path").unwrap();
+        let result: Result<RelPathBuf, _> = serde_json::from_str(&json);
         assert!(result.is_err());
     }
 

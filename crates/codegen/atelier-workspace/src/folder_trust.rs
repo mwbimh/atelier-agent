@@ -245,11 +245,12 @@ pub fn repo_configs_present(cwd: &Path) -> bool {
 }
 
 /// Display-only: which repo-local code-exec config KINDS are present for `cwd`
-/// (`mcp`, `plugins`, `lsp`, `envrc`, `claude`, `hooks`, `agents`), deduped in
+/// (`mcp`, `plugins`, `lsp`, `envrc`, `claude`, `hooks`), deduped in
 /// cheap→expensive marker order. Single source with [`repo_configs_present`]
 /// (which is `!repo_config_kinds(cwd).is_empty()`), so a folder that the gate
-/// fired on always has a non-empty, accurate kind list — no `[plugins].paths` /
-/// `.claude` / `.atelier/agents` / subdir-launch gaps. NOT itself the trust gate.
+/// fired on always has a non-empty, accurate kind list. Legacy project Agent
+/// directories are inert and intentionally do not participate. NOT itself the
+/// trust gate.
 pub fn repo_config_kinds(cwd: &Path) -> Vec<&'static str> {
     collect_repo_config_kinds(cwd, false)
 }
@@ -359,14 +360,6 @@ fn collect_repo_config_kinds(cwd: &Path, first_only: bool) -> Vec<&'static str> 
     // exactly what `discover_plugins` scans for Project scope (errs secure).
     if !atelier_agent::plugins::project_plugin_dirs_in(&chain.dirs).is_empty() {
         hit!("plugins");
-    }
-    // Project AGENT dirs (`.atelier/agents` / `.claude/agents`): a project agent
-    // definition can carry an inline `hooks:` block (repo-controlled code-exec)
-    // AND can SHADOW a built-in subagent by name, so an agents-only clone must
-    // still be gated. Uses the shared SSOT walk (cwd→git root) so detection
-    // can't drift from agent discovery — same pattern as the plugin line above.
-    if !atelier_agent::discovery::project_agent_dirs_in(&chain.dirs).is_empty() {
-        hit!("agents");
     }
     // `~/.claude.json` `projects.<cwd>.mcpServers`.
     if claude_project_mcp_present(cwd) {
@@ -562,33 +555,16 @@ mod tests {
     }
 
     #[test]
-    fn repo_configs_present_detects_project_agents() {
-        // A `.atelier/agents`-only clone must be gated: a project agent definition
-        // can carry an inline `hooks:` block (code-exec) and can shadow a built-in
-        // subagent by name.
+    fn legacy_project_agent_directories_are_inert() {
         let tmp = repo_tmp();
         std::fs::create_dir_all(tmp.path().join(".atelier").join("agents")).unwrap();
-        assert!(repo_configs_present(tmp.path()));
-    }
-
-    #[test]
-    fn repo_configs_present_detects_claude_agents() {
-        // `.claude/agents` is the vendor-compat project agent dir; same gate.
-        let tmp = repo_tmp();
         std::fs::create_dir_all(tmp.path().join(".claude").join("agents")).unwrap();
-        assert!(repo_configs_present(tmp.path()));
-    }
-
-    #[test]
-    fn repo_configs_present_detects_project_agents_from_subdir() {
-        // Agents live at the git root but the session is launched from a subdir;
-        // detection walks cwd→git root exactly like agent discovery, so it must
-        // still fire (a cwd-only probe would miss it).
-        let tmp = repo_tmp();
-        std::fs::create_dir_all(tmp.path().join(".atelier").join("agents")).unwrap();
         let subdir = tmp.path().join("crates").join("inner");
         std::fs::create_dir_all(&subdir).unwrap();
-        assert!(repo_configs_present(&subdir));
+
+        assert!(!repo_configs_present(tmp.path()));
+        assert!(!repo_configs_present(&subdir));
+        assert!(!repo_config_kinds(&subdir).contains(&"agents"));
     }
 
     #[test]
@@ -688,10 +664,9 @@ mod tests {
     fn repo_config_kinds_matches_gate_and_reports_all_kinds() {
         // SSOT guard: `repo_config_kinds` (full scan) must agree with the gate
         // (`repo_configs_present == !repo_config_kinds(..).is_empty()`) AND report
-        // the kinds the single-source refactor added — `plugins` via
-        // `[plugins].paths`, `claude` via `.claude/settings.json`, `agents` via
-        // `.atelier/agents` — even when launched from a SUBDIR (the cwd→git-root walk
-        // that `first_only` shares). Guards against silent drift between the two.
+        // the active kinds — `plugins` via `[plugins].paths` and `claude` via
+        // `.claude/settings.json` — even when launched from a SUBDIR. Legacy
+        // `.atelier/agents` metadata must stay inert.
         let tmp = repo_tmp();
         let atelier = tmp.path().join(".atelier");
         std::fs::create_dir_all(atelier.join("agents")).unwrap();
@@ -708,12 +683,13 @@ mod tests {
         std::fs::create_dir_all(&subdir).unwrap();
 
         let kinds = repo_config_kinds(&subdir);
-        for expected in ["plugins", "claude", "agents"] {
+        for expected in ["plugins", "claude"] {
             assert!(
                 kinds.contains(&expected),
                 "repo_config_kinds missing {expected:?} (subdir launch); got {kinds:?}"
             );
         }
+        assert!(!kinds.contains(&"agents"), "legacy Agent dirs are inert");
         // Gate ↔ kinds equivalence: a configured repo and an empty one.
         assert_eq!(
             repo_configs_present(&subdir),

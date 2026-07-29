@@ -610,9 +610,7 @@ fn resolve_agent_definition_defaults_to_atelier_build() {
     let tmp = tempfile::tempdir().unwrap();
     let def = MvpAgent::resolve_agent_definition(
         tmp.path(),
-        None,
         &config::AgentSelectionConfig::default(),
-        None,
         None,
     );
     assert_eq!(def.name, config::DEFAULT_AGENT_TYPE);
@@ -632,9 +630,7 @@ fn resolve_agent_definition_model_agent_type_overrides_default() {
     let tmp = tempfile::tempdir().unwrap();
     let def = MvpAgent::resolve_agent_definition(
         tmp.path(),
-        None,
         &config::AgentSelectionConfig::default(),
-        None,
         Some("codex"),
     );
     assert_eq!(def.name, "codex");
@@ -656,9 +652,7 @@ fn resolve_agent_definition_none_agent_type_does_not_override() {
     let tmp = tempfile::tempdir().unwrap();
     let def = MvpAgent::resolve_agent_definition(
         tmp.path(),
-        None,
         &config::AgentSelectionConfig::default(),
-        None,
         None,
     );
     assert_eq!(def.name, config::DEFAULT_AGENT_TYPE);
@@ -666,76 +660,32 @@ fn resolve_agent_definition_none_agent_type_does_not_override() {
         unsafe { std::env::set_var("ATELIER_AGENT", v) }
     }
 }
-/// Regression for the web-client devbox bug: an ACP profile must
-/// win when the model's `agent_type` is the default value.
 #[test]
 #[serial_test::serial]
-fn resolve_agent_definition_acp_profile_wins_when_model_agent_type_is_default() {
-    let prev = std::env::var("ATELIER_AGENT").ok();
-    unsafe {
-        std::env::remove_var("ATELIER_AGENT");
-    }
+fn resolve_agent_definition_rejects_custom_environment_agent() {
+    let previous = std::env::var("ATELIER_AGENT").ok();
+    unsafe { std::env::set_var("ATELIER_AGENT", "custom-agent-profile") };
     let tmp = tempfile::tempdir().unwrap();
-    let acp_profile = atelier_agent::AgentDefinition::from_json(&serde_json::json!(
-        { "name" : "custom-devbox-profile", "description" :
-        "Custom devbox profile", "systemPrompt" :
-        "You are a custom-configured devbox agent.", }
-    ))
-    .expect("agent definition must parse");
-    let def = MvpAgent::resolve_agent_definition(
-        tmp.path(),
-        None,
-        &config::AgentSelectionConfig::default(),
-        Some(acp_profile),
-        Some(config::DEFAULT_AGENT_TYPE),
-    );
-    assert_eq!(
-        def.name, "custom-devbox-profile",
-        "ACP _meta.agentProfile must win when model_agent_type is the default value"
-    );
-    if let Some(v) = prev {
-        unsafe { std::env::set_var("ATELIER_AGENT", v) }
-    }
-}
-/// Regression: after `DEFAULT_AGENT_TYPE` flipped to
-/// `atelier-build-plan`, models in the catalog that still declare
-/// `agent_type = "atelier-build"` explicitly must NOT preempt an ACP
-/// profile. Any value in the `atelier-build*` family is the stock harness
-/// with no strict requirement.
-#[test]
-#[serial_test::serial]
-fn resolve_agent_definition_acp_profile_wins_for_explicit_atelier_build_family() {
-    let prev = std::env::var("ATELIER_AGENT").ok();
-    unsafe {
-        std::env::remove_var("ATELIER_AGENT");
-    }
-    let tmp = tempfile::tempdir().unwrap();
-    let acp_profile = atelier_agent::AgentDefinition::from_json(&serde_json::json!(
-        { "name" : "custom-devbox-profile", "description" :
-        "Custom devbox profile", }
-    ))
-    .expect("agent definition must parse");
-    for family_variant in [
-        "atelier-build",
-        "atelier-build-plan",
-        "atelier-build-concise",
-    ] {
-        let def = MvpAgent::resolve_agent_definition(
+    let result = std::panic::catch_unwind(|| {
+        MvpAgent::resolve_agent_definition(
             tmp.path(),
-            None,
             &config::AgentSelectionConfig::default(),
-            Some(acp_profile.clone()),
-            Some(family_variant),
-        );
-        assert_eq!(
-            def.name, "custom-devbox-profile",
-            "ACP profile must win for atelier-build family variant `{family_variant}`"
-        );
+            None,
+        )
+    });
+    match previous {
+        Some(value) => unsafe { std::env::set_var("ATELIER_AGENT", value) },
+        None => unsafe { std::env::remove_var("ATELIER_AGENT") },
     }
-    if let Some(v) = prev {
-        unsafe { std::env::set_var("ATELIER_AGENT", v) }
-    }
+    let panic = result.expect_err("custom ATELIER_AGENT values must fail closed");
+    let message = panic
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| panic.downcast_ref::<&str>().copied())
+        .unwrap_or_default();
+    assert!(message.contains("unsupported ATELIER_AGENT value"));
 }
+
 /// A non-strict (stock / vision-capable) model leaves the template alone, so
 /// such models keep native image input.
 #[test]
@@ -759,67 +709,6 @@ fn inherited_harness_template_respects_explicit_template() {
     let tmp = tempfile::tempdir().unwrap();
     let explicit = UserMessageTemplate::Custom("MY CUSTOM TEMPLATE".to_owned());
     assert!(inherited_harness_template(&explicit, Some("cursor"), tmp.path()).is_none());
-}
-/// CLI `--agent-profile` wins when model_agent_type is the default
-/// (also shadowed by the same regression).
-#[test]
-#[serial_test::serial]
-fn resolve_agent_definition_cli_agent_profile_wins_when_model_agent_type_is_default() {
-    let prev = std::env::var("ATELIER_AGENT").ok();
-    unsafe {
-        std::env::remove_var("ATELIER_AGENT");
-    }
-    let tmp = tempfile::tempdir().unwrap();
-    let profile_path = tmp.path().join("cli-profile.md");
-    std::fs::write(
-        &profile_path,
-        "---\nname: cli-profile\ndescription: cli test\n---\nYou are a CLI profile.\n",
-    )
-    .unwrap();
-    let def = MvpAgent::resolve_agent_definition(
-        tmp.path(),
-        Some(&profile_path),
-        &config::AgentSelectionConfig::default(),
-        None,
-        Some(config::DEFAULT_AGENT_TYPE),
-    );
-    assert_eq!(def.name, "cli-profile");
-    if let Some(v) = prev {
-        unsafe { std::env::set_var("ATELIER_AGENT", v) }
-    }
-}
-/// Agent profile with `model: Override(id)` preserves the field through resolution.
-#[test]
-#[serial_test::serial]
-fn resolve_agent_definition_agent_profile_with_model_override() {
-    let prev = std::env::var("ATELIER_AGENT").ok();
-    unsafe {
-        std::env::remove_var("ATELIER_AGENT");
-    }
-    let tmp = tempfile::tempdir().unwrap();
-    let agents_dir = tmp.path().join(".atelier").join("agents");
-    std::fs::create_dir_all(&agents_dir).unwrap();
-    std::fs::write(
-            agents_dir.join("test-architect.md"),
-            "---\nname: test-architect\ndescription: test\nmodel: test-model-123\n---\nYou are a test.\n",
-        )
-        .unwrap();
-    let agent_config = config::AgentSelectionConfig {
-        name: Some("test-architect".to_string()),
-        definition: None,
-        system_prompt_label: None,
-    };
-    let def = MvpAgent::resolve_agent_definition(tmp.path(), None, &agent_config, None, None);
-    assert_eq!(def.name, "test-architect");
-    assert_eq!(
-        def.model,
-        atelier_agent::config::ModelOverride::Override("test-model-123".to_string()),
-        "agent profile model override must be preserved through resolution"
-    );
-    match prev {
-        Some(v) => unsafe { std::env::set_var("ATELIER_AGENT", v) },
-        None => unsafe { std::env::remove_var("ATELIER_AGENT") },
-    }
 }
 #[test]
 fn read_session_or_init_meta_str_prefers_session_meta() {
@@ -858,6 +747,35 @@ fn parse_session_plugin_dirs_filters_and_dedupes() {
     assert!(parse_session_plugin_dirs(None).is_empty());
     assert!(parse_session_plugin_dirs(serde_json::json!({}).as_object()).is_empty());
 }
+#[test]
+fn builtin_agent_profile_meta_accepts_only_fixed_harness_names() {
+    let session = serde_json::json!({ "agentProfile": "atelier-build-plan" });
+    assert_eq!(
+        builtin_agent_profile_from_meta(session.as_object(), None).unwrap(),
+        Some("atelier-build-plan")
+    );
+
+    let custom = serde_json::json!({ "agentProfile": "custom-profile" });
+    assert!(
+        builtin_agent_profile_from_meta(custom.as_object(), None)
+            .unwrap_err()
+            .contains("only built-in Agent harnesses are allowed")
+    );
+
+    let object = serde_json::json!({ "agentProfile": { "name": "codex" } });
+    assert_eq!(
+        builtin_agent_profile_from_meta(object.as_object(), None).unwrap_err(),
+        "agentProfile must be a built-in Agent harness name"
+    );
+}
+
+#[test]
+fn builtin_agent_profile_session_value_is_authoritative() {
+    let session = serde_json::json!({ "agentProfile": { "name": "custom" } });
+    let init = serde_json::json!({ "agentProfile": "codex" });
+    assert!(builtin_agent_profile_from_meta(session.as_object(), init.as_object()).is_err());
+}
+
 #[test]
 fn read_session_or_init_meta_str_returns_none_when_absent() {
     assert_eq!(read_session_or_init_meta_str(None, None, "rules"), None,);
@@ -1006,9 +924,7 @@ async fn file_toolset_override_e2e_to_finalized_toolset() {
     let tmp = tempfile::tempdir().unwrap();
     let mut def = MvpAgent::resolve_agent_definition(
         tmp.path(),
-        None,
         &config::AgentSelectionConfig::default(),
-        None,
         None,
     );
     let toolset_config = ShellToolsetConfig {

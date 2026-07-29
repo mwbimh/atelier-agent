@@ -270,6 +270,7 @@ mod tests {
     fn test_sampling_config() -> SamplingConfig {
         SamplingConfig {
             base_url: "https://api.example.com".to_string(),
+            provider_id: None,
             model: "test-model".to_string(),
             max_completion_tokens: None,
             temperature: None,

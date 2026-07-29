@@ -135,6 +135,7 @@ atelier-test-utils = { path = "../../common/atelier-test-utils" }
 # Decode tar.gz archives produced by workspace upload helpers in tests.
 flate2 = { workspace = true }
 tar = { workspace = true }
+serial_test = { workspace = true }
 
 [package.metadata.cargo-shear]
 ignored = ["tokio-tungstenite"]

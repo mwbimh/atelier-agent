@@ -276,3 +276,6 @@ default-bazel = [
 jemalloc = []
 sandbox-enforce = ["atelier-sandbox/enforce"]
 release-dist = []
+# Exposes narrowly scoped constructors/setters used by sibling crate unit tests.
+# Never enabled by production binaries.
+test-support = ["atelier-pager-render/test-support"]

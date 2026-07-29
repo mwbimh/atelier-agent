@@ -123,7 +123,7 @@ pub static USER_GUIDE: &[Doc] = &[
     ),
     guide!(
         "16-subagents.md",
-        "Subagents and Personas",
+        "Built-in Subagents",
         "Spawning parallel child agents with specialized roles"
     ),
     guide!(

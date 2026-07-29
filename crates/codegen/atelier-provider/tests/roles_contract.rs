@@ -1,15 +1,11 @@
 use atelier_provider::{ProviderRegistry, RoleConfig, RoleError, RoleId, RoleRegistry};
-use serde_json::{Map, Value};
+use serde_json::{Map, Value, json};
 use tempfile::tempdir;
 
 fn role_config(provider: &str, model: &str) -> RoleConfig {
-    RoleConfig {
-        provider: provider.into(),
-        model: model.into(),
-        effort: Some("high".into()),
-        fast_mode: false,
-        payload: Map::new(),
-    }
+    let mut config = RoleConfig::new(provider, model).unwrap();
+    config.effort = Some("high".into());
+    config
 }
 
 #[test]
@@ -21,6 +17,45 @@ fn default_registry_contains_no_placeholder_role_assignments() {
         assert!(registry.find(role_id).is_none());
     }
     assert!(registry.find_by_name("custom").is_none());
+}
+
+#[test]
+fn fixed_roles_include_general_subagent_with_stable_parentage() {
+    assert_eq!(RoleId::ALL.len(), 12);
+    assert_eq!("general".parse::<RoleId>().unwrap(), RoleId::General);
+    assert_eq!(RoleId::General.settings_parent(), Some(RoleId::Main));
+    for role in [
+        RoleId::Explore,
+        RoleId::Implement,
+        RoleId::Review,
+        RoleId::Test,
+    ] {
+        assert_eq!(role.settings_parent(), Some(RoleId::General));
+    }
+    for role in [
+        RoleId::Compact,
+        RoleId::Summary,
+        RoleId::Title,
+        RoleId::Planner,
+        RoleId::Strategist,
+        RoleId::Skeptic,
+    ] {
+        assert_eq!(role.settings_parent(), Some(RoleId::Main));
+    }
+}
+
+#[test]
+fn context_ancestry_never_inherits_main_for_non_main_roles() {
+    assert_eq!(RoleId::Main.context_ancestry(), &[RoleId::Main]);
+    assert_eq!(RoleId::General.context_ancestry(), &[RoleId::General]);
+    assert_eq!(
+        RoleId::Review.context_ancestry(),
+        &[RoleId::Review, RoleId::General]
+    );
+    assert_eq!(RoleId::Compact.context_ancestry(), &[RoleId::Compact]);
+    for role in RoleId::ALL.into_iter().filter(|role| *role != RoleId::Main) {
+        assert!(!role.context_ancestry().contains(&RoleId::Main));
+    }
 }
 
 #[test]
@@ -110,6 +145,143 @@ fn role_debug_redacts_payload_values() {
 }
 
 #[test]
+fn sparse_role_settings_resolve_each_field_through_the_fixed_parent_chain() {
+    let registry: RoleRegistry = toml::from_str(
+        r#"
+        [general]
+        provider = "proxy"
+        model = "general-model"
+        effort = "low"
+        fast_mode = true
+
+        [explore]
+        model = "explore-model"
+
+        [review]
+        effort = "high"
+        fast_mode = false
+        [review.payload]
+        temperature = 0.1
+        "#,
+    )
+    .unwrap();
+    let main = RoleConfig::new("main-provider", "main-model").unwrap();
+
+    let (_, explore) = registry.resolve_inherited(RoleId::Explore, &main);
+    assert_eq!(explore.provider, "proxy");
+    assert_eq!(explore.model, "explore-model");
+    assert_eq!(explore.effort.as_deref(), Some("low"));
+    assert!(explore.fast_mode);
+
+    let (_, review) = registry.resolve_inherited(RoleId::Review, &main);
+    assert_eq!(review.provider, "proxy");
+    assert_eq!(review.model, "general-model");
+    assert_eq!(review.effort.as_deref(), Some("high"));
+    assert!(!review.fast_mode);
+    assert_eq!(review.payload["temperature"], 0.1);
+}
+
+#[test]
+fn sparse_role_resolution_reports_per_field_sources() {
+    let main = RoleConfig::new("main-provider", "main-model").unwrap();
+    let general: RoleConfig = toml::from_str(
+        r#"
+        provider = "general-provider"
+        effort = "low"
+        [payload]
+        shared = "general"
+        parent = true
+        "#,
+    )
+    .unwrap();
+    let review: RoleConfig = toml::from_str(
+        r#"
+        model = "review-model"
+        fast_mode = true
+        [payload]
+        shared = "review"
+        "#,
+    )
+    .unwrap();
+    let mut registry = RoleRegistry::new();
+    registry.update(RoleId::General, general).unwrap();
+    registry.update(RoleId::Review, review).unwrap();
+
+    let resolved = registry.resolve_inherited_details(RoleId::Review, &main);
+
+    assert_eq!(resolved.source, RoleId::Review);
+    assert_eq!(resolved.field_sources.provider, RoleId::General);
+    assert_eq!(resolved.field_sources.model, RoleId::Review);
+    assert_eq!(resolved.field_sources.effort, Some(RoleId::General));
+    assert_eq!(resolved.field_sources.fast_mode, Some(RoleId::Review));
+    assert_eq!(resolved.field_sources.payload["parent"], RoleId::General);
+    assert_eq!(resolved.field_sources.payload["shared"], RoleId::Review);
+}
+
+#[test]
+fn sparse_role_patch_preserves_unspecified_exact_overrides() {
+    let mut existing = RoleConfig::new("provider", "model-a").unwrap();
+    existing.effort = Some("low".into());
+    existing.set_fast_mode(true);
+    existing.payload.insert("kept".into(), json!(true));
+    let patch: RoleConfig = toml::from_str("effort = \"high\"").unwrap();
+
+    let merged = existing.patched_with(&patch, true);
+
+    assert_eq!(merged.provider_override(), Some("provider"));
+    assert_eq!(merged.model_override(), Some("model-a"));
+    assert_eq!(merged.effort.as_deref(), Some("high"));
+    assert_eq!(merged.fast_mode_override(), Some(true));
+    assert_eq!(merged.payload["kept"], json!(true));
+}
+
+#[test]
+fn sparse_role_patch_can_replace_the_exact_payload() {
+    let mut existing = RoleConfig::new("provider", "model-a").unwrap();
+    existing.payload.insert("old".into(), json!(true));
+    let patch: RoleConfig = toml::from_str(
+        r#"
+        effort = "high"
+        [payload]
+        new = true
+        "#,
+    )
+    .unwrap();
+
+    let merged = existing.patched_with(&patch, false);
+
+    assert!(!merged.payload.contains_key("old"));
+    assert_eq!(merged.payload["new"], json!(true));
+}
+
+#[test]
+fn sparse_role_serialization_preserves_omitted_fast_mode() {
+    let registry: RoleRegistry = toml::from_str(
+        r#"
+        [explore]
+        effort = "medium"
+        "#,
+    )
+    .unwrap();
+
+    let serialized = toml::to_string(&registry).unwrap();
+
+    assert!(serialized.contains("effort = \"medium\""));
+    assert!(!serialized.contains("fast_mode"));
+    assert!(!serialized.contains("provider"));
+    assert!(!serialized.contains("model"));
+}
+
+#[test]
+fn main_role_cannot_be_persisted_in_role_registry() {
+    let mut registry = RoleRegistry::default();
+    assert_eq!(
+        registry.update(RoleId::Main, role_config("provider", "model")),
+        Err(RoleError::MainManagedByConfig)
+    );
+}
+
+#[test]
 fn role_registry_supports_update_delete_and_find() {
     let mut registry = RoleRegistry::default();
     let updated = role_config("proxy", "review-model");
@@ -187,10 +359,10 @@ fn role_fast_mode_false_overrides_provider_default_true() {
 fn every_persisted_role_assignment_is_configured() {
     let mut registry = RoleRegistry::default();
     registry
-        .update(RoleId::Main, role_config("default", "default"))
+        .update(RoleId::General, role_config("default", "default"))
         .unwrap();
 
-    assert!(registry.find(RoleId::Main).unwrap().is_configured());
+    assert!(registry.find(RoleId::General).unwrap().is_configured());
     assert!(role_config("provider", "model").is_configured());
 }
 
@@ -216,14 +388,15 @@ fn missing_roles_file_stays_empty_until_a_role_is_configured() {
     let mut registry = ProviderRegistry::load_or_create(&path).unwrap();
     assert!(registry.roles().is_empty());
     registry
-        .update_role(RoleId::Main, role_config("proxy", "main-model"))
+        .update_role(RoleId::General, role_config("proxy", "general-model"))
         .unwrap();
     registry.save().unwrap();
 
     let text = std::fs::read_to_string(directory.path().join("roles.toml")).unwrap();
-    assert!(text.contains("[roles.main]"));
+    assert!(text.contains("[roles.general]"));
+    assert!(!text.contains("[roles.main]"));
     let loaded = ProviderRegistry::load_or_create(&path).unwrap();
-    assert_eq!(loaded.role(RoleId::Main).unwrap().model, "main-model");
+    assert_eq!(loaded.role(RoleId::General).unwrap().model, "general-model");
     assert_eq!(loaded.roles().len(), 1);
     assert!(!text.contains("provider = \"default\""));
     assert!(!text.contains("model = \"default\""));
@@ -236,7 +409,7 @@ fn invalid_persisted_role_is_rejected() {
     std::fs::write(&path, "schema_version = 3\n\n[providers]\n").unwrap();
     std::fs::write(
         directory.path().join("roles.toml"),
-        "schema_version = 1\n\n[roles.main]\nprovider = \"\"\nmodel = \"model\"\n",
+        "schema_version = 1\n\n[roles.general]\nprovider = \"\"\nmodel = \"model\"\n",
     )
     .unwrap();
 

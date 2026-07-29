@@ -2156,10 +2156,10 @@ mod tests {
         // Hermetic: three names tie on fuzzy score for `/p`; MRU recency must
         // pick the winner regardless of the live builtin registry.
         let mut ctrl = tie_controller(
-            &["privacy", "personas", "plan"],
+            &["privacy", "providers", "plan"],
             &[
                 ("privacy", 1_700_000_900),
-                ("personas", 1_700_000_010),
+                ("providers", 1_700_000_010),
                 ("plan", 1_700_000_050),
             ],
         );
@@ -2272,11 +2272,11 @@ mod tests {
     #[test]
     fn ghost_tracks_selection_when_skill_wins_mru_tie() {
         // Repro of the reported "/p shows ghost `pager-headless` but Tab inserts
-        // `personas`" divergence: a builtin (`personas`) and an ACP skill
+        // `providers`" divergence: a builtin (`providers`) and an ACP skill
         // (`pager-headless`) tie on fuzzy score for `/p`, MRU favors the skill.
         // The ghost must equal the selected (Tab-accepted) row in every case.
         let mut ctrl = SlashController::new(
-            CommandRegistry::new(vec![Arc::new(TieCmd("personas"))]),
+            CommandRegistry::new(vec![Arc::new(TieCmd("providers"))]),
             std::path::PathBuf::from("."),
         );
         ctrl.registry_mut()
@@ -2324,8 +2324,8 @@ mod tests {
         // Flat schema (hermetic): using `plan` recently boosts it even when
         // typing `/p`, independent of the live builtin registry.
         let mut ctrl = tie_controller(
-            &["plan", "personas"],
-            &[("plan", 1_700_000_999), ("personas", 1_700_000_010)],
+            &["plan", "providers"],
+            &[("plan", 1_700_000_999), ("providers", 1_700_000_010)],
         );
 
         let state = SlashState::default();

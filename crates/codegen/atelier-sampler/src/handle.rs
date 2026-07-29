@@ -82,6 +82,15 @@ impl SamplerHandle {
         });
     }
 
+    /// Mark the start of a new logical sampling operation.
+    ///
+    /// Commands on this handle are ordered, so calling this immediately before
+    /// `submit` or `submit_and_collect` resets prior terminal-failure state
+    /// without resetting auth/compaction resubmissions inside the operation.
+    pub fn reset_retry_budget(&self) {
+        let _ = self.cmd_tx.send(SamplerCommand::ResetRetryBudget);
+    }
+
     /// Query whether a request is still in flight. Returns `false`
     /// for unknown / finished / cancelled ids.
     pub async fn is_active(&self, request_id: RequestId) -> bool {

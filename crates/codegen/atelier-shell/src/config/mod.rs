@@ -1,6 +1,5 @@
 pub mod reloader;
 pub mod watcher;
-use crate::bundle;
 pub use atelier_config_types::{
     DEFAULT_RECENCY_DECAY, MemoryDreamConfig, MemoryEmbeddingConfig, MemoryFlushConfig,
     MemoryGcConfig, MemoryIndexConfig, MemoryInitialInjectionConfig, MemorySearchConfig,
@@ -220,7 +219,7 @@ impl MemoryConfig {
 /// `ATELIER_SUBAGENTS=0` env var or `[subagents] enabled = false`
 /// in config.toml.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct SubagentsConfig {
     /// Whether subagent support is enabled.
     pub enabled: bool,
@@ -246,193 +245,12 @@ pub struct SubagentsConfig {
     /// ```
     #[serde(default)]
     pub toggle: std::collections::HashMap<String, bool>,
-    /// Declarative subagent role definitions.
-    ///
-    /// ```toml
-    /// [subagents.roles.researcher]
-    /// description = "Deep research agent"
-    /// default_capability_mode = "read-only"
-    /// model = "atelier-3"
-    ///
-    /// [subagents.roles.implementer]
-    /// description = "Implementation agent with full access"
-    /// default_capability_mode = "all"
-    /// prompt_file = ".atelier/prompts/implementer.md"
-    /// ```
-    #[serde(default)]
-    pub roles: std::collections::HashMap<String, SubagentRole>,
-    /// Named persona/SOUL definitions.
-    ///
-    /// ```toml
-    /// [subagents.personas.researcher]
-    /// instructions = "You are a thorough researcher. Always cite sources."
-    ///
-    /// [subagents.personas.concise]
-    /// instructions = "Be extremely concise. No filler words."
-    /// instructions_file = ".atelier/personas/concise.md"
-    /// ```
-    #[serde(default)]
-    pub personas: std::collections::HashMap<String, SubagentPersona>,
 }
-use atelier_subagent_resolution::config::{SubagentPersona, SubagentRole};
 impl SubagentsConfig {
-    fn discover_personas_in_dir(&mut self, dir: &std::path::Path) {
-        if !dir.is_dir() {
-            return;
-        }
-        let entries = match std::fs::read_dir(dir) {
-            Ok(e) => e,
-            Err(e) => {
-                tracing::debug!(error = % e, "Failed to read personas directory");
-                return;
-            }
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) != Some("toml") {
-                continue;
-            }
-            let Some(name) = path.file_stem().and_then(|s| s.to_str()).map(String::from) else {
-                continue;
-            };
-            if self.personas.contains_key(&name) {
-                continue;
-            }
-            match std::fs::read_to_string(&path) {
-                Ok(content) => match toml::from_str::<SubagentPersona>(&content) {
-                    Ok(mut persona) => {
-                        persona.source_dir = path.parent().map(|p| p.to_path_buf());
-                        persona.source_path = Some(path.display().to_string());
-                        tracing::debug!(
-                            persona = % name, "Loaded persona from file"
-                        );
-                        self.personas.insert(name, persona);
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            persona = % name, error = % e,
-                            "Failed to parse persona file"
-                        );
-                    }
-                },
-                Err(e) => {
-                    tracing::warn!(error = % e, "Failed to read persona file");
-                }
-            }
-        }
-    }
-    fn discover_roles_in_dir(&mut self, dir: &std::path::Path) {
-        if !dir.is_dir() {
-            return;
-        }
-        let entries = match std::fs::read_dir(dir) {
-            Ok(e) => e,
-            Err(e) => {
-                tracing::debug!(error = % e, "Failed to read roles directory");
-                return;
-            }
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) != Some("toml") {
-                continue;
-            }
-            let Some(name) = path.file_stem().and_then(|s| s.to_str()).map(String::from) else {
-                continue;
-            };
-            if self.roles.contains_key(&name) {
-                tracing::debug!(
-                    role = % name,
-                    "Skipping file-based role, higher-priority config takes precedence"
-                );
-                continue;
-            }
-            match std::fs::read_to_string(&path) {
-                Ok(content) => match toml::from_str::<SubagentRole>(&content) {
-                    Ok(mut role) => {
-                        role.source_dir = path.parent().map(|p| p.to_path_buf());
-                        tracing::debug!(role = % name, "Loaded role from file");
-                        self.roles.insert(name, role);
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            role = % name, path = % path.display(), error = % e,
-                            "Failed to parse role file"
-                        );
-                    }
-                },
-                Err(e) => {
-                    tracing::warn!(
-                        path = % path.display(), error = % e, "Failed to read role file"
-                    );
-                }
-            }
-        }
-    }
     /// Check if a subagent is enabled.
     /// Returns `true` if the agent is not in the toggle map (default enabled).
     pub fn is_subagent_enabled(&self, name: &str) -> bool {
         self.toggle.get(name).copied().unwrap_or(true)
-    }
-    /// Look up a role by name.
-    pub fn get_role(&self, name: &str) -> Option<&SubagentRole> {
-        self.roles.get(name)
-    }
-    /// Look up a persona by name.
-    pub fn get_persona(&self, name: &str) -> Option<&SubagentPersona> {
-        self.personas.get(name)
-    }
-    /// Discover personas from `.atelier/personas/` directory.
-    ///
-    /// File-based personas are loaded from `{cwd}/.atelier/personas/*.toml`.
-    /// Each file defines a single `SubagentPersona`. The file stem becomes
-    /// the persona name. Inline config takes precedence.
-    pub fn discover_personas(&mut self, cwd: &std::path::Path) {
-        let dir = cwd.join(".atelier").join("personas");
-        self.discover_personas_in_dir(&dir);
-    }
-    /// Validate all role definitions. Returns a list of (role_name, error_message)
-    /// for invalid entries.
-    pub fn validate_roles(&self) -> Vec<(String, String)> {
-        let valid_modes = ["read-only", "read-write", "execute", "all"];
-        let mut errors = Vec::new();
-        for (name, role) in &self.roles {
-            if role.description.is_empty() {
-                errors.push((name.clone(), "description is required".to_string()));
-            }
-            if let Some(ref mode) = role.default_capability_mode
-                && !valid_modes.contains(&mode.as_str())
-            {
-                errors.push((
-                    name.clone(),
-                    format!(
-                        "invalid default_capability_mode \"{mode}\", \
-                         must be one of: {}",
-                        valid_modes.join(", ")
-                    ),
-                ));
-            }
-            if let Some(ref pf) = role.prompt_file
-                && pf.trim().is_empty()
-            {
-                errors.push((
-                    name.clone(),
-                    "prompt_file must not be empty or whitespace".to_string(),
-                ));
-            }
-        }
-        errors
-    }
-    /// Discover roles from `.atelier/roles/` directory and merge with inline config.
-    ///
-    /// File-based roles are loaded from `{cwd}/.atelier/roles/*.toml`. Each file
-    /// defines a single `SubagentRole` (same schema as inline `[subagents.roles.*]`).
-    /// The file stem becomes the role name.
-    ///
-    /// Precedence: inline config roles override file-based roles with the same name.
-    pub fn discover_roles(&mut self, cwd: &std::path::Path) {
-        let roles_dir = cwd.join(".atelier").join("roles");
-        self.discover_roles_in_dir(&roles_dir);
     }
     /// Resolve the final subagents config from all sources (in priority order):
     /// 1. CLI flag `--subagents` (absolute highest — always enables)
@@ -444,20 +262,7 @@ impl SubagentsConfig {
     /// intent (CLI flag, `ATELIER_SUBAGENTS`, `[subagents] enabled`) changes
     /// the default.
     ///
-    /// When `cwd` is provided, file-based roles are discovered from
-    /// `{cwd}/.atelier/roles/*.toml` and merged (inline config takes precedence).
-    pub fn resolve(cli_flag: bool, config: &toml::Value, cwd: Option<&std::path::Path>) -> Self {
-        let atelier_home = crate::util::atelier_home::atelier_home();
-        let bundled_root = bundle::bundled_root();
-        Self::resolve_with_roots(cli_flag, config, cwd, &atelier_home, &bundled_root)
-    }
-    fn resolve_with_roots(
-        cli_flag: bool,
-        config: &toml::Value,
-        cwd: Option<&std::path::Path>,
-        user_root: &std::path::Path,
-        bundled_root: &std::path::Path,
-    ) -> Self {
+    pub fn resolve(cli_flag: bool, config: &toml::Value, _cwd: Option<&std::path::Path>) -> Self {
         let mut result: Self = config
             .get("subagents")
             .and_then(|v| v.clone().try_into().ok())
@@ -471,14 +276,9 @@ impl SubagentsConfig {
             true,
         );
         result.enabled = resolved.value;
-        if let Some(cwd) = cwd {
-            result.discover_roles(cwd);
-            result.discover_personas(cwd);
-        }
-        result.discover_roles_in_dir(&user_root.join("roles"));
-        result.discover_personas_in_dir(&user_root.join("personas"));
-        result.discover_roles_in_dir(&bundled_root.join("roles"));
-        result.discover_personas_in_dir(&bundled_root.join("personas"));
+        // Runtime Role IDs are fixed. Custom Role/Persona fields are rejected
+        // by `SubagentsConfig` deserialization and no filesystem discovery is
+        // performed.
         result
     }
 }

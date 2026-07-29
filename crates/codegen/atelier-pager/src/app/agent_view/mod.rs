@@ -1134,10 +1134,6 @@ pub struct AgentView {
     /// Active hooks/plugins modal popup. When `Some`, blocks all input and
     /// renders as a centered overlay. Opened by `/hooks`, `/plugins`, or `/mcps`.
     pub(crate) extensions_modal: Option<ExtensionsModalState>,
-    /// Active agents modal popup. When `Some`, blocks all input and
-    /// renders as a centered overlay. Opened by `/config-agents` or `/agents`.
-    pub(crate) agents_modal: Option<crate::views::agents_modal::AgentsModalState>,
-    pub(crate) persona_detail: Option<crate::views::persona_detail::PersonaDetailState>,
     /// Active /btw side question overlay. When `Some`, renders as a dismissible
     /// overlay and captures keyboard input (Esc/Enter/Space to dismiss).
     pub btw_state: Option<crate::views::btw_overlay::BtwOverlayState>,
@@ -2260,7 +2256,6 @@ pub(super) mod test_fixtures {
             child_session_id: Arc::from(child_sid),
             description: Arc::from("test"),
             subagent_type: Arc::from("general-purpose"),
-            persona: None,
             role: None,
             model: None,
             context_source: None,
@@ -3098,7 +3093,7 @@ pub(super) mod test_fixtures {
 /// the lazy Mermaid glue (which needs a session dir) can be exercised from the
 /// `mermaid_worker` test module without duplicating the large `AgentSession`
 /// literal.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) fn test_agent_view(session_id: Option<&str>, cwd: std::path::PathBuf) -> AgentView {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     AgentView::new(

@@ -23,16 +23,9 @@ fn claude_tool_kind(name: &str) -> Option<ToolKind> {
 }
 /// Builds an Agent from an AgentDefinition + session context.
 ///
-/// Two main flows:
+/// Agent definitions are compile-time built-ins. The builder receives one of
+/// those definitions and applies Session/runtime clamps before construction.
 ///
-///   // 1. From a definition file
-///   let def = AgentDefinition::from_file("agents/code-reviewer.md")?;
-///   let agent = AgentBuilder::new(cwd, None, notification_handle)
-///       .from_definition(def)
-///       .build()
-///       .await?;
-///
-///   // 2. Programmatic (no file)
 ///   let agent = AgentBuilder::new(cwd, None, notification_handle)
 ///       .with_name("my-agent")
 ///       .with_description("A custom agent")
@@ -59,14 +52,10 @@ pub struct AgentBuilder {
     /// The agent definition — set via from_definition() or built up
     /// via individual with_*() calls.
     definition: Option<AgentDefinition>,
-    /// Pre-rendered persona IO summaries for the task tool description.
-    persona_summaries: Vec<String>,
     /// Whether this builder produces a primary or subagent session prompt.
     prompt_audience: crate::prompt::context::PromptAudience,
-    /// Role instructions to inject into the system prompt.
+    /// Fixed Role Context instructions to inject into the system prompt.
     role_instructions: Option<String>,
-    /// Persona instructions to inject into the system prompt.
-    persona_instructions: Option<String>,
     name: Option<String>,
     description: Option<String>,
     prompt_mode: PromptMode,
@@ -191,10 +180,8 @@ impl AgentBuilder {
             owner_session_id: None,
             parent_scheduler_handle: None,
             definition: None,
-            persona_summaries: Vec::new(),
             prompt_audience: crate::prompt::context::PromptAudience::Primary,
             role_instructions: None,
-            persona_instructions: None,
             name: None,
             description: None,
             prompt_mode: PromptMode::Extend,
@@ -268,11 +255,6 @@ impl AgentBuilder {
         self.definition = Some(def);
         self
     }
-    /// Set pre-rendered persona IO summaries for the task tool description.
-    pub fn with_persona_summaries(mut self, summaries: Vec<String>) -> Self {
-        self.persona_summaries = summaries;
-        self
-    }
     /// Set the prompt audience (Primary or Subagent).
     pub fn with_prompt_audience(
         mut self,
@@ -283,10 +265,6 @@ impl AgentBuilder {
     }
     pub fn with_role_instructions(mut self, instructions: Option<String>) -> Self {
         self.role_instructions = instructions;
-        self
-    }
-    pub fn with_persona_instructions(mut self, instructions: Option<String>) -> Self {
-        self.persona_instructions = instructions;
         self
     }
     pub fn with_name(mut self, name: impl Into<String>) -> Self {
@@ -1128,13 +1106,11 @@ impl AgentBuilder {
             prompt_body: definition.prompt_body.clone(),
             system_prompt: definition.system_prompt.clone(),
             agents_md_files,
-            persona_summaries: self.persona_summaries,
             build_timestamp_utc: now.to_rfc3339(),
             memory_enabled: self.memory_enabled,
             memory_global_path: self.memory_global_path,
             memory_workspace_path: self.memory_workspace_path,
             role_instructions: self.role_instructions,
-            persona_instructions: self.persona_instructions,
             os_name: Some(std::env::consts::OS.to_string()),
             shell_path: Some(resolve_shell_for_prompt()),
             working_directory: Some(display_working_dir),
@@ -1258,9 +1234,8 @@ fn task_model_guidance(model_slugs: &[String]) -> String {
 /// Maps each [`SubagentEntry`] to the shared
 /// [`atelier_tool_types::SubagentDescriptor`] and defers to
 /// [`atelier_tool_types::build_task_description`] so the CLI and the prod chat
-/// stack share one builder. Built-in (unshadowed) entries carry the hardcoded
-/// tool-name fragment; user-defined entries carry `None` so their raw
-/// `description` is used verbatim (markdown is fine — it's model-facing text).
+/// stack share one builder. Every runtime entry is a compiled built-in and
+/// carries its fixed tool-name fragment.
 pub(crate) fn build_task_description(
     subagents: &[SubagentEntry],
     model_slugs: &[String],
@@ -1270,7 +1245,6 @@ pub(crate) fn build_task_description(
         .map(|entry| {
             let tools = match &entry.source {
                 SubagentSource::Builtin(b) => Some(builtin_tools_fragment(*b)),
-                SubagentSource::UserDefined { .. } => None,
             };
             atelier_tool_types::SubagentDescriptor {
                 name: entry.name.clone(),
@@ -1296,14 +1270,13 @@ fn resolve_shell_for_prompt() -> String {
     #[cfg(not(unix))]
     {
         atelier_config::shell::detect_windows_shell()
-            .name()
+            .prompt_description()
             .to_string()
     }
 }
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::AgentScope;
     fn entry(name: &str, desc: &str, source: SubagentSource) -> SubagentEntry {
         SubagentEntry {
             name: name.to_string(),
@@ -1339,60 +1312,6 @@ mod tests {
         assert!(
             desc.contains("- **general-purpose**: General-purpose agent."),
             "should include agent entry"
-        );
-    }
-    #[test]
-    fn build_task_description_user_entry_is_raw() {
-        let subagents = vec![entry(
-            "code-reviewer",
-            "Reviews code for bugs and style issues.",
-            SubagentSource::UserDefined {
-                scope: AgentScope::Project,
-            },
-        )];
-        let desc = build_task_description(&subagents, &[]);
-        assert!(desc.contains("- **code-reviewer**: Reviews code for bugs and style issues."));
-        assert!(
-            !desc.contains("Has access to all tools:"),
-            "user-defined entries should not get tool fragments"
-        );
-    }
-    #[test]
-    fn build_task_description_user_template_syntax_verbatim() {
-        let subagents = vec![entry(
-            "my-agent",
-            "Uses ${{ some.template }} syntax.",
-            SubagentSource::UserDefined {
-                scope: AgentScope::User,
-            },
-        )];
-        let desc = build_task_description(&subagents, &[]);
-        assert!(
-            desc.contains("${{ some.template }}"),
-            "template-like syntax in user descriptions should be rendered verbatim"
-        );
-    }
-    #[test]
-    fn build_task_description_shadowed_builtin_uses_user_desc() {
-        let subagents = vec![SubagentEntry {
-            name: "explore".to_string(),
-            description: "My custom explore agent.".to_string(),
-            source: SubagentSource::UserDefined {
-                scope: AgentScope::Project,
-            },
-            shadows_builtin: Some(BuiltinAgentName::Explore),
-            config_source: atelier_tools::types::config_source::ConfigSource::Project {
-                path: std::path::PathBuf::new(),
-            },
-        }];
-        let desc = build_task_description(&subagents, &[]);
-        assert!(
-            desc.contains("- **explore**: My custom explore agent."),
-            "shadowed built-in should use user description"
-        );
-        assert!(
-            !desc.contains(atelier_tool_types::EXPLORE_SUBAGENT.tools_template),
-            "shadowed built-in should NOT include built-in tool fragment"
         );
     }
     #[test]
@@ -2034,58 +1953,6 @@ mod tests {
         assert!(
             names.contains(&"run_terminal_command".to_string()),
             "got: {names:?}"
-        );
-    }
-    /// End-to-end: an on-disk plugin agent parsed via `from_file_frontmatter_only`
-    /// with a compat-style `tools:` allowlist gets the mapped toolset (not 0 tools).
-    #[tokio::test]
-    async fn plugin_style_agent_file_maps_claude_tools() {
-        use atelier_tools::computer::local::LocalTerminalBackend;
-        use atelier_tools::notification::ToolNotificationHandle;
-        const MD: &str = "---\n\
-            name: test\n\
-            description: test agent\n\
-            tools: Read, Bash, Grep\n\
-            ---\n\n\
-            Test agent body.\n";
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("test.md");
-        std::fs::write(&path, MD).unwrap();
-        let def = crate::config::AgentDefinition::from_file_frontmatter_only(&path).unwrap();
-        assert_eq!(
-            def.tools,
-            vec!["Read".to_string(), "Bash".to_string(), "Grep".to_string()],
-        );
-        let agent = AgentBuilder::new(
-            std::env::temp_dir(),
-            Arc::new(LocalTerminalBackend::new()),
-            ToolNotificationHandle::noop(),
-        )
-        .from_definition(def)
-        .build()
-        .await
-        .unwrap();
-        let names: Vec<String> = agent
-            .tool_definitions()
-            .await
-            .iter()
-            .map(|d| d.function.name.clone())
-            .collect();
-        assert!(
-            names.contains(&"read_file".to_string()),
-            "Read→read_file; got: {names:?}"
-        );
-        assert!(
-            names.contains(&"run_terminal_command".to_string()),
-            "Bash→run_terminal_command; got: {names:?}"
-        );
-        assert!(
-            names.contains(&"grep".to_string()),
-            "Grep→grep; got: {names:?}"
-        );
-        assert!(
-            !names.contains(&"search_replace".to_string()),
-            "Edit must be excluded; got: {names:?}"
         );
     }
     /// A restrictive allowlist must never strip MCP access. Compat allowlists

@@ -1115,6 +1115,27 @@ impl PromptWidget {
         self.slash_state.snapshot().open
     }
 
+    /// Whether the open command-row selection is the exact canonical name of
+    /// a command whose arguments are optional. Agent-view Enter uses this to
+    /// execute `/compact` or `/roles` immediately instead of first inserting a
+    /// trailing space and requiring a second Enter.
+    pub fn slash_exact_optional_command_selected(&self) -> bool {
+        let snapshot = self.slash_state.snapshot();
+        if !snapshot.cursor_in_command {
+            return false;
+        }
+        let Some(row) = snapshot.selection() else {
+            return false;
+        };
+        let command_name = row.command_name();
+        command_name.eq_ignore_ascii_case(&snapshot.query)
+            && self
+                .slash_controller
+                .registry()
+                .get_for_dispatch(command_name)
+                .is_some_and(|command| command.takes_args() && !command.args_required())
+    }
+
     /// Close the slash dropdown.
     pub fn slash_close(&mut self) {
         self.slash_state.close();
