@@ -208,6 +208,86 @@ fast_mode = false
 }
 
 #[test]
+fn local_model_profile_exposes_fast_mode_from_priority_service_tier() {
+    let home = tempdir().unwrap();
+    write(
+        &home.path().join("providers.toml"),
+        r#"schema_version = 3
+
+[providers.example]
+display_name = "Example"
+auth = { type = "bearer" }
+base_url = "https://example.example/v1"
+enabled = true
+"#,
+    );
+    write(
+        &home.path().join("models/providers/example/models.toml"),
+        r#"schema_version = 1
+
+[models."gpt-custom"]
+wire_api = "responses"
+fast_mode = false
+service_tiers = ["default", "priority"]
+"#,
+    );
+
+    let registry = ProviderRegistry::load_or_create(home.path().join("providers.toml")).unwrap();
+    let model = registry
+        .model(&ModelKey::new("example", "gpt-custom").unwrap())
+        .unwrap();
+
+    assert!(model.fast_mode);
+}
+
+#[test]
+fn exact_common_priority_capability_enriches_remote_cache_without_tier_metadata() {
+    let home = tempdir().unwrap();
+    write(
+        &home.path().join("providers.toml"),
+        r#"schema_version = 3
+
+[providers.proxy]
+display_name = "Proxy"
+auth = { type = "bearer" }
+base_url = "https://proxy.example/v1"
+enabled = true
+"#,
+    );
+    write(
+        &home.path().join("models/default/openai.toml"),
+        r#"schema_version = 2
+
+[models."gpt-5.6-sol"]
+wire_api = "responses"
+fast_mode = true
+"#,
+    );
+    write(
+        &home.path().join("cache/providers/proxy/models.json"),
+        r#"{
+  "schema_version": 1,
+  "provider_id": "proxy",
+  "models": [{
+    "key": {"provider_id": "proxy", "model_id": "gpt-5.6-sol"},
+    "display_name": "GPT-5.6 Sol",
+    "wire_api": "responses",
+    "fast_mode": false,
+    "source": "remote",
+    "enabled": true
+  }]
+}"#,
+    );
+
+    let registry = ProviderRegistry::load_or_create(home.path().join("providers.toml")).unwrap();
+    let model = registry
+        .model(&ModelKey::new("proxy", "gpt-5.6-sol").unwrap())
+        .unwrap();
+
+    assert!(model.fast_mode);
+}
+
+#[test]
 fn explicit_remote_metadata_takes_precedence_over_common_model_defaults() {
     let home = tempdir().unwrap();
     write(

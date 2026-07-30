@@ -110,6 +110,8 @@ pub(crate) struct ModelProfileDisk {
     pub default_effort: Option<String>,
     #[serde(default)]
     pub fast_mode: Option<bool>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub service_tiers: Vec<String>,
     #[serde(default)]
     pub capabilities: CapabilityOverrides,
     #[serde(default)]
@@ -491,6 +493,18 @@ fn resolve_descriptor(
     descriptor
 }
 
+fn profile_fast_mode(profile: &ModelProfileDisk) -> Option<bool> {
+    if profile
+        .service_tiers
+        .iter()
+        .any(|tier| tier.eq_ignore_ascii_case("priority"))
+    {
+        Some(true)
+    } else {
+        profile.fast_mode
+    }
+}
+
 fn apply_missing_profile(
     descriptor: &mut ModelDescriptor,
     profile: &ModelProfileDisk,
@@ -509,7 +523,7 @@ fn apply_missing_profile(
         descriptor.default_effort = profile.default_effort.clone();
     }
     if !descriptor.fast_mode {
-        descriptor.fast_mode = profile.fast_mode.unwrap_or(false);
+        descriptor.fast_mode = profile_fast_mode(profile).unwrap_or(false);
     }
     if apply_capabilities {
         descriptor.capabilities = profile
@@ -540,7 +554,7 @@ fn apply_exact_profile(descriptor: &mut ModelDescriptor, profile: &ModelProfileD
     if profile.default_effort.is_some() {
         descriptor.default_effort = profile.default_effort.clone();
     }
-    if let Some(fast_mode) = profile.fast_mode {
+    if let Some(fast_mode) = profile_fast_mode(profile) {
         descriptor.fast_mode = fast_mode;
     }
     descriptor.capabilities = profile

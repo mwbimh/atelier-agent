@@ -1,4 +1,6 @@
-use atelier_provider::{ProviderRegistry, RoleConfig, RoleError, RoleId, RoleRegistry};
+use atelier_provider::{
+    ProviderRegistry, RoleConfig, RoleError, RoleId, RoleRegistry, fast_mode_from_payload,
+};
 use serde_json::{Map, Value, json};
 use tempfile::tempdir;
 
@@ -294,6 +296,17 @@ fn role_registry_supports_update_delete_and_find() {
 }
 
 #[test]
+fn canonical_service_tier_wins_over_legacy_fast_mode_state() {
+    let payload = serde_json::from_value(json!({
+        "fast_mode": true,
+        "service_tier": "default",
+    }))
+    .unwrap();
+
+    assert_eq!(fast_mode_from_payload(&payload), Some(false));
+}
+
+#[test]
 fn role_payload_overrides_provider_defaults_deterministically() {
     let mut provider_payload = Map::new();
     provider_payload.insert("zeta".into(), Value::String("provider".into()));
@@ -312,12 +325,12 @@ fn role_payload_overrides_provider_defaults_deterministically() {
     assert_eq!(merged.get("alpha"), Some(&Value::Bool(true)));
     assert_eq!(
         serde_json::to_string(&merged).unwrap(),
-        r#"{"alpha":true,"fast_mode":false,"shared":"role","zeta":"provider"}"#
+        r#"{"alpha":true,"service_tier":"default","shared":"role","zeta":"provider"}"#
     );
 }
 
 #[test]
-fn fast_mode_is_encoded_in_the_effective_role_payload() {
+fn fast_mode_is_encoded_as_the_openai_service_tier() {
     let mut config = role_config("provider", "model");
     config.fast_mode = true;
     config
@@ -326,32 +339,35 @@ fn fast_mode_is_encoded_in_the_effective_role_payload() {
 
     let payload = config.effective_payload();
 
-    assert_eq!(payload.get("fast_mode"), Some(&Value::Bool(true)));
+    assert!(payload.get("fast_mode").is_none());
+    assert_eq!(payload.get("service_tier"), Some(&json!("priority")));
     assert_eq!(payload.get("temperature"), Some(&Value::from(0.2)));
 }
 
 #[test]
-fn merged_payload_includes_fast_mode() {
+fn merged_payload_includes_fast_service_tier() {
     let mut config = role_config("provider", "model");
     config.fast_mode = true;
 
     let merged = config.merged_payload(&Map::new());
 
-    assert_eq!(merged.get("fast_mode"), Some(&Value::Bool(true)));
+    assert!(merged.get("fast_mode").is_none());
+    assert_eq!(merged.get("service_tier"), Some(&json!("priority")));
 }
 
 #[test]
-fn role_fast_mode_false_overrides_provider_default_true() {
+fn role_fast_mode_false_overrides_provider_priority_tier() {
     let config = role_config("provider", "model");
     let provider_defaults = serde_json::from_value(serde_json::json!({
-        "fast_mode": true,
+        "service_tier": "priority",
         "temperature": 0.8,
     }))
     .unwrap();
 
     let merged = config.merged_payload(&provider_defaults);
 
-    assert_eq!(merged.get("fast_mode"), Some(&Value::Bool(false)));
+    assert!(merged.get("fast_mode").is_none());
+    assert_eq!(merged.get("service_tier"), Some(&json!("default")));
     assert_eq!(merged.get("temperature"), Some(&Value::from(0.8)));
 }
 

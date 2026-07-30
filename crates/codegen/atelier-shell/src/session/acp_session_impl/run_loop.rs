@@ -313,8 +313,10 @@ pub(super) async fn run_session(
             SessionCommand::GetRequestPayload { responds_to } => { let _ = responds_to
             .send(session.role_request_payload.borrow().clone()); }
             SessionCommand::SetRoleFastMode { enabled, responds_to } => {
-            session.role_request_payload.borrow_mut().insert("fast_mode".to_owned(),
-            serde_json::Value::Bool(enabled)); let _ = responds_to.send(()); }
+            let mut payload = session.role_request_payload.borrow_mut(); payload
+            .remove("fast_mode"); payload.insert("service_tier".to_owned(),
+            serde_json::Value::String(if enabled { "priority" } else { "default" }
+            .to_owned())); drop(payload); let _ = responds_to.send(()); }
             SessionCommand::RebuildAgentForDefinition { definition, responds_to } => {
             let outcome = session.handle_rebuild_agent_for_definition(definition). await;
             let _ = responds_to.send(outcome); } SessionCommand::OverrideModelName {

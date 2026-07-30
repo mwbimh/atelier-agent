@@ -317,13 +317,24 @@ impl RoleConfig {
 
     /// Return the payload that should be sent for this role.
     ///
-    /// `fast_mode` is kept as a first-class role setting for the management
-    /// surface, but is transported as a provider-specific JSON field so the
-    /// sampler remains protocol-neutral.
+    /// `fast_mode` remains a first-class Role setting for the management
+    /// surface. OpenAI-compatible wire APIs express it as the documented
+    /// `service_tier` request parameter: `priority` when enabled and `default`
+    /// when disabled. The internal `fast_mode` key must never reach the wire.
     pub fn effective_payload(&self) -> Map<String, Value> {
         let mut payload = self.payload.clone();
-        if self.fast_mode_explicit {
-            payload.insert("fast_mode".into(), Value::Bool(self.fast_mode));
+        let legacy_fast_mode = payload
+            .remove("fast_mode")
+            .and_then(|value| value.as_bool());
+        if let Some(enabled) = self
+            .fast_mode_explicit
+            .then_some(self.fast_mode)
+            .or(legacy_fast_mode)
+        {
+            payload.insert(
+                "service_tier".into(),
+                Value::String(if enabled { "priority" } else { "default" }.into()),
+            );
         }
         payload
     }
@@ -671,6 +682,24 @@ impl RoleRegistry {
         let role = self.find(role_id).ok_or(RoleError::NotFound(role_id))?;
         Ok(role.merged_payload(provider_defaults))
     }
+}
+
+/// Resolve the fast-mode state encoded in an effective request payload.
+///
+/// `service_tier` is canonical. The internal `fast_mode` bool is accepted only
+/// so an already-loaded Session can be normalized without leaking it on wire.
+pub fn fast_mode_from_payload(payload: &Map<String, Value>) -> Option<bool> {
+    match payload
+        .get("service_tier")
+        .and_then(Value::as_str)
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("priority" | "fast") => return Some(true),
+        Some("default") => return Some(false),
+        _ => {}
+    }
+    payload.get("fast_mode").and_then(Value::as_bool)
 }
 
 /// Deterministically merge a Provider payload with a role payload.

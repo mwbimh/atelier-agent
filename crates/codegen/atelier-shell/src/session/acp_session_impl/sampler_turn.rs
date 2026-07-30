@@ -362,10 +362,8 @@ impl SessionActor {
         main_role.effort = main_config
             .reasoning_effort
             .map(|effort| effort.to_string());
-        if let Some(fast_mode) = main_config
-            .request_payload
-            .get("fast_mode")
-            .and_then(serde_json::Value::as_bool)
+        if let Some(fast_mode) =
+            atelier_provider::fast_mode_from_payload(&main_config.request_payload)
         {
             main_role.set_fast_mode(fast_mode);
         }

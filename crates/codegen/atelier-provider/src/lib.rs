@@ -11,7 +11,7 @@ mod storage_v2;
 
 pub use roles::{
     ResolvedRoleConfig, RoleConfig, RoleError, RoleFieldSources, RoleId, RoleRegistry,
-    merge_payloads,
+    fast_mode_from_payload, merge_payloads,
 };
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
@@ -1113,11 +1113,48 @@ fn parse_openai_model_value(
         capabilities,
         reasoning_efforts: parse_reasoning_efforts(object),
         default_effort: json_string(object, &["default_effort", "defaultEffort"]),
-        fast_mode: json_bool(object, &["fast_mode", "fastMode", "supports_fast_mode"])
-            .unwrap_or(false),
+        fast_mode: parse_fast_mode_capability(object),
         source: ModelSource::Remote,
         enabled: true,
     })
+}
+
+fn parse_fast_mode_capability(object: &serde_json::Map<String, Value>) -> bool {
+    let canonical_service_tier = object
+        .get("service_tiers")
+        .or_else(|| object.get("serviceTiers"))
+        .and_then(Value::as_array)
+        .is_some_and(|tiers| {
+            tiers.iter().any(|tier| {
+                tier.as_str()
+                    .or_else(|| tier.as_object()?.get("id")?.as_str())
+                    .is_some_and(|id| id.eq_ignore_ascii_case("priority"))
+            })
+        });
+    if canonical_service_tier {
+        return true;
+    }
+
+    let legacy_fast_tier = object
+        .get("additional_speed_tiers")
+        .or_else(|| object.get("additionalSpeedTiers"))
+        .and_then(Value::as_array)
+        .is_some_and(|tiers| {
+            tiers.iter().filter_map(Value::as_str).any(|tier| {
+                tier.eq_ignore_ascii_case("fast") || tier.eq_ignore_ascii_case("priority")
+            })
+        });
+    legacy_fast_tier
+        || json_bool(
+            object,
+            &[
+                "fast_mode",
+                "fastMode",
+                "supports_fast_mode",
+                "supportsFastMode",
+            ],
+        )
+        .unwrap_or(false)
 }
 
 fn parse_discovered_wire_api(
@@ -1816,6 +1853,7 @@ impl ProviderRegistry {
                     reasoning_efforts: stored.reasoning_efforts.clone(),
                     default_effort: stored.default_effort.clone(),
                     fast_mode: Some(stored.fast_mode),
+                    service_tiers: Vec::new(),
                     capabilities: CapabilityOverrides::from_capabilities(&stored.capabilities),
                     payload: Map::new(),
                     enabled: Some(stored.enabled),

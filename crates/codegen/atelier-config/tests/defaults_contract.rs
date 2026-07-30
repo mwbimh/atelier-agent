@@ -117,6 +117,19 @@ fn first_run_writes_the_split_atelier_config_tree() {
             .collect::<Vec<_>>(),
         ["none", "low", "medium", "high", "xhigh", "max"]
     );
+    for model in ["gpt-5", "gpt-5.4", "gpt-5.6-sol"] {
+        assert_eq!(
+            openai["models"][model]["fast_mode"].as_bool(),
+            Some(true),
+            "{model} must expose OpenAI priority service tier"
+        );
+    }
+    assert_eq!(openai["models"]["o3"]["fast_mode"].as_bool(), Some(false));
+    assert!(atelier_config::defaults::built_in_model_supports_fast_mode(
+        "gpt-5.6-sol"
+    ));
+    assert!(!atelier_config::defaults::built_in_model_supports_fast_mode("o3"));
+    assert!(!atelier_config::defaults::built_in_model_supports_fast_mode("gpt-unknown"));
 
     let anthropic =
         std::fs::read_to_string(home.path().join("models/default/anthropic.toml")).unwrap();

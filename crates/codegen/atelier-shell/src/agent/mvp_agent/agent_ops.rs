@@ -123,11 +123,7 @@ fn main_role_from_sampling_config(
     let mut main = atelier_provider::RoleConfig::new(provider, model)
         .map_err(|error| acp::Error::invalid_params().data(error.to_string()))?;
     main.effort = config.reasoning_effort.map(|effort| effort.to_string());
-    if let Some(fast_mode) = config
-        .request_payload
-        .get("fast_mode")
-        .and_then(serde_json::Value::as_bool)
-    {
+    if let Some(fast_mode) = atelier_provider::fast_mode_from_payload(&config.request_payload) {
         main.set_fast_mode(fast_mode);
     }
     Ok(main)
@@ -391,11 +387,7 @@ impl MvpAgent {
             .models_manager
             .current_reasoning_effort()
             .map(|effort| effort.to_string());
-        if let Some(fast_mode) = entry
-            .request_payload
-            .get("fast_mode")
-            .and_then(serde_json::Value::as_bool)
-        {
+        if let Some(fast_mode) = atelier_provider::fast_mode_from_payload(&entry.request_payload) {
             main.set_fast_mode(fast_mode);
         }
         Ok(main)
@@ -3230,7 +3222,8 @@ mod role_sampling_tests {
             Some(atelier_sampling_types::ReasoningEffort::High)
         );
         assert_eq!(config.request_payload["temperature"], json!(0.2));
-        assert_eq!(config.request_payload["fast_mode"], json!(true));
+        assert!(!config.request_payload.contains_key("fast_mode"));
+        assert_eq!(config.request_payload["service_tier"], json!("priority"));
         assert_eq!(config.request_payload["provider_only"], json!("default"));
         assert_eq!(config.request_payload["shared"], json!("role"));
     }
@@ -3278,7 +3271,8 @@ mod role_sampling_tests {
             config.reasoning_effort,
             Some(atelier_sampling_types::ReasoningEffort::Low)
         );
-        assert_eq!(config.request_payload["fast_mode"], json!(true));
+        assert!(!config.request_payload.contains_key("fast_mode"));
+        assert_eq!(config.request_payload["service_tier"], json!("priority"));
         assert_eq!(config.request_payload["temperature"], json!(0.15));
     }
 

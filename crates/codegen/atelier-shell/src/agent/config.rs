@@ -2762,6 +2762,15 @@ mod sandbox_settings_contract_tests {
     }
 }
 
+fn provider_model_supports_fast_mode(
+    model: &atelier_provider::ModelDescriptor,
+    wire_api: WireApi,
+) -> bool {
+    let catalog_support = model.fast_mode
+        || atelier_config::defaults::built_in_model_supports_fast_mode(&model.key.model_id);
+    catalog_support && matches!(wire_api, WireApi::Responses | WireApi::ChatCompletions)
+}
+
 /// Convert the persisted local Provider catalog into the shell's model-entry
 /// representation. Provider model keys remain composite (`provider/model`),
 /// while `ModelInfo.model` keeps the provider's routing slug.
@@ -2833,7 +2842,7 @@ pub fn model_entries_from_provider_snapshot(
             info.supported_in_api = true;
             info.supports_reasoning_effort = model.capabilities.reasoning_effort;
             info.accepts_images = model.capabilities.image_input;
-            info.supports_fast_mode = model.fast_mode;
+            info.supports_fast_mode = provider_model_supports_fast_mode(model, wire_api);
             info.supports_backend_search = model.capabilities.web_search;
             info.reasoning_efforts = provider_reasoning_efforts(model);
             info.reasoning_effort = info
@@ -7067,6 +7076,51 @@ reasoning_effort = "low"
             entries.first().map(|(key, _)| key.as_str()),
             Some("example/deepseek-v4-flash")
         );
+    }
+
+    #[test]
+    fn catalog_capability_exposes_fast_mode_only_on_openai_wire_apis() {
+        let provider = atelier_provider::ProviderConfig {
+            id: "example".into(),
+            display_name: "Example".into(),
+            base_url: url::Url::parse("https://example.test/v1").unwrap(),
+            credential: atelier_provider::CredentialRef::None,
+            auth: ProviderAuth::None,
+            discovery: atelier_provider::ProviderDiscovery::Static,
+            extra_headers: std::collections::BTreeMap::new(),
+            enabled: true,
+        };
+        let descriptor = |model_id: &str, wire_api| atelier_provider::ModelDescriptor {
+            key: atelier_provider::ModelKey::new("example", model_id).unwrap(),
+            display_name: model_id.into(),
+            description: None,
+            wire_api: Some(wire_api),
+            context_window: Some(128_000),
+            capabilities: Default::default(),
+            reasoning_efforts: Vec::new(),
+            default_effort: None,
+            fast_mode: false,
+            source: atelier_provider::ModelSource::Remote,
+            enabled: true,
+        };
+        let snapshot = ProviderSnapshot {
+            providers: vec![provider],
+            models: vec![
+                descriptor("gpt-5.6-sol", WireApi::Responses),
+                descriptor("gpt-5.4", WireApi::ChatCompletions),
+                descriptor("gpt-5.5", WireApi::Messages),
+                descriptor("gpt-unknown", WireApi::Responses),
+            ],
+            model_provider_overrides: Default::default(),
+            experimental_model_features: Default::default(),
+        };
+
+        let entries = model_entries_from_provider_snapshot(&snapshot, None);
+
+        assert!(entries["example/gpt-5.6-sol"].info.supports_fast_mode);
+        assert!(entries["example/gpt-5.4"].info.supports_fast_mode);
+        assert!(!entries["example/gpt-5.5"].info.supports_fast_mode);
+        assert!(!entries["example/gpt-unknown"].info.supports_fast_mode);
     }
 
     #[test]

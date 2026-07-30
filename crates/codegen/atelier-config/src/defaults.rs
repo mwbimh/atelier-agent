@@ -1,7 +1,10 @@
 //! First-run Atelier configuration tree and resettable built-in presets.
 
+use serde::Deserialize;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 const PROVIDERS_TOML: &str = "schema_version = 3\n\n[providers]\n";
 const ROLES_TOML: &str = "schema_version = 1\n\n[roles]\n";
@@ -10,6 +13,39 @@ const ANTHROPIC_MODELS_TOML: &str = include_str!("../defaults/models/anthropic.t
 const GOOGLE_MODELS_TOML: &str = include_str!("../defaults/models/google.toml");
 const DEEPSEEK_MODELS_TOML: &str = include_str!("../defaults/models/deepseek.toml");
 const XAI_MODELS_TOML: &str = include_str!("../defaults/models/xai.toml");
+
+#[derive(Deserialize)]
+struct BuiltInModelCatalog {
+    #[serde(default)]
+    models: BTreeMap<String, BuiltInModelCapability>,
+}
+
+#[derive(Deserialize)]
+struct BuiltInModelCapability {
+    #[serde(default)]
+    fast_mode: bool,
+}
+
+/// Return whether an exact built-in model preset exposes OpenAI priority
+/// processing. This embedded catalog remains current even when an existing
+/// user's resettable on-disk defaults predate the running binary.
+pub fn built_in_model_supports_fast_mode(model_id: &str) -> bool {
+    static FAST_MODE_MODELS: OnceLock<BTreeSet<String>> = OnceLock::new();
+    FAST_MODE_MODELS
+        .get_or_init(|| {
+            toml::from_str::<BuiltInModelCatalog>(OPENAI_MODELS_TOML)
+                .map(|catalog| {
+                    catalog
+                        .models
+                        .into_iter()
+                        .filter_map(|(model, capability)| capability.fast_mode.then_some(model))
+                        .collect()
+                })
+                .unwrap_or_default()
+        })
+        .contains(model_id)
+}
+
 const LOGO: &str = r#"    ___  ____________
    /   |/_  __/ ____/
   / /| | / / / __/

@@ -944,11 +944,8 @@ fn resolve_fixed_runtime_role_id(
         .sampling_config
         .reasoning_effort
         .map(|effort| effort.to_string());
-    if let Some(fast_mode) = ctx
-        .sampling_config
-        .request_payload
-        .get("fast_mode")
-        .and_then(serde_json::Value::as_bool)
+    if let Some(fast_mode) =
+        atelier_provider::fast_mode_from_payload(&ctx.sampling_config.request_payload)
     {
         main.set_fast_mode(fast_mode);
     }

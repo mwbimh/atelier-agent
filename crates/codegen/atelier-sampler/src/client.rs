@@ -453,7 +453,7 @@ mod request_payload_tests {
     use serde_json::{Value, json};
 
     #[test]
-    fn request_payload_is_merged_into_the_wire_body() {
+    fn request_payload_maps_fast_mode_to_openai_priority_service_tier() {
         let mut body = json!({
             "model": "main-model",
             "temperature": 0.7,
@@ -466,13 +466,31 @@ mod request_payload_tests {
         }))
         .unwrap();
 
-        apply_request_payload(&mut body, &payload);
+        apply_request_payload(&mut body, &payload, &ApiBackend::Responses);
 
         assert_eq!(body["model"], "main-model");
         assert_eq!(body["messages"][0]["content"], "hello");
         assert_eq!(body["temperature"], 0.2);
-        assert_eq!(body["fast_mode"], true);
+        assert!(body.get("fast_mode").is_none());
+        assert_eq!(body["service_tier"], "priority");
         assert_eq!(body["provider_option"]["budget"], 123);
+    }
+
+    #[test]
+    fn fast_mode_controls_are_removed_from_messages_wire_bodies() {
+        let mut body = json!({"model": "claude-model"});
+        let payload = serde_json::from_value(json!({
+            "fast_mode": true,
+            "service_tier": "priority",
+            "provider_option": true,
+        }))
+        .unwrap();
+
+        apply_request_payload(&mut body, &payload, &ApiBackend::Messages);
+
+        assert!(body.get("fast_mode").is_none());
+        assert!(body.get("service_tier").is_none());
+        assert_eq!(body["provider_option"], true);
     }
 
     #[test]
@@ -480,7 +498,7 @@ mod request_payload_tests {
         let mut body = json!(null);
         let payload = serde_json::from_value(json!({"fast_mode": true})).unwrap();
 
-        apply_request_payload(&mut body, &payload);
+        apply_request_payload(&mut body, &payload, &ApiBackend::Responses);
 
         assert_eq!(body, Value::Null);
     }
@@ -509,7 +527,7 @@ mod request_payload_tests {
         }))
         .unwrap();
 
-        apply_request_payload(&mut body, &payload);
+        apply_request_payload(&mut body, &payload, &ApiBackend::Responses);
 
         assert_eq!(body["model"], "main-model");
         assert_eq!(body["messages"][0]["content"], "hello");
@@ -560,7 +578,8 @@ mod request_payload_tests {
         assert_eq!(body["model"], "deepseek-v4-flash");
         assert_eq!(body["stream"], true);
         assert_eq!(body["stream_options"]["include_usage"], true);
-        assert_eq!(body["fast_mode"], false);
+        assert!(body.get("fast_mode").is_none());
+        assert!(body.get("service_tier").is_none());
         assert_eq!(body["provider_option"]["budget"], 123);
         assert!(body.get("messages").is_some());
     }
@@ -577,15 +596,38 @@ fn patch_responses_reasoning_effort(
     }
 }
 
-fn apply_request_payload(body: &mut Value, payload: &Map<String, Value>) {
+fn apply_request_payload(body: &mut Value, payload: &Map<String, Value>, api_backend: &ApiBackend) {
     let Some(object) = body.as_object_mut() else {
         return;
     };
     for (key, value) in payload {
-        if is_protected_request_key(key) {
+        if matches!(key.as_str(), "fast_mode" | "service_tier") || is_protected_request_key(key) {
             continue;
         }
         object.insert(key.clone(), value.clone());
+    }
+    if matches!(
+        api_backend,
+        ApiBackend::ChatCompletions | ApiBackend::Responses
+    ) {
+        let service_tier = payload
+            .get("service_tier")
+            .and_then(Value::as_str)
+            .map(|tier| match tier.to_ascii_lowercase().as_str() {
+                "fast" => "priority".to_owned(),
+                _ => tier.to_owned(),
+            })
+            .or_else(|| {
+                payload
+                    .get("fast_mode")
+                    .and_then(Value::as_bool)
+                    .map(|enabled| if enabled { "priority" } else { "default" }.to_owned())
+            });
+        if let Some(service_tier) = service_tier
+            && !service_tier.eq_ignore_ascii_case("default")
+        {
+            object.insert("service_tier".into(), Value::String(service_tier));
+        }
     }
 }
 
@@ -1069,7 +1111,11 @@ impl SamplingClient {
             tracing::error!("Failed to serialize inference request: {}", e);
             SamplingError::Serialization(e)
         })?;
-        apply_request_payload(&mut body, &self.defaults.request_payload);
+        apply_request_payload(
+            &mut body,
+            &self.defaults.request_payload,
+            &self.defaults.api_backend,
+        );
         Ok(body)
     }
 
@@ -1151,7 +1197,11 @@ impl SamplingClient {
             tracing::error!("Failed to serialize chat completion request: {}", e);
             SamplingError::Serialization(e)
         })?;
-        apply_request_payload(&mut request_body, &self.defaults.request_payload);
+        apply_request_payload(
+            &mut request_body,
+            &self.defaults.request_payload,
+            &self.defaults.api_backend,
+        );
         let http_request = self
             .post(self.endpoint("chat/completions"))
             .json(&request_body);
@@ -1205,7 +1255,11 @@ impl SamplingClient {
             );
             SamplingError::Serialization(e)
         })?;
-        apply_request_payload(&mut request_body, &self.defaults.request_payload);
+        apply_request_payload(
+            &mut request_body,
+            &self.defaults.request_payload,
+            &self.defaults.api_backend,
+        );
         request_body["stream"] = serde_json::json!(true);
         let http_request = self
             .post(self.endpoint("chat/completions"))
@@ -1417,7 +1471,11 @@ impl SamplingClient {
         // old raw_output machinery.
         atelier_sampling_types::patch_reasoning_text_types(&mut request_body);
         patch_responses_reasoning_effort(&mut request_body, request.reasoning_effort);
-        apply_request_payload(&mut request_body, &self.defaults.request_payload);
+        apply_request_payload(
+            &mut request_body,
+            &self.defaults.request_payload,
+            &self.defaults.api_backend,
+        );
         let http_request = self.post(self.endpoint("responses")).json(&request_body);
 
         let response = http_request.send().await.map_err(|e| {
@@ -1549,7 +1607,11 @@ impl SamplingClient {
         }
         atelier_sampling_types::patch_reasoning_text_types(&mut request_body);
         patch_responses_reasoning_effort(&mut request_body, request.reasoning_effort);
-        apply_request_payload(&mut request_body, &self.defaults.request_payload);
+        apply_request_payload(
+            &mut request_body,
+            &self.defaults.request_payload,
+            &self.defaults.api_backend,
+        );
         // Fresh per attempt so signals never leak across retries; `None`
         // (check disabled) sends no header and does no peek work per event.
         let doom_loop = self
@@ -2052,7 +2114,11 @@ impl SamplingClient {
                 };
                 let mut body = serde_json::to_value(&streaming_request)
                     .map_err(SamplingError::Serialization)?;
-                apply_request_payload(&mut body, &self.defaults.request_payload);
+                apply_request_payload(
+                    &mut body,
+                    &self.defaults.request_payload,
+                    &self.defaults.api_backend,
+                );
                 body["stream"] = serde_json::json!(true);
                 Ok(body)
             }
@@ -2092,7 +2158,11 @@ impl SamplingClient {
                 }
                 atelier_sampling_types::patch_reasoning_text_types(&mut body);
                 patch_responses_reasoning_effort(&mut body, wrapper.reasoning_effort);
-                apply_request_payload(&mut body, &self.defaults.request_payload);
+                apply_request_payload(
+                    &mut body,
+                    &self.defaults.request_payload,
+                    &self.defaults.api_backend,
+                );
                 Ok(body)
             }
             ApiBackend::Messages => {

@@ -161,7 +161,8 @@ fn fixed_role_payload_overrides_provider_defaults_without_dropping_them() {
     assert_eq!(config.request_payload["provider_only"], json!("default"));
     assert_eq!(config.request_payload["role_only"], json!(true));
     assert_eq!(config.request_payload["shared"], json!("role"));
-    assert_eq!(config.request_payload["fast_mode"], json!(true));
+    assert!(!config.request_payload.contains_key("fast_mode"));
+    assert_eq!(config.request_payload["service_tier"], json!("priority"));
 }
 #[test]
 #[serial_test::serial]
@@ -221,7 +222,8 @@ fn sparse_fixed_role_settings_resolve_per_field_through_general() {
     assert_eq!(config.request_payload["provider"], json!(true));
     assert_eq!(config.request_payload["inherited"], json!(true));
     assert_eq!(config.request_payload["child"], json!(true));
-    assert_eq!(config.request_payload["fast_mode"], json!(true));
+    assert!(!config.request_payload.contains_key("fast_mode"));
+    assert_eq!(config.request_payload["service_tier"], json!("priority"));
 }
 
 /// Invariant: resolving a subagent applies the parent session's

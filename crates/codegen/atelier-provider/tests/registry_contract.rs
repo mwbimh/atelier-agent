@@ -254,7 +254,13 @@ fn openai_models_response_parser_is_pure_and_fail_closed() {
             },
             {
               "id": "unknown-capabilities",
-              "owned_by": "vendor"
+              "owned_by": "vendor",
+              "fast_mode": false,
+              "service_tiers": [{
+                "id": "priority",
+                "name": "Fast",
+                "description": "Priority processing"
+              }]
             }
           ]
         }
@@ -276,6 +282,10 @@ fn openai_models_response_parser_is_pure_and_fail_closed() {
 
     assert_eq!(parsed[1].key.model_id, "unknown-capabilities");
     assert_eq!(parsed[1].capabilities, ModelCapabilities::default());
+    assert!(
+        parsed[1].fast_mode,
+        "canonical priority service tier must expose fast mode"
+    );
 
     let mut registry = ProviderRegistry::in_memory();
     registry.upsert_provider(provider("proxy")).unwrap();
