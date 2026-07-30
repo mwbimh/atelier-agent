@@ -12,7 +12,8 @@ use windows_sys::Win32::Security::Authorization::{
 };
 use windows_sys::Win32::Security::{
     ACCESS_ALLOWED_ACE, ACE_FLAGS, ACE_HEADER, CONTAINER_INHERIT_ACE, DACL_SECURITY_INFORMATION,
-    EqualSid, GetAce, OBJECT_INHERIT_ACE,
+    EqualSid, GetAce, InitializeSecurityDescriptor, OBJECT_INHERIT_ACE, SECURITY_DESCRIPTOR,
+    SetFileSecurityW, SetSecurityDescriptorDacl,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     DELETE, FILE_GENERIC_EXECUTE, FILE_GENERIC_READ, FILE_GENERIC_WRITE,
@@ -133,7 +134,12 @@ pub fn grant_restricted_sids(
 /// Persist an inheritable ACL grant. This is used only for the materialized
 /// internal runner directory, which the dedicated sandbox account must be able
 /// to read and execute across sessions.
-fn dacl_has_inheritable_grant(dacl: *mut ACL, sid: *mut c_void, access_mask: u32) -> bool {
+fn dacl_has_grant(
+    dacl: *mut ACL,
+    sid: *mut c_void,
+    access_mask: u32,
+    required_inheritance: Option<u8>,
+) -> bool {
     if dacl.is_null() {
         return false;
     }
@@ -145,7 +151,7 @@ fn dacl_has_inheritable_grant(dacl: *mut ACL, sid: *mut c_void, access_mask: u32
         }
         let header = unsafe { &*ace.cast::<ACE_HEADER>() };
         if header.AceType != ACCESS_ALLOWED_ACE_KIND
-            || header.AceFlags & INHERIT_HEADER_FLAGS != INHERIT_HEADER_FLAGS
+            || required_inheritance.is_some_and(|flags| header.AceFlags & flags != flags)
         {
             continue;
         }
@@ -158,6 +164,10 @@ fn dacl_has_inheritable_grant(dacl: *mut ACL, sid: *mut c_void, access_mask: u32
         }
     }
     false
+}
+
+fn dacl_has_inheritable_grant(dacl: *mut ACL, sid: *mut c_void, access_mask: u32) -> bool {
+    dacl_has_grant(dacl, sid, access_mask, Some(INHERIT_HEADER_FLAGS))
 }
 
 /// Ensure the workspace root has stable account and capability grants. The
@@ -246,6 +256,106 @@ pub fn ensure_persistent_workspace_grant(
     unsafe { LocalFree(new_dacl as HLOCAL) };
     if code != 0 {
         return Err(win32_error("SetNamedSecurityInfoW", code));
+    }
+    Ok(true)
+}
+
+/// Ensure one workspace ancestor is traversable by the dedicated account and
+/// the stable restricted-token traversal capability. The ACEs deliberately do
+/// not inherit: they expose only ancestor directory metadata, never sibling
+/// contents outside the workspace root.
+pub fn ensure_persistent_ancestor_traversal_grant(
+    path: &Path,
+    sandbox_user: *mut c_void,
+    traversal_capability: *mut c_void,
+) -> Result<bool> {
+    let path_wide = path_to_wide(path);
+    let mut dacl = ptr::null_mut();
+    let mut security_descriptor = ptr::null_mut();
+    let code = unsafe {
+        GetNamedSecurityInfoW(
+            path_wide.as_ptr(),
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION,
+            ptr::null_mut(),
+            ptr::null_mut(),
+            &mut dacl,
+            ptr::null_mut(),
+            &mut security_descriptor,
+        )
+    };
+    if code != 0 {
+        return Err(win32_error("GetNamedSecurityInfoW", code));
+    }
+
+    let access = FILE_GENERIC_READ | FILE_GENERIC_EXECUTE;
+    let already_present = dacl_has_grant(dacl, sandbox_user, access, None)
+        && dacl_has_grant(dacl, traversal_capability, access, None);
+    if already_present {
+        if !security_descriptor.is_null() {
+            unsafe { LocalFree(security_descriptor as HLOCAL) };
+        }
+        return Ok(false);
+    }
+
+    let entries = [sandbox_user, traversal_capability].map(|sid| EXPLICIT_ACCESS_W {
+        grfAccessPermissions: access,
+        grfAccessMode: GRANT_ACCESS,
+        grfInheritance: 0,
+        Trustee: TRUSTEE_W {
+            pMultipleTrustee: ptr::null_mut(),
+            MultipleTrusteeOperation: 0,
+            TrusteeForm: TRUSTEE_IS_SID,
+            TrusteeType: TRUSTEE_IS_UNKNOWN,
+            ptstrName: sid.cast(),
+        },
+    });
+    let mut new_dacl = ptr::null_mut();
+    let code =
+        unsafe { SetEntriesInAclW(entries.len() as u32, entries.as_ptr(), dacl, &mut new_dacl) };
+    if !security_descriptor.is_null() {
+        unsafe { LocalFree(security_descriptor as HLOCAL) };
+    }
+    if code != 0 {
+        return Err(win32_error("SetEntriesInAclW", code));
+    }
+    // SetNamedSecurityInfoW propagates parent ACL changes through the entire
+    // descendant tree. Ancestor traversal ACEs are non-inheritable, so apply
+    // this exact DACL with SetFileSecurityW instead and avoid rewriting every
+    // sibling workspace under the ancestor.
+    let mut descriptor = SECURITY_DESCRIPTOR::default();
+    if unsafe {
+        InitializeSecurityDescriptor(
+            (&mut descriptor as *mut SECURITY_DESCRIPTOR).cast(),
+            1, // SECURITY_DESCRIPTOR_REVISION
+        )
+    } == 0
+    {
+        unsafe { LocalFree(new_dacl as HLOCAL) };
+        return Err(crate::winutil::win_error("InitializeSecurityDescriptor"));
+    }
+    if unsafe {
+        SetSecurityDescriptorDacl(
+            (&mut descriptor as *mut SECURITY_DESCRIPTOR).cast(),
+            1,
+            new_dacl,
+            0,
+        )
+    } == 0
+    {
+        unsafe { LocalFree(new_dacl as HLOCAL) };
+        return Err(crate::winutil::win_error("SetSecurityDescriptorDacl"));
+    }
+    let ok = unsafe {
+        SetFileSecurityW(
+            path_wide.as_ptr(),
+            DACL_SECURITY_INFORMATION,
+            (&mut descriptor as *mut SECURITY_DESCRIPTOR).cast(),
+        )
+    };
+    unsafe { LocalFree(new_dacl as HLOCAL) };
+    if ok == 0 {
+        return Err(crate::winutil::win_error("SetFileSecurityW"));
     }
     Ok(true)
 }

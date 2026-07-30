@@ -89,6 +89,25 @@ fn sandbox_user_policy_sids(capability: *mut c_void, logon: *mut c_void) -> [*mu
     [capability, logon]
 }
 
+fn sandbox_user_restriction_sids(
+    workspace: *mut c_void,
+    ancestor_traversal: *mut c_void,
+    logon: *mut c_void,
+    users: *mut c_void,
+    world: *mut c_void,
+) -> [*mut c_void; 5] {
+    [workspace, ancestor_traversal, logon, users, world]
+}
+
+fn sandbox_user_default_dacl_sids(
+    workspace: *mut c_void,
+    user: *mut c_void,
+    logon: *mut c_void,
+    world: *mut c_void,
+) -> [*mut c_void; 4] {
+    [workspace, user, logon, world]
+}
+
 fn restricting_entries<const N: usize>(sids: [*mut c_void; N]) -> [SID_AND_ATTRIBUTES; N] {
     sids.map(|sid| SID_AND_ATTRIBUTES {
         Sid: sid,
@@ -237,6 +256,45 @@ fn capability_path(home: &Path, roots: &[PathBuf], mode: crate::SandboxMode) -> 
     home.join(".sandbox").join("capabilities").join(name)
 }
 
+fn load_or_create_capability_sid(path: &Path, label: &str) -> Result<LocalSid> {
+    if let Ok(value) = std::fs::read_to_string(path) {
+        return LocalSid::new(value.trim());
+    }
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("{label} SID path has no parent"))?;
+    std::fs::create_dir_all(parent)?;
+    let value = generate_capability_sid_text()?;
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+    {
+        Ok(mut file) => {
+            use std::io::Write as _;
+            file.write_all(value.as_bytes())?;
+            file.sync_all()?;
+            LocalSid::new(&value)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            LocalSid::new(std::fs::read_to_string(path)?.trim())
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+/// Load the stable restricted-token capability used only for non-inheritable
+/// read/traverse grants on workspace ancestor directories.
+pub fn ancestor_traversal_sid(home: &Path) -> Result<LocalSid> {
+    load_or_create_capability_sid(
+        &home
+            .join(".sandbox")
+            .join("capabilities")
+            .join("ancestor-traversal.sid"),
+        "ancestor traversal",
+    )
+}
+
 /// Load the stable capability identity for one exact root set and access mode.
 /// Persisting this identity lets an already-propagated workspace ACL be reused
 /// across Atelier launches instead of recursively rewriting the repository on
@@ -251,31 +309,7 @@ pub fn workspace_capability_sid(
             "workspace capability requires at least one root"
         ));
     }
-    let path = capability_path(home, roots, mode);
-    if let Ok(value) = std::fs::read_to_string(&path) {
-        return LocalSid::new(value.trim());
-    }
-    let parent = path
-        .parent()
-        .ok_or_else(|| anyhow::anyhow!("workspace capability path has no parent"))?;
-    std::fs::create_dir_all(parent)?;
-    let value = generate_capability_sid_text()?;
-    match std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&path)
-    {
-        Ok(mut file) => {
-            use std::io::Write as _;
-            file.write_all(value.as_bytes())?;
-            file.sync_all()?;
-            LocalSid::new(&value)
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-            LocalSid::new(std::fs::read_to_string(&path)?.trim())
-        }
-        Err(error) => Err(error.into()),
-    }
+    load_or_create_capability_sid(&capability_path(home, roots, mode), "workspace capability")
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -554,9 +588,13 @@ pub fn create_restricted_token(capability: &LocalSid) -> Result<RestrictedToken>
 
 /// Derive a WRITE_RESTRICTED primary token from the dedicated sandbox
 /// account's current logon token. The normal token supplies the sandbox-account
-/// side of the access check; the restricting set deliberately requires the
-/// per-workspace capability instead of accepting the account SID again.
-pub fn create_restricted_token_for_sandbox_user(capability: &LocalSid) -> Result<RestrictedToken> {
+/// side of the access check. Workspace resources still require the exact
+/// per-workspace capability; the separate traversal capability is granted only
+/// on non-inheriting ancestor-directory ACEs needed to establish the cwd.
+pub fn create_restricted_token_for_sandbox_user(
+    capability: &LocalSid,
+    ancestor_traversal: &LocalSid,
+) -> Result<RestrictedToken> {
     let desired: TOKEN_ACCESS_MASK = TOKEN_DUPLICATE
         | TOKEN_QUERY
         | TOKEN_ASSIGN_PRIMARY
@@ -573,12 +611,13 @@ pub fn create_restricted_token_for_sandbox_user(capability: &LocalSid) -> Result
     let system_read = LocalSid::new("S-1-5-32-545")?;
     let world_read = LocalSid::new("S-1-1-0")?;
     let policy_sids = sandbox_user_policy_sids(capability.as_ptr(), logon.as_mut_ptr().cast());
-    let restrictions = restricting_entries([
+    let restrictions = restricting_entries(sandbox_user_restriction_sids(
         policy_sids[0],
+        ancestor_traversal.as_ptr(),
         policy_sids[1],
         system_read.as_ptr(),
         world_read.as_ptr(),
-    ]);
+    ));
     let mut restricted = ptr::null_mut();
     if unsafe {
         CreateRestrictedToken(
@@ -598,12 +637,12 @@ pub fn create_restricted_token_for_sandbox_user(capability: &LocalSid) -> Result
         return Err(win_error("CreateRestrictedToken(sandbox user)"));
     }
     let token = OwnedHandle(restricted);
-    let default_dacl_sids = [
+    let default_dacl_sids = sandbox_user_default_dacl_sids(
         policy_sids[0],
         user.as_mut_ptr().cast(),
         policy_sids[1],
         world_read.as_ptr(),
-    ];
+    );
     unsafe {
         set_default_dacl(token.raw(), &default_dacl_sids)?;
         enable_change_notify_privilege(token.raw())?;
@@ -615,8 +654,8 @@ pub fn create_restricted_token_for_sandbox_user(capability: &LocalSid) -> Result
 mod tests {
     use super::{
         DEFAULT_DACL_ACCESS_MASK, DISABLE_MAX_PRIVILEGE, LUA_TOKEN, WRITE_RESTRICTED,
-        restricted_token_flag_attempts, sandbox_user_policy_sids,
-        sandbox_user_restricted_token_flags, standard_policy_sids,
+        restricted_token_flag_attempts, sandbox_user_default_dacl_sids, sandbox_user_policy_sids,
+        sandbox_user_restricted_token_flags, sandbox_user_restriction_sids, standard_policy_sids,
     };
     use std::ffi::c_void;
     use windows_sys::Win32::Foundation::GENERIC_ALL;
@@ -653,6 +692,24 @@ mod tests {
     }
 
     #[test]
+    fn traversal_capability_is_restricting_only_and_never_inherited_by_created_files() {
+        let workspace = 1usize as *mut c_void;
+        let traversal = 2usize as *mut c_void;
+        let logon = 3usize as *mut c_void;
+        let users = 4usize as *mut c_void;
+        let world = 5usize as *mut c_void;
+        let user = 6usize as *mut c_void;
+
+        assert!(
+            sandbox_user_restriction_sids(workspace, traversal, logon, users, world)
+                .contains(&traversal)
+        );
+        assert!(
+            !sandbox_user_default_dacl_sids(workspace, user, logon, world).contains(&traversal)
+        );
+    }
+
+    #[test]
     fn workspace_capability_is_stable_per_root_and_mode() {
         let home = tempfile::tempdir().unwrap();
         let root = tempfile::tempdir().unwrap();
@@ -682,6 +739,33 @@ mod tests {
 
         assert_eq!(first, second);
         assert_ne!(first, read_only);
+    }
+
+    #[test]
+    fn ancestor_traversal_capability_is_stable_and_not_a_workspace_capability() {
+        let home = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let roots = vec![root.path().to_path_buf()];
+
+        let first = super::ancestor_traversal_sid(home.path())
+            .unwrap()
+            .to_string()
+            .unwrap();
+        let second = super::ancestor_traversal_sid(home.path())
+            .unwrap()
+            .to_string()
+            .unwrap();
+        let workspace = super::workspace_capability_sid(
+            home.path(),
+            &roots,
+            crate::SandboxMode::WorkspaceWrite,
+        )
+        .unwrap()
+        .to_string()
+        .unwrap();
+
+        assert_eq!(first, second);
+        assert_ne!(first, workspace);
     }
 
     #[test]

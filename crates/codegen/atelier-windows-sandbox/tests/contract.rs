@@ -210,6 +210,119 @@ fn managed_powershell_7_starts_under_both_persistent_sandbox_accounts() {
 }
 
 #[test]
+fn managed_powershell_starts_at_the_workspace_and_supports_relative_file_operations() {
+    if !restricted_token_supported_or_skip() {
+        return;
+    }
+    let Some(program_data) = std::env::var_os("ProgramData") else {
+        eprintln!("skipping managed PowerShell cwd probe: ProgramData is unset");
+        return;
+    };
+    let manifest_path = PathBuf::from(program_data)
+        .join("Atelier")
+        .join("runtimes")
+        .join("powershell")
+        .join("active.json");
+    let Ok(manifest_source) = std::fs::read_to_string(&manifest_path) else {
+        eprintln!(
+            "skipping managed PowerShell cwd probe: missing {}",
+            manifest_path.display()
+        );
+        return;
+    };
+    let manifest: serde_json::Value =
+        serde_json::from_str(&manifest_source).expect("parse managed PowerShell manifest");
+    let pwsh = PathBuf::from(
+        manifest["path"]
+            .as_str()
+            .expect("managed PowerShell manifest path"),
+    );
+
+    let temp = tempfile::tempdir().expect("tempdir");
+    let workspace = temp.path().join("workspace");
+    let nested = workspace.join("existing");
+    let sibling = temp.path().join("sibling");
+    std::fs::create_dir_all(&nested).expect("existing workspace directory");
+    std::fs::write(nested.join("input.txt"), "readable").expect("workspace input");
+    std::fs::create_dir(&sibling).expect("sibling directory");
+    std::fs::write(sibling.join("secret.txt"), "must-not-read").expect("sibling secret");
+    let expected = workspace
+        .to_string_lossy()
+        .replace('`', "``")
+        .replace('"', "`\"");
+    let outside = sibling
+        .join("secret.txt")
+        .to_string_lossy()
+        .replace('`', "``")
+        .replace('"', "`\"");
+    let mut request = command_request(SandboxMode::WorkspaceWrite, &workspace);
+    request.program = pwsh.clone();
+    request.args = vec![
+        OsString::from("-NoLogo"),
+        OsString::from("-NoProfile"),
+        OsString::from("-NonInteractive"),
+        OsString::from("-Command"),
+        OsString::from(format!(
+            "$ErrorActionPreference = 'Stop'; \
+             if ($PWD.Path -ine \"{expected}\") {{ \
+                 Write-Error \"unexpected cwd: $($PWD.Path)\"; exit 42 \
+             }}; \
+             Set-Content -LiteralPath 'existing\\probe.txt' -Value 'ok'; \
+             Remove-Item -LiteralPath 'existing\\probe.txt' -Force; \
+             $outsideReadable = $true; \
+             try {{ Get-Content -LiteralPath \"{outside}\" -ErrorAction Stop | Out-Null }} \
+             catch {{ $outsideReadable = $false }}; \
+             if ($outsideReadable) {{ Write-Error 'read escaped workspace'; exit 43 }}; \
+             Write-Output 'PWSH_WORKSPACE_CWD_OK'"
+        )),
+    ];
+    request.timeout = Some(std::time::Duration::from_secs(10));
+
+    let output = run_command(request).expect("sandboxed managed PowerShell cwd probe");
+    assert_eq!(
+        output.exit_code,
+        0,
+        "stdout={:?} stderr={:?}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(nested.is_dir());
+    assert!(!nested.join("probe.txt").exists());
+    assert!(String::from_utf8_lossy(&output.stdout).contains("PWSH_WORKSPACE_CWD_OK"));
+
+    let mut read_only = command_request(SandboxMode::ReadOnly, &workspace);
+    read_only.program = pwsh;
+    read_only.args = vec![
+        OsString::from("-NoLogo"),
+        OsString::from("-NoProfile"),
+        OsString::from("-NonInteractive"),
+        OsString::from("-Command"),
+        OsString::from(format!(
+            "$ErrorActionPreference = 'Stop'; \
+             if ($PWD.Path -ine \"{expected}\") {{ exit 44 }}; \
+             if ((Get-Content -LiteralPath 'existing\\input.txt' -Raw).Trim() -ne 'readable') {{ exit 45 }}; \
+             $writeDenied = $false; \
+             try {{ Set-Content -LiteralPath 'existing\\blocked.txt' -Value 'blocked' -ErrorAction Stop }} \
+             catch {{ $writeDenied = $true }}; \
+             if (-not $writeDenied) {{ exit 46 }}; \
+             Write-Output 'PWSH_READ_ONLY_CWD_OK'"
+        )),
+    ];
+    read_only.timeout = Some(std::time::Duration::from_secs(10));
+
+    let output = run_command(read_only).expect("sandboxed read-only PowerShell cwd probe");
+    assert_eq!(
+        output.exit_code,
+        0,
+        "stdout={:?} stderr={:?}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!nested.join("blocked.txt").exists());
+    assert!(String::from_utf8_lossy(&output.stdout).contains("PWSH_READ_ONLY_CWD_OK"));
+}
+
+#[test]
 fn controlled_path_resolves_managed_powershell_from_the_toolchain_registry() {
     if !restricted_token_supported_or_skip() {
         return;

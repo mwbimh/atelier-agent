@@ -1,11 +1,15 @@
 use crate::acl::{
-    ScopedAclGrant, access_mask_for_mode, ensure_persistent_workspace_grant, grant_restricted_sids,
+    ScopedAclGrant, access_mask_for_mode, ensure_persistent_ancestor_traversal_grant,
+    ensure_persistent_workspace_grant, grant_restricted_sids,
 };
 use crate::env::make_environment_block;
 use crate::materialize;
 use crate::process::spawn_as_user_with_handles;
 use crate::setup::{SandboxCreds, ensure_sandbox_creds};
-use crate::token::{LocalSid, create_restricted_token_for_sandbox_user, workspace_capability_sid};
+use crate::token::{
+    LocalSid, ancestor_traversal_sid, create_restricted_token_for_sandbox_user,
+    workspace_capability_sid,
+};
 use crate::winutil::{argv_to_command_line, path_to_wide, to_wide, win_error};
 use anyhow::{Context, Result, anyhow};
 use serde::{Deserialize, Serialize};
@@ -46,7 +50,7 @@ use windows_sys::Win32::System::Threading::{
     TerminateProcess, WaitForSingleObject,
 };
 
-const PROTOCOL_VERSION: u32 = 1;
+const PROTOCOL_VERSION: u32 = 2;
 const ERROR_PIPE_CONNECTED: u32 = 535;
 static PIPE_NONCE: AtomicU64 = AtomicU64::new(1);
 
@@ -63,6 +67,8 @@ fn record_spawn_timing(name: &'static str, started: Instant) {
 struct RunnerRequest {
     version: u32,
     capability_sid: String,
+    #[serde(default)]
+    ancestor_traversal_sid: String,
     program: PathBuf,
     args: Vec<String>,
     cwd: PathBuf,
@@ -286,6 +292,30 @@ impl Drop for PersistentPipedProcess {
     }
 }
 
+fn workspace_ancestors_requiring_traversal(root: &Path) -> Vec<PathBuf> {
+    let user_profile = std::env::var_os("USERPROFILE")
+        .map(PathBuf::from)
+        .and_then(|path| dunce::canonicalize(path).ok());
+    if user_profile.as_ref().is_some_and(|profile| root == profile) {
+        return Vec::new();
+    }
+    let profile_boundary = user_profile.filter(|profile| crate::path_is_within(profile, root));
+    let mut ancestors = Vec::new();
+    for ancestor in root.ancestors().skip(1) {
+        if ancestor.parent().is_none() {
+            break;
+        }
+        ancestors.push(ancestor.to_path_buf());
+        if profile_boundary
+            .as_ref()
+            .is_some_and(|profile| ancestor == profile)
+        {
+            break;
+        }
+    }
+    ancestors
+}
+
 pub fn spawn(request: crate::CommandRequest) -> Result<PersistentPipedProcess> {
     let total_started = Instant::now();
 
@@ -309,6 +339,7 @@ pub fn spawn(request: crate::CommandRequest) -> Result<PersistentPipedProcess> {
 
     let started = Instant::now();
     let capability = workspace_capability_sid(&home, &validated.roots, request.mode)?;
+    let ancestor_traversal = ancestor_traversal_sid(&home)?;
     let sandbox_user = LocalSid::from_account(&creds.username)?;
     record_spawn_timing("windows_sandbox.resolve_sids", started);
 
@@ -322,6 +353,13 @@ pub fn spawn(request: crate::CommandRequest) -> Result<PersistentPipedProcess> {
             capability.as_ptr(),
             access,
         )?;
+        for ancestor in workspace_ancestors_requiring_traversal(root) {
+            acl_changed |= ensure_persistent_ancestor_traversal_grant(
+                &ancestor,
+                sandbox_user.as_ptr(),
+                ancestor_traversal.as_ptr(),
+            )?;
+        }
     }
     record_spawn_timing(
         if acl_changed {
@@ -369,6 +407,7 @@ pub fn spawn(request: crate::CommandRequest) -> Result<PersistentPipedProcess> {
     let payload = RunnerRequest {
         version: PROTOCOL_VERSION,
         capability_sid: capability.to_string()?,
+        ancestor_traversal_sid: ancestor_traversal.to_string()?,
         program,
         args: request
             .args
@@ -623,7 +662,8 @@ where
     }
     let result = (|| -> Result<_> {
         let capability = LocalSid::new(&request.capability_sid)?;
-        let token = create_restricted_token_for_sandbox_user(&capability)?;
+        let ancestor_traversal = LocalSid::new(&request.ancestor_traversal_sid)?;
+        let token = create_restricted_token_for_sandbox_user(&capability, &ancestor_traversal)?;
         let args = request
             .args
             .into_iter()
