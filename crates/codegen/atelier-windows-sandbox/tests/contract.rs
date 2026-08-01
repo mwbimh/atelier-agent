@@ -323,7 +323,7 @@ fn managed_powershell_starts_at_the_workspace_and_supports_relative_file_operati
 }
 
 #[test]
-fn controlled_path_resolves_managed_powershell_from_the_toolchain_registry() {
+fn inherited_path_also_resolves_managed_powershell_from_the_toolchain_registry() {
     if !restricted_token_supported_or_skip() {
         return;
     }
@@ -365,7 +365,7 @@ fn controlled_path_resolves_managed_powershell_from_the_toolchain_registry() {
     ];
     request.timeout = Some(std::time::Duration::from_secs(10));
 
-    let output = run_command(request).expect("resolve managed PowerShell from controlled PATH");
+    let output = run_command(request).expect("resolve managed PowerShell from inherited PATH");
     assert_eq!(
         output.exit_code,
         0,
@@ -378,10 +378,155 @@ fn controlled_path_resolves_managed_powershell_from_the_toolchain_registry() {
         resolved.lines().any(|line| line
             .trim()
             .eq_ignore_ascii_case(&expected.to_string_lossy())),
-        "controlled PATH did not resolve {}: {resolved:?}",
+        "inherited PATH did not resolve {}: {resolved:?}",
         expected.display()
     );
-    assert!(!resolved.to_ascii_lowercase().contains("windowsapps"));
+}
+
+#[test]
+fn sandbox_child_uses_the_sandbox_account_profile_for_writable_caches() {
+    if !restricted_token_supported_or_skip() {
+        return;
+    }
+    let temp = tempfile::tempdir().expect("tempdir");
+    let system_root = std::env::var_os("SystemRoot")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(r"C:\Windows"));
+    let mut request = command_request(SandboxMode::ReadOnly, temp.path());
+    request.program = system_root.join("System32/cmd.exe");
+    request.args = vec![
+        OsString::from("/D"),
+        OsString::from("/S"),
+        OsString::from("/C"),
+        OsString::from("echo %USERPROFILE%&echo %LOCALAPPDATA%&echo %TEMP%"),
+    ];
+    request.timeout = Some(std::time::Duration::from_secs(10));
+
+    let output = run_command(request).expect("inspect sandbox child profile environment");
+    assert_eq!(
+        output.exit_code,
+        0,
+        "stdout={:?} stderr={:?}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let values = stdout
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>();
+    assert_eq!(values.len(), 3, "unexpected environment output: {values:?}");
+    let host_profile = std::env::var("USERPROFILE").unwrap_or_default();
+    assert!(!values[0].eq_ignore_ascii_case(&host_profile));
+    assert!(
+        values[0].to_ascii_lowercase().contains("ateliersandbox"),
+        "USERPROFILE={:?}",
+        values[0]
+    );
+    assert!(
+        values[1].to_ascii_lowercase().contains("ateliersandbox"),
+        "LOCALAPPDATA={:?}",
+        values[1]
+    );
+    assert!(
+        values[2]
+            .replace('/', "\\")
+            .to_ascii_lowercase()
+            .ends_with(r"\appdata\local\temp"),
+        "TEMP={:?}",
+        values[2]
+    );
+    let host_temp = std::env::var("TEMP").unwrap_or_default();
+    assert!(!values[2].eq_ignore_ascii_case(&host_temp));
+}
+
+#[test]
+fn inherited_path_resolves_installed_host_developer_tools() {
+    if !restricted_token_supported_or_skip() {
+        return;
+    }
+    let host_path = std::env::var_os("PATH").unwrap_or_default();
+    let system_root = std::env::var_os("SystemRoot")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(r"C:\Windows"));
+    for tool in ["uv.exe", "node.exe", "cargo.exe"] {
+        let expected = std::env::split_paths(&host_path)
+            .map(|root| root.join(tool))
+            .find(|path| path.is_file());
+        let Some(expected) = expected else {
+            eprintln!("skipping host PATH probe: {tool} is not installed");
+            continue;
+        };
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mut request = command_request(SandboxMode::ReadOnly, temp.path());
+        request.program = system_root.join("System32/cmd.exe");
+        request.args = vec![
+            OsString::from("/D"),
+            OsString::from("/S"),
+            OsString::from("/C"),
+            OsString::from(format!("where.exe {tool}")),
+        ];
+        request.timeout = Some(std::time::Duration::from_secs(10));
+
+        let output = run_command(request)
+            .unwrap_or_else(|error| panic!("resolve host {tool} from inherited PATH: {error:#}"));
+        assert_eq!(
+            output.exit_code,
+            0,
+            "tool={tool} stdout={:?} stderr={:?}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let resolved = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            resolved.lines().any(|line| line
+                .trim()
+                .eq_ignore_ascii_case(&expected.to_string_lossy())),
+            "inherited PATH did not resolve host {tool} {}: {resolved:?}",
+            expected.display()
+        );
+    }
+}
+
+#[test]
+fn uv_uses_the_sandbox_profile_cache_without_polluting_the_workspace() {
+    if !restricted_token_supported_or_skip() {
+        return;
+    }
+    let host_path = std::env::var_os("PATH").unwrap_or_default();
+    if !std::env::split_paths(&host_path)
+        .map(|root| root.join("uv.exe"))
+        .any(|path| path.is_file())
+    {
+        eprintln!("skipping uv cache probe: uv.exe is not installed");
+        return;
+    }
+    let temp = tempfile::tempdir().expect("tempdir");
+    let system_root = std::env::var_os("SystemRoot")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(r"C:\Windows"));
+    let mut request = command_request(SandboxMode::WorkspaceWrite, temp.path());
+    request.program = system_root.join("System32/cmd.exe");
+    request.args = vec![
+        OsString::from("/D"),
+        OsString::from("/S"),
+        OsString::from("/C"),
+        OsString::from("uv.exe cache dir && uv.exe cache prune"),
+    ];
+    request.timeout = Some(std::time::Duration::from_secs(30));
+
+    let output = run_command(request).expect("run uv cache probe inside sandbox");
+    assert_eq!(
+        output.exit_code,
+        0,
+        "stdout={:?} stderr={:?}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let cache = String::from_utf8_lossy(&output.stdout).to_ascii_lowercase();
+    assert!(cache.contains("ateliersandbox") || cache.contains("atelie~"));
+    assert!(!temp.path().join(".uv-cache").exists());
 }
 
 #[test]

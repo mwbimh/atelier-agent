@@ -292,6 +292,42 @@ impl Drop for PersistentPipedProcess {
     }
 }
 
+fn inherited_path_entries_requiring_grant(
+    path: &std::ffi::OsStr,
+    user_profile: &Path,
+    workspace_roots: &[PathBuf],
+    protected_roots: &[PathBuf],
+) -> Vec<PathBuf> {
+    let mut entries = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for entry in std::env::split_paths(path) {
+        if !entry.is_absolute()
+            || entry == user_profile
+            || workspace_roots
+                .iter()
+                .any(|workspace| crate::path_is_within(workspace, &entry))
+            || protected_roots
+                .iter()
+                .any(|protected| crate::path_is_within(protected, &entry))
+        {
+            continue;
+        }
+        if seen.insert(crate::canonical_path_key(&entry)) {
+            entries.push(entry);
+        }
+    }
+    entries
+}
+
+fn request_path(request: &crate::CommandRequest) -> Option<std::ffi::OsString> {
+    request
+        .env
+        .iter()
+        .find(|(key, _)| key.to_string_lossy().eq_ignore_ascii_case("Path"))
+        .map(|(_, value)| value.clone())
+        .or_else(|| std::env::var_os("PATH"))
+}
+
 fn workspace_ancestors_requiring_traversal(root: &Path) -> Vec<PathBuf> {
     let user_profile = std::env::var_os("USERPROFILE")
         .map(PathBuf::from)
@@ -359,6 +395,80 @@ pub fn spawn(request: crate::CommandRequest) -> Result<PersistentPipedProcess> {
                 sandbox_user.as_ptr(),
                 ancestor_traversal.as_ptr(),
             )?;
+        }
+    }
+    if let (Some(path), Some(user_profile)) = (
+        request_path(&request),
+        std::env::var_os("USERPROFILE").map(PathBuf::from),
+    ) {
+        let mut protected_roots = [
+            "SystemRoot",
+            "ProgramW6432",
+            "ProgramFiles",
+            "ProgramFiles(x86)",
+        ]
+        .into_iter()
+        .filter_map(std::env::var_os)
+        .map(PathBuf::from)
+        .collect::<Vec<_>>();
+        if let Some(program_data) = std::env::var_os("ProgramData") {
+            protected_roots.push(PathBuf::from(program_data));
+        }
+        for root in inherited_path_entries_requiring_grant(
+            &path,
+            &user_profile,
+            &validated.roots,
+            &protected_roots,
+        ) {
+            let requested_root = root;
+            let Ok(root) = dunce::canonicalize(&requested_root) else {
+                continue;
+            };
+            if !root.is_dir() || crate::path_normalization::ensure_no_reparse_points(&root).is_err()
+            {
+                continue;
+            }
+            match ensure_persistent_workspace_grant(
+                &root,
+                sandbox_user.as_ptr(),
+                ancestor_traversal.as_ptr(),
+                access_mask_for_mode(crate::SandboxMode::ReadOnly),
+            ) {
+                Ok(changed) => {
+                    acl_changed |= changed;
+                    let mut ancestors = workspace_ancestors_requiring_traversal(&requested_root);
+                    for ancestor in workspace_ancestors_requiring_traversal(&root) {
+                        if !ancestors.iter().any(|existing| {
+                            crate::canonical_path_key(existing)
+                                == crate::canonical_path_key(&ancestor)
+                        }) {
+                            ancestors.push(ancestor);
+                        }
+                    }
+                    for ancestor in ancestors {
+                        match ensure_persistent_ancestor_traversal_grant(
+                            &ancestor,
+                            sandbox_user.as_ptr(),
+                            ancestor_traversal.as_ptr(),
+                        ) {
+                            Ok(changed) => acl_changed |= changed,
+                            Err(error) => {
+                                tracing::warn!(
+                                    path = %ancestor.display(),
+                                    error = %error,
+                                    "could not grant sandbox traversal to inherited PATH root"
+                                );
+                                break;
+                            }
+                        }
+                    }
+                }
+                Err(error) => tracing::warn!(
+                    path = %root.display(),
+                    error = %error,
+                    "could not grant sandbox read/execute access to inherited PATH root"
+                ),
+            }
         }
     }
     record_spawn_timing(
@@ -759,7 +869,10 @@ fn read_frame<T: for<'de> Deserialize<'de>>(reader: &mut File) -> Result<T> {
 
 #[cfg(test)]
 mod tests {
-    use super::{KillOnCloseJob, PersistentPipedProcess, parse_runner_args};
+    use super::{
+        KillOnCloseJob, PersistentPipedProcess, inherited_path_entries_requiring_grant,
+        parse_runner_args,
+    };
     use std::fs::File;
     use std::os::windows::io::{AsRawHandle, FromRawHandle, IntoRawHandle};
     use std::process::{Child, Command, Stdio};
@@ -776,6 +889,25 @@ mod tests {
     const TREE_HELPER_MODE: &str = "ATELIER_WINDOWS_SANDBOX_TREE_HELPER_MODE";
     const TREE_HELPER_SIGNAL: &str = "ATELIER_WINDOWS_SANDBOX_TREE_HELPER_SIGNAL";
     const TREE_HELPER_PID: &str = "ATELIER_WINDOWS_SANDBOX_TREE_HELPER_PID";
+
+    #[test]
+    fn inherited_path_grants_user_and_custom_tool_roots_outside_the_workspace() {
+        let roots = inherited_path_entries_requiring_grant(
+            std::ffi::OsStr::new(
+                r"C:\Users\dev\.local\bin;C:\Program Files\Git\cmd;C:\Users\dev\repo\tools;C:\USERS\DEV\.LOCAL\BIN;C:\toolchains\node;relative",
+            ),
+            std::path::Path::new(r"C:\Users\dev"),
+            &[std::path::PathBuf::from(r"C:\Users\dev\repo")],
+            &[std::path::PathBuf::from(r"C:\Program Files")],
+        );
+        assert_eq!(
+            roots,
+            vec![
+                std::path::PathBuf::from(r"C:\Users\dev\.local\bin"),
+                std::path::PathBuf::from(r"C:\toolchains\node"),
+            ]
+        );
+    }
 
     fn spawn_tree_helper(mode: &str, temp: &tempfile::TempDir) -> (Child, std::path::PathBuf) {
         let signal = temp.path().join("start-tree");

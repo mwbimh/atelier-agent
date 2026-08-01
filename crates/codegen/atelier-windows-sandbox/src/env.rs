@@ -87,8 +87,13 @@ pub fn make_environment_block(
         );
     }
 
+    let inherited_path = overrides
+        .iter()
+        .find(|(key, _)| key.to_string_lossy().eq_ignore_ascii_case("Path"))
+        .map(|(_, value)| value.clone())
+        .or_else(|| std::env::var_os("PATH"));
     let approved_tool_roots = approved_tool_roots();
-    replace_path_with_controlled(&mut values, &approved_tool_roots);
+    replace_path_with_inherited(&mut values, inherited_path.as_deref(), &approved_tool_roots);
     values = filter_environment_values(values);
 
     // The first-stage crate has no telemetry sink. Remove caller-provided OTEL
@@ -109,8 +114,9 @@ pub fn make_environment_block(
     block
 }
 
-fn replace_path_with_controlled(
+fn replace_path_with_inherited(
     values: &mut BTreeMap<String, String>,
+    inherited_path: Option<&std::ffi::OsStr>,
     approved_tool_roots: &[std::path::PathBuf],
 ) {
     values.retain(|key, _| !key.eq_ignore_ascii_case("Path"));
@@ -119,25 +125,35 @@ fn replace_path_with_controlled(
         .find(|(key, _)| key.eq_ignore_ascii_case("SystemRoot"))
         .map(|(_, value)| std::path::PathBuf::from(value))
         .unwrap_or_else(|| std::path::PathBuf::from(r"C:\Windows"));
-    let mut roots = vec![
+    let required_roots = [
         system_root.join("System32"),
         system_root.clone(),
         system_root.join("System32/Wbem"),
         system_root.join("System32/WindowsPowerShell/v1.0"),
         system_root.join("System32/OpenSSH"),
     ];
-    for root in approved_tool_roots {
-        if !roots.iter().any(|existing| existing == root) {
+    let mut roots = inherited_path
+        .map(std::env::split_paths)
+        .into_iter()
+        .flatten()
+        .filter(|root| !root.as_os_str().is_empty())
+        .collect::<Vec<_>>();
+    for root in required_roots.iter().chain(approved_tool_roots) {
+        if !roots.iter().any(|existing| {
+            existing
+                .to_string_lossy()
+                .eq_ignore_ascii_case(&root.to_string_lossy())
+        }) {
             roots.push(root.clone());
         }
     }
-    values.insert(
-        "Path".to_owned(),
-        std::env::join_paths(roots)
-            .unwrap_or_else(|_| std::ffi::OsString::from(r"C:\Windows\System32"))
-            .to_string_lossy()
-            .into_owned(),
-    );
+    let path = std::env::join_paths(&roots).unwrap_or_else(|_| {
+        inherited_path
+            .filter(|path| !path.is_empty())
+            .map(std::ffi::OsString::from)
+            .unwrap_or_else(|| std::ffi::OsString::from(r"C:\Windows\System32"))
+    });
+    values.insert("Path".to_owned(), path.to_string_lossy().into_owned());
 }
 
 fn approved_tool_roots() -> Vec<std::path::PathBuf> {
@@ -318,6 +334,10 @@ mod tests {
     #[test]
     fn sandbox_child_environment_keeps_parent_toolchain_but_not_parent_identity() {
         let parent = BTreeMap::from([
+            (
+                "Path".to_owned(),
+                r"C:\Users\parent\bin;C:\host-tools".to_owned(),
+            ),
             ("CARGO_HOME".to_owned(), r"C:\parent-cargo".to_owned()),
             (ATELIER_HOME_ENV.to_owned(), r"C:\parent-atelier".to_owned()),
             ("USERPROFILE".to_owned(), r"C:\Users\parent".to_owned()),
@@ -337,6 +357,8 @@ mod tests {
             child.get("CARGO_HOME").map(String::as_str),
             Some(r"C:\parent-cargo")
         );
+        let path = child.get("Path").expect("child PATH");
+        assert!(path.starts_with(r"C:\Users\parent\bin;C:\host-tools"));
         assert_eq!(
             child.get(ATELIER_HOME_ENV).map(String::as_str),
             Some(r"C:\parent-atelier")
@@ -394,18 +416,41 @@ mod tests {
     }
 
     #[test]
-    fn controlled_path_never_inherits_the_parent_path() {
-        let mut values = BTreeMap::from([
-            (
-                "Path".to_owned(),
-                r"C:\Users\parent\bin;C:\unapproved".to_owned(),
-            ),
-            ("SystemRoot".to_owned(), r"C:\Windows".to_owned()),
-        ]);
-        replace_path_with_controlled(&mut values, &[]);
+    fn sandbox_path_inherits_the_frozen_parent_path_and_keeps_system_roots() {
+        let mut values = BTreeMap::from([("SystemRoot".to_owned(), r"C:\Windows".to_owned())]);
+        replace_path_with_inherited(
+            &mut values,
+            Some(std::ffi::OsStr::new(r"C:\Users\parent\bin;C:\host-tools")),
+            &[],
+        );
         let path = values.get("Path").unwrap();
-        assert!(!path.contains(r"C:\Users\parent\bin"));
-        assert!(!path.contains(r"C:\unapproved"));
+        assert!(path.starts_with(r"C:\Users\parent\bin;C:\host-tools"));
         assert!(path.contains(r"C:\Windows\System32"));
+    }
+
+    #[test]
+    fn sandbox_path_deduplicates_required_roots_without_reordering_host_tools() {
+        let mut values = BTreeMap::from([("SystemRoot".to_owned(), r"C:\Windows".to_owned())]);
+        replace_path_with_inherited(
+            &mut values,
+            Some(std::ffi::OsStr::new(
+                r"C:\tools;C:\WINDOWS\system32;C:\other",
+            )),
+            &[std::path::PathBuf::from(r"C:\managed")],
+        );
+        let roots = std::env::split_paths(values.get("Path").unwrap()).collect::<Vec<_>>();
+        assert_eq!(roots[0], std::path::PathBuf::from(r"C:\tools"));
+        assert_eq!(roots[1], std::path::PathBuf::from(r"C:\WINDOWS\system32"));
+        assert_eq!(roots[2], std::path::PathBuf::from(r"C:\other"));
+        assert_eq!(
+            roots
+                .iter()
+                .filter(|root| root
+                    .to_string_lossy()
+                    .eq_ignore_ascii_case(r"C:\Windows\System32"))
+                .count(),
+            1
+        );
+        assert!(roots.contains(&std::path::PathBuf::from(r"C:\managed")));
     }
 }

@@ -48,8 +48,10 @@ The active process chain is:
 - The installer places managed PowerShell under
   `C:\ProgramData\Atelier\runtimes\powershell\<version>` and writes
   `active.json`. Executable roots approved by the installer are recorded in
-  `C:\ProgramData\Atelier\tools\registry.json`; the sandbox child receives a
-  controlled PATH instead of the host user's complete PATH.
+  `C:\ProgramData\Atelier\tools\registry.json`. The sandbox child receives a
+  Session-start snapshot of the host PATH, with required Windows system and
+  managed-tool roots appended when absent. Shell selection remains independent
+  and continues to use the verified absolute PowerShell path.
 
 The following upstream capability is not implemented here:
 
