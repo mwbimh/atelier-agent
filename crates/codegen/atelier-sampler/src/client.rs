@@ -517,6 +517,7 @@ mod request_payload_tests {
             "model": "main-model",
             "messages": [{"role": "user", "content": "hello"}],
             "input": "hello",
+            "instructions": "typed instructions",
             "tools": [{"type": "function"}],
             "tool_choice": "none",
             "stream": true,
@@ -526,6 +527,7 @@ mod request_payload_tests {
             "model": "attacker-model",
             "messages": [],
             "input": "attacker-input",
+            "instructions": "attacker instructions",
             "tools": [],
             "tool_choice": "auto",
             "stream": false,
@@ -540,6 +542,7 @@ mod request_payload_tests {
         assert_eq!(body["model"], "main-model");
         assert_eq!(body["messages"][0]["content"], "hello");
         assert_eq!(body["input"], "hello");
+        assert_eq!(body["instructions"], "typed instructions");
         assert_eq!(body["tools"][0]["type"], "function");
         assert_eq!(body["tool_choice"], "none");
         assert_eq!(body["stream"], true);
@@ -719,7 +722,14 @@ fn apply_request_payload(body: &mut Value, payload: &Map<String, Value>, api_bac
 fn is_protected_request_key(key: &str) -> bool {
     matches!(
         key,
-        "model" | "messages" | "input" | "tools" | "tool_choice" | "stream" | "stream_options"
+        "model"
+            | "messages"
+            | "input"
+            | "instructions"
+            | "tools"
+            | "tool_choice"
+            | "stream"
+            | "stream_options"
     )
 }
 
@@ -1673,6 +1683,7 @@ impl SamplingClient {
         );
 
         let extra_raw_tools = std::mem::take(&mut request.extra_raw_tools);
+        let extra_raw_input_items = std::mem::take(&mut request.extra_raw_input_items);
         let mut request_body = serde_json::to_value(&request.inner).map_err(|e| {
             tracing::error!("Failed to serialize responses request: {}", e);
             SamplingError::Serialization(e)
@@ -1688,6 +1699,18 @@ impl SamplingClient {
                 tools.extend(extra_raw_tools);
             } else {
                 request_body["tools"] = serde_json::Value::Array(extra_raw_tools);
+            }
+        }
+        if !extra_raw_input_items.is_empty() {
+            if let Some(input) = request_body
+                .get_mut("input")
+                .and_then(serde_json::Value::as_array_mut)
+            {
+                input.extend(extra_raw_input_items);
+            } else {
+                return Err(SamplingError::InvalidConfiguration(
+                    "raw Responses input items require an item-array input",
+                ));
             }
         }
         atelier_sampling_types::patch_reasoning_text_types(&mut request_body);
@@ -2149,7 +2172,10 @@ impl SamplingClient {
     // =========================================================================
 
     /// Apply default configuration to a ConversationRequest.
-    fn apply_conversation_defaults(&self, request: &mut ConversationRequest) -> Result<()> {
+    pub(crate) fn apply_conversation_defaults(
+        &self,
+        request: &mut ConversationRequest,
+    ) -> Result<()> {
         if request.model.is_none() {
             request.model = Some(self.defaults.model.clone());
         }
@@ -2560,7 +2586,7 @@ mod tests {
             temperature: None,
             top_p: None,
             request_payload: Default::default(),
-            remote_compaction_endpoint: None,
+            remote_compaction_v2: false,
             image_generation_endpoint: None,
             api_backend: ApiBackend::ChatCompletions,
             auth_scheme: AuthScheme::Bearer,

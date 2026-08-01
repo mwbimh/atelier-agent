@@ -51,8 +51,7 @@ impl SessionActor {
             .set(auto_compact_threshold_percent);
         self.supports_backend_search
             .set(sampling_config.supports_backend_search);
-        *self.remote_compaction_endpoint.borrow_mut() =
-            sampling_config.remote_compaction_endpoint.clone();
+        *self.remote_compaction_v2.borrow_mut() = sampling_config.remote_compaction_v2;
         *self.image_generation_endpoint.borrow_mut() =
             sampling_config.image_generation_endpoint.clone();
         self.compactions_remaining

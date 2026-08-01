@@ -99,7 +99,7 @@ pub(super) async fn make_replay_send_update_fixture() -> ReplaySendUpdateFixture
         )),
         telemetry_enabled: false,
         role_request_payload: std::cell::RefCell::new(serde_json::Map::new()),
-        remote_compaction_endpoint: std::cell::RefCell::new(None),
+        remote_compaction_v2: std::cell::RefCell::new(false),
         image_generation_endpoint: std::cell::RefCell::new(None),
         supports_backend_search: std::cell::Cell::new(false),
         compactions_remaining: std::cell::Cell::new(None),

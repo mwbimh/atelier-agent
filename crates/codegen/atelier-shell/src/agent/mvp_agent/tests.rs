@@ -2372,7 +2372,7 @@ fn find_model_by_id_prefers_key_then_falls_back_to_slug() {
         env_key: None,
         api_base_url: None,
         request_payload: serde_json::Map::new(),
-        remote_compaction_endpoint: None,
+        remote_compaction_v2: false,
         image_generation_endpoint: None,
     };
     let mut models = indexmap::IndexMap::new();

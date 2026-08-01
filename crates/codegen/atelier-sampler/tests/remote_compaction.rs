@@ -1,8 +1,8 @@
 use atelier_sampler::{
-    ApiBackend, AuthScheme, BearerResolver, CompactClient, SamplerConfig, SamplingError,
+    ApiBackend, AuthScheme, BearerResolver, RemoteCompactionV2Client, SamplerConfig, SamplingError,
 };
-use atelier_sampling_types::rs;
-use axum::{Json, Router, http::HeaderMap, routing::post};
+use atelier_sampling_types::{ConversationItem, ConversationRequest};
+use axum::{Router, body::Body, http::HeaderMap, response::Response, routing::post};
 use indexmap::IndexMap;
 use serde_json::{Value, json};
 use std::sync::Once;
@@ -24,23 +24,76 @@ struct CapturedRequest {
     body: Value,
 }
 
+fn completed_response(output: Value) -> Value {
+    json!({
+        "type": "response.completed",
+        "sequence_number": 2,
+        "response": {
+            "id": "resp_compact_1",
+            "object": "response",
+            "created_at": 0,
+            "model": "gpt-test",
+            "status": "completed",
+            "output": output,
+            "usage": {
+                "input_tokens": 120,
+                "input_tokens_details": { "cached_tokens": 20 },
+                "output_tokens": 8,
+                "output_tokens_details": { "reasoning_tokens": 0 },
+                "total_tokens": 128
+            }
+        }
+    })
+}
+
+fn compact_sse() -> String {
+    let item = json!({
+        "type": "compaction",
+        "id": "cmp_1",
+        "encrypted_content": "opaque",
+        "created_by": "server"
+    });
+    [
+        format!(
+            "event: response.output_item.done\ndata: {}\n\n",
+            json!({
+                "type": "response.output_item.done",
+                "sequence_number": 1,
+                "output_index": 0,
+                "item": item
+            })
+        ),
+        format!(
+            "event: response.completed\ndata: {}\n\n",
+            completed_response(json!([item]))
+        ),
+        "data: [DONE]\n\n".to_owned(),
+    ]
+    .concat()
+}
+
 async fn start_server(
     status: axum::http::StatusCode,
-    response: Value,
+    response_body: String,
 ) -> (String, Arc<Mutex<Vec<CapturedRequest>>>) {
     let captured = Arc::new(Mutex::new(Vec::new()));
     let handler_capture = captured.clone();
     let app = Router::new().route(
-        "/v1/responses/compact",
-        post(move |headers: HeaderMap, Json(body): Json<Value>| {
+        "/v1/responses",
+        post(move |headers: HeaderMap, body: axum::body::Bytes| {
             let handler_capture = handler_capture.clone();
-            let response = response.clone();
+            let response_body = response_body.clone();
             async move {
+                let body: Value = serde_json::from_slice(&body).unwrap();
                 handler_capture
                     .lock()
                     .unwrap()
                     .push(CapturedRequest { headers, body });
-                (status, Json(response))
+                Response::builder()
+                    .status(status)
+                    .header("content-type", "text/event-stream")
+                    .body(Body::from(response_body))
+                    .unwrap()
             }
         }),
     );
@@ -63,55 +116,47 @@ fn config(base_url: String) -> SamplerConfig {
         auth_scheme: AuthScheme::Bearer,
         extra_headers: IndexMap::from([("x-provider-header".into(), "present".into())]),
         request_payload: serde_json::from_value(json!({
-            "fast_mode": true,
-            "temperature": 0.1
+            "service_tier": "priority",
+            "instructions": "payload must not replace typed compaction context",
+            "input": []
         }))
         .unwrap(),
-        remote_compaction_endpoint: Some("responses/compact".into()),
+        remote_compaction_v2: true,
         bearer_resolver: Some(Arc::new(StaticBearer("fresh-token"))),
         ..Default::default()
     }
 }
 
 #[tokio::test]
-async fn unary_compaction_uses_provider_auth_and_never_merges_inference_payload() {
-    let (base_url, captured) = start_server(
-        axum::http::StatusCode::OK,
-        json!({
-            "output": [{
-                "type": "compaction",
-                "id": "cmp_1",
-                "encrypted_content": "opaque"
-            }]
-        }),
-    )
-    .await;
-    let client = CompactClient::from_config(config(base_url))
+async fn v2_compaction_streams_through_responses_with_trigger_tools_and_provider_controls() {
+    let (base_url, captured) = start_server(axum::http::StatusCode::OK, compact_sse()).await;
+    let client = RemoteCompactionV2Client::from_config(config(base_url))
         .unwrap()
-        .expect("configured endpoint");
+        .expect("configured capability");
 
     let response = client
         .compact(
-            vec![
-                serde_json::from_value::<rs::InputItem>(json!({
-                    "type": "message",
-                    "role": "user",
-                    "content": "hello"
-                }))
-                .unwrap(),
-            ],
-            "compact carefully",
+            ConversationRequest {
+                items: vec![ConversationItem::user("hello")],
+                tools: vec![atelier_sampling_types::ToolSpec {
+                    name: "read".into(),
+                    description: Some("read a file".into()),
+                    parameters: json!({"type":"object"}),
+                }],
+                model: Some("gpt-test".into()),
+                ..Default::default()
+            },
+            Some("preserve decisions".to_owned()),
             Duration::from_secs(5),
         )
         .await
         .unwrap();
 
-    assert!(matches!(
-        &response.output[0],
-        rs::InputItem::Item(rs::Item::Compaction(compaction))
-            if compaction.id.as_deref() == Some("cmp_1")
-                && compaction.encrypted_content == "opaque"
-    ));
+    assert_eq!(response.response_id, "resp_compact_1");
+    assert_eq!(response.compaction.id.as_deref(), Some("cmp_1"));
+    assert_eq!(response.compaction.encrypted_content, "opaque");
+    assert_eq!(response.usage.unwrap().prompt_tokens, 120);
+
     let requests = captured.lock().unwrap();
     assert_eq!(requests.len(), 1);
     let request = &requests[0];
@@ -129,81 +174,113 @@ async fn unary_compaction_uses_provider_auth_and_never_merges_inference_payload(
             .unwrap()
             .starts_with("pi/1.0 (")
     );
+    assert_eq!(request.body["model"], "gpt-test");
+    assert_eq!(request.body["instructions"], "preserve decisions");
+    assert_eq!(request.body["stream"], true);
+    assert_eq!(request.body["service_tier"], "priority");
     assert_eq!(
-        request.body,
-        json!({
-            "model": "gpt-test",
-            "input": [{"type": "message", "role": "user", "content": "hello"}],
-            "instructions": "compact carefully"
-        })
+        request.body["input"].as_array().unwrap().last().unwrap(),
+        &json!({"type": "compaction_trigger"})
     );
-    assert!(request.body.get("fast_mode").is_none());
-    assert!(request.body.get("temperature").is_none());
-    assert!(request.body.get("stream").is_none());
-    assert!(request.body.get("tools").is_none());
+    assert_eq!(request.body["tools"].as_array().unwrap().len(), 1);
 }
 
 #[test]
-fn compact_client_rejects_non_responses_and_unsafe_endpoints() {
+fn v2_client_is_exact_opt_in_and_responses_only() {
+    let mut disabled = config("https://provider.example/v1".into());
+    disabled.remote_compaction_v2 = false;
+    assert!(
+        RemoteCompactionV2Client::from_config(disabled)
+            .unwrap()
+            .is_none()
+    );
+
     let mut non_responses = config("https://provider.example/v1".into());
     non_responses.api_backend = ApiBackend::ChatCompletions;
-    assert!(CompactClient::from_config(non_responses).is_err());
+    assert!(RemoteCompactionV2Client::from_config(non_responses).is_err());
+}
 
-    for endpoint in [
-        "https://evil.example/compact",
-        "/responses/compact",
-        "../responses/compact",
-        "responses/../compact",
-        r"responses\compact",
-        "responses/%2e%2e/compact",
-        "responses/compact?target=evil",
-        "responses/compact#fragment",
-    ] {
-        let mut unsafe_config = config("https://provider.example/v1".into());
-        unsafe_config.remote_compaction_endpoint = Some(endpoint.into());
-        assert!(
-            CompactClient::from_config(unsafe_config).is_err(),
-            "unsafe endpoint should fail: {endpoint:?}"
-        );
+fn compact_request() -> ConversationRequest {
+    ConversationRequest {
+        items: vec![ConversationItem::user("hello")],
+        model: Some("gpt-test".into()),
+        ..Default::default()
     }
 }
 
-#[test]
-fn absent_endpoint_does_not_construct_a_compact_client() {
-    let mut config = config("https://provider.example/v1".into());
-    config.remote_compaction_endpoint = None;
-    assert!(CompactClient::from_config(config).unwrap().is_none());
-}
-
 #[tokio::test]
-async fn compact_client_classifies_rate_limits_and_rejects_empty_output() {
-    let (base_url, _) = start_server(
-        axum::http::StatusCode::TOO_MANY_REQUESTS,
-        json!({"error": {"message": "slow down"}}),
-    )
-    .await;
-    let client = CompactClient::from_config(config(base_url))
+async fn v2_requires_exactly_one_compaction_item_and_completed_event() {
+    let terminal_only = format!(
+        "event: response.completed\ndata: {}\n\ndata: [DONE]\n\n",
+        completed_response(json!([]))
+    );
+    let (base_url, _) = start_server(axum::http::StatusCode::OK, terminal_only).await;
+    let client = RemoteCompactionV2Client::from_config(config(base_url))
         .unwrap()
         .unwrap();
     let error = client
-        .compact(Vec::new(), "", Duration::from_secs(5))
-        .await
-        .unwrap_err();
-    assert!(matches!(
-        error,
-        SamplingError::Api {
-            status: axum::http::StatusCode::TOO_MANY_REQUESTS,
-            ..
-        }
-    ));
-
-    let (base_url, _) = start_server(axum::http::StatusCode::OK, json!({"output": []})).await;
-    let client = CompactClient::from_config(config(base_url))
-        .unwrap()
-        .unwrap();
-    let error = client
-        .compact(Vec::new(), "", Duration::from_secs(5))
+        .compact(compact_request(), None, Duration::from_secs(5))
         .await
         .unwrap_err();
     assert!(matches!(error, SamplingError::Serialization(_)));
+
+    let item = json!({
+        "type": "compaction",
+        "id": "cmp_duplicate",
+        "encrypted_content": "opaque"
+    });
+    let duplicate = [
+        format!(
+            "event: response.output_item.done\ndata: {}\n\n",
+            json!({
+                "type": "response.output_item.done",
+                "sequence_number": 1,
+                "output_index": 0,
+                "item": item
+            })
+        ),
+        format!(
+            "event: response.output_item.done\ndata: {}\n\n",
+            json!({
+                "type": "response.output_item.done",
+                "sequence_number": 2,
+                "output_index": 1,
+                "item": item
+            })
+        ),
+        format!(
+            "event: response.completed\ndata: {}\n\n",
+            completed_response(json!([item, item]))
+        ),
+        "data: [DONE]\n\n".to_owned(),
+    ]
+    .concat();
+    let (base_url, _) = start_server(axum::http::StatusCode::OK, duplicate).await;
+    let client = RemoteCompactionV2Client::from_config(config(base_url))
+        .unwrap()
+        .unwrap();
+    let error = client
+        .compact(compact_request(), None, Duration::from_secs(5))
+        .await
+        .unwrap_err();
+    assert!(matches!(error, SamplingError::Serialization(_)));
+
+    let output_without_completion = format!(
+        "event: response.output_item.done\ndata: {}\n\ndata: [DONE]\n\n",
+        json!({
+            "type": "response.output_item.done",
+            "sequence_number": 1,
+            "output_index": 0,
+            "item": item
+        })
+    );
+    let (base_url, _) = start_server(axum::http::StatusCode::OK, output_without_completion).await;
+    let client = RemoteCompactionV2Client::from_config(config(base_url))
+        .unwrap()
+        .unwrap();
+    let error = client
+        .compact(compact_request(), None, Duration::from_secs(15))
+        .await
+        .unwrap_err();
+    assert!(matches!(error, SamplingError::EventStreamError(_)));
 }

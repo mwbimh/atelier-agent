@@ -55,8 +55,8 @@ pub enum ConversationItem {
     /// wrapping `rs::WebSearchToolCall` etc.) so no field is dropped on the
     /// way through.
     Reasoning(rs::ReasoningItem),
-    /// Opaque encrypted context returned by the Responses legacy remote
-    /// compaction endpoint. It must be persisted and sent back byte-for-byte
+    /// Opaque encrypted context returned by Responses remote compaction.
+    /// It must be persisted and sent back byte-for-byte
     /// on subsequent Responses requests; the client never interprets
     /// `encrypted_content`.
     Compaction(rs::CompactionSummaryItemParam),
@@ -2210,9 +2210,9 @@ fn build_responses_input(req: &ConversationRequest) -> rs::InputParam {
     rs::InputParam::Items(conversation_items_to_responses_input_items(&req.items))
 }
 
-/// Encode persisted conversation items into Responses input items. Exposed for
-/// the legacy remote compaction endpoint so it uses the exact same wire
-/// conversion as ordinary inference.
+/// Encode persisted conversation items into Responses input items. Exposed so
+/// compaction and replay paths use the exact same wire conversion as ordinary
+/// inference.
 pub fn conversation_items_to_responses_input_items(
     items: &[ConversationItem],
 ) -> Vec<rs::InputItem> {
@@ -2375,7 +2375,7 @@ pub enum ResponsesInputItemConversionError {
     MissingImageUrl,
 }
 
-/// Decode the legacy `/responses/compact` output into persisted conversation
+/// Decode Responses-compatible compacted input items into persisted conversation
 /// items. The endpoint may return retained messages followed by one opaque
 /// compaction item. Other item kinds fail closed so the Session can apply its
 /// one permitted local fallback instead of silently discarding context.

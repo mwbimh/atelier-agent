@@ -2903,7 +2903,7 @@ fn test_model_entry(model_id: &str) -> crate::agent::config::ModelEntry {
         env_key: None,
         api_base_url: None,
         request_payload: serde_json::Map::new(),
-        remote_compaction_endpoint: None,
+        remote_compaction_v2: false,
         image_generation_endpoint: None,
     }
 }

@@ -1030,7 +1030,7 @@ async fn read_parent_sampling_config(
                 temperature: cfg.temperature,
                 top_p: cfg.top_p,
                 request_payload: ctx.sampling_config.request_payload.clone(),
-                remote_compaction_endpoint: ctx.sampling_config.remote_compaction_endpoint.clone(),
+                remote_compaction_v2: ctx.sampling_config.remote_compaction_v2,
                 image_generation_endpoint: ctx.sampling_config.image_generation_endpoint.clone(),
                 api_backend: cfg.api_backend,
                 auth_scheme,

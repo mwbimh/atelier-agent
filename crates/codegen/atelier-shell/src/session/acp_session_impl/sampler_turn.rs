@@ -276,7 +276,7 @@ impl SessionActor {
             temperature: cfg.temperature,
             top_p: cfg.top_p,
             request_payload: self.role_request_payload.borrow().clone(),
-            remote_compaction_endpoint: self.remote_compaction_endpoint.borrow().clone(),
+            remote_compaction_v2: *self.remote_compaction_v2.borrow(),
             image_generation_endpoint: self.image_generation_endpoint.borrow().clone(),
             api_backend: cfg.api_backend,
             auth_scheme,

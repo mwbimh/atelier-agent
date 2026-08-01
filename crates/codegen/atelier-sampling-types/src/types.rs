@@ -1116,6 +1116,11 @@ pub struct CreateResponseWrapper {
     /// as raw JSON into the serialized request body's `tools` array.
     pub extra_raw_tools: Vec<serde_json::Value>,
 
+    /// Responses input items that the pinned `async-openai` version does not
+    /// model yet. Used narrowly for the remote-compaction-v2
+    /// `{ "type": "compaction_trigger" }` sentinel.
+    pub extra_raw_input_items: Vec<serde_json::Value>,
+
     /// Original Atelier effort before conversion to async-openai's narrower
     /// enum. Needed to preserve the distinct `max` wire value.
     pub reasoning_effort: Option<ReasoningEffort>,
@@ -1135,6 +1140,7 @@ impl CreateResponseWrapper {
             x_atelier_user_id: None,
             trace: None,
             extra_raw_tools: vec![],
+            extra_raw_input_items: vec![],
             reasoning_effort: None,
         }
     }

@@ -15,7 +15,7 @@ use crate::session::helpers::CompactionStateContext;
 use crate::session::helpers::compaction_context::CompactionInputs;
 use crate::session::helpers::compaction_context::to_system_reminder;
 use crate::session::helpers::session_compact::{
-    CompactOutput, CompactionOutcome, build_compaction_chat_history, build_compaction_prompt,
+    CompactOutput, CompactionOutcome, build_compaction_chat_history,
     build_two_pass_compaction_prompt, generate_session_compact, is_context_length_error,
 };
 use crate::session::persistence::PersistenceMsg;
@@ -29,7 +29,7 @@ use atelier_chat_state::compaction_utils::{
     prepare_conversation_for_verbatim_summarization, sanitize_compacted_history,
     validate_compacted_history,
 };
-use atelier_sampling_types::{ApiBackend, ConversationItem, SamplingError};
+use atelier_sampling_types::{ApiBackend, ConversationItem};
 use std::sync::Arc;
 use std::time::Duration;
 /// Default percentage points below the auto-compact threshold at which prefire
@@ -70,63 +70,63 @@ fn fingerprint_prefix(items: &[ConversationItem]) -> u64 {
     h.finish()
 }
 
-fn decode_remote_compaction_output(
-    output: Vec<atelier_sampling_types::rs::InputItem>,
-) -> Result<Vec<ConversationItem>, SamplingError> {
-    let items =
-        atelier_sampling_types::conversation::responses_input_items_to_conversation_items(output)
-            .map_err(SamplingError::serialization_message)?;
-    if !items
+const REMOTE_COMPACTION_V2_RETAINED_TOKEN_BUDGET: u64 = 64_000;
+
+/// Mirror Codex remote-compaction-v2 installation semantics: keep only genuine
+/// user messages from the prompt, bound the retained tail, then append the one
+/// opaque compaction output. Runtime-owned System/Role/project context is
+/// reinstalled later by `build_remote_compacted_history`.
+fn build_remote_compaction_v2_history(
+    conversation: &[ConversationItem],
+    compaction: atelier_sampling_types::rs::CompactionSummaryItemParam,
+) -> Vec<ConversationItem> {
+    let retained = conversation
         .iter()
-        .any(|item| matches!(item, ConversationItem::Compaction(_)))
-    {
-        return Err(SamplingError::serialization_message(
-            "remote compaction output did not contain an opaque compaction item",
-        ));
-    }
-    let sanitized = sanitize_compacted_history(items);
-    let violations = validate_compacted_history(&sanitized.items);
-    if !violations.is_empty() {
-        return Err(SamplingError::serialization_message(format!(
-            "remote compaction output contained invalid tool-result references: {}",
-            violations.join(", ")
-        )));
-    }
-    Ok(sanitized.items)
+        .filter(|item| {
+            matches!(
+                item,
+                ConversationItem::User(user) if user.synthetic_reason.is_none()
+            )
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let mut retained = atelier_chat_state::compaction_utils::fit_conversation_to_budget(
+        retained,
+        REMOTE_COMPACTION_V2_RETAINED_TOKEN_BUDGET,
+    );
+    retained.push(ConversationItem::Compaction(compaction));
+    retained
 }
 
 #[cfg(test)]
 mod remote_compaction_contract_tests {
     use super::*;
-    use atelier_sampling_types::rs;
 
     #[test]
-    fn remote_output_requires_and_preserves_opaque_compaction_item() {
-        let output = vec![
-            rs::InputItem::EasyMessage(rs::EasyInputMessage {
-                r#type: rs::MessageType::Message,
-                role: rs::Role::User,
-                content: rs::EasyInputContent::Text("retained".to_owned()),
-            }),
-            rs::InputItem::Item(rs::Item::Compaction(rs::CompactionSummaryItemParam {
+    fn v2_history_retains_real_users_discards_runtime_items_and_appends_compaction() {
+        let conversation = vec![
+            ConversationItem::system("system"),
+            ConversationItem::project_instructions("project"),
+            ConversationItem::user("real user"),
+            ConversationItem::assistant("assistant"),
+            ConversationItem::system_reminder("reminder"),
+        ];
+        let history = build_remote_compaction_v2_history(
+            &conversation,
+            atelier_sampling_types::rs::CompactionSummaryItemParam {
                 id: Some("cmp_123".to_owned()),
                 encrypted_content: "opaque-payload".to_owned(),
-            })),
-        ];
-        let decoded = decode_remote_compaction_output(output).unwrap();
+            },
+        );
+        assert_eq!(history.len(), 2);
+        assert!(matches!(&history[0], ConversationItem::User(_)));
+        assert_eq!(history[0].text_content(), "real user");
         assert!(matches!(
-            &decoded[1],
+            &history[1],
             ConversationItem::Compaction(item)
                 if item.id.as_deref() == Some("cmp_123")
                     && item.encrypted_content == "opaque-payload"
         ));
-
-        let missing = vec![rs::InputItem::EasyMessage(rs::EasyInputMessage {
-            r#type: rs::MessageType::Message,
-            role: rs::Role::User,
-            content: rs::EasyInputContent::Text("not compacted".to_owned()),
-        })];
-        assert!(decode_remote_compaction_output(missing).is_err());
     }
 }
 /// Outcome of a background prefire pass-1 run, recorded on the
@@ -851,20 +851,39 @@ impl SessionActor {
         &self,
         sampling_config: &atelier_sampler::SamplerConfig,
         conversation: &[ConversationItem],
-        user_context: Option<&str>,
+        tools: Vec<atelier_sampling_types::ToolSpec>,
+        hosted_tools: Vec<atelier_sampling_types::HostedTool>,
+        compact_role_context: Option<&str>,
         request_timeout: Duration,
     ) -> Result<Option<Vec<ConversationItem>>, acp::Error> {
-        let client = atelier_sampler::CompactClient::from_config(sampling_config.clone())
-            .map_err(crate::sampling::error::map_sampling_err_to_acp)?;
+        let client =
+            atelier_sampler::RemoteCompactionV2Client::from_config(sampling_config.clone())
+                .map_err(crate::sampling::error::map_sampling_err_to_acp)?;
         let Some(client) = client else {
             return Ok(None);
         };
-        let input =
-            atelier_sampling_types::conversation::conversation_items_to_responses_input_items(
-                conversation,
-            );
-        let instructions = build_compaction_prompt(user_context, false);
-        let response = match client.compact(input, instructions, request_timeout).await {
+        let request_id = format!("atelier-compact-v2-{}", uuid::Uuid::new_v4());
+        let request = atelier_sampling_types::ConversationRequest {
+            items: conversation.to_vec(),
+            tools,
+            hosted_tools,
+            model: Some(sampling_config.model.clone()),
+            reasoning_effort: sampling_config.reasoning_effort,
+            x_atelier_conv_id: Some(self.session_info.id.to_string()),
+            x_atelier_req_id: Some(request_id),
+            x_atelier_session_id: Some(self.session_info.id.to_string()),
+            x_atelier_agent_id: Some(atelier_telemetry::id::agent_id()),
+            ..Default::default()
+        };
+        let started = std::time::Instant::now();
+        let response = match client
+            .compact(
+                request,
+                compact_role_context.map(str::to_owned),
+                request_timeout,
+            )
+            .await
+        {
             Ok(response) => response,
             Err(error)
                 if atelier_sampler::classify_compact_failure(&error)
@@ -874,7 +893,7 @@ impl SessionActor {
                     session_id = %self.session_info.id.0,
                     model = %sampling_config.model,
                     error = %error,
-                    "remote compaction failed; falling back to local compaction once"
+                    "remote compaction v2 failed; falling back to local compaction once"
                 );
                 return Ok(None);
             }
@@ -882,30 +901,25 @@ impl SessionActor {
                 return Err(crate::sampling::error::map_sampling_err_to_acp(error));
             }
         };
-        match decode_remote_compaction_output(response.output) {
-            Ok(items) => {
-                tracing::info!(
-                    session_id = %self.session_info.id.0,
-                    model = %sampling_config.model,
-                    item_count = items.len(),
-                    "remote compaction completed"
-                );
-                Ok(Some(items))
-            }
-            Err(error) => {
-                debug_assert_eq!(
-                    atelier_sampler::classify_compact_failure(&error),
-                    atelier_sampler::CompactFailureAction::FallbackLocal
-                );
-                tracing::warn!(
-                    session_id = %self.session_info.id.0,
-                    model = %sampling_config.model,
-                    error = %error,
-                    "remote compaction response was unusable; falling back to local compaction once"
-                );
-                Ok(None)
-            }
+        if let Some(usage) = response.usage.as_ref() {
+            self.chat_state_handle.record_model_call_usage(
+                Some(sampling_config.model.clone()),
+                usage.clone(),
+                Some(started.elapsed().as_millis() as u64),
+                None,
+            );
+            self.signals_handle()
+                .record_token_usage(usage.completion_tokens, usage.reasoning_tokens);
         }
+        let items = build_remote_compaction_v2_history(conversation, response.compaction);
+        tracing::info!(
+            session_id = %self.session_info.id.0,
+            model = %sampling_config.model,
+            item_count = items.len(),
+            response_id = %response.response_id,
+            "remote compaction v2 completed"
+        );
+        Ok(Some(items))
     }
 
     /// Inner implementation of compaction that supports an optional `auto_continue`
@@ -1081,14 +1095,6 @@ impl SessionActor {
                 .wall_clock_budget_secs
                 .max(1),
         );
-        let remote_compacted_history = self
-            .try_remote_compaction(
-                &sampling_config,
-                &full_conversation,
-                user_context.as_deref(),
-                remote_timeout,
-            )
-            .await?;
         let use_backend_search =
             self.agent.borrow().backend_search_enabled() && self.supports_backend_search.get();
         let effective_tool_defs: Vec<atelier_sampling_types::ToolDefinition> = self
@@ -1109,6 +1115,16 @@ impl SessionActor {
         } else {
             Vec::new()
         };
+        let remote_compacted_history = self
+            .try_remote_compaction(
+                &sampling_config,
+                &full_conversation,
+                compaction_tools.clone(),
+                compaction_hosted_tools.clone(),
+                user_context.as_deref(),
+                remote_timeout,
+            )
+            .await?;
         tracing::info!(
             num_tools = compaction_tools.len(),
             tool_tokens = compaction_tool_tokens,
@@ -2378,7 +2394,7 @@ mod inline_auto_compact_flow_tests {
                 env_key: None,
                 api_base_url: None,
                 request_payload: serde_json::Map::new(),
-                remote_compaction_endpoint: None,
+                remote_compaction_v2: false,
                 image_generation_endpoint: None,
             },
         );
@@ -2396,7 +2412,7 @@ mod inline_auto_compact_flow_tests {
                 env_key: None,
                 api_base_url: None,
                 request_payload: serde_json::Map::new(),
-                remote_compaction_endpoint: Some("responses/compact".to_owned()),
+                remote_compaction_v2: true,
                 image_generation_endpoint: None,
             },
         );
@@ -2482,7 +2498,7 @@ mod inline_auto_compact_flow_tests {
             telemetry_enabled: false,
             role_request_payload: std::cell::RefCell::new(serde_json::Map::new()),
             supports_backend_search: std::cell::Cell::new(false),
-            remote_compaction_endpoint: std::cell::RefCell::new(None),
+            remote_compaction_v2: std::cell::RefCell::new(false),
             image_generation_endpoint: std::cell::RefCell::new(None),
             compactions_remaining: std::cell::Cell::new(None),
             compaction_at_tokens: std::cell::Cell::new(None),
@@ -2946,7 +2962,7 @@ mod inline_auto_compact_flow_tests {
     ) -> RemoteCompactionMock {
         use axum::Json;
         use axum::response::IntoResponse;
-        use axum::response::sse::Sse;
+        use axum::response::sse::{Event, Sse};
         use axum::routing::post;
         use std::convert::Infallible;
 
@@ -2954,49 +2970,20 @@ mod inline_auto_compact_flow_tests {
         let local_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let remote_counter = remote_calls.clone();
         let local_counter = local_calls.clone();
-        let app = axum::Router::new()
-            .route(
-                "/v1/responses/compact",
-                post(move || {
-                    let remote_counter = remote_counter.clone();
-                    async move {
-                        remote_counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                        if let Some(delay) = remote_delay {
-                            tokio::time::sleep(delay).await;
-                        }
-                        if remote_status.is_success() {
-                            Json(serde_json::json!({
-                                "output": [
-                                    {
-                                        "type": "message",
-                                        "role": "user",
-                                        "content": "retained remote context"
-                                    },
-                                    {
-                                        "type": "compaction",
-                                        "id": "cmp_session",
-                                        "encrypted_content": "opaque-session-state"
-                                    }
-                                ]
-                            }))
-                            .into_response()
-                        } else {
-                            (
-                                remote_status,
-                                Json(serde_json::json!({
-                                    "error": { "message": "remote compact failed" }
-                                })),
-                            )
-                                .into_response()
-                        }
-                    }
-                }),
-            )
-            .route(
-                "/v1/responses",
-                post(move || {
-                    let local_counter = local_counter.clone();
-                    async move {
+        let app = axum::Router::new().route(
+            "/v1/responses",
+            post(move |Json(body): Json<serde_json::Value>| {
+                let remote_counter = remote_counter.clone();
+                let local_counter = local_counter.clone();
+                async move {
+                    let is_remote_v2 = body
+                        .get("input")
+                        .and_then(serde_json::Value::as_array)
+                        .and_then(|input| input.last())
+                        .and_then(|item| item.get("type"))
+                        .and_then(serde_json::Value::as_str)
+                        == Some("compaction_trigger");
+                    if !is_remote_v2 {
                         local_counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                         let text = "Summary of prior work. ".repeat(30);
                         let events = atelier_test_support::sse::responses_api_events_exact(
@@ -3005,10 +2992,70 @@ mod inline_auto_compact_flow_tests {
                         );
                         let stream =
                             futures::stream::iter(events.into_iter().map(Ok::<_, Infallible>));
-                        Sse::new(stream).into_response()
+                        return Sse::new(stream).into_response();
                     }
-                }),
-            );
+
+                    remote_counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    if let Some(delay) = remote_delay {
+                        tokio::time::sleep(delay).await;
+                    }
+                    if !remote_status.is_success() {
+                        return (
+                            remote_status,
+                            Json(serde_json::json!({
+                                "error": { "message": "remote compact failed" }
+                            })),
+                        )
+                            .into_response();
+                    }
+
+                    let item = serde_json::json!({
+                        "type": "compaction",
+                        "id": "cmp_session",
+                        "encrypted_content": "opaque-session-state",
+                        "created_by": "test"
+                    });
+                    let done = serde_json::json!({
+                        "type": "response.output_item.done",
+                        "sequence_number": 1,
+                        "output_index": 0,
+                        "item": item
+                    });
+                    let completed = serde_json::json!({
+                        "type": "response.completed",
+                        "sequence_number": 2,
+                        "response": {
+                            "id": "resp_compact_session",
+                            "object": "response",
+                            "created_at": 0,
+                            "model": "test-model",
+                            "status": "completed",
+                            "output": [item],
+                            "usage": {
+                                "input_tokens": 120,
+                                "input_tokens_details": { "cached_tokens": 20 },
+                                "output_tokens": 8,
+                                "output_tokens_details": { "reasoning_tokens": 2 },
+                                "total_tokens": 128
+                            }
+                        }
+                    });
+                    let events = vec![
+                        Ok::<_, Infallible>(
+                            Event::default()
+                                .event("response.output_item.done")
+                                .data(done.to_string()),
+                        ),
+                        Ok::<_, Infallible>(
+                            Event::default()
+                                .event("response.completed")
+                                .data(completed.to_string()),
+                        ),
+                    ];
+                    Sse::new(futures::stream::iter(events)).into_response()
+                }
+            }),
+        );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move {
@@ -3065,6 +3112,15 @@ mod inline_auto_compact_flow_tests {
                     0,
                     "remote success must not invoke local compaction"
                 );
+                let usage = actor
+                    .chat_state_handle
+                    .try_get_session_usage()
+                    .await
+                    .expect("chat-state actor alive");
+                assert_eq!(usage.totals.model_calls, 1);
+                assert_eq!(usage.totals.input_tokens, 120);
+                assert_eq!(usage.totals.output_tokens, 8);
+                assert_eq!(usage.totals.reasoning_tokens, 2);
                 let conversation = actor.chat_state_handle.get_conversation().await;
                 let opaque = conversation.iter().find_map(|item| match item {
                     ConversationItem::Compaction(item) => Some(item),
@@ -3163,7 +3219,8 @@ mod inline_auto_compact_flow_tests {
                     server
                         .remote_calls
                         .load(std::sync::atomic::Ordering::SeqCst),
-                    1
+                    3,
+                    "remote compaction v2 uses one initial stream plus two retries"
                 );
                 assert_eq!(
                     server.local_calls.load(std::sync::atomic::Ordering::SeqCst),
@@ -3210,7 +3267,8 @@ mod inline_auto_compact_flow_tests {
                     server
                         .remote_calls
                         .load(std::sync::atomic::Ordering::SeqCst),
-                    1
+                    3,
+                    "429 is bounded by the v2 stream retry budget"
                 );
                 assert_eq!(
                     server.local_calls.load(std::sync::atomic::Ordering::SeqCst),

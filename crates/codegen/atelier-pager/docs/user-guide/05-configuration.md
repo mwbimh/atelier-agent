@@ -85,10 +85,38 @@ references, and safe extra headers, but no model, Wire API, Role, or
 runtime-selection tables. Fixed Role assignments live in `roles.toml` and are
 written only after the user configures them. Exact model-ID metadata lives under `models/default/`;
 family wildcards such as `gpt-5*` or `claude-*` are rejected. Provider-specific
-model and experimental endpoint settings live under
+model capabilities and endpoint settings live under
 `models/providers/<provider>/`, while discovery results live under
 `cache/providers/<provider>/`. Use `/provider`, `/model`, `/wire-api`, and
 `/roles` for normal runtime changes.
+
+### Responses remote compaction v2
+
+Remote compaction is disabled unless an exact Provider/model profile opts in.
+For example, place this in
+`$ATELIER_HOME/models/providers/openai/models.toml` only after confirming that
+that exact Provider/model supports the Codex-style Responses protocol:
+
+```toml
+schema_version = 2
+
+[models."gpt-5.4".experimental]
+remote_compaction_v2 = true
+```
+
+The capability is Responses-only and does not configure a separate endpoint.
+Atelier sends the normal conversation, tool definitions, Compact Role Context,
+and Provider request controls to the Provider's ordinary streaming `/responses`
+endpoint, with a final `{"type":"compaction_trigger"}` input item. The stream
+must complete and return exactly one opaque compaction item. Transport,
+serialization, unsupported-endpoint, and server failures retry remotely and
+then fall back to local compaction once; authentication, configuration, request,
+rate-limit, and cancellation failures do not silently fall back.
+
+HTTPS protects the request in transit, not from the Provider: the Provider can
+read the full conversation, tool definitions, Role Context, and other input sent
+for compaction. Atelier persists and replays returned `encrypted_content`
+byte-for-byte but cannot decrypt it.
 
 Each Context supplies `subagent.md` as the generic Subagent protocol. Context
 packages may provide files for the fixed Runtime Roles under
@@ -761,7 +789,7 @@ In that example, only `EXAMPLE_API_KEY` is read for Provider `example`.
 | `$ATELIER_HOME/roles.toml` | Non-Main fixed Role assignments; MAIN remains in `config.toml` |
 | `$ATELIER_HOME/request-agents.toml` | Selectable outbound identities with explicit User-Agent strings |
 | `$ATELIER_HOME/models/default/` | Exact model-ID defaults: effort, fast mode, context window, capabilities, and Wire API |
-| `$ATELIER_HOME/models/providers/<provider>/` | Provider-specific model overrides and experimental endpoints |
+| `$ATELIER_HOME/models/providers/<provider>/` | Provider-specific model overrides, capabilities, and endpoint settings |
 | `$ATELIER_HOME/cache/providers/<provider>/` | Provider discovery cache; never stored in `providers.toml` |
 | `$ATELIER_HOME/contexts/<preset>/` | Editable generic, Goal, compaction, and Role prompt files |
 | `$ATELIER_HOME/branding/logo.txt` | TUI ASCII logo |

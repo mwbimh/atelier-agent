@@ -141,6 +141,28 @@ The sandbox is applied to the **entire ate process** at startup using kernel pri
 
 The sandbox is **irreversible** once applied. The agent cannot relax restrictions at runtime.
 
+A runtime control may change the configuration for the **next process and new
+session**, but it cannot re-tokenize the current process, downgrade its Workspace
+Worker, or widen an existing session. On Windows, explicitly disabling the
+sandbox therefore requires both values before starting a new `ate` process:
+
+```powershell
+$env:ATELIER_SANDBOX = "off"
+$env:ATELIER_SANDBOX_BACKEND = "unsafe"
+ate
+```
+
+The persistent equivalent is:
+
+```toml
+[sandbox]
+profile = "off"
+backend = "unsafe"
+```
+
+Exit the old process and create a new session. An existing or resumed session
+keeps its original profile and cannot be switched to `off` in place.
+
 ---
 
 ## Resuming Sessions

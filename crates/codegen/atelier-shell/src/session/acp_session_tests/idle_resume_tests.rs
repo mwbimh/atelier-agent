@@ -162,7 +162,7 @@ async fn test_idle_resume_does_not_fetch_vendor_model_metadata() {
                 turn_prompt_mode: Arc::new(parking_lot::Mutex::new(PromptMode::Agent)),
                 telemetry_enabled: false,
                 role_request_payload: std::cell::RefCell::new(serde_json::Map::new()),
-                remote_compaction_endpoint: std::cell::RefCell::new(None),
+                remote_compaction_v2: std::cell::RefCell::new(false),
                 image_generation_endpoint: std::cell::RefCell::new(None),
                 supports_backend_search: std::cell::Cell::new(false),
                 compactions_remaining: std::cell::Cell::new(None),

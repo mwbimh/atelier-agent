@@ -89,9 +89,11 @@ fn auth_refresh_has_no_remote_diagnostic_upload_hook() {
 }
 
 fn production_part<'a>(source: &'a str, test_module_marker: &str) -> &'a str {
-    source
-        .split_once(test_module_marker)
-        .map_or(source, |(production, _)| production)
+    let marker_index = source.find(test_module_marker).or_else(|| {
+        let crlf_marker = test_module_marker.replace('\n', "\r\n");
+        source.find(&crlf_marker)
+    });
+    marker_index.map_or(source, |index| &source[..index])
 }
 
 #[test]

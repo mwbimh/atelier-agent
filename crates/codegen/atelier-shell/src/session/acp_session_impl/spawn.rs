@@ -1172,9 +1172,7 @@ pub(crate) async fn spawn_session_actor(
         telemetry_enabled,
         supports_backend_search: std::cell::Cell::new(sampling_config.supports_backend_search),
         role_request_payload: std::cell::RefCell::new(sampling_config.request_payload.clone()),
-        remote_compaction_endpoint: std::cell::RefCell::new(
-            sampling_config.remote_compaction_endpoint.clone(),
-        ),
+        remote_compaction_v2: std::cell::RefCell::new(sampling_config.remote_compaction_v2),
         image_generation_endpoint: std::cell::RefCell::new(
             sampling_config.image_generation_endpoint.clone(),
         ),

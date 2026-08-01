@@ -44,7 +44,8 @@ pub use client::{
     set_request_agent_identity_with_user_agent, user_agent_string_for,
 };
 pub use compaction::{
-    CompactClient, CompactFailureAction, CompactRequest, CompactResponse, classify_compact_failure,
+    CompactFailureAction, RemoteCompactionV2Client, RemoteCompactionV2Output,
+    classify_compact_failure,
 };
 pub use config::{
     AuthScheme, BearerResolver, HeaderInjector, OriginClientInfo, RetryPolicy, SamplerConfig,

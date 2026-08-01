@@ -38,7 +38,7 @@ pub fn test_sampler_config(
         temperature: Some(0.7),
         top_p: None,
         request_payload: Default::default(),
-        remote_compaction_endpoint: None,
+        remote_compaction_v2: false,
         image_generation_endpoint: None,
         api_backend,
         auth_scheme: Default::default(),

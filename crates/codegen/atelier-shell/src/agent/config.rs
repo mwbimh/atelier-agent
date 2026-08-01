@@ -2884,10 +2884,9 @@ pub fn model_entries_from_provider_snapshot(
                 request_payload: provider_model_override
                     .map(|override_config| override_config.payload.clone())
                     .unwrap_or_default(),
-                remote_compaction_endpoint: snapshot
-                    .resolve_remote_compaction_endpoint(&model.key)
-                    .ok()
-                    .flatten(),
+                remote_compaction_v2: snapshot
+                    .supports_remote_compaction_v2(&model.key)
+                    .unwrap_or(false),
                 image_generation_endpoint: snapshot
                     .resolve_image_generation_endpoint(&model.key)
                     .ok()
@@ -3653,10 +3652,9 @@ pub struct ModelEntry {
     pub api_base_url: Option<String>,
     #[serde(default)]
     pub request_payload: serde_json::Map<String, serde_json::Value>,
-    /// Provider/model-exact transport route for experimental remote
-    /// compaction. Never merged into ordinary request JSON.
+    /// Exact Provider/model capability gate for Responses remote compaction v2.
     #[serde(default)]
-    pub remote_compaction_endpoint: Option<String>,
+    pub remote_compaction_v2: bool,
     /// Provider/model-exact transport route for experimental OpenAI
     /// Images-compatible generation. Never inherited from common defaults.
     #[serde(default)]
@@ -3673,7 +3671,7 @@ impl ModelEntry {
             env_key: None,
             api_base_url: None,
             request_payload: serde_json::Map::new(),
-            remote_compaction_endpoint: None,
+            remote_compaction_v2: false,
             image_generation_endpoint: None,
         }
     }
@@ -3687,7 +3685,7 @@ impl ModelEntry {
             env_key: entry.env_key.clone(),
             api_base_url: entry.api_base_url.clone(),
             request_payload: serde_json::Map::new(),
-            remote_compaction_endpoint: None,
+            remote_compaction_v2: false,
             image_generation_endpoint: None,
         }
     }
@@ -4312,7 +4310,7 @@ pub fn resolve_aux_model_sampling_config(
             env_key: None,
             api_base_url: None,
             request_payload: serde_json::Map::new(),
-            remote_compaction_endpoint: None,
+            remote_compaction_v2: false,
             image_generation_endpoint: None,
         };
         let credentials = resolve_credentials_enforced(&entry, session_key, disable_api_key_auth);
@@ -4427,7 +4425,7 @@ pub fn sampling_config_for_model(
         temperature,
         top_p,
         request_payload: model.request_payload.clone(),
-        remote_compaction_endpoint: model.remote_compaction_endpoint.clone(),
+        remote_compaction_v2: model.remote_compaction_v2,
         image_generation_endpoint: model.image_generation_endpoint.clone(),
         api_backend,
         auth_scheme: credentials.auth_scheme,
@@ -4552,7 +4550,7 @@ fn resolve_hidden_default_web_search_sampling_config(
         env_key: None,
         api_base_url: None,
         request_payload: serde_json::Map::new(),
-        remote_compaction_endpoint: None,
+        remote_compaction_v2: false,
         image_generation_endpoint: None,
     };
     let credentials = resolve_credentials_enforced(&entry, session_key, disable_api_key_auth);
@@ -5282,7 +5280,7 @@ reasoning_effort = "low"
             env_key: env_key.map(EnvKeys::single),
             api_base_url: api_base_url.map(|s| s.to_string()),
             request_payload: serde_json::Map::new(),
-            remote_compaction_endpoint: None,
+            remote_compaction_v2: false,
             image_generation_endpoint: None,
         }
     }
@@ -7124,7 +7122,7 @@ reasoning_effort = "low"
     }
 
     #[test]
-    fn remote_compaction_endpoint_propagates_only_for_responses_models() {
+    fn remote_compaction_v2_propagates_only_for_responses_models() {
         let provider = |id: &str| atelier_provider::ProviderConfig {
             id: id.into(),
             display_name: id.into(),
@@ -7149,10 +7147,7 @@ reasoning_effort = "low"
             enabled: true,
         };
         let feature = atelier_provider::ExperimentalModelFeatures {
-            remote_compaction: Some(atelier_provider::ExperimentalEndpoint {
-                enabled: true,
-                endpoint: "responses/compact".into(),
-            }),
+            remote_compaction_v2: true,
             image_generation: None,
         };
         let snapshot = ProviderSnapshot {
@@ -7171,25 +7166,14 @@ reasoning_effort = "low"
         let entries = model_entries_from_provider_snapshot(&snapshot, None);
         let responses = entries.get("responses/shared").unwrap();
         let chat = entries.get("chat/shared").unwrap();
-        assert_eq!(
-            responses.remote_compaction_endpoint.as_deref(),
-            Some("responses/compact")
-        );
-        assert_eq!(chat.remote_compaction_endpoint, None);
-        assert_eq!(
-            resolve_sampling(responses, None)
-                .remote_compaction_endpoint
-                .as_deref(),
-            Some("responses/compact")
-        );
-        assert_eq!(
-            resolve_sampling(chat, None).remote_compaction_endpoint,
-            None
-        );
+        assert!(responses.remote_compaction_v2);
+        assert!(!chat.remote_compaction_v2);
+        assert!(resolve_sampling(responses, None).remote_compaction_v2);
+        assert!(!resolve_sampling(chat, None).remote_compaction_v2);
         assert!(
             !responses
                 .request_payload
-                .contains_key("remote_compaction_endpoint"),
+                .contains_key("remote_compaction_v2"),
             "transport routing metadata must not leak into ordinary inference payload"
         );
     }
@@ -10073,7 +10057,7 @@ default = "atelier-4.5"
             env_key: None,
             api_base_url: None,
             request_payload: serde_json::Map::new(),
-            remote_compaction_endpoint: None,
+            remote_compaction_v2: false,
             image_generation_endpoint: None,
         }
     }

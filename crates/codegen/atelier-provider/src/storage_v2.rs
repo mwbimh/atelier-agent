@@ -370,7 +370,7 @@ fn load_common_profiles(
             profile.validate(&format!("{model_id:?} in {}", path.display()))?;
             if !profile.experimental.is_empty() {
                 return Err(ProviderError::InvalidProvider(format!(
-                    "experimental model endpoints are provider-specific and cannot be set in {}",
+                    "experimental model features are provider-specific and cannot be set in {}",
                     path.display()
                 )));
             }

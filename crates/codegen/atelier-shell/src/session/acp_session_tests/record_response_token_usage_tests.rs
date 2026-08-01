@@ -182,7 +182,7 @@ async fn build_session_info_sources_show_model_fingerprint_from_catalog() {
                 env_key: None,
                 api_base_url: None,
                 request_payload: serde_json::Map::new(),
-                remote_compaction_endpoint: None,
+                remote_compaction_v2: false,
                 image_generation_endpoint: None,
             };
             entry.info.show_model_fingerprint = false;

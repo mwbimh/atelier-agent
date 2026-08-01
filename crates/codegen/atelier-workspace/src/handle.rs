@@ -5617,6 +5617,12 @@ pub(crate) mod tests {
     /// `events.jsonl`. Bypasses the env flag via the private `build` seam so the
     /// assertion never races a sibling test's process environment.
     pub(crate) fn make_handle_with_events() -> (WorkspaceHandle, tempfile::TempDir) {
+        make_handle_with_event_setting(true)
+    }
+
+    fn make_handle_with_event_setting(
+        events_enabled: bool,
+    ) -> (WorkspaceHandle, tempfile::TempDir) {
         let factory = Arc::new(TestSessionContextFactory::new());
         let cwd = factory.temp.path().to_path_buf();
         let config = WorkspaceConfig {
@@ -5643,7 +5649,7 @@ pub(crate) mod tests {
             config,
             home.path().to_path_buf(),
             true,
-            true,
+            events_enabled,
             false,
             false,
             crate::environment::WorkspaceIdentity::default(),
@@ -5854,7 +5860,7 @@ pub(crate) mod tests {
         use atelier_tool_protocol::turn_hook::{
             AfterTurnPayload, BeforeTurnPayload, TurnHookOutcome,
         };
-        let handle = make_handle();
+        let (handle, home) = make_handle_with_event_setting(false);
         assert!(
             !handle.shared().events_enabled,
             "test precondition: events must be disabled"
@@ -5896,7 +5902,7 @@ pub(crate) mod tests {
             handle.shared().session_event_writers.is_empty(),
             "flag-off must not cache any session writer (EventWriter::noop preserved)"
         );
-        let sessions_dir = handle.shared().workspace_home().join("sessions");
+        let sessions_dir = home.path().join("sessions");
         assert!(
             !sessions_dir.exists(),
             "flag-off must not create the sessions dir or any events.jsonl"

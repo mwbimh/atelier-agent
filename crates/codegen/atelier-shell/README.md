@@ -16,8 +16,8 @@ Network access is limited to capabilities explicitly configured by the user:
 - Provider OAuth endpoints;
 - user-configured MCP servers;
 - explicit web fetch/search tools;
-- experimental Provider/model endpoints such as remote compaction or image
-  generation.
+- exact Provider/model capabilities such as Responses remote compaction v2 and
+  Provider-specific image generation endpoints.
 
 There is no global API key or vendor endpoint fallback. Every model request is
 routed through a `provider/model` selection.

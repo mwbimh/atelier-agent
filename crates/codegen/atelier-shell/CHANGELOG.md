@@ -14,6 +14,8 @@ notices.
 - Replaced inherited project documentation with Atelier-specific English and
   Chinese documentation.
 - Opened the contribution process to external issues and pull requests.
+- Replaced the legacy unary `/responses/compact` integration with streaming
+  Responses remote compaction v2 using a `compaction_trigger` input item.
 
 ## 0.1.220-alpha.4
 

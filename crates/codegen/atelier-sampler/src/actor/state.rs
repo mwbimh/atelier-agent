@@ -100,7 +100,7 @@ mod tests {
             temperature: None,
             top_p: None,
             request_payload: Default::default(),
-            remote_compaction_endpoint: None,
+            remote_compaction_v2: false,
             image_generation_endpoint: None,
             api_backend: ApiBackend::ChatCompletions,
             auth_scheme: Default::default(),

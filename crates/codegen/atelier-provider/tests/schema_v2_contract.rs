@@ -428,7 +428,7 @@ reasoning_effort = true
 }
 
 #[test]
-fn provider_model_profile_exposes_experimental_endpoints() {
+fn provider_model_profile_exposes_experimental_features() {
     let home = tempdir().unwrap();
     write(
         &home.path().join("providers.toml"),
@@ -449,9 +449,8 @@ enabled = true
 wire_api = "responses"
 context_window = 400000
 
-[models."gpt-5.4".experimental.remote_compaction]
-enabled = true
-endpoint = "responses/compact"
+[models."gpt-5.4".experimental]
+remote_compaction_v2 = true
 
 [models."gpt-5.4".experimental.image_generation]
 enabled = true
@@ -462,10 +461,7 @@ endpoint = "images/generations"
     let registry = ProviderRegistry::load_or_create(home.path().join("providers.toml")).unwrap();
     let key = ModelKey::new("openai", "gpt-5.4").unwrap();
     let features = registry.experimental_model_features(&key).unwrap();
-    assert_eq!(
-        features.remote_compaction.unwrap().endpoint,
-        "responses/compact"
-    );
+    assert!(features.remote_compaction_v2);
     assert_eq!(
         features.image_generation.unwrap().endpoint,
         "images/generations"
@@ -480,12 +476,10 @@ endpoint = "images/generations"
                 .expect("exact Provider profile")
         )
     );
-    assert_eq!(
+    assert!(
         snapshot
-            .resolve_remote_compaction_endpoint(&key)
-            .expect("valid exact endpoint")
-            .as_deref(),
-        Some("responses/compact")
+            .supports_remote_compaction_v2(&key)
+            .expect("valid exact capability")
     );
     assert_eq!(
         snapshot
@@ -629,17 +623,15 @@ enabled = true
 wire_api = "responses"
 context_window = 128000
 
-[models."shared".experimental.remote_compaction]
-enabled = true
-endpoint = "responses/compact"
+[models."shared".experimental]
+remote_compaction_v2 = true
 
 [models."disabled"]
 wire_api = "responses"
 context_window = 128000
 
-[models."disabled".experimental.remote_compaction]
-enabled = false
-endpoint = "responses/compact"
+[models."disabled".experimental]
+remote_compaction_v2 = false
 "#,
     );
     write(
@@ -650,9 +642,8 @@ endpoint = "responses/compact"
 wire_api = "chat_completions"
 context_window = 128000
 
-[models."shared".experimental.remote_compaction]
-enabled = true
-endpoint = "responses/compact"
+[models."shared".experimental]
+remote_compaction_v2 = true
 "#,
     );
 
@@ -663,23 +654,9 @@ endpoint = "responses/compact"
     let disabled = ModelKey::new("responses", "disabled").unwrap();
     let chat = ModelKey::new("chat", "shared").unwrap();
 
-    assert_eq!(
-        snapshot
-            .resolve_remote_compaction_endpoint(&responses)
-            .unwrap()
-            .as_deref(),
-        Some("responses/compact")
-    );
-    assert_eq!(
-        snapshot
-            .resolve_remote_compaction_endpoint(&disabled)
-            .unwrap(),
-        None
-    );
-    assert_eq!(
-        snapshot.resolve_remote_compaction_endpoint(&chat).unwrap(),
-        None
-    );
+    assert!(snapshot.supports_remote_compaction_v2(&responses).unwrap());
+    assert!(!snapshot.supports_remote_compaction_v2(&disabled).unwrap());
+    assert!(!snapshot.supports_remote_compaction_v2(&chat).unwrap());
     assert!(
         !snapshot
             .experimental_model_features
@@ -689,21 +666,11 @@ endpoint = "responses/compact"
 }
 
 #[test]
-fn experimental_endpoint_rejects_origin_and_path_escape_syntax() {
-    for endpoint in [
-        "https://evil.example/compact",
-        "/responses/compact",
-        "../responses/compact",
-        "responses/../compact",
-        r"responses\compact",
-        "responses/%2e%2e/compact",
-        "responses/compact?target=evil",
-        "responses/compact#fragment",
-    ] {
-        let home = tempdir().unwrap();
-        write(
-            &home.path().join("providers.toml"),
-            r#"schema_version = 3
+fn legacy_remote_compaction_endpoint_schema_is_rejected() {
+    let home = tempdir().unwrap();
+    write(
+        &home.path().join("providers.toml"),
+        r#"schema_version = 3
 
 [providers.openai]
 display_name = "OpenAI"
@@ -711,29 +678,22 @@ auth = { type = "bearer" }
 base_url = "https://api.openai.com/v1"
 enabled = true
 "#,
-        );
-        write(
-            &home.path().join("models/providers/openai/models.toml"),
-            &format!(
-                r#"schema_version = 1
+    );
+    write(
+        &home.path().join("models/providers/openai/models.toml"),
+        r#"schema_version = 1
 
 [models."gpt-5.4"]
 context_window = 400000
 
 [models."gpt-5.4".experimental.remote_compaction]
 enabled = true
-endpoint = {endpoint:?}
-"#
-            ),
-        );
+endpoint = "responses/compact"
+"#,
+    );
 
-        let error = ProviderRegistry::load_or_create(home.path().join("providers.toml"))
-            .expect_err("unsafe endpoint must fail closed");
-        assert!(
-            error.to_string().contains("Provider-relative"),
-            "unexpected error for {endpoint:?}: {error}"
-        );
-    }
+    ProviderRegistry::load_or_create(home.path().join("providers.toml"))
+        .expect_err("legacy remote compaction endpoint schema must fail closed");
 }
 
 #[test]
@@ -782,7 +742,7 @@ enabled = true
 }
 
 #[test]
-fn common_defaults_cannot_enable_experimental_provider_endpoints() {
+fn common_defaults_cannot_enable_experimental_provider_features() {
     let home = tempdir().unwrap();
     write(
         &home.path().join("providers.toml"),
@@ -801,13 +761,12 @@ enabled = true
 
 [models."gpt-5.4"]
 
-[models."gpt-5.4".experimental.remote_compaction]
-enabled = true
-endpoint = "responses/compact"
+[models."gpt-5.4".experimental]
+remote_compaction_v2 = true
 "#,
     );
 
     let error = ProviderRegistry::load_or_create(home.path().join("providers.toml"))
-        .expect_err("common defaults must not activate experimental endpoints");
+        .expect_err("common defaults must not activate experimental features");
     assert!(error.to_string().contains("provider-specific"));
 }

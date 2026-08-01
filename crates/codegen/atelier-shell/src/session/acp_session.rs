@@ -463,10 +463,10 @@ pub(crate) struct SessionActor {
     /// ChatState because role configuration is runtime control-plane state,
     /// not conversation history.
     pub(crate) role_request_payload: std::cell::RefCell<serde_json::Map<String, serde_json::Value>>,
-    /// Provider/model-exact transport route for the active model. Kept out of
-    /// ChatState and ordinary request payloads; model switches replace it
-    /// atomically with the rest of the sampling route.
-    pub(crate) remote_compaction_endpoint: std::cell::RefCell<Option<String>>,
+    /// Exact Provider/model capability gate for Responses remote compaction
+    /// v2. Kept out of conversation history; model switches replace it with
+    /// the rest of the sampling route.
+    pub(crate) remote_compaction_v2: std::cell::RefCell<bool>,
     /// Provider/model-exact image generation route for the active model.
     pub(crate) image_generation_endpoint: std::cell::RefCell<Option<String>>,
     pub(crate) compactions_remaining:

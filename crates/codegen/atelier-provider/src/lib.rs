@@ -1026,18 +1026,19 @@ impl ExperimentalEndpoint {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct ExperimentalModelFeatures {
+    /// Exact Provider/model opt-in for Responses remote compaction v2.
+    /// V2 uses the ordinary `/responses` stream and therefore has no
+    /// separately configurable endpoint.
     #[serde(default)]
-    pub remote_compaction: Option<ExperimentalEndpoint>,
+    pub remote_compaction_v2: bool,
     #[serde(default)]
     pub image_generation: Option<ExperimentalEndpoint>,
 }
 
 impl ExperimentalModelFeatures {
     fn validate(&self) -> Result<(), ProviderError> {
-        if let Some(endpoint) = &self.remote_compaction {
-            endpoint.validate()?;
-        }
         if let Some(endpoint) = &self.image_generation {
             endpoint.validate()?;
         }
@@ -1453,26 +1454,16 @@ impl ProviderSnapshot {
         })
     }
 
-    /// Resolve an active remote-compaction endpoint for one exact
-    /// Provider/model pair. A configured endpoint is inert unless the exact
-    /// profile enables it and the effective wire API is Responses.
-    pub fn resolve_remote_compaction_endpoint(
-        &self,
-        key: &ModelKey,
-    ) -> Result<Option<String>, ProviderError> {
+    /// Resolve the exact Provider/model capability gate for Responses remote
+    /// compaction v2. Unknown models and non-Responses wire APIs fail closed.
+    pub fn supports_remote_compaction_v2(&self, key: &ModelKey) -> Result<bool, ProviderError> {
         if self.resolve_wire_api(key)?.wire_api != WireApi::Responses {
-            return Ok(None);
+            return Ok(false);
         }
-        let Some(endpoint) = self
+        Ok(self
             .experimental_model_features
             .get(&key.to_string())
-            .and_then(|features| features.remote_compaction.as_ref())
-            .filter(|endpoint| endpoint.enabled)
-        else {
-            return Ok(None);
-        };
-        endpoint.validate()?;
-        Ok(Some(endpoint.endpoint.clone()))
+            .is_some_and(|features| features.remote_compaction_v2))
     }
 
     /// Resolve an active OpenAI Images-compatible endpoint for one exact

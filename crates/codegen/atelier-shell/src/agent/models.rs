@@ -1161,7 +1161,7 @@ fn build_prefetched_map(
             env_key: None,
             api_base_url: m.api_base_url.clone().or(api_base_url_override.clone()),
             request_payload: serde_json::Map::new(),
-            remote_compaction_endpoint: None,
+            remote_compaction_v2: false,
             image_generation_endpoint: None,
         };
         map.insert(key, entry);
@@ -1663,7 +1663,7 @@ mod tests {
             env_key: None,
             api_base_url: None,
             request_payload: serde_json::Map::new(),
-            remote_compaction_endpoint: None,
+            remote_compaction_v2: false,
             image_generation_endpoint: None,
         };
         flagged.info.show_model_fingerprint = true;
@@ -1678,7 +1678,7 @@ mod tests {
                 env_key: None,
                 api_base_url: None,
                 request_payload: serde_json::Map::new(),
-                remote_compaction_endpoint: None,
+                remote_compaction_v2: false,
                 image_generation_endpoint: None,
             },
         );
@@ -1691,7 +1691,7 @@ mod tests {
             env_key: None,
             api_base_url: None,
             request_payload: serde_json::Map::new(),
-            remote_compaction_endpoint: None,
+            remote_compaction_v2: false,
             image_generation_endpoint: None,
         };
         custom.info.show_model_fingerprint = true;
@@ -1977,7 +1977,7 @@ mod tests {
                 env_key: None,
                 api_base_url: None,
                 request_payload: serde_json::Map::new(),
-                remote_compaction_endpoint: None,
+                remote_compaction_v2: false,
                 image_generation_endpoint: None,
             },
         );
@@ -2034,7 +2034,7 @@ mod tests {
             env_key: None,
             api_base_url: None,
             request_payload: serde_json::Map::new(),
-            remote_compaction_endpoint: None,
+            remote_compaction_v2: false,
             image_generation_endpoint: None,
         };
         reasoning_entry.info.supports_reasoning_effort = true;
@@ -2059,7 +2059,7 @@ mod tests {
             env_key: None,
             api_base_url: None,
             request_payload: serde_json::Map::new(),
-            remote_compaction_endpoint: None,
+            remote_compaction_v2: false,
             image_generation_endpoint: None,
         };
         prefetched.insert("plain-model".to_string(), plain_entry);
@@ -2089,7 +2089,7 @@ mod tests {
             env_key: None,
             api_base_url: None,
             request_payload: serde_json::Map::new(),
-            remote_compaction_endpoint: None,
+            remote_compaction_v2: false,
             image_generation_endpoint: None,
         };
         no_none.info.supports_reasoning_effort = true;
@@ -2110,7 +2110,7 @@ mod tests {
             env_key: None,
             api_base_url: None,
             request_payload: serde_json::Map::new(),
-            remote_compaction_endpoint: None,
+            remote_compaction_v2: false,
             image_generation_endpoint: None,
         };
         with_none.info.supports_reasoning_effort = true;
@@ -2219,7 +2219,7 @@ mod tests {
             env_key: None,
             api_base_url: None,
             request_payload: serde_json::Map::new(),
-            remote_compaction_endpoint: None,
+            remote_compaction_v2: false,
             image_generation_endpoint: None,
         };
         reasoning_entry.info.supports_reasoning_effort = true;
@@ -2231,7 +2231,7 @@ mod tests {
             env_key: None,
             api_base_url: None,
             request_payload: serde_json::Map::new(),
-            remote_compaction_endpoint: None,
+            remote_compaction_v2: false,
             image_generation_endpoint: None,
         };
         prefetched.insert("plain-model".to_string(), plain_entry);
@@ -2276,7 +2276,7 @@ mod tests {
             env_key: None,
             api_base_url: None,
             request_payload: serde_json::Map::new(),
-            remote_compaction_endpoint: None,
+            remote_compaction_v2: false,
             image_generation_endpoint: None,
         }
     }

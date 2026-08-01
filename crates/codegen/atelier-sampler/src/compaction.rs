@@ -1,16 +1,22 @@
-//! Unary transport for Provider-specific Responses-compatible compaction.
+//! Streaming Responses remote-compaction-v2 transport.
+//!
+//! V2 uses the ordinary `/responses` endpoint. The request is a normal
+//! Responses inference request whose final input item is the raw
+//! `{ "type": "compaction_trigger" }` sentinel. The stream must complete and
+//! emit exactly one compaction output item.
 
 use std::time::Duration;
 
-use atelier_sampling_types::error::parse_error_bytes;
-use atelier_sampling_types::{ApiBackend, Result, SamplingError, rs};
-use serde::{Deserialize, Serialize};
-
-use crate::attribution::SamplingConsumer;
-use crate::client::{
-    SamplingClient, extract_model_metadata, extract_retry_after, extract_should_retry,
+use atelier_sampling_types::{
+    ApiBackend, ConversationRequest, Result, SamplingError, TokenUsage, rs,
 };
+use futures_util::StreamExt;
+
+use crate::client::SamplingClient;
 use crate::config::SamplerConfig;
+use crate::retry::retry_backoff_with_jitter;
+
+const MAX_REMOTE_COMPACTION_V2_STREAM_RETRIES: u32 = 2;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CompactFailureAction {
@@ -20,9 +26,10 @@ pub enum CompactFailureAction {
 
 pub fn classify_compact_failure(error: &SamplingError) -> CompactFailureAction {
     match error {
-        SamplingError::Http(_) | SamplingError::Serialization(_) => {
-            CompactFailureAction::FallbackLocal
-        }
+        SamplingError::Http(_)
+        | SamplingError::Serialization(_)
+        | SamplingError::EventStreamError(_)
+        | SamplingError::StreamError { .. } => CompactFailureAction::FallbackLocal,
         SamplingError::Api { status, .. }
             if matches!(status.as_u16(), 404 | 405 | 501) || status.is_server_error() =>
         {
@@ -31,8 +38,6 @@ pub fn classify_compact_failure(error: &SamplingError) -> CompactFailureAction {
         SamplingError::Auth(_)
         | SamplingError::InvalidConfiguration(_)
         | SamplingError::Api { .. }
-        | SamplingError::EventStreamError(_)
-        | SamplingError::StreamError { .. }
         | SamplingError::IdleTimeout { .. }
         | SamplingError::EmptyResponse { .. }
         | SamplingError::MaxTokensTruncation
@@ -40,192 +45,209 @@ pub fn classify_compact_failure(error: &SamplingError) -> CompactFailureAction {
     }
 }
 
-#[derive(Clone, Serialize, Deserialize, PartialEq)]
-pub struct CompactRequest {
-    pub model: String,
-    pub input: Vec<rs::InputItem>,
-    #[serde(skip_serializing_if = "String::is_empty")]
-    pub instructions: String,
-}
-
-impl std::fmt::Debug for CompactRequest {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("CompactRequest")
-            .field("model", &self.model)
-            .field("input_items", &self.input.len())
-            .field("instructions", &"REDACTED")
-            .finish()
-    }
-}
-
-#[derive(Clone, Serialize, Deserialize, PartialEq)]
-pub struct CompactResponse {
-    pub output: Vec<rs::InputItem>,
-}
-
-impl std::fmt::Debug for CompactResponse {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("CompactResponse")
-            .field("output_items", &self.output.len())
-            .finish()
-    }
-}
-
 #[derive(Clone, Debug)]
-struct ProviderRelativeEndpoint(String);
-
-impl ProviderRelativeEndpoint {
-    fn parse(raw: String) -> Result<Self> {
-        let endpoint = raw.trim();
-        let unsafe_segment = endpoint
-            .split('/')
-            .any(|segment| segment.is_empty() || matches!(segment, "." | ".."));
-        if endpoint.is_empty()
-            || endpoint != raw
-            || endpoint.starts_with(['/', '\\'])
-            || endpoint.contains(['\\', '?', '#', '%'])
-            || endpoint.chars().any(char::is_control)
-            || reqwest::Url::parse(endpoint).is_ok()
-            || unsafe_segment
-        {
-            return Err(SamplingError::InvalidConfiguration(
-                "remote compaction endpoint must be a safe Provider-relative path",
-            ));
-        }
-        Ok(Self(raw))
-    }
-
-    fn resolve(&self, base_url: &str) -> Result<reqwest::Url> {
-        let mut url = reqwest::Url::parse(base_url).map_err(|_| {
-            SamplingError::InvalidConfiguration("Provider base_url must be an absolute URL")
-        })?;
-        let scheme = url.scheme().to_owned();
-        let host = url.host_str().map(str::to_owned);
-        let port = url.port_or_known_default();
-        let path = format!("{}/{}", url.path().trim_end_matches('/'), self.0.as_str());
-        url.set_path(&path);
-        url.set_query(None);
-        url.set_fragment(None);
-        if url.scheme() != scheme
-            || url.host_str() != host.as_deref()
-            || url.port_or_known_default() != port
-        {
-            return Err(SamplingError::InvalidConfiguration(
-                "remote compaction endpoint must preserve the Provider origin",
-            ));
-        }
-        Ok(url)
-    }
+pub struct RemoteCompactionV2Output {
+    pub compaction: rs::CompactionSummaryItemParam,
+    pub response_id: String,
+    pub usage: Option<TokenUsage>,
 }
 
-/// Dedicated non-streaming client for the experimental remote compaction
-/// endpoint. It reuses the Provider's HTTP client, authentication and headers,
-/// but deliberately ignores ordinary inference `request_payload` fields.
+/// Exact Provider/model-gated client for Responses remote compaction v2.
 #[derive(Clone, Debug)]
-pub struct CompactClient {
+pub struct RemoteCompactionV2Client {
     sampling: SamplingClient,
-    endpoint: ProviderRelativeEndpoint,
     model: String,
 }
 
-impl CompactClient {
-    /// Construct a client only when a remote endpoint is configured. A
-    /// non-Responses backend is rejected even if an endpoint somehow bypasses
-    /// the Provider control-plane gate.
+impl RemoteCompactionV2Client {
     pub fn from_config(config: SamplerConfig) -> Result<Option<Self>> {
-        let Some(raw_endpoint) = config.remote_compaction_endpoint.clone() else {
+        if !config.remote_compaction_v2 {
             return Ok(None);
-        };
+        }
         if config.api_backend != ApiBackend::Responses {
             return Err(SamplingError::InvalidConfiguration(
-                "remote compaction requires the Responses wire API",
+                "remote compaction v2 requires the Responses wire API",
             ));
         }
-        let endpoint = ProviderRelativeEndpoint::parse(raw_endpoint)?;
         let model = config.model.clone();
         let sampling = SamplingClient::new(config)?;
-        endpoint.resolve(sampling.base_url())?;
-        Ok(Some(Self {
-            sampling,
-            endpoint,
-            model,
-        }))
+        Ok(Some(Self { sampling, model }))
     }
 
     pub async fn compact(
         &self,
-        input: Vec<rs::InputItem>,
-        instructions: impl Into<String>,
+        request: ConversationRequest,
+        instructions: Option<String>,
         request_timeout: Duration,
-    ) -> Result<CompactResponse> {
-        self.compact_request(
-            CompactRequest {
-                model: self.model.clone(),
-                input,
-                instructions: instructions.into(),
-            },
+    ) -> Result<RemoteCompactionV2Output> {
+        match tokio::time::timeout(
             request_timeout,
+            self.compact_with_retries(request, instructions),
         )
         .await
+        {
+            Ok(result) => result,
+            Err(_) => Err(SamplingError::IdleTimeout {
+                elapsed_secs: request_timeout.as_secs(),
+            }),
+        }
     }
 
-    pub async fn compact_request(
+    async fn compact_with_retries(
         &self,
-        request: CompactRequest,
-        request_timeout: Duration,
-    ) -> Result<CompactResponse> {
-        if request.model != self.model {
+        request: ConversationRequest,
+        instructions: Option<String>,
+    ) -> Result<RemoteCompactionV2Output> {
+        if request
+            .model
+            .as_deref()
+            .is_some_and(|model| model != self.model)
+        {
             return Err(SamplingError::InvalidConfiguration(
-                "remote compaction request model must match the Provider model",
+                "remote compaction v2 request model must match the Provider model",
             ));
         }
-        let url = self.endpoint.resolve(self.sampling.base_url())?;
-        let response = self
-            .sampling
-            .post_provider_url(url)
-            .timeout(request_timeout)
-            .json(&request)
-            .send()
-            .await?;
-        let status = response.status();
-        let model_metadata = extract_model_metadata(response.headers());
-        let retry_after_secs = extract_retry_after(response.headers());
-        let should_retry = extract_should_retry(response.headers());
-        let bytes = response.bytes().await?;
 
-        if status == reqwest::StatusCode::UNAUTHORIZED {
-            self.sampling
-                .record_401_attribution(SamplingConsumer::RemoteCompaction);
-            return Err(SamplingError::Auth(format!(
-                "Unauthorized (401): {}",
-                parse_error_bytes(bytes.as_ref())
-            )));
+        let mut retries = 0u32;
+        loop {
+            match self
+                .compact_once(request.clone(), instructions.clone())
+                .await
+            {
+                Ok(output) => return Ok(output),
+                Err(error)
+                    if error.is_retryable()
+                        && !error.is_context_length_error()
+                        && error.should_retry_header() != Some(false)
+                        && retries < MAX_REMOTE_COMPACTION_V2_STREAM_RETRIES =>
+                {
+                    retries += 1;
+                    let backoff = error
+                        .retry_after()
+                        .map(Duration::from_secs)
+                        .unwrap_or_else(|| retry_backoff_with_jitter(retries));
+                    tokio::time::sleep(backoff).await;
+                }
+                Err(error) => return Err(error),
+            }
         }
-        if !status.is_success() {
-            return Err(SamplingError::Api {
-                status,
-                message: parse_error_bytes(bytes.as_ref()),
-                model_metadata,
-                retry_after_secs,
-                should_retry,
-            });
-        }
-
-        let response: CompactResponse = serde_json::from_slice(&bytes)?;
-        if response.output.is_empty() {
-            return Err(SamplingError::serialization_message(
-                "remote compaction response output must not be empty",
-            ));
-        }
-        Ok(response)
     }
+
+    async fn compact_once(
+        &self,
+        mut request: ConversationRequest,
+        instructions: Option<String>,
+    ) -> Result<RemoteCompactionV2Output> {
+        request.model = Some(self.model.clone());
+        self.sampling.apply_conversation_defaults(&mut request)?;
+
+        let trace = request.trace.take();
+        let extra_tools = atelier_sampling_types::extra_raw_tools(&request.hosted_tools);
+        let responses_request: rs::CreateResponse = (&request).into();
+        let mut wrapper = atelier_sampling_types::CreateResponseWrapper::new(responses_request);
+        wrapper.reasoning_effort = request.reasoning_effort;
+        wrapper.x_atelier_conv_id = request.x_atelier_conv_id;
+        wrapper.x_atelier_req_id = request.x_atelier_req_id;
+        wrapper.x_atelier_session_id = request.x_atelier_session_id;
+        wrapper.x_atelier_turn_idx = request.x_atelier_turn_idx;
+        wrapper.x_atelier_agent_id = request.x_atelier_agent_id;
+        wrapper.extra_raw_tools = extra_tools;
+        wrapper.extra_raw_input_items = vec![serde_json::json!({
+            "type": "compaction_trigger"
+        })];
+        wrapper.inner.instructions = instructions.filter(|value| !value.is_empty());
+        if let Some(trace) = trace {
+            wrapper.trace = Some(trace);
+        }
+
+        let (mut stream, _metadata, _doom_loop) =
+            self.sampling.create_response_stream(wrapper).await?;
+        collect_compaction_output(&mut stream).await
+    }
+}
+
+async fn collect_compaction_output(
+    stream: &mut (impl futures_util::Stream<Item = Result<rs::ResponseStreamEvent>> + Unpin),
+) -> Result<RemoteCompactionV2Output> {
+    let mut output_item_count = 0usize;
+    let mut compaction_count = 0usize;
+    let mut compaction = None;
+
+    while let Some(event) = stream.next().await {
+        match event? {
+            rs::ResponseStreamEvent::ResponseOutputItemDone(event) => {
+                output_item_count += 1;
+                if let rs::OutputItem::Compaction(item) = event.item {
+                    compaction_count += 1;
+                    if compaction.is_none() {
+                        compaction = Some(rs::CompactionSummaryItemParam {
+                            id: Some(item.id),
+                            encrypted_content: item.encrypted_content,
+                        });
+                    }
+                }
+            }
+            rs::ResponseStreamEvent::ResponseCompleted(event) => {
+                if compaction_count != 1 {
+                    return Err(SamplingError::serialization_message(format!(
+                        "remote compaction v2 expected exactly one compaction output item, got {compaction_count} from {output_item_count} output items"
+                    )));
+                }
+                let usage = event.response.usage.map(|usage| TokenUsage {
+                    prompt_tokens: usage.input_tokens,
+                    completion_tokens: usage.output_tokens,
+                    total_tokens: usage.total_tokens,
+                    reasoning_tokens: usage.output_tokens_details.reasoning_tokens,
+                    cached_prompt_tokens: usage.input_tokens_details.cached_tokens,
+                });
+                return Ok(RemoteCompactionV2Output {
+                    compaction: compaction.expect("count is exactly one"),
+                    response_id: event.response.id,
+                    usage,
+                });
+            }
+            rs::ResponseStreamEvent::ResponseIncomplete(_) => {
+                return Err(SamplingError::MaxTokensTruncation);
+            }
+            rs::ResponseStreamEvent::ResponseFailed(event) => {
+                let message = event
+                    .response
+                    .error
+                    .map(|error| format!("{}: {}", error.code, error.message))
+                    .unwrap_or_else(|| "remote compaction v2 response failed".to_owned());
+                return Err(SamplingError::Api {
+                    status: reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+                    message,
+                    model_metadata: None,
+                    retry_after_secs: None,
+                    should_retry: None,
+                });
+            }
+            rs::ResponseStreamEvent::ResponseError(event) => {
+                return Err(SamplingError::Api {
+                    status: reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+                    message: format!(
+                        "{}: {}",
+                        event.code.unwrap_or_else(|| "error".to_owned()),
+                        event.message
+                    ),
+                    model_metadata: None,
+                    retry_after_secs: None,
+                    should_retry: None,
+                });
+            }
+            _ => {}
+        }
+    }
+
+    Err(SamplingError::EventStreamError(
+        "remote compaction v2 stream closed before response.completed".to_owned(),
+    ))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{CompactFailureAction, ProviderRelativeEndpoint, classify_compact_failure};
+    use super::{CompactFailureAction, classify_compact_failure};
     use atelier_sampling_types::SamplingError;
     use reqwest::StatusCode;
 
@@ -237,16 +259,6 @@ mod tests {
             retry_after_secs: None,
             should_retry: None,
         }
-    }
-
-    #[test]
-    fn provider_relative_endpoint_preserves_base_path_and_origin() {
-        let endpoint = ProviderRelativeEndpoint::parse("responses/compact".to_owned()).unwrap();
-        let url = endpoint.resolve("https://api.example.test/v1").unwrap();
-        assert_eq!(
-            url.as_str(),
-            "https://api.example.test/v1/responses/compact"
-        );
     }
 
     #[test]
@@ -279,7 +291,7 @@ mod tests {
             CompactFailureAction::FallbackLocal
         );
         assert_eq!(
-            classify_compact_failure(&SamplingError::InvalidConfiguration("bad endpoint")),
+            classify_compact_failure(&SamplingError::InvalidConfiguration("disabled")),
             CompactFailureAction::ReturnError
         );
     }

@@ -49,8 +49,6 @@ pub enum SamplingConsumer {
     MessagesStream,
     /// `messages`: Anthropic Messages API non-streaming.
     Messages,
-    /// Provider-specific Responses-compatible remote compaction endpoint.
-    RemoteCompaction,
     /// Provider-specific OpenAI Images-compatible generation endpoint.
     ImageGeneration,
 }
@@ -68,7 +66,6 @@ impl SamplingConsumer {
             Self::Responses => "responses",
             Self::MessagesStream => "messages_stream",
             Self::Messages => "messages",
-            Self::RemoteCompaction => "remote_compaction",
             Self::ImageGeneration => "image_generation",
         }
     }
