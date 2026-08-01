@@ -1962,11 +1962,7 @@ pub fn response_to_conversation_items(response: rs::Response) -> Vec<Conversatio
         .filter(|s| !s.is_empty());
     // The server echoes the applied reasoning config; record the effort with
     // the same per-response provenance as `model`/`system_fingerprint`.
-    let reasoning_effort = response
-        .reasoning
-        .as_ref()
-        .and_then(|r| r.effort.clone())
-        .map(crate::ReasoningEffort::from_responses_api);
+    let reasoning_effort = crate::response_reasoning_effort(&response);
 
     let mut items: Vec<ConversationItem> = Vec::with_capacity(response.output.len() + 1);
     let mut content = String::new();
@@ -4140,6 +4136,22 @@ mod tests {
             truncation: None,
             usage: None,
         };
+
+        let mut max_response = response.clone();
+        max_response.metadata = Some(std::collections::HashMap::from([(
+            crate::RESPONSE_REASONING_EFFORT_METADATA_KEY.to_owned(),
+            "max".to_owned(),
+        )]));
+        let max_items = response_to_conversation_items(max_response);
+        let ConversationItem::Assistant(max_assistant) =
+            max_items.last().expect("trailing max-effort Assistant")
+        else {
+            panic!("Expected Assistant item");
+        };
+        assert_eq!(
+            max_assistant.reasoning_effort,
+            Some(crate::ReasoningEffort::Max)
+        );
 
         let items = response_to_conversation_items(response);
         let ConversationItem::Assistant(a) = items.last().expect("trailing Assistant") else {

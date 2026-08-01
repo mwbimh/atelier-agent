@@ -773,6 +773,11 @@ pub enum ReasoningEffort {
     Max,
 }
 
+/// Reserved typed-response metadata used when the wire reports an effort newer
+/// than the current async-openai enum. Sampler response decoders own this key;
+/// provider-supplied metadata with the same name is stripped before decoding.
+pub const RESPONSE_REASONING_EFFORT_METADATA_KEY: &str = "x-atelier-response-reasoning-effort";
+
 impl ReasoningEffort {
     pub fn to_responses_api(self) -> crate::rs::ReasoningEffort {
         match self {
@@ -821,6 +826,26 @@ impl ReasoningEffort {
             Self::Max => Some("max"),
         }
     }
+}
+
+/// Return the exact effort reported by a typed Responses API result.
+///
+/// `async-openai` 0.33 does not yet deserialize the `"max"` variant. The
+/// sampler normalizes that value to `xhigh` for typed decoding and records the
+/// exact wire token in reserved response metadata, which takes precedence here.
+pub fn response_reasoning_effort(response: &crate::rs::Response) -> Option<ReasoningEffort> {
+    response
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get(RESPONSE_REASONING_EFFORT_METADATA_KEY))
+        .and_then(|effort| effort.parse().ok())
+        .or_else(|| {
+            response
+                .reasoning
+                .as_ref()
+                .and_then(|reasoning| reasoning.effort.clone())
+                .map(ReasoningEffort::from_responses_api)
+        })
 }
 
 impl std::fmt::Display for ReasoningEffort {

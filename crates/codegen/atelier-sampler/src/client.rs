@@ -166,6 +166,7 @@ fn deserialize_response_event_with_fallback_model(
         Err(first_err) => {
             // Try sanitizing: parse as Value, strip unknown tools, retry.
             if let Ok(mut value) = serde_json::from_str::<serde_json::Value>(data) {
+                normalize_response_reasoning_effort(&mut value);
                 // Some Responses-compatible proxies omit the echoed model on
                 // response.created/completed. async-openai models it as a
                 // required field, so restore it from the request before the
@@ -262,6 +263,13 @@ fn apply_terminal_event_overrides(event: &mut rs::ResponseStreamEvent, data: &st
     let Ok(value) = serde_json::from_str::<serde_json::Value>(data) else {
         return;
     };
+    preserve_max_response_reasoning_effort(
+        response,
+        value
+            .pointer("/response/reasoning/effort")
+            .and_then(Value::as_str)
+            == Some("max"),
+    );
     // Stash cost ticks in metadata for stream_responses.
     if let Some(ticks) = atelier_sampling_types::reported_cost_ticks(
         value
@@ -447,7 +455,7 @@ impl std::fmt::Debug for ClientDefaults {
 
 #[cfg(test)]
 mod request_payload_tests {
-    use super::{SamplingClient, apply_request_payload};
+    use super::{SamplingClient, apply_request_payload, deserialize_response};
     use crate::SamplerConfig;
     use atelier_sampling_types::{ApiBackend, ConversationRequest};
     use serde_json::{Value, json};
@@ -558,6 +566,27 @@ mod request_payload_tests {
     }
 
     #[test]
+    fn non_streaming_response_accepts_and_preserves_max_reasoning_effort() {
+        let response = deserialize_response(
+            br#"{
+                "id": "resp_max",
+                "object": "response",
+                "created_at": 0,
+                "model": "gpt-5.6-sol",
+                "status": "completed",
+                "output": [],
+                "reasoning": { "effort": "max", "summary": null }
+            }"#,
+        )
+        .expect("the non-streaming Responses parser must accept max effort");
+
+        assert_eq!(
+            atelier_sampling_types::response_reasoning_effort(&response),
+            Some(atelier_sampling_types::ReasoningEffort::Max)
+        );
+    }
+
+    #[test]
     fn preview_body_contains_the_actual_backend_shape_and_merged_role_payload() {
         let config = SamplerConfig {
             base_url: "http://127.0.0.1:1/v1".to_owned(),
@@ -594,6 +623,62 @@ fn patch_responses_reasoning_effort(
     {
         reasoning.insert("effort".to_owned(), Value::String("max".to_owned()));
     }
+}
+
+/// Normalize response effort variants that the pinned async-openai types do
+/// not yet know. Returns whether the exact wire effort was `max` so callers can
+/// restore it in reserved typed-response metadata after deserialization.
+fn normalize_response_reasoning_effort(value: &mut Value) -> bool {
+    let is_stream_event = value.get("response").and_then(Value::as_object).is_some();
+    let response = if is_stream_event {
+        value.get_mut("response").and_then(Value::as_object_mut)
+    } else {
+        value.as_object_mut()
+    };
+    let Some(response) = response else {
+        return false;
+    };
+
+    if let Some(metadata) = response.get_mut("metadata").and_then(Value::as_object_mut) {
+        metadata.remove(atelier_sampling_types::RESPONSE_REASONING_EFFORT_METADATA_KEY);
+    }
+
+    let Some(effort) = response
+        .get_mut("reasoning")
+        .and_then(Value::as_object_mut)
+        .and_then(|reasoning| reasoning.get_mut("effort"))
+    else {
+        return false;
+    };
+    if effort.as_str().is_some_and(|effort| effort == "max") {
+        *effort = Value::String("xhigh".to_owned());
+        true
+    } else {
+        false
+    }
+}
+
+fn preserve_max_response_reasoning_effort(response: &mut rs::Response, was_max: bool) {
+    if let Some(metadata) = response.metadata.as_mut() {
+        metadata.remove(atelier_sampling_types::RESPONSE_REASONING_EFFORT_METADATA_KEY);
+    }
+    if was_max {
+        response
+            .metadata
+            .get_or_insert_with(Default::default)
+            .insert(
+                atelier_sampling_types::RESPONSE_REASONING_EFFORT_METADATA_KEY.to_owned(),
+                "max".to_owned(),
+            );
+    }
+}
+
+fn deserialize_response(data: &[u8]) -> serde_json::Result<rs::Response> {
+    let mut value = serde_json::from_slice::<Value>(data)?;
+    let was_max = normalize_response_reasoning_effort(&mut value);
+    let mut response = serde_json::from_value::<rs::Response>(value)?;
+    preserve_max_response_reasoning_effort(&mut response, was_max);
+    Ok(response)
 }
 
 fn apply_request_payload(body: &mut Value, payload: &Map<String, Value>, api_backend: &ApiBackend) {
@@ -1524,7 +1609,7 @@ impl SamplingClient {
             });
         }
 
-        let response_obj = serde_json::from_slice::<rs::Response>(&bytes).map_err(|e| {
+        let response_obj = deserialize_response(&bytes).map_err(|e| {
             let raw_body = String::from_utf8_lossy(&bytes);
             tracing::error!(
                 error = %e,
@@ -3267,6 +3352,33 @@ mod tests {
             panic!("expected ResponseCompleted");
         };
         assert!(e.response.metadata.is_none());
+    }
+
+    #[test]
+    fn deserialize_response_event_accepts_and_preserves_max_reasoning_effort() {
+        let sse = r#"{
+            "type": "response.completed",
+            "sequence_number": 0,
+            "response": {
+                "id": "resp_max",
+                "object": "response",
+                "created_at": 0,
+                "model": "gpt-5.6-sol",
+                "status": "completed",
+                "output": [],
+                "reasoning": { "effort": "max", "summary": null }
+            }
+        }"#;
+
+        let event = deserialize_response_event(sse)
+            .expect("the Responses parser must accept the catalog's max effort");
+        let rs::ResponseStreamEvent::ResponseCompleted(e) = event else {
+            panic!("expected ResponseCompleted");
+        };
+        assert_eq!(
+            atelier_sampling_types::response_reasoning_effort(&e.response),
+            Some(atelier_sampling_types::ReasoningEffort::Max)
+        );
     }
 
     #[test]
