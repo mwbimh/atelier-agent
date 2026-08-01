@@ -76,7 +76,8 @@ release/
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\release\install-windows.ps1
 ```
 
-安装脚本支持 `-InstallDir`、`-NoPathUpdate` 和 `-SetupSandbox`。
+安装脚本支持 `-InstallDir`、`-NoPathUpdate`、`-SetupSandbox` 和
+`-SkipDefaultTools`。它会优先复用宿主 PATH 中已有的 Git、ripgrep 和 uv；缺失时才安装固定版本并校验 SHA-256 的 managed copy。Node.js 与 Rust 只做推荐，不会自动安装。
 
 ## Monorepo 目录
 

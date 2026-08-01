@@ -9,6 +9,7 @@
 #   -SetupSandbox                 Run `ate.exe sandbox setup` after installation.
 #   -PowerShellArchive <zip>      Install an offline portable PowerShell archive.
 #   -PowerShellArchiveSha256 <h>  Required SHA-256 for the offline archive.
+#   -SkipDefaultTools              Do not install missing Git, ripgrep, or uv.
 
 [CmdletBinding()]
 param(
@@ -18,7 +19,8 @@ param(
     [string]$PowerShellVersion = "7.6.4",
     [string]$PowerShellArchive = "",
     [string]$PowerShellArchiveSha256 = "",
-    [switch]$SkipPowerShellRuntime
+    [switch]$SkipPowerShellRuntime,
+    [switch]$SkipDefaultTools
 )
 
 Set-StrictMode -Version Latest
@@ -54,7 +56,74 @@ function Set-AtelierReadExecuteAcl {
     }
 }
 
-if (-not $SkipPowerShellRuntime -and -not (Test-IsAdministrator)) {
+function Invoke-DownloadWithRetry {
+    param(
+        [Parameter(Mandatory = $true)][string]$Uri,
+        [Parameter(Mandatory = $true)][string]$OutFile
+    )
+    $lastError = $null
+    for ($attempt = 1; $attempt -le 3; $attempt++) {
+        try {
+            Remove-Item -LiteralPath $OutFile -Force -ErrorAction SilentlyContinue
+            Invoke-WebRequest -UseBasicParsing -Uri $Uri -OutFile $OutFile
+            return
+        } catch {
+            $lastError = $_
+            if ($attempt -lt 3) {
+                Start-Sleep -Seconds ([Math]::Pow(2, $attempt))
+            }
+        }
+    }
+    throw "Download failed after 3 attempts: $Uri`n$($lastError | Out-String)"
+}
+
+function Assert-SafeZipArchive {
+    param(
+        [Parameter(Mandatory = $true)][string]$Archive,
+        [Parameter(Mandatory = $true)][string]$Destination
+    )
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $destinationRoot = [IO.Path]::GetFullPath($Destination).TrimEnd('\') + '\'
+    $zip = [IO.Compression.ZipFile]::OpenRead($Archive)
+    try {
+        foreach ($entry in $zip.Entries) {
+            $name = $entry.FullName.Replace('\', '/')
+            $segments = @($name -split '/' | Where-Object { $_ -ne '' })
+            if ([string]::IsNullOrWhiteSpace($name) -or
+                $name.StartsWith('/') -or
+                $name.Contains(':') -or
+                ($segments | Where-Object { $_ -eq '..' })) {
+                throw "Unsafe ZIP entry: $($entry.FullName)"
+            }
+            $destinationPath = [IO.Path]::GetFullPath((Join-Path $Destination $name))
+            if (-not $destinationPath.StartsWith(
+                $destinationRoot,
+                [StringComparison]::OrdinalIgnoreCase
+            )) {
+                throw "ZIP entry escapes the staging directory: $($entry.FullName)"
+            }
+        }
+    } finally {
+        $zip.Dispose()
+    }
+}
+
+function Test-ApplicationAvailable {
+    param([Parameter(Mandatory = $true)][string]$Name)
+    $command = Get-Command $Name -CommandType Application -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    return $null -ne $command -and
+        -not ([IO.Path]::GetFullPath($command.Source) -match "(?i)\\WindowsApps\\")
+}
+
+$missingDefaultTool = -not $SkipDefaultTools -and (
+    -not (Test-ApplicationAvailable -Name "git.exe") -or
+    -not (Test-ApplicationAvailable -Name "rg.exe") -or
+    -not (Test-ApplicationAvailable -Name "uv.exe")
+)
+$requiresElevation = -not $SkipPowerShellRuntime -or $missingDefaultTool
+
+if ($requiresElevation -and -not (Test-IsAdministrator)) {
     # Start-Process joins ArgumentList entries into one native command line.
     # Empty values (notably the default InstallDir) and paths containing spaces
     # therefore cannot be forwarded safely as a plain string array. Serialize
@@ -64,6 +133,8 @@ if (-not $SkipPowerShellRuntime -and -not (Test-IsAdministrator)) {
         PowerShellVersion = $PowerShellVersion
         NoPathUpdate = [bool]$NoPathUpdate
         SetupSandbox = [bool]$SetupSandbox
+        SkipPowerShellRuntime = [bool]$SkipPowerShellRuntime
+        SkipDefaultTools = [bool]$SkipDefaultTools
     }
     if (-not [string]::IsNullOrWhiteSpace($InstallDir)) {
         $elevatedParameters["InstallDir"] = $InstallDir
@@ -91,6 +162,8 @@ if (`$payload.PSObject.Properties.Name -contains "InstallDir") {
 }
 if ([bool]`$payload.NoPathUpdate) { `$invokeParameters["NoPathUpdate"] = `$true }
 if ([bool]`$payload.SetupSandbox) { `$invokeParameters["SetupSandbox"] = `$true }
+if ([bool]`$payload.SkipPowerShellRuntime) { `$invokeParameters["SkipPowerShellRuntime"] = `$true }
+if ([bool]`$payload.SkipDefaultTools) { `$invokeParameters["SkipDefaultTools"] = `$true }
 if (`$payload.PSObject.Properties.Name -contains "PowerShellArchive") {
     `$invokeParameters["PowerShellArchive"] = [string]`$payload.PowerShellArchive
     `$invokeParameters["PowerShellArchiveSha256"] = [string]`$payload.PowerShellArchiveSha256
@@ -108,7 +181,7 @@ try {
         [Text.Encoding]::Unicode.GetBytes($elevatedCommand)
     )
 
-    Write-Host "Administrator approval is required to install the managed PowerShell runtime."
+    Write-Host "Administrator approval is required to install Atelier managed runtimes or default tools."
     try {
         $process = Start-Process -FilePath "powershell.exe" -Verb RunAs -Wait -PassThru -ArgumentList @(
             "-NoProfile", "-ExecutionPolicy", "Bypass", "-EncodedCommand", $encodedCommand
@@ -244,8 +317,8 @@ function Install-ManagedPowerShell {
             $temporaryDownload = Join-Path ([IO.Path]::GetTempPath()) ("atelier-{0}" -f $archiveName)
             $checksumsDownload = Join-Path ([IO.Path]::GetTempPath()) ("atelier-powershell-{0}-hashes.sha256" -f $Version)
             $releaseBase = "https://github.com/PowerShell/PowerShell/releases/download/v$Version"
-            Invoke-WebRequest -UseBasicParsing -Uri "$releaseBase/$archiveName" -OutFile $temporaryDownload
-            Invoke-WebRequest -UseBasicParsing -Uri "$releaseBase/hashes.sha256" -OutFile $checksumsDownload
+            Invoke-DownloadWithRetry -Uri "$releaseBase/$archiveName" -OutFile $temporaryDownload
+            Invoke-DownloadWithRetry -Uri "$releaseBase/hashes.sha256" -OutFile $checksumsDownload
             $expectedLine = Get-Content -LiteralPath $checksumsDownload | Where-Object {
                 $_ -match ("(?i)^[0-9a-f]{64}\s+\*?" + [regex]::Escape($archiveName) + "$")
             } | Select-Object -First 1
@@ -276,6 +349,7 @@ function Install-ManagedPowerShell {
         Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue
         New-Item -ItemType Directory -Path $staging -Force | Out-Null
         try {
+            Assert-SafeZipArchive -Archive $Archive -Destination $staging
             Expand-Archive -LiteralPath $Archive -DestinationPath $staging -Force
             $pwsh = Join-Path $staging "pwsh.exe"
             if (-not (Test-Path -LiteralPath $pwsh -PathType Leaf)) {
@@ -341,6 +415,222 @@ function Install-ManagedPowerShell {
     }
 }
 
+function Install-ManagedArchiveTool {
+    param(
+        [Parameter(Mandatory = $true)][string]$Id,
+        [Parameter(Mandatory = $true)][string]$Version,
+        [Parameter(Mandatory = $true)][string]$ArchiveName,
+        [Parameter(Mandatory = $true)][string]$ArchiveUrl,
+        [Parameter(Mandatory = $true)][string]$ArchiveSha256,
+        [Parameter(Mandatory = $true)][string]$ExecutableName,
+        [string]$ExpectedRelativeSuffix = "",
+        [string[]]$ProbeArguments = @("--version")
+    )
+
+    if ([string]::IsNullOrWhiteSpace($env:ProgramData)) {
+        throw "ProgramData is not set; cannot install managed tool $Id"
+    }
+    if ($ArchiveSha256 -notmatch "(?i)^[0-9a-f]{64}$") {
+        throw "Managed tool $Id requires a fixed 64-character SHA-256"
+    }
+
+    $toolRoot = Join-Path $env:ProgramData ("Atelier\tools\{0}" -f $Id)
+    $versionRoot = Join-Path $toolRoot $Version
+    $activeManifest = Join-Path $toolRoot "active.json"
+    New-Item -ItemType Directory -Path $toolRoot -Force | Out-Null
+    Set-AtelierReadExecuteAcl -Path $toolRoot
+
+    if (Test-Path -LiteralPath $activeManifest -PathType Leaf) {
+        try {
+            $active = Get-Content -LiteralPath $activeManifest -Raw | ConvertFrom-Json
+            $activeExecutable = [IO.Path]::GetFullPath([string]$active.executable)
+            if ([string]$active.version -eq $Version -and
+                (Test-Path -LiteralPath $activeExecutable -PathType Leaf)) {
+                & $activeExecutable @ProbeArguments | Out-Null
+                if ($LASTEXITCODE -eq 0) {
+                    $activeRoot = Split-Path -Parent $activeExecutable
+                    if (($env:Path -split ";") -notcontains $activeRoot) {
+                        $env:Path = "$activeRoot;$env:Path"
+                    }
+                    return $activeExecutable
+                }
+            }
+        } catch {
+            # A malformed or stale manifest is repaired by the verified install below.
+        }
+    }
+
+    $temporaryDownload = Join-Path ([IO.Path]::GetTempPath()) (
+        "atelier-{0}-{1}-{2}" -f $Id, $PID, $ArchiveName
+    )
+    $staging = Join-Path $toolRoot (".staging-{0}-{1}" -f $Version, $PID)
+    try {
+        Invoke-DownloadWithRetry -Uri $ArchiveUrl -OutFile $temporaryDownload
+        $actualHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $temporaryDownload).Hash
+        if ($actualHash -ne $ArchiveSha256.ToUpperInvariant()) {
+            throw "Managed tool $Id archive SHA-256 mismatch"
+        }
+
+        Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue
+        New-Item -ItemType Directory -Path $staging -Force | Out-Null
+        Assert-SafeZipArchive -Archive $temporaryDownload -Destination $staging
+        Expand-Archive -LiteralPath $temporaryDownload -DestinationPath $staging -Force
+        $reparsePoint = Get-ChildItem -LiteralPath $staging -Recurse -Force | Where-Object {
+            $_.Attributes -band [IO.FileAttributes]::ReparsePoint
+        } | Select-Object -First 1
+        if ($reparsePoint) {
+            throw "Managed tool $Id archive contains a reparse point: $($reparsePoint.FullName)"
+        }
+
+        $candidates = @(Get-ChildItem -LiteralPath $staging -Recurse -File -Filter $ExecutableName)
+        if (-not [string]::IsNullOrWhiteSpace($ExpectedRelativeSuffix)) {
+            $normalizedSuffix = $ExpectedRelativeSuffix.Replace('/', '\').TrimStart('\')
+            $candidates = @($candidates | Where-Object {
+                $relative = $_.FullName.Substring($staging.Length).TrimStart('\')
+                $relative.EndsWith($normalizedSuffix, [StringComparison]::OrdinalIgnoreCase)
+            })
+        }
+        if ($candidates.Count -ne 1) {
+            throw "Managed tool $Id archive must contain exactly one expected $ExecutableName"
+        }
+        $relativeExecutable = $candidates[0].FullName.Substring($staging.Length).TrimStart('\')
+        & $candidates[0].FullName @ProbeArguments | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            throw "Managed tool $Id failed its startup probe"
+        }
+
+        $backupRoot = "$versionRoot.backup-$PID"
+        Remove-Item -LiteralPath $backupRoot -Recurse -Force -ErrorAction SilentlyContinue
+        if (Test-Path -LiteralPath $versionRoot) {
+            Move-Item -LiteralPath $versionRoot -Destination $backupRoot
+        }
+        try {
+            Move-Item -LiteralPath $staging -Destination $versionRoot
+            Remove-Item -LiteralPath $backupRoot -Recurse -Force -ErrorAction SilentlyContinue
+        } catch {
+            Remove-Item -LiteralPath $versionRoot -Recurse -Force -ErrorAction SilentlyContinue
+            if (Test-Path -LiteralPath $backupRoot) {
+                Move-Item -LiteralPath $backupRoot -Destination $versionRoot
+            }
+            throw
+        }
+
+        Set-AtelierReadExecuteAcl -Path $versionRoot
+        foreach ($sandboxAccount in @("AtelierSandbox", "AtelierSandboxNoNet")) {
+            if (Get-LocalUser -Name $sandboxAccount -ErrorAction SilentlyContinue) {
+                & icacls.exe $versionRoot /grant:r ("{0}:(OI)(CI)RX" -f $sandboxAccount) | Out-Null
+                if ($LASTEXITCODE -ne 0) {
+                    throw "Failed to grant $sandboxAccount access to managed tool $Id"
+                }
+            }
+        }
+
+        $installedExecutable = Join-Path $versionRoot $relativeExecutable
+        $executableRoot = Split-Path -Parent $installedExecutable
+        $manifestTemporary = "$activeManifest.new.$PID"
+        $manifest = @{
+            schema_version = 1
+            id = $Id
+            version = $Version
+            architecture = if ($env:PROCESSOR_ARCHITECTURE -eq "ARM64") { "arm64" } else { "x64" }
+            executable = $installedExecutable
+            roots = @($executableRoot)
+        } | ConvertTo-Json -Depth 4
+        Write-Utf8NoBom -Path $manifestTemporary -Value $manifest
+        Move-Item -LiteralPath $manifestTemporary -Destination $activeManifest -Force
+        if (($env:Path -split ";") -notcontains $executableRoot) {
+            $env:Path = "$executableRoot;$env:Path"
+        }
+        Write-Host "Managed $Id installed: $installedExecutable"
+        return $installedExecutable
+    } finally {
+        Remove-Item -LiteralPath $temporaryDownload -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Install-DefaultManagedTools {
+    if ([string]::IsNullOrWhiteSpace($env:ProgramData)) {
+        throw "ProgramData is not set; cannot install default managed tools"
+    }
+    $architecture = if ($env:PROCESSOR_ARCHITECTURE -eq "ARM64") { "arm64" } else { "x64" }
+
+    if (-not (Test-ApplicationAvailable -Name "git.exe")) {
+        $gitVersion = "2.55.0.3"
+        $gitArchive = if ($architecture -eq "arm64") {
+            "MinGit-2.55.0.3-arm64.zip"
+        } else {
+            "MinGit-2.55.0.3-64-bit.zip"
+        }
+        $gitHash = if ($architecture -eq "arm64") {
+            "f7748965d5068e81ad93ca1923650db6742d6e22332b1ae7567a841c59f6bde5"
+        } else {
+            "f48e2d2dc74a24454adc6d8fd0ac25bf9c2386f19cfb06202b9465aaad4f9f05"
+        }
+        Install-ManagedArchiveTool `
+            -Id "git" `
+            -Version $gitVersion `
+            -ArchiveName $gitArchive `
+            -ArchiveUrl "https://github.com/git-for-windows/git/releases/download/v2.55.0.windows.3/$gitArchive" `
+            -ArchiveSha256 $gitHash `
+            -ExecutableName "git.exe" `
+            -ExpectedRelativeSuffix "cmd\git.exe" | Out-Null
+    }
+
+    if (-not (Test-ApplicationAvailable -Name "rg.exe")) {
+        $rgVersion = "15.2.0"
+        $rgArchive = if ($architecture -eq "arm64") {
+            "ripgrep-15.2.0-aarch64-pc-windows-msvc.zip"
+        } else {
+            "ripgrep-15.2.0-x86_64-pc-windows-msvc.zip"
+        }
+        $rgHash = if ($architecture -eq "arm64") {
+            "e4abca10c3a64ebea742667dd7009449d49403db5460dd6873e389fa2945360f"
+        } else {
+            "71b2fef860abe467217a538ff31de02f5258807c0129f771846f87bd029aafc5"
+        }
+        Install-ManagedArchiveTool `
+            -Id "ripgrep" `
+            -Version $rgVersion `
+            -ArchiveName $rgArchive `
+            -ArchiveUrl "https://github.com/BurntSushi/ripgrep/releases/download/$rgVersion/$rgArchive" `
+            -ArchiveSha256 $rgHash `
+            -ExecutableName "rg.exe" | Out-Null
+    }
+
+    if (-not (Test-ApplicationAvailable -Name "uv.exe")) {
+        $uvVersion = "0.12.1"
+        $uvArchive = if ($architecture -eq "arm64") {
+            "uv-aarch64-pc-windows-msvc.zip"
+        } else {
+            "uv-x86_64-pc-windows-msvc.zip"
+        }
+        $uvHash = if ($architecture -eq "arm64") {
+            "9bc7c18e616230fa2dc6fb24bc3afde18a95c2b5c9433de747e9502c66041568"
+        } else {
+            "8fcb0cb46e1229065e344758980924e569bef5882ef45f46fada8fb24e06b74a"
+        }
+        Install-ManagedArchiveTool `
+            -Id "uv" `
+            -Version $uvVersion `
+            -ArchiveName $uvArchive `
+            -ArchiveUrl "https://github.com/astral-sh/uv/releases/download/$uvVersion/$uvArchive" `
+            -ArchiveSha256 $uvHash `
+            -ExecutableName "uv.exe" | Out-Null
+    }
+}
+
+function Write-ToolchainRecommendations {
+    if (-not (Test-ApplicationAvailable -Name "node.exe")) {
+        Write-Host "Node.js is recommended for TypeScript and JavaScript projects; ask the Agent to prepare a managed Node.js toolchain when needed."
+    }
+    if (-not (Test-ApplicationAvailable -Name "rustup.exe") -and
+        -not (Test-ApplicationAvailable -Name "cargo.exe")) {
+        Write-Host "Rust is recommended for Rust projects; ask the Agent to prepare a managed rustup toolchain when needed."
+    }
+    Write-Host "Python runtimes, C/C++, Java, and .NET toolchains can also be prepared as project requirements are detected."
+}
+
 function Write-ToolchainRegistry {
     if ([string]::IsNullOrWhiteSpace($env:ProgramData)) { return }
     $toolRoot = Join-Path $env:ProgramData "Atelier\tools"
@@ -353,6 +643,25 @@ function Write-ToolchainRegistry {
         $managed = Get-Content -LiteralPath $activeManifest -Raw | ConvertFrom-Json
         $managedRoot = Split-Path -Parent ([IO.Path]::GetFullPath([string]$managed.path))
         $roots += @{ path = $managedRoot; enabled = $true }
+    }
+
+    Get-ChildItem -LiteralPath $toolRoot -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+        $toolManifest = Join-Path $_.FullName "active.json"
+        if (Test-Path -LiteralPath $toolManifest -PathType Leaf) {
+            try {
+                $managedTool = Get-Content -LiteralPath $toolManifest -Raw | ConvertFrom-Json
+                foreach ($managedRootValue in @($managedTool.roots)) {
+                    $managedRoot = [IO.Path]::GetFullPath([string]$managedRootValue)
+                    if (-not ($roots | Where-Object {
+                        [string]::Equals($_.path, $managedRoot, [StringComparison]::OrdinalIgnoreCase)
+                    })) {
+                        $roots += @{ path = $managedRoot; enabled = $true }
+                    }
+                }
+            } catch {
+                throw "Invalid managed tool manifest: $toolManifest"
+            }
+        }
     }
 
     $approvedPrefixes = @(
@@ -388,8 +697,14 @@ function Write-ToolchainRegistry {
 
 if (-not $SkipPowerShellRuntime) {
     Install-ManagedPowerShell -Version $PowerShellVersion -Archive $PowerShellArchive -ArchiveSha256 $PowerShellArchiveSha256
+}
+if (-not $SkipDefaultTools) {
+    Install-DefaultManagedTools
+}
+if (-not $SkipPowerShellRuntime -or $missingDefaultTool) {
     Write-ToolchainRegistry
 }
+Write-ToolchainRecommendations
 
 if ($SetupSandbox) {
     & $destination sandbox setup

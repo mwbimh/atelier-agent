@@ -28,6 +28,13 @@ can provision the Windows sandbox during installation; otherwise the first
 interactive launch asks whether to enable it and opens the UAC approval flow
 automatically when accepted.
 
+The installer reuses Git, ripgrep, and uv from the host PATH when available. If
+one is missing, it silently installs a pinned, SHA-256-verified managed copy
+under `C:\ProgramData\Atelier\tools`. Pass `-SkipDefaultTools` to disable these
+downloads. Node.js and Rust remain recommendations rather than automatic
+installs; additional language toolchains are prepared only when a project needs
+them.
+
 Verify the installation:
 
 ```bash

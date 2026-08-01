@@ -81,7 +81,10 @@ Install for the current user:
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\release\install-windows.ps1
 ```
 
-The installer supports `-InstallDir`, `-NoPathUpdate`, and `-SetupSandbox`.
+The installer supports `-InstallDir`, `-NoPathUpdate`, `-SetupSandbox`, and
+`-SkipDefaultTools`. It reuses host Git, ripgrep, and uv when available and
+installs pinned, verified managed copies only when they are missing. Node.js and
+Rust are recommended separately rather than installed automatically.
 
 ## Monorepo layout
 

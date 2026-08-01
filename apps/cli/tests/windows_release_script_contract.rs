@@ -25,6 +25,7 @@ fn windows_installer_manages_powershell_runtime_and_uses_the_adjacent_binary() {
     assert!(source.contains("[switch]$SetupSandbox"));
     assert!(source.contains("[string]$PowerShellArchive"));
     assert!(source.contains("[string]$PowerShellArchiveSha256"));
+    assert!(source.contains("[switch]$SkipDefaultTools"));
     assert!(source.contains("PowerShell-$PowerShellVersion-win-$architecture.zip"));
     assert!(source.contains("PowerShell version must use numeric major.minor.patch format"));
     assert!(source.contains("Atelier\\runtimes\\powershell"));
@@ -35,6 +36,16 @@ fn windows_installer_manages_powershell_runtime_and_uses_the_adjacent_binary() {
     assert!(source.contains("*S-1-5-32-545"));
     assert!(source.contains("$approvedPrefixes"));
     assert!(source.contains("[IO.FileAttributes]::ReparsePoint"));
+    assert!(source.contains("Install-DefaultManagedTools"));
+    assert!(source.contains("Assert-SafeZipArchive"));
+    assert!(source.contains("ripgrep-15.2.0"));
+    assert!(source.contains("71b2fef860abe467217a538ff31de02f5258807c0129f771846f87bd029aafc5"));
+    assert!(source.contains("uv-x86_64-pc-windows-msvc.zip"));
+    assert!(source.contains("8fcb0cb46e1229065e344758980924e569bef5882ef45f46fada8fb24e06b74a"));
+    assert!(source.contains("MinGit-2.55.0.3-64-bit.zip"));
+    assert!(source.contains("f48e2d2dc74a24454adc6d8fd0ac25bf9c2386f19cfb06202b9465aaad4f9f05"));
+    assert!(source.contains("Node.js is recommended"));
+    assert!(source.contains("Rust is recommended"));
     assert!(source.contains("Invoke-WebRequest"));
     assert!(source.contains("--version"));
     assert!(source.contains("sandbox setup"));
@@ -53,6 +64,8 @@ fn windows_installer_elevation_preserves_optional_arguments_and_child_errors() {
 
     assert!(source.contains("$elevatedParameters = @{"));
     assert!(source.contains("$elevatedParameters[\"InstallDir\"] = $InstallDir"));
+    assert!(source.contains("SkipDefaultTools = [bool]$SkipDefaultTools"));
+    assert!(source.contains("SkipPowerShellRuntime = [bool]$SkipPowerShellRuntime"));
     assert!(source.contains("-EncodedCommand"));
     assert!(source.contains("$elevationLog"));
     assert!(source.contains("Elevated installer output:"));
