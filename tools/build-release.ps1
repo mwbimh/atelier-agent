@@ -46,6 +46,10 @@ if (Test-Path -LiteralPath $outputPath) {
 
 New-Item -ItemType Directory -Path $outputPath -Force | Out-Null
 $env:CARGO_TARGET_DIR = $targetPath
+$env:ATELIER_BUILD_COMMIT = (& git -C $repoRoot rev-parse --short HEAD).Trim()
+if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($env:ATELIER_BUILD_COMMIT)) {
+    throw "Failed to resolve the release commit with git rev-parse --short HEAD"
+}
 
 & cargo build --locked --profile release-dist -p atelier-pager-bin --bin ate -j 1
 if ($LASTEXITCODE -ne 0) {

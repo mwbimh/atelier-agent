@@ -11,6 +11,20 @@ fn release_build_packages_the_windows_installer_script() {
 }
 
 #[test]
+fn release_build_pins_the_current_commit_into_every_version_build_script() {
+    let release_script = include_str!("../../../tools/build-release.ps1");
+    let cli_build_script = include_str!("../build.rs");
+    let pager_build_script = include_str!("../../../crates/codegen/atelier-pager/build.rs");
+
+    assert!(release_script.contains("ATELIER_BUILD_COMMIT"));
+    assert!(release_script.contains("rev-parse --short HEAD"));
+    for source in [cli_build_script, pager_build_script] {
+        assert!(source.contains("cargo:rerun-if-env-changed=ATELIER_BUILD_COMMIT"));
+        assert!(source.contains("std::env::var(\"ATELIER_BUILD_COMMIT\")"));
+    }
+}
+
+#[test]
 fn windows_installer_manages_powershell_runtime_and_uses_the_adjacent_binary() {
     let script = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("scripts/install-windows.ps1");
     let source = std::fs::read_to_string(&script).unwrap_or_else(|error| {
