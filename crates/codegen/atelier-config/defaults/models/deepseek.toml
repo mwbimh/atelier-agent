@@ -1,11 +1,12 @@
-# Verified 2026-07-25 against the current DeepSeek catalog in Pi AI 0.82.1.
+# Verified 2026-07-25 against the official DeepSeek Thinking Mode documentation.
+# https://api-docs.deepseek.com/guides/thinking_mode
 schema_version = 2
 
 [models."deepseek-v4-flash"]
 display_name = "DeepSeek V4 Flash"
 wire_api = "chat_completions"
 context_window = 1000000
-reasoning_efforts = ["none", "high", "max"]
+reasoning_efforts = ["none", "low", "high", "max"]
 default_effort = "high"
 fast_mode = false
 [models."deepseek-v4-flash".capabilities]
@@ -22,7 +23,7 @@ server_compaction = false
 display_name = "DeepSeek V4 Pro"
 wire_api = "chat_completions"
 context_window = 1000000
-reasoning_efforts = ["none", "high", "max"]
+reasoning_efforts = ["none", "low", "high", "max"]
 default_effort = "high"
 fast_mode = false
 [models."deepseek-v4-pro".capabilities]

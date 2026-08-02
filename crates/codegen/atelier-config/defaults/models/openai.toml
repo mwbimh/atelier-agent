@@ -1,4 +1,6 @@
-# Verified 2026-07-25 against OpenAI SDK 6.49.0, Codex 0.145.0 model metadata, and Pi AI 0.82.1.
+# Verified 2026-07-25 against the official OpenAI model pages and Codex 0.145.0 model metadata.
+# https://developers.openai.com/api/docs/guides/reasoning
+# https://developers.openai.com/api/docs/models
 schema_version = 2
 
 [models."gpt-5"]
@@ -91,7 +93,7 @@ display_name = "GPT-5.1"
 wire_api = "responses"
 context_window = 400000
 reasoning_efforts = ["none", "low", "medium", "high"]
-default_effort = "medium"
+default_effort = "none"
 fast_mode = true
 [models."gpt-5.1".capabilities]
 text_input = true
@@ -159,7 +161,7 @@ display_name = "GPT-5.2"
 wire_api = "responses"
 context_window = 400000
 reasoning_efforts = ["none", "low", "medium", "high", "xhigh"]
-default_effort = "medium"
+default_effort = "none"
 fast_mode = true
 [models."gpt-5.2".capabilities]
 text_input = true
@@ -244,7 +246,7 @@ display_name = "GPT-5.4"
 wire_api = "responses"
 context_window = 272000
 reasoning_efforts = ["none", "low", "medium", "high", "xhigh"]
-default_effort = "medium"
+default_effort = "none"
 fast_mode = true
 [models."gpt-5.4".capabilities]
 text_input = true
@@ -261,7 +263,7 @@ display_name = "GPT-5.4 mini"
 wire_api = "responses"
 context_window = 400000
 reasoning_efforts = ["none", "low", "medium", "high", "xhigh"]
-default_effort = "medium"
+default_effort = "none"
 fast_mode = true
 [models."gpt-5.4-mini".capabilities]
 text_input = true
@@ -278,7 +280,7 @@ display_name = "GPT-5.4 nano"
 wire_api = "responses"
 context_window = 400000
 reasoning_efforts = ["none", "low", "medium", "high", "xhigh"]
-default_effort = "medium"
+default_effort = "none"
 fast_mode = true
 [models."gpt-5.4-nano".capabilities]
 text_input = true
@@ -329,7 +331,7 @@ display_name = "GPT-5.5 Pro"
 wire_api = "responses"
 context_window = 1050000
 reasoning_efforts = ["medium", "high", "xhigh"]
-default_effort = "medium"
+default_effort = "high"
 fast_mode = true
 [models."gpt-5.5-pro".capabilities]
 text_input = true
@@ -363,7 +365,7 @@ display_name = "GPT-5.6 Sol"
 wire_api = "responses"
 context_window = 272000
 reasoning_efforts = ["none", "low", "medium", "high", "xhigh", "max"]
-default_effort = "medium"
+default_effort = "low"
 fast_mode = true
 [models."gpt-5.6-sol".capabilities]
 text_input = true

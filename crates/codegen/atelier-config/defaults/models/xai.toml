@@ -1,4 +1,5 @@
-# Verified 2026-07-25 against the current xAI catalog in Pi AI 0.82.1.
+# Verified 2026-07-25 against the official xAI reasoning documentation.
+# https://docs.x.ai/docs/guides/reasoning
 schema_version = 2
 
 [models."grok-4.3"]
@@ -20,8 +21,8 @@ server_compaction = false
 display_name = "Grok 4.5"
 wire_api = "responses"
 context_window = 500000
-reasoning_efforts = ["low", "medium", "high"]
-default_effort = "medium"
+reasoning_efforts = ["low", "medium", "high", "xhigh"]
+default_effort = "high"
 fast_mode = false
 [models."grok-4.5".capabilities]
 text_input = true

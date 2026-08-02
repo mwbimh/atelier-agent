@@ -117,6 +117,73 @@ fn first_run_writes_the_split_atelier_config_tree() {
             .collect::<Vec<_>>(),
         ["none", "low", "medium", "high", "xhigh", "max"]
     );
+    for (model, effort) in [
+        ("gpt-5", "medium"),
+        ("gpt-5-mini", "medium"),
+        ("gpt-5-nano", "medium"),
+        ("gpt-5-pro", "high"),
+        ("gpt-5-codex", "medium"),
+        ("gpt-5.1", "none"),
+        ("gpt-5.1-codex", "medium"),
+        ("gpt-5.1-codex-max", "medium"),
+        ("gpt-5.1-codex-mini", "medium"),
+        ("gpt-5.2", "none"),
+        ("gpt-5.2-codex", "medium"),
+        ("gpt-5.2-pro", "medium"),
+        ("gpt-5.3-codex", "medium"),
+        ("gpt-5.3-codex-spark", "medium"),
+        ("gpt-5.4", "none"),
+        ("gpt-5.4-mini", "none"),
+        ("gpt-5.4-nano", "none"),
+        ("gpt-5.4-pro", "medium"),
+        ("gpt-5.5", "medium"),
+        ("gpt-5.5-pro", "high"),
+        ("gpt-5.6-luna", "medium"),
+        ("gpt-5.6-sol", "low"),
+        ("gpt-5.6-terra", "medium"),
+    ] {
+        assert_eq!(
+            openai["models"][model]["default_effort"].as_str(),
+            Some(effort),
+            "incorrect documented default effort for {model}"
+        );
+    }
+
+    let deepseek =
+        std::fs::read_to_string(home.path().join("models/default/deepseek.toml")).unwrap();
+    let deepseek: toml::Value = toml::from_str(&deepseek).unwrap();
+    for model in ["deepseek-v4-flash", "deepseek-v4-pro"] {
+        assert_eq!(
+            deepseek["models"][model]["reasoning_efforts"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(toml::Value::as_str)
+                .collect::<Vec<_>>(),
+            ["none", "low", "high", "max"]
+        );
+        assert_eq!(
+            deepseek["models"][model]["default_effort"].as_str(),
+            Some("high"),
+            "DeepSeek documents thinking mode as enabled with high effort by default"
+        );
+    }
+
+    let xai = std::fs::read_to_string(home.path().join("models/default/xai.toml")).unwrap();
+    let xai: toml::Value = toml::from_str(&xai).unwrap();
+    assert_eq!(
+        xai["models"]["grok-4.5"]["reasoning_efforts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(toml::Value::as_str)
+            .collect::<Vec<_>>(),
+        ["low", "medium", "high", "xhigh"]
+    );
+    assert_eq!(
+        xai["models"]["grok-4.5"]["default_effort"].as_str(),
+        Some("high")
+    );
     for model in ["gpt-5", "gpt-5.4", "gpt-5.6-sol"] {
         assert_eq!(
             openai["models"][model]["fast_mode"].as_bool(),
