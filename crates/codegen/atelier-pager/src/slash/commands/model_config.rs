@@ -11,7 +11,6 @@ const MODEL_LIST: &str = "_atelier/model/list";
 const MODEL_GET: &str = "_atelier/model/get";
 const MODEL_UPDATE_WIRE_API: &str = "_atelier/model/update_wire_api";
 const OVERRIDE_SET: &str = "_atelier/model_provider_override/set";
-const OVERRIDE_DELETE: &str = "_atelier/model_provider_override/delete";
 const OVERRIDE_TEST: &str = "_atelier/model_provider_override/test";
 
 pub struct ModelConfigCommand;
@@ -26,7 +25,7 @@ impl SlashCommand for ModelConfigCommand {
     }
 
     fn usage(&self) -> &str {
-        "/wire-api [list|get|wire|override|delete|test] ..."
+        "/wire-api [list|get|wire|override|reset|test] ..."
     }
 
     fn takes_args(&self) -> bool {
@@ -41,7 +40,7 @@ impl SlashCommand for ModelConfigCommand {
         let trailing_space = args_query.chars().last().is_some_and(char::is_whitespace);
         let tokens = args_query.split_whitespace().collect::<Vec<_>>();
         let subcommands = || {
-            ["list", "get", "wire", "override", "delete", "test"]
+            ["list", "get", "wire", "override", "reset", "test"]
                 .into_iter()
                 .map(|command| ArgItem {
                     display: command.to_owned(),
@@ -64,26 +63,21 @@ impl SlashCommand for ModelConfigCommand {
         if command == "list" {
             return None;
         }
-        if !["get", "wire", "override", "delete", "test"].contains(&command) {
+        if !["get", "wire", "override", "reset", "test"].contains(&command) {
             return Some(subcommands());
         }
         if tokens.len() == 1 {
-            let append_space = matches!(command, "wire" | "override" | "delete" | "test");
+            let append_space = matches!(command, "wire" | "override" | "test");
             return Some(model_items(ctx, command, append_space));
         }
         if tokens.len() == 2 && !trailing_space {
-            let append_space = matches!(command, "wire" | "override" | "delete" | "test");
+            let append_space = matches!(command, "wire" | "override" | "test");
             return Some(model_items(ctx, command, append_space));
         }
         let model_key = tokens[1];
         if tokens.len() == 2 && trailing_space {
-            if command == "delete" {
-                return Some(vec![ArgItem {
-                    display: format!("Remove override for {model_key}"),
-                    match_text: "confirm remove override".to_owned(),
-                    insert_text: format!("delete {model_key} confirm"),
-                    description: "Restore the model's definition or default Wire API".to_owned(),
-                }]);
+            if command == "reset" {
+                return None;
             }
             if matches!(command, "wire" | "override") {
                 return Some(
@@ -214,20 +208,17 @@ impl SlashCommand for ModelConfigCommand {
                     }),
                 )
             }
-            "delete" => {
-                let [_, model_key, confirmation] = tokens.as_slice() else {
+            "reset" => {
+                let [_, model_key] = tokens.as_slice() else {
                     return CommandResult::Error(
-                        "Deletion requires confirmation. Use /wire-api delete <provider/model> confirm"
-                            .to_owned(),
+                        "Usage: /wire-api reset <provider/model>".to_owned(),
                     );
                 };
-                if confirmation != "confirm" {
-                    return CommandResult::Error(
-                        "Deletion requires confirmation. Use /wire-api delete <provider/model> confirm"
-                            .to_owned(),
-                    );
-                }
-                extension(OVERRIDE_DELETE, json!({ "modelKey": model_key }))
+                CommandResult::Action(Action::OpenDestructiveConfirm {
+                    action: crate::views::modal::DestructiveAction::ResetWireApi {
+                        model_key: model_key.to_owned(),
+                    },
+                })
             }
             "test" => {
                 let Some(model_key) = tokens.get(1) else {
@@ -351,7 +342,7 @@ mod tests {
                 .iter()
                 .map(|item| item.display.as_str())
                 .collect::<Vec<_>>(),
-            vec!["list", "get", "wire", "override", "delete", "test"]
+            vec!["list", "get", "wire", "override", "reset", "test"]
         );
         assert_eq!(insert_text(&items, "wire"), "wire ");
     }
@@ -394,11 +385,21 @@ mod tests {
     }
 
     #[test]
-    fn delete_suggestions_require_an_explicit_confirmation_step() {
-        let models = suggested("delete ");
-        assert_eq!(insert_text(&models, "proxy/gpt-5"), "delete proxy/gpt-5 ");
-        let confirmation = suggested("delete proxy/gpt-5 ");
-        assert_eq!(confirmation[0].insert_text, "delete proxy/gpt-5 confirm");
+    fn reset_suggestions_stop_at_the_model_before_opening_confirmation() {
+        let models = suggested("reset ");
+        assert_eq!(insert_text(&models, "proxy/gpt-5"), "reset proxy/gpt-5");
+        let command_ctx = ctx();
+        let app_ctx = AppCtx {
+            models: command_ctx.models,
+            cwd: std::path::Path::new("."),
+            has_session_announcements: false,
+            screen_mode: crate::app::ScreenMode::Inline,
+        };
+        assert!(
+            ModelConfigCommand
+                .suggest_args(&app_ctx, "reset proxy/gpt-5 ")
+                .is_none()
+        );
     }
 
     #[test]
@@ -456,17 +457,18 @@ mod tests {
     }
 
     #[test]
-    fn delete_command_requires_confirmation() {
+    fn reset_command_opens_a_safe_confirmation_modal() {
         let mut command_ctx = ctx();
         assert!(matches!(
-            ModelConfigCommand.run(&mut command_ctx, "delete proxy/gpt-5"),
-            CommandResult::Error(error) if error.contains("requires confirmation")
+            ModelConfigCommand.run(&mut command_ctx, "reset proxy/gpt-5"),
+            CommandResult::Action(Action::OpenDestructiveConfirm { action })
+                if action == crate::views::modal::DestructiveAction::ResetWireApi {
+                    model_key: "proxy/gpt-5".to_owned(),
+                }
         ));
         assert!(matches!(
             ModelConfigCommand.run(&mut command_ctx, "delete proxy/gpt-5 confirm"),
-            CommandResult::Action(Action::RuntimeExtension { method, params })
-                if method == "_atelier/model_provider_override/delete"
-                    && params["modelKey"] == "proxy/gpt-5"
+            CommandResult::Error(error) if error.starts_with("Usage:")
         ));
     }
 }

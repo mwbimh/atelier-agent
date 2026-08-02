@@ -911,6 +911,10 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
         Action::OpenSettings => dispatch_open_settings(app),
         Action::OpenSlashArgPicker { command } => dispatch_open_slash_arg_picker(app, command),
         Action::OpenProviderWizard => dispatch_open_provider_wizard(app),
+        Action::OpenDestructiveConfirm { action } => dispatch_open_destructive_confirm(app, action),
+        Action::ConfirmDestructiveAction { action } => {
+            dispatch_confirm_destructive_action(app, action)
+        }
         Action::OpenProviderEditWizard { provider_id } => {
             dispatch_open_provider_edit_wizard(app, provider_id)
         }
@@ -1368,6 +1372,44 @@ pub(super) fn override_model_recovery_provider_presence(
         previous
     });
     ModelRecoveryProviderPresenceGuard(previous)
+}
+
+fn dispatch_open_destructive_confirm(
+    app: &mut AppView,
+    action: crate::views::modal::DestructiveAction,
+) -> Vec<Effect> {
+    let ActiveView::Agent(id) = app.active_view else {
+        return vec![];
+    };
+    let Some(agent) = app.agents.get_mut(&id) else {
+        return vec![];
+    };
+    agent.active_modal = Some(crate::views::modal::ActiveModal::DestructiveConfirm {
+        state: crate::views::modal::DestructiveConfirmState::new(action),
+    });
+    vec![]
+}
+
+fn dispatch_confirm_destructive_action(
+    app: &mut AppView,
+    action: crate::views::modal::DestructiveAction,
+) -> Vec<Effect> {
+    if let ActiveView::Agent(id) = app.active_view
+        && let Some(agent) = app.agents.get_mut(&id)
+    {
+        agent.active_modal = None;
+    }
+    let (method, params) = match action {
+        crate::views::modal::DestructiveAction::DeleteProvider { provider_id } => (
+            "_atelier/provider/delete",
+            serde_json::json!({ "providerId": provider_id }),
+        ),
+        crate::views::modal::DestructiveAction::ResetWireApi { model_key } => (
+            "_atelier/model_provider_override/delete",
+            serde_json::json!({ "modelKey": model_key }),
+        ),
+    };
+    dispatch_runtime_extension(app, method.to_owned(), params)
 }
 
 fn dispatch_open_provider_wizard(app: &mut AppView) -> Vec<Effect> {

@@ -165,7 +165,7 @@ Advanced custom endpoint commands remain scriptable:
 /provider disable <id>
 /provider test <id>
 /provider refresh <id>
-/provider delete <id> confirm
+/provider delete <id>
 ```
 
 Aliases: `/providers`
@@ -195,13 +195,14 @@ Inspect and change model-level Wire API settings:
 /wire-api get <provider/model>
 /wire-api wire <provider/model> <chat_completions|responses|messages|default>
 /wire-api override <provider/model> <wire-api|default> [json-payload]
-/wire-api delete <provider/model> confirm
+/wire-api reset <provider/model>
 /wire-api test <provider/model> [execute]
 ```
 
 Bare `/wire-api` opens the interactive picker. List and inspection results are
 rendered as user-readable summaries; internal RPC names and JSON are not shown.
-Removing an override requires the explicit confirmation step.
+Provider deletion and Wire API reset open a dedicated confirmation modal whose
+safe default is Cancel; no trailing confirmation word is required.
 
 ### `/effort <level>`
 

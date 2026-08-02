@@ -59,7 +59,7 @@ selection instead of typing the complete commands.
 /provider disable <id>
 /provider test <id>
 /provider refresh <id>
-/provider delete <id> confirm
+/provider delete <id>
 ```
 
 Submitting `/provider add` first offers known Provider presets. Presets own
@@ -197,7 +197,7 @@ metadata, Atelier keeps the model selectable with `chat_completions` and a
 /wire-api get <provider/model>
 /wire-api wire <provider/model> <chat_completions|responses|messages|default>
 /wire-api override <provider/model> <wire-api|default> [json-payload]
-/wire-api delete <provider/model> confirm
+/wire-api reset <provider/model>
 /wire-api test <provider/model> [execute]
 ```
 

@@ -173,7 +173,7 @@ Advanced users can also use complete one-line commands. `<auth>` is `bearer`,
 /provider refresh <id>
 /provider login <id> [flow]
 /provider logout <id>
-/provider delete <id> confirm
+/provider delete <id>
 ```
 
 Omit `[flow]` for a known Provider; its preset selects the configured login

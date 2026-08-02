@@ -78,7 +78,7 @@ Inspect or change model protocol selection at runtime:
 /wire-api override provider/model chat_completions {"temperature":0.2}
 /wire-api test provider/model
 /wire-api test provider/model execute
-/wire-api delete provider/model
+/wire-api reset provider/model
 ```
 
 Resolution order is:

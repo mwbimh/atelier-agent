@@ -497,6 +497,54 @@ impl AgentView {
             }
         }
 
+        // Destructive confirmation: default focus is Cancel. Enter only
+        // confirms after the user explicitly moves to the dangerous choice;
+        // Esc and `n` always cancel.
+        if let Some(ActiveModal::DestructiveConfirm { state }) = self.active_modal.as_mut() {
+            let chrome_cfg = mw::ModalWindowConfig {
+                title: state.action.title(),
+                tabs: None,
+                shortcuts: &[],
+                sizing: mw::ModalSizing::default(),
+                fold_info: None,
+            };
+            if matches!(
+                mw::handle_modal_key(&mut state.window, key, &chrome_cfg),
+                ModalWindowOutcome::CloseRequested
+            ) {
+                self.active_modal = None;
+                return InputOutcome::Changed;
+            }
+            use crate::views::modal::DestructiveConfirmChoice;
+            match key.code {
+                KeyCode::Left | KeyCode::Up | KeyCode::BackTab => {
+                    state.selected = DestructiveConfirmChoice::Cancel;
+                    return InputOutcome::Changed;
+                }
+                KeyCode::Right | KeyCode::Down | KeyCode::Tab => {
+                    state.selected = DestructiveConfirmChoice::Confirm;
+                    return InputOutcome::Changed;
+                }
+                KeyCode::Char('n') if key.modifiers.is_empty() => {
+                    self.active_modal = None;
+                    return InputOutcome::Changed;
+                }
+                KeyCode::Char('y') if key.modifiers.is_empty() => {
+                    let action = state.action.clone();
+                    return InputOutcome::Action(Action::ConfirmDestructiveAction { action });
+                }
+                KeyCode::Enter => {
+                    if state.selected == DestructiveConfirmChoice::Cancel {
+                        self.active_modal = None;
+                        return InputOutcome::Changed;
+                    }
+                    let action = state.action.clone();
+                    return InputOutcome::Action(Action::ConfirmDestructiveAction { action });
+                }
+                _ => return InputOutcome::Changed,
+            }
+        }
+
         // ResetSettingsConfirm: y/n routing. Handled before generic
         // char-match so Esc/F2/Ctrl+, route to Cancel (not modal close).
         if let Some(ActiveModal::ResetSettingsConfirm { modal, .. }) = self.active_modal.as_ref() {
@@ -547,6 +595,7 @@ impl AgentView {
             | ActiveModal::ShortcutsHelp { .. }
             | ActiveModal::MemoryBrowser { .. }
             | ActiveModal::ProviderWizard { .. }
+            | ActiveModal::DestructiveConfirm { .. }
             | ActiveModal::Roles { .. }
             | ActiveModal::Settings { .. }
             | ActiveModal::ResetSettingsConfirm { .. }
@@ -1620,6 +1669,20 @@ impl AgentView {
             }
         }
 
+        // Destructive confirmation: the close button is always Cancel.
+        if let Some(ActiveModal::DestructiveConfirm { state }) = &mut self.active_modal {
+            let outcome =
+                mw::handle_modal_mouse(&mut state.window, mouse.kind, mouse.column, mouse.row);
+            return match outcome {
+                ModalWindowOutcome::CloseRequested => {
+                    self.active_modal = None;
+                    InputOutcome::Changed
+                }
+                ModalWindowOutcome::Handled => InputOutcome::Changed,
+                _ => InputOutcome::Unchanged,
+            };
+        }
+
         // ResetSettingsConfirm: route mouse events through the
         // modal-window chrome.
         if let Some(ActiveModal::ResetSettingsConfirm { settings_state, .. }) =
@@ -2348,6 +2411,8 @@ impl AgentView {
                 crate::views::provider_wizard::render_provider_wizard(
                     buf, area, state, compact, &theme,
                 );
+            } else if let modal::ActiveModal::DestructiveConfirm { state } = active_modal {
+                crate::views::modal::render_destructive_confirm(buf, area, state, compact, &theme);
             } else if let modal::ActiveModal::Roles { state } = active_modal {
                 crate::views::roles_modal::render_roles_modal(buf, area, state, compact, &theme);
             } else if let modal::ActiveModal::Settings {
@@ -2717,6 +2782,70 @@ mod session_picker_delete_tests {
             !st.selection_hidden,
             "typing a query restores the selection highlight"
         );
+    }
+}
+
+#[cfg(test)]
+mod destructive_confirmation_tests {
+    use crate::app::actions::Action;
+    use crate::app::agent_view::test_fixtures::make_agent;
+    use crate::app::app_view::InputOutcome;
+    use crate::views::modal::{
+        ActiveModal, DestructiveAction, DestructiveConfirmChoice, DestructiveConfirmState,
+    };
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    fn open_provider_delete(agent: &mut crate::app::agent_view::AgentView) {
+        agent.active_modal = Some(ActiveModal::DestructiveConfirm {
+            state: DestructiveConfirmState::new(DestructiveAction::DeleteProvider {
+                provider_id: "example".to_owned(),
+            }),
+        });
+    }
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn destructive_confirmation_defaults_to_cancel_and_enter_is_safe() {
+        let mut agent = make_agent();
+        open_provider_delete(&mut agent);
+        assert!(matches!(
+            agent.active_modal.as_ref(),
+            Some(ActiveModal::DestructiveConfirm { state })
+                if state.selected == DestructiveConfirmChoice::Cancel
+        ));
+
+        let outcome = agent.handle_modal_key(&key(KeyCode::Enter));
+        assert!(matches!(outcome, InputOutcome::Changed));
+        assert!(agent.active_modal.is_none());
+    }
+
+    #[test]
+    fn destructive_confirmation_requires_selecting_the_dangerous_choice() {
+        let mut agent = make_agent();
+        open_provider_delete(&mut agent);
+
+        agent.handle_modal_key(&key(KeyCode::Right));
+        let outcome = agent.handle_modal_key(&key(KeyCode::Enter));
+        assert!(matches!(
+            outcome,
+            InputOutcome::Action(Action::ConfirmDestructiveAction { action })
+                if action == DestructiveAction::DeleteProvider {
+                    provider_id: "example".to_owned(),
+                }
+        ));
+    }
+
+    #[test]
+    fn destructive_confirmation_escape_cancels() {
+        let mut agent = make_agent();
+        open_provider_delete(&mut agent);
+
+        let outcome = agent.handle_modal_key(&key(KeyCode::Esc));
+        assert!(matches!(outcome, InputOutcome::Changed));
+        assert!(agent.active_modal.is_none());
     }
 }
 

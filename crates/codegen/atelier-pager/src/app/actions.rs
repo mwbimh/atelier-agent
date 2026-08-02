@@ -553,6 +553,15 @@ pub enum Action {
     },
     /// Open the multi-step Provider connection wizard.
     OpenProviderWizard,
+    /// Open a dedicated, default-safe confirmation popup for a destructive
+    /// Provider or Wire API operation.
+    OpenDestructiveConfirm {
+        action: crate::views::modal::DestructiveAction,
+    },
+    /// Execute the destructive operation after the popup is confirmed.
+    ConfirmDestructiveAction {
+        action: crate::views::modal::DestructiveAction,
+    },
     /// Open the same wizard pre-populated from an existing Provider.
     OpenProviderEditWizard {
         provider_id: String,

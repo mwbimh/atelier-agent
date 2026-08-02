@@ -38,6 +38,76 @@ impl<R> ModalConfirmation<R> {
         self.options.iter().find(|o| o.key == ch).map(|o| &o.result)
     }
 }
+
+/// Destructive operation awaiting explicit TUI confirmation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DestructiveAction {
+    /// Permanently remove a configured Provider.
+    DeleteProvider { provider_id: String },
+    /// Remove the exact Provider/model Wire API override and restore inheritance.
+    ResetWireApi { model_key: String },
+}
+
+impl DestructiveAction {
+    pub fn title(&self) -> &'static str {
+        match self {
+            Self::DeleteProvider { .. } => "Delete Provider?",
+            Self::ResetWireApi { .. } => "Reset Wire API override?",
+        }
+    }
+
+    pub fn prompt(&self) -> String {
+        match self {
+            Self::DeleteProvider { provider_id } => {
+                format!("Delete Provider '{provider_id}'?")
+            }
+            Self::ResetWireApi { model_key } => {
+                format!("Reset the exact Wire API override for '{model_key}'?")
+            }
+        }
+    }
+
+    pub fn warning(&self) -> &'static str {
+        match self {
+            Self::DeleteProvider { .. } => {
+                "Provider configuration, credentials, and discovered models will be removed."
+            }
+            Self::ResetWireApi { .. } => {
+                "The model will return to its inherited definition or the default Wire API."
+            }
+        }
+    }
+
+    pub fn confirm_label(&self) -> &'static str {
+        match self {
+            Self::DeleteProvider { .. } => "Delete Provider",
+            Self::ResetWireApi { .. } => "Reset override",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DestructiveConfirmChoice {
+    Cancel,
+    Confirm,
+}
+
+/// State for the dedicated destructive-action confirmation popup.
+pub struct DestructiveConfirmState {
+    pub action: DestructiveAction,
+    pub selected: DestructiveConfirmChoice,
+    pub window: ModalWindowState,
+}
+
+impl DestructiveConfirmState {
+    pub fn new(action: DestructiveAction) -> Self {
+        Self {
+            action,
+            selected: DestructiveConfirmChoice::Cancel,
+            window: ModalWindowState::new(),
+        }
+    }
+}
 /// Result of the edit-confirmation modal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EditConfirmResult {
@@ -290,6 +360,8 @@ pub enum ActiveModal {
     ProviderWizard {
         state: Box<crate::views::provider_wizard::ProviderWizardState>,
     },
+    /// Dedicated confirmation popup for Provider deletion and Wire API reset.
+    DestructiveConfirm { state: DestructiveConfirmState },
     /// Dedicated manager for the 12 fixed Runtime Roles.
     Roles {
         state: Box<crate::views::roles_modal::RolesModalState>,
@@ -577,6 +649,140 @@ pub fn filter_palette_entries(query: &str, sharing_enabled: bool) -> Vec<Palette
     }
     result
 }
+pub fn render_destructive_confirm(
+    buf: &mut Buffer,
+    area: Rect,
+    state: &mut DestructiveConfirmState,
+    compact: bool,
+    theme: &Theme,
+) {
+    use crate::views::modal_window::{ModalSizing, ModalWindowConfig, Shortcut};
+
+    let shortcuts = [
+        Shortcut {
+            label: "←/→ choose",
+            clickable: false,
+            id: 0,
+        },
+        Shortcut {
+            label: "Enter select",
+            clickable: false,
+            id: 0,
+        },
+        Shortcut {
+            label: "Esc cancel",
+            clickable: false,
+            id: 0,
+        },
+    ];
+    let config = ModalWindowConfig {
+        title: state.action.title(),
+        tabs: None,
+        shortcuts: &shortcuts,
+        sizing: ModalSizing {
+            width_pct: 0.62,
+            max_width: 88,
+            min_width: 44,
+            v_margin: 8,
+            h_pad: 2,
+            v_pad: 1,
+            footer_lines: 2,
+        }
+        .with_compact(compact),
+        fold_info: None,
+    };
+    let Some(content) = crate::views::modal_window::render_modal_window(
+        buf,
+        area,
+        &mut state.window,
+        &config,
+        theme,
+    ) else {
+        return;
+    };
+    if content.content.height < 4 || content.content.width == 0 {
+        return;
+    }
+
+    let prompt = state.action.prompt();
+    buf.set_line(
+        content.content.x,
+        content.content.y,
+        &Line::from(Span::styled(
+            prompt,
+            Style::default()
+                .fg(theme.text_primary)
+                .add_modifier(Modifier::BOLD),
+        )),
+        content.content.width,
+    );
+    buf.set_line(
+        content.content.x,
+        content.content.y.saturating_add(1),
+        &Line::from(Span::styled(
+            state.action.warning(),
+            Style::default().fg(theme.accent_error),
+        )),
+        content.content.width,
+    );
+
+    let choices = [
+        (
+            DestructiveConfirmChoice::Cancel,
+            "Cancel",
+            "Keep the current configuration",
+            theme.accent_user,
+        ),
+        (
+            DestructiveConfirmChoice::Confirm,
+            state.action.confirm_label(),
+            "This action takes effect immediately",
+            theme.accent_error,
+        ),
+    ];
+    for (index, (choice, label, description, accent)) in choices.into_iter().enumerate() {
+        let selected = state.selected == choice;
+        let y = content.content.y.saturating_add(3 + index as u16);
+        if y >= content.content.y.saturating_add(content.content.height) {
+            break;
+        }
+        let bg = if selected {
+            theme.bg_visual
+        } else {
+            theme.bg_base
+        };
+        buf.set_style(
+            Rect {
+                x: content.content.x,
+                y,
+                width: content.content.width,
+                height: 1,
+            },
+            Style::default().bg(bg),
+        );
+        let prefix = if selected { "❯ " } else { "  " };
+        let label_style = Style::default()
+            .fg(accent)
+            .bg(bg)
+            .add_modifier(if selected {
+                Modifier::BOLD
+            } else {
+                Modifier::empty()
+            });
+        let description_style = Style::default().fg(theme.gray).bg(bg);
+        buf.set_line(
+            content.content.x,
+            y,
+            &Line::from(vec![
+                Span::styled(prefix, label_style),
+                Span::styled(label, label_style),
+                Span::styled(format!(" — {description}"), description_style),
+            ]),
+            content.content.width,
+        );
+    }
+}
+
 impl ActiveModal {
     pub fn hint_pairs(&self, drain_blocked: bool) -> Vec<(char, &'static str)> {
         match self {
@@ -598,6 +804,7 @@ impl ActiveModal {
             | ActiveModal::ShortcutsHelp { .. }
             | ActiveModal::MemoryBrowser { .. }
             | ActiveModal::ProviderWizard { .. }
+            | ActiveModal::DestructiveConfirm { .. }
             | ActiveModal::Roles { .. }
             | ActiveModal::Settings { .. }
             | ActiveModal::RememberNoteReview { .. } => vec![],
@@ -629,6 +836,7 @@ impl ActiveModal {
             ActiveModal::ShortcutsHelp { .. } => "Keyboard Shortcuts",
             ActiveModal::MemoryBrowser { .. } => "Memory",
             ActiveModal::ProviderWizard { .. } => "Add Provider",
+            ActiveModal::DestructiveConfirm { state } => state.action.title(),
             ActiveModal::Roles { .. } => "Runtime Roles",
             ActiveModal::Settings { .. } => crate::views::settings_modal::MODAL_TITLE,
             ActiveModal::ResetSettingsConfirm { .. } => "Reset setting?",

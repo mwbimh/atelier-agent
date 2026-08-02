@@ -428,6 +428,60 @@ fn announcements_open_cta_opens_promo_and_noops_under_critical() {
     unsafe { std::env::remove_var("ATELIER_TEST_OPEN_URL_FILE") };
     let _ = std::fs::remove_file(&url_file);
 }
+#[test]
+fn destructive_confirm_dispatch_opens_modal_and_routes_provider_delete() {
+    let mut app = test_app_with_agent();
+    let id = AgentId(0);
+    app.active_view = ActiveView::Agent(id);
+    let action = crate::views::modal::DestructiveAction::DeleteProvider {
+        provider_id: "example".to_owned(),
+    };
+
+    assert!(
+        dispatch(
+            Action::OpenDestructiveConfirm {
+                action: action.clone(),
+            },
+            &mut app,
+        )
+        .is_empty()
+    );
+    assert!(matches!(
+        app.agents.get(&id).and_then(|agent| agent.active_modal.as_ref()),
+        Some(crate::views::modal::ActiveModal::DestructiveConfirm { state })
+            if state.action == action
+    ));
+
+    let effects = dispatch(Action::ConfirmDestructiveAction { action }, &mut app);
+    assert!(matches!(
+        effects.as_slice(),
+        [Effect::RuntimeExtension { agent_id: Some(effect_agent), method, params }]
+            if *effect_agent == id
+                && method == "_atelier/provider/delete"
+                && params["providerId"] == "example"
+    ));
+    assert!(app.agents.get(&id).unwrap().active_modal.is_none());
+}
+
+#[test]
+fn destructive_confirm_dispatch_routes_wire_api_reset() {
+    let mut app = test_app_with_agent();
+    let id = AgentId(0);
+    app.active_view = ActiveView::Agent(id);
+    let action = crate::views::modal::DestructiveAction::ResetWireApi {
+        model_key: "proxy/gpt-5".to_owned(),
+    };
+
+    let effects = dispatch(Action::ConfirmDestructiveAction { action }, &mut app);
+    assert!(matches!(
+        effects.as_slice(),
+        [Effect::RuntimeExtension { agent_id: Some(effect_agent), method, params }]
+            if *effect_agent == id
+                && method == "_atelier/model_provider_override/delete"
+                && params["modelKey"] == "proxy/gpt-5"
+    ));
+}
+
 /// `AnnouncementCtaShown` latches once per (announcement, surface): first
 /// frame with an armed CTA rect emits, later frames don't, and a NEW
 /// announcement id re-emits on the same surfaces.

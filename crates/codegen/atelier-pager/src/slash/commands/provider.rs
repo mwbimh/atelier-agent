@@ -50,13 +50,7 @@ impl SlashCommand for ProviderCommand {
         }
 
         if command == Some("delete") && tokens.len() == 2 && trailing_space {
-            let provider_id = tokens[1];
-            return Some(vec![ArgItem {
-                display: format!("Delete {provider_id}"),
-                match_text: "confirm delete".to_owned(),
-                insert_text: format!("delete {provider_id} confirm"),
-                description: "Permanent action; Provider credentials and models are removed".into(),
-            }]);
+            return Some(Vec::new());
         }
 
         if command == Some("login") && has_argument {
@@ -189,17 +183,16 @@ impl SlashCommand for ProviderCommand {
             }
             "delete" => {
                 let Some(provider_id) = provider_id else {
-                    return CommandResult::Error("Usage: /provider delete <id> confirm".into());
+                    return CommandResult::Error("Usage: /provider delete <id>".into());
                 };
-                if parts.next() != Some("confirm") || parts.next().is_some() {
-                    return CommandResult::Error(format!(
-                        "Deletion requires confirmation. Use /provider delete {provider_id} confirm"
-                    ));
+                if parts.next().is_some() {
+                    return CommandResult::Error("Usage: /provider delete <id>".into());
                 }
-                runtime_extension(
-                    "_atelier/provider/delete",
-                    serde_json::json!({ "providerId": provider_id }),
-                )
+                CommandResult::Action(Action::OpenDestructiveConfirm {
+                    action: crate::views::modal::DestructiveAction::DeleteProvider {
+                        provider_id: provider_id.to_owned(),
+                    },
+                })
             }
             "test" => {
                 let Some(provider_id) = provider_id else {
@@ -540,7 +533,7 @@ fn runtime_extension(method: &str, params: serde_json::Value) -> CommandResult {
 /// command to the composer instead of submitting an incomplete `/provider
 /// edit` invocation.
 fn provider_id_insert_text(command: &str, provider_id: &str) -> String {
-    if matches!(command, "login" | "delete") {
+    if command == "login" {
         format!("{command} {provider_id} ")
     } else {
         format!("{command} {provider_id}")
@@ -973,17 +966,37 @@ mod tests {
     }
 
     #[test]
-    fn provider_delete_requires_explicit_confirmation() {
+    fn provider_delete_opens_a_safe_confirmation_modal() {
         let mut ctx = empty_ctx();
         assert!(matches!(
             ProviderCommand.run(&mut ctx, "delete example"),
-            CommandResult::Error(error) if error.contains("requires confirmation")
+            CommandResult::Action(Action::OpenDestructiveConfirm { action })
+                if action == crate::views::modal::DestructiveAction::DeleteProvider {
+                    provider_id: "example".to_owned(),
+                }
         ));
         assert!(matches!(
             ProviderCommand.run(&mut ctx, "delete example confirm"),
-            CommandResult::Action(Action::RuntimeExtension { method, params })
-                if method == "_atelier/provider/delete" && params["providerId"] == "example"
+            CommandResult::Error(error) if error.starts_with("Usage:")
         ));
+    }
+
+    #[test]
+    fn provider_delete_suggestion_stops_at_the_provider_id() {
+        let models = crate::acp::model_state::ModelState::default();
+        let app_ctx = crate::slash::command::AppCtx {
+            models: &models,
+            cwd: std::path::Path::new("."),
+            has_session_announcements: false,
+            screen_mode: crate::app::ScreenMode::Inline,
+        };
+        let items = ProviderCommand
+            .suggest_args(&app_ctx, "delete example ")
+            .expect("delete confirmation handoff");
+        assert!(
+            items.is_empty(),
+            "confirmation is a modal, not another token"
+        );
     }
 
     #[test]
