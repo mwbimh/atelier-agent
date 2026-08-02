@@ -47,6 +47,7 @@ pub(super) fn handle_permission_request(
     //    `enqueue_permission` even in YOLO mode (won't pick
     //    `AllowAlways` by default).
     if agent.session.is_yolo()
+        && !atelier_workspace::permission::is_sandbox_override_permission(&perm.request)
         && let Some(allow) = perm
             .request
             .options
@@ -245,12 +246,25 @@ fn build_permission_display(
     });
 
     let bash_description = bash_input.map(|b| b.description);
+    let sandbox_override = atelier_workspace::permission::is_sandbox_override_permission(req);
+    let retry_after_denial = req
+        .meta
+        .as_ref()
+        .and_then(|meta| meta.get("retryAfterSandboxDenial"))
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
 
     let is_execute = is_bash
         || req.tool_call.fields.kind == Some(acp::ToolKind::Execute)
         || raw_command.is_some();
 
-    let title = if is_execute {
+    let title = if sandbox_override {
+        if retry_after_denial {
+            "Allow one retry outside the sandbox?".to_owned()
+        } else {
+            "Allow this command outside the sandbox?".to_owned()
+        }
+    } else if is_execute {
         bash_description
             .as_deref()
             .map(str::trim)
@@ -294,7 +308,23 @@ fn build_permission_display(
         }
     };
 
-    let description = mcp_args_lines(req);
+    let mut description = mcp_args_lines(req);
+    if sandbox_override {
+        if let Some(justification) = req
+            .meta
+            .as_ref()
+            .and_then(|meta| meta.get("justification"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            description.push(format!("Reason: {justification}"));
+        }
+        description.push(
+            "Scope: this command only; runs as the current host user, not Administrator."
+                .to_owned(),
+        );
+    }
     let bash_cmd = if is_execute { raw_command } else { None };
     (title, description, bash_cmd)
 }
@@ -420,5 +450,50 @@ pub(super) fn apply_recap_block(agent: &mut AgentView, auto: bool, recap_block: 
         None => {
             agent.scrollback.push_block(recap_block);
         }
+    }
+}
+
+#[cfg(test)]
+mod sandbox_override_display_tests {
+    use super::*;
+
+    #[test]
+    fn sandbox_override_prompt_explains_scope_and_justification() {
+        let update = acp::ToolCallUpdate::new(
+            acp::ToolCallId::new(Arc::from("override-call")),
+            acp::ToolCallUpdateFields::new()
+                .kind(Some(acp::ToolKind::Execute))
+                .raw_input(Some(serde_json::json!({
+                    "command": "whoami",
+                    "description": "Inspect identity",
+                    "is_background": false,
+                    "sandbox_permissions": "require_escalated",
+                    "justification": "The command needs host-user access."
+                }))),
+        );
+        let request = acp::RequestPermissionRequest::new(
+            acp::SessionId::new(Arc::from("session")),
+            update,
+            vec![],
+        )
+        .meta(
+            serde_json::json!({
+                atelier_workspace::permission::SANDBOX_OVERRIDE_META_KEY: true,
+                "justification": "The command needs host-user access.",
+                "retryAfterSandboxDenial": false
+            })
+            .as_object()
+            .cloned(),
+        );
+
+        let (title, description, command) = build_permission_display(&request, None);
+        assert_eq!(title, "Allow this command outside the sandbox?");
+        assert_eq!(command.as_deref(), Some("whoami"));
+        assert!(description.iter().any(|line| line.contains("Reason:")));
+        assert!(
+            description
+                .iter()
+                .any(|line| line.contains("not Administrator"))
+        );
     }
 }

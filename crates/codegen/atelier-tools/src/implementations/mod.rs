@@ -13,7 +13,7 @@ pub mod skills;
 pub mod task_output;
 pub mod use_tool;
 pub mod web_search;
-pub use atelier_build::bash::{BashError, BashToolInput};
+pub use atelier_build::bash::{BashError, BashToolInput, SandboxPermissions};
 pub use atelier_build::{
     AskUserQuestionTool, BashTool, EnterPlanModeTool, ExitPlanModeTool, GrepTool, KillTaskTool,
     ListDirTool, ReadFileTool, SearchReplaceTool, TaskOutputTool, TaskTool, TodoWriteTool,

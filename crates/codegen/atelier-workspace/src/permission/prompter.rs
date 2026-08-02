@@ -13,6 +13,19 @@ use atelier_tools::implementations::atelier_build::web_fetch::domain_from_url;
 
 const REJECT_ONCE_LABEL: &str = "No, and tell Atelier what to do differently";
 
+/// ACP request metadata marker for mandatory per-command sandbox overrides.
+/// Clients use it to ensure YOLO/headless auto-approval never selects the
+/// ordinary `AllowOnce` option for a host-execution request.
+pub const SANDBOX_OVERRIDE_META_KEY: &str = "atelierSandboxOverride";
+
+pub fn is_sandbox_override_permission(req: &acp::RequestPermissionRequest) -> bool {
+    req.meta
+        .as_ref()
+        .and_then(|meta| meta.get(SANDBOX_OVERRIDE_META_KEY))
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+}
+
 /// Stable option id for the edit prompt's "Yes, allow all edits during this
 /// session" choice. Distinct from the generic `"always-allow"` id (used by
 /// `fallback_options` / `generic_bash_options` with genuinely-persistent
@@ -714,6 +727,65 @@ impl AcpPrompter {
                 }
             }
             _ => self.fallback_options.clone(),
+        }
+    }
+
+    /// Request mandatory approval for one command to run outside the sandbox.
+    /// The option set intentionally contains no Always/YOLO choice.
+    pub async fn request_sandbox_override(
+        &self,
+        _access: &AccessKind,
+        tool_call_update: &acp::ToolCallUpdate,
+        request: &crate::permission::types::SandboxOverrideRequest,
+    ) -> PromptOutcome {
+        if self.hub_permission.is_some() {
+            return PromptOutcome::Error(
+                "sandbox override approval is unavailable through the server permission transport"
+                    .to_owned(),
+            );
+        }
+
+        let options = vec![
+            acp::PermissionOption::new(
+                "sandbox-override-allow-once",
+                "Yes, run this command outside the sandbox".to_owned(),
+                acp::PermissionOptionKind::AllowOnce,
+            ),
+            acp::PermissionOption::new(
+                "sandbox-override-reject-once",
+                REJECT_ONCE_LABEL.to_owned(),
+                acp::PermissionOptionKind::RejectOnce,
+            ),
+        ];
+        let meta = serde_json::json!({
+            SANDBOX_OVERRIDE_META_KEY: true,
+            "justification": atelier_acp_runtime::redact_text(&request.justification),
+            "retryAfterSandboxDenial": request.retry_after_denial,
+        })
+        .as_object()
+        .cloned();
+        let req = acp::RequestPermissionRequest::new(
+            self.session_id.clone(),
+            tool_call_update.clone(),
+            options,
+        )
+        .meta(meta);
+        match self.gateway.request_permission(req).await {
+            Ok(resp) => match resp.outcome {
+                acp::RequestPermissionOutcome::Selected(selected)
+                    if selected.option_id
+                        == acp::PermissionOptionId::new("sandbox-override-allow-once") =>
+                {
+                    PromptOutcome::AllowOnce
+                }
+                acp::RequestPermissionOutcome::Selected(_) => PromptOutcome::RejectOnce,
+                acp::RequestPermissionOutcome::Cancelled => PromptOutcome::Cancelled,
+                _ => PromptOutcome::Error("unknown permission outcome".to_owned()),
+            },
+            Err(error) => {
+                tracing::error!(?error, "failed to request sandbox override approval");
+                PromptOutcome::Error("failed to request sandbox override approval".to_owned())
+            }
         }
     }
 

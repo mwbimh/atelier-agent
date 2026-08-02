@@ -28,6 +28,7 @@ pub(super) async fn dispatch_tool(
             prepared.parsed_args.clone(),
             &prepared.tool_call_id.0,
             Some(session_id),
+            prepared.unsandboxed_execution_approved,
         )
         .await
 }
@@ -202,6 +203,8 @@ impl SessionActor {
             timeout: None,
             description: title_command.clone().into_owned(),
             is_background: false,
+            sandbox_permissions: Default::default(),
+            justification: None,
         });
         // Bash mode has no model-issued wire name; resolve the toolset's
         // execute tool by kind so the atelier/tool identity still stamps.

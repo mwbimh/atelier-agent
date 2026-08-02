@@ -158,6 +158,7 @@ async fn request(handle: &PermissionHandle, access: AccessKind, id: &str) -> Dec
         access,
         tool_call_update: tool_call_update(id, "mcp"),
         respond_to: tx,
+        sandbox_override: None,
         session_id: None,
         subagent_type: None,
         subagent_description: None,

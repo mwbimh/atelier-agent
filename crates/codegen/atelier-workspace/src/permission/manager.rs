@@ -16,6 +16,7 @@ use crate::permission::shell_access::combine_decisions;
 use crate::permission::state::{PermissionState, load_state_from_disk, persist_state};
 use crate::permission::types::{
     AccessKind, ClientType, Decision, EditPolicy, PermissionCommand, PermissionEvent, PromptPolicy,
+    SandboxOverrideRequest,
 };
 use atelier_paths::AbsPathBuf;
 use atelier_tools::implementations::atelier_build::web_fetch::{
@@ -622,7 +623,52 @@ impl PermissionHandle {
         subagent_type: Option<String>,
         subagent_description: Option<String>,
     ) -> Decision {
+        self.request_inner(
+            access,
+            tool_call_update,
+            session_id,
+            subagent_type,
+            subagent_description,
+            None,
+        )
+        .await
+    }
+
+    /// Mandatory interactive approval for one command to run as the host user.
+    /// `AllowAll`/YOLO deliberately do not satisfy this request.
+    pub async fn request_sandbox_override(
+        &self,
+        access: AccessKind,
+        tool_call_update: acp::ToolCallUpdate,
+        session_id: Option<String>,
+        subagent_type: Option<String>,
+        subagent_description: Option<String>,
+        request: SandboxOverrideRequest,
+    ) -> Decision {
+        self.request_inner(
+            access,
+            tool_call_update,
+            session_id,
+            subagent_type,
+            subagent_description,
+            Some(request),
+        )
+        .await
+    }
+
+    async fn request_inner(
+        &self,
+        access: AccessKind,
+        tool_call_update: acp::ToolCallUpdate,
+        session_id: Option<String>,
+        subagent_type: Option<String>,
+        subagent_description: Option<String>,
+        sandbox_override: Option<SandboxOverrideRequest>,
+    ) -> Decision {
         match self {
+            PermissionHandle::AllowAll if sandbox_override.is_some() => Decision::Reject(
+                "sandbox override requires an interactive user approval channel".to_owned(),
+            ),
             PermissionHandle::AllowAll => Decision::Allow,
             PermissionHandle::Actor {
                 cmd_tx, in_flight, ..
@@ -635,6 +681,7 @@ impl PermissionHandle {
                     access,
                     tool_call_update,
                     respond_to: tx,
+                    sandbox_override,
                     session_id,
                     subagent_type,
                     subagent_description,
@@ -1054,6 +1101,7 @@ fn spawn_permission_manager_with_pin(
                     access,
                     tool_call_update,
                     mut respond_to,
+                    sandbox_override,
                     session_id: request_session_id,
                     subagent_type: request_subagent_type,
                     subagent_description: request_subagent_description,
@@ -1194,6 +1242,60 @@ fn spawn_permission_manager_with_pin(
                         );
                         let decision = Decision::PolicyDeny(reason);
                         emit_event(&decision, false, false, None, Some(reasons::POLICY_DENY));
+                        let _ = respond_to.send(decision);
+                        continue;
+                    }
+
+                    if let Some(ref override_request) = sandbox_override {
+                        // Host execution is a separate capability from ordinary
+                        // tool approval. It always requires an interactive,
+                        // per-command decision: YOLO, auto mode, safe-command
+                        // lists, persisted grants, and managed Allow rules do
+                        // not satisfy it. A managed Deny was enforced above.
+                        if prompt_policy == PromptPolicy::Deny {
+                            let decision = Decision::PolicyDeny(
+                                "sandbox override denied because no interactive approval channel is allowed"
+                                    .to_owned(),
+                            );
+                            emit_event(&decision, false, false, None, Some(reasons::PROMPT_DENY));
+                            let _ = respond_to.send(decision);
+                            continue;
+                        }
+                        let prompt_outcome = tokio::select! {
+                            outcome = prompter.request_sandbox_override(
+                                &access,
+                                &tool_call_update,
+                                override_request,
+                            ) => outcome,
+                            _ = respond_to.closed() => PromptOutcome::Cancelled,
+                        };
+                        let (decision, outcome_str) = match prompt_outcome {
+                            PromptOutcome::AllowOnce => (Decision::Allow, "allow_once"),
+                            PromptOutcome::Cancelled => (Decision::Cancelled, "cancelled"),
+                            PromptOutcome::FollowupMessage(message) => {
+                                (Decision::FollowupMessage(message), "followup")
+                            }
+                            PromptOutcome::Error(error) => (
+                                Decision::Reject(format!(
+                                    "Failed to request sandbox override permission: {error}"
+                                )),
+                                "error",
+                            ),
+                            _ => (
+                                Decision::Reject(
+                                    "User rejected running the command outside the sandbox"
+                                        .to_owned(),
+                                ),
+                                "reject_once",
+                            ),
+                        };
+                        emit_event(
+                            &decision,
+                            false,
+                            true,
+                            Some(outcome_str),
+                            Some(reasons::NEEDS_USER),
+                        );
                         let _ = respond_to.send(decision);
                         continue;
                     }
@@ -1811,6 +1913,31 @@ mod tests {
         assert!(!clamp_yolo(false, Some(PIN)));
         assert!(clamp_yolo(true, None));
         assert!(!clamp_yolo(false, None));
+    }
+
+    #[tokio::test]
+    async fn allow_all_cannot_authorize_a_sandbox_override() {
+        let decision = PermissionHandle::allow_all()
+            .request_sandbox_override(
+                AccessKind::Bash("whoami".to_owned()),
+                acp::ToolCallUpdate::new(
+                    acp::ToolCallId::new(Arc::from("sandbox-override-test")),
+                    acp::ToolCallUpdateFields::new(),
+                ),
+                Some("test-session".to_owned()),
+                None,
+                None,
+                SandboxOverrideRequest {
+                    justification: "Inspect the host identity".to_owned(),
+                    retry_after_denial: false,
+                },
+            )
+            .await;
+
+        assert!(
+            matches!(decision, Decision::Reject(ref reason) if reason.contains("interactive user approval")),
+            "AllowAll/YOLO must not imply host execution: {decision:?}"
+        );
     }
 
     #[test]
@@ -2668,6 +2795,56 @@ mod tests {
         )
     }
 
+    #[tokio::test]
+    async fn yolo_still_prompts_for_a_per_command_sandbox_override() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let tmp = tempfile::tempdir().unwrap();
+                let cwd = AbsPathBuf::new(tmp.path().to_path_buf()).unwrap();
+                let client = RecordingClient::default();
+                let prompts = client.prompts.clone();
+                let (manager, _events) =
+                    manager_with_recording_client(&cwd, None, client, ClientType::AtelierPager);
+                manager.set_yolo_mode(true);
+                assert!(manager.is_yolo_mode());
+
+                let decision = manager
+                    .request_sandbox_override(
+                        AccessKind::Bash("whoami".to_owned()),
+                        tool_call(),
+                        Some("test-session".to_owned()),
+                        None,
+                        None,
+                        SandboxOverrideRequest {
+                            justification: "Inspect the host identity".to_owned(),
+                            retry_after_denial: false,
+                        },
+                    )
+                    .await;
+
+                assert!(matches!(decision, Decision::Reject(_)));
+                let prompts = prompts.borrow();
+                assert_eq!(prompts.len(), 1, "YOLO must not suppress the prompt");
+                let prompt = &prompts[0];
+                assert!(crate::permission::prompter::is_sandbox_override_permission(
+                    prompt
+                ));
+                assert!(prompt.options.iter().any(|option| {
+                    option.option_id.0.as_ref() == "sandbox-override-allow-once"
+                        && option.kind == acp::PermissionOptionKind::AllowOnce
+                }));
+                assert!(prompt.options.iter().all(|option| {
+                    !matches!(
+                        option.kind,
+                        acp::PermissionOptionKind::AllowAlways
+                            | acp::PermissionOptionKind::RejectAlways
+                    )
+                }));
+            })
+            .await;
+    }
+
     struct ApprovingClient;
 
     #[async_trait::async_trait(?Send)]
@@ -3292,6 +3469,7 @@ mod tests {
                         access: AccessKind::Bash("curl http://example.com".into()),
                         tool_call_update: tool_call(),
                         respond_to: tx,
+                        sandbox_override: None,
                         session_id: None,
                         subagent_type: None,
                         subagent_description: None,
@@ -3402,6 +3580,7 @@ mod tests {
                         access: AccessKind::Bash("curl http://example.com".into()),
                         tool_call_update: tool_call(),
                         respond_to: tx,
+                        sandbox_override: None,
                         session_id: None,
                         subagent_type: None,
                         subagent_description: None,

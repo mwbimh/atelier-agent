@@ -2716,6 +2716,32 @@ async fn capture_login_path() -> HashMap<String, String> {
 /// `killpg` on Unix; `TerminateJobObject` on Windows. This gives
 /// grandchild teardown for fan-out workloads (npm install, git clone,
 /// cargo build) on both platforms.
+#[cfg(not(unix))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WindowsExecutionRoute {
+    ApprovedHost,
+    NativeSandbox(&'static str),
+    ExplicitUnsafe,
+    Refuse,
+}
+
+#[cfg(not(unix))]
+fn windows_execution_route(
+    unsandboxed_execution_approved: bool,
+    native_mode: Option<&'static str>,
+    explicit_unsafe: bool,
+) -> WindowsExecutionRoute {
+    if unsandboxed_execution_approved {
+        WindowsExecutionRoute::ApprovedHost
+    } else if let Some(mode) = native_mode {
+        WindowsExecutionRoute::NativeSandbox(mode)
+    } else if explicit_unsafe {
+        WindowsExecutionRoute::ExplicitUnsafe
+    } else {
+        WindowsExecutionRoute::Refuse
+    }
+}
+
 fn spawn_shell_command(
     command: &str,
     cwd: &std::path::Path,
@@ -2798,63 +2824,88 @@ fn spawn_shell_command(
         };
 
         let inv = atelier_config::shell::shell_command_argv(command)?;
-        let mut cmd = if let Some(mode) = atelier_sandbox::windows_child_sandbox_mode() {
-            let mode = match mode {
-                "read-only" => atelier_windows_sandbox::SandboxMode::ReadOnly,
-                "workspace-write" => atelier_windows_sandbox::SandboxMode::WorkspaceWrite,
-                other => {
-                    return Err(std::io::Error::other(format!(
-                        "unsupported Windows sandbox preview mode: {other}"
-                    )));
-                }
-            };
-            let command_args: Vec<std::ffi::OsString> = inv
-                .args
-                .iter()
-                .cloned()
-                .map(std::ffi::OsString::from)
-                .collect();
-            let runner = atelier_windows_sandbox::command_runner_path()
+        let unsandboxed_execution_approved = env
+            .get(crate::computer::types::UNSANDBOXED_EXECUTION_ENV)
+            .is_some_and(|value| value == "1");
+        let route = windows_execution_route(
+            unsandboxed_execution_approved,
+            atelier_sandbox::windows_child_sandbox_mode(),
+            cfg!(test)
+                || cfg!(feature = "test-unsafe-exec")
+                || atelier_sandbox::diagnostics().backend
+                    == atelier_sandbox::SandboxBackendKind::Unsafe,
+        );
+        let mut cmd = match route {
+            WindowsExecutionRoute::ApprovedHost => {
+                // This branch is reachable only when the session orchestrator
+                // attached a trusted per-call approval marker. It restores the
+                // ordinary host-user token for this command only; it does not
+                // request Administrator privileges or UAC elevation.
+                let mut cmd = tokio::process::Command::new(&inv.program);
+                cmd.args(&inv.args).current_dir(cwd);
+                cmd
+            }
+            WindowsExecutionRoute::NativeSandbox(mode) => {
+                let mode = match mode {
+                    "read-only" => atelier_windows_sandbox::SandboxMode::ReadOnly,
+                    "workspace-write" => atelier_windows_sandbox::SandboxMode::WorkspaceWrite,
+                    other => {
+                        return Err(std::io::Error::other(format!(
+                            "unsupported Windows sandbox preview mode: {other}"
+                        )));
+                    }
+                };
+                let command_args: Vec<std::ffi::OsString> = inv
+                    .args
+                    .iter()
+                    .cloned()
+                    .map(std::ffi::OsString::from)
+                    .collect();
+                let runner = atelier_windows_sandbox::command_runner_path()
+                    .map_err(|error| std::io::Error::other(error.to_string()))?;
+                let current_exe = std::env::current_exe()?;
+                let runner_args = atelier_windows_sandbox::command_runner_args_for(
+                    &runner,
+                    &current_exe,
+                    mode,
+                    &[cwd.to_path_buf()],
+                    cwd,
+                    std::path::Path::new(&inv.program),
+                    &command_args,
+                )
                 .map_err(|error| std::io::Error::other(error.to_string()))?;
-            let current_exe = std::env::current_exe()?;
-            let runner_args = atelier_windows_sandbox::command_runner_args_for(
-                &runner,
-                &current_exe,
-                mode,
-                &[cwd.to_path_buf()],
-                cwd,
-                std::path::Path::new(&inv.program),
-                &command_args,
-            )
-            .map_err(|error| std::io::Error::other(error.to_string()))?;
-            let mut cmd = tokio::process::Command::new(runner);
-            cmd.args(runner_args).current_dir(cwd);
-            cmd
-        } else if cfg!(test)
-            || cfg!(feature = "test-unsafe-exec")
-            || atelier_sandbox::diagnostics().backend == atelier_sandbox::SandboxBackendKind::Unsafe
-        {
-            // Bare execution is available only through the explicit unsafe
-            // backend. Unit tests also use it because their test-harness EXE
-            // cannot service ate.exe's hidden command-runner sub-mode.
-            // Production builds still fail closed when the native sandbox is
-            // unavailable.
-            let mut cmd = tokio::process::Command::new(&inv.program);
-            cmd.args(&inv.args).current_dir(cwd);
-            cmd
-        } else {
-            return Err(std::io::Error::other(
-                "Windows sandbox preview is not active; refusing unsandboxed command execution",
-            ));
+                let mut cmd = tokio::process::Command::new(runner);
+                cmd.args(runner_args).current_dir(cwd);
+                cmd
+            }
+            WindowsExecutionRoute::ExplicitUnsafe => {
+                // Bare execution is available through the explicitly selected
+                // unsafe backend. Unit tests use the same route because their
+                // harness EXE cannot service ate.exe's hidden runner mode.
+                let mut cmd = tokio::process::Command::new(&inv.program);
+                cmd.args(&inv.args).current_dir(cwd);
+                cmd
+            }
+            WindowsExecutionRoute::Refuse => {
+                return Err(std::io::Error::other(
+                    "Windows sandbox preview is not active; refusing unsandboxed command execution",
+                ));
+            }
         };
         cmd.envs(inv.env)
+            // The approval marker is control-plane state, never child data.
+            // Remove an inherited host value as well as filtering request env
+            // below so a user-set parent variable cannot leak into descendants.
+            .env_remove(crate::computer::types::UNSANDBOXED_EXECUTION_ENV)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
 
         for (key, value) in env {
-            cmd.env(key, value);
+            if key != crate::computer::types::UNSANDBOXED_EXECUTION_ENV {
+                cmd.env(key, value);
+            }
         }
         cmd.envs(crate::util::pager_env());
         // Agent marker must win over request env.
@@ -2994,6 +3045,30 @@ mod tests {
             }
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_execution_route_requires_explicit_per_command_or_global_authorization() {
+        assert_eq!(
+            windows_execution_route(true, Some("workspace-write"), false),
+            WindowsExecutionRoute::ApprovedHost,
+            "an approved command bypasses only its own sandbox attempt"
+        );
+        assert_eq!(
+            windows_execution_route(false, Some("workspace-write"), false),
+            WindowsExecutionRoute::NativeSandbox("workspace-write"),
+            "the next ordinary command returns to the session sandbox"
+        );
+        assert_eq!(
+            windows_execution_route(false, None, true),
+            WindowsExecutionRoute::ExplicitUnsafe
+        );
+        assert_eq!(
+            windows_execution_route(false, None, false),
+            WindowsExecutionRoute::Refuse,
+            "missing sandbox state must never silently fall back to the host"
+        );
     }
 
     #[tokio::test]

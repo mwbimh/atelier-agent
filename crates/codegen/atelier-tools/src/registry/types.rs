@@ -1486,8 +1486,35 @@ impl FinalizedToolset {
         tool_call_id: &str,
         cwd_override: Option<std::path::PathBuf>,
     ) -> Result<ToolRunResult, atelier_tool_runtime::ToolError> {
+        self.call_with_unsandboxed_execution(
+            tool_name,
+            tool_args,
+            tool_call_id,
+            cwd_override,
+            false,
+        )
+        .await
+    }
+
+    /// Dispatch with a trusted per-call host-execution authorization. The
+    /// boolean is supplied only by the session approval orchestrator and is
+    /// converted into a typed runtime marker before the tool executes.
+    pub async fn call_with_unsandboxed_execution(
+        self: &Arc<Self>,
+        tool_name: &str,
+        tool_args: serde_json::Value,
+        tool_call_id: &str,
+        cwd_override: Option<std::path::PathBuf>,
+        approved: bool,
+    ) -> Result<ToolRunResult, atelier_tool_runtime::ToolError> {
         use futures::StreamExt;
-        let mut stream = self.call_streaming(tool_name, tool_args, tool_call_id, cwd_override);
+        let mut stream = self.call_streaming_internal(
+            tool_name,
+            tool_args,
+            tool_call_id,
+            cwd_override,
+            approved,
+        );
         while let Some(item) = stream.next().await {
             match item {
                 atelier_tool_runtime::ToolStreamItem::Progress(_) => continue,
@@ -1517,13 +1544,24 @@ impl FinalizedToolset {
         tool_call_id: &str,
         cwd_override: Option<std::path::PathBuf>,
     ) -> atelier_tool_runtime::ToolStream<ToolRunResult> {
+        self.call_streaming_internal(tool_name, tool_args, tool_call_id, cwd_override, false)
+    }
+
+    fn call_streaming_internal(
+        self: &Arc<Self>,
+        tool_name: &str,
+        tool_args: serde_json::Value,
+        tool_call_id: &str,
+        cwd_override: Option<std::path::PathBuf>,
+        unsandboxed_execution_approved: bool,
+    ) -> atelier_tool_runtime::ToolStream<ToolRunResult> {
         use futures::StreamExt;
         let this = Arc::clone(self);
         let tool_name = tool_name.to_owned();
         let tool_call_id = tool_call_id.to_owned();
         Box::pin(async_stream::stream! {
             let parts = match this.prepare_dispatch(& tool_name, tool_args, &
-            tool_call_id, cwd_override,) { Ok(parts) => parts, Err(e) => { yield
+            tool_call_id, cwd_override, unsandboxed_execution_approved,) { Ok(parts) => parts, Err(e) => { yield
             atelier_tool_runtime::ToolStreamItem::Terminal(Err(e)); return; } }; let
             DispatchParts { lr_handle, ctx, canonical_params, output_converter,
             effective_tool_name, } = parts; let mut inner = lr_handle.execute(ctx,
@@ -1552,6 +1590,7 @@ impl FinalizedToolset {
         tool_args: serde_json::Value,
         tool_call_id: &str,
         cwd_override: Option<std::path::PathBuf>,
+        unsandboxed_execution_approved: bool,
     ) -> Result<DispatchParts, atelier_tool_runtime::ToolError> {
         let (registry_id, output_converter, reverse_params) = {
             let tools = self.tools.read();
@@ -1583,6 +1622,10 @@ impl FinalizedToolset {
         let rt_call_id = atelier_tool_protocol::ToolCallId::new(tool_call_id)
             .unwrap_or_else(|_| atelier_tool_protocol::ToolCallId::new_v7());
         let mut ctx = atelier_tool_runtime::ToolCallContext::new(rt_call_id);
+        if unsandboxed_execution_approved {
+            ctx.extensions
+                .insert(atelier_tool_runtime::UnsandboxedExecutionApproved);
+        }
         ctx.extensions.insert(self.resources.clone());
         ctx.extensions.insert_arc(Arc::clone(&self.renderer));
         if let Some(cwd) = cwd_override {
@@ -2438,6 +2481,8 @@ mod tests {
             timeout: None,
             description: "list files".into(),
             is_background: false,
+            sandbox_permissions: Default::default(),
+            justification: None,
         });
         let merged = merge_tool_meta(
             &toolset,
@@ -4578,6 +4623,7 @@ mod tests {
                 serde_json::json!({ "target_file" : "noop" }),
                 "test-call",
                 None,
+                false,
             )
             .expect("prepare_dispatch succeeds");
         let wvc = parts
@@ -4596,6 +4642,7 @@ mod tests {
                 serde_json::json!({ "target_file" : "noop" }),
                 "test-call",
                 None,
+                false,
             )
             .expect("prepare_dispatch succeeds");
         assert!(

@@ -117,6 +117,12 @@ impl ListToolsContext {
 #[derive(Clone, Debug)]
 pub struct Cwd(pub PathBuf);
 
+/// Trusted, per-call proof that the user approved running this command outside
+/// the application sandbox. Only the session approval orchestrator may insert
+/// this marker; model arguments and session environment variables cannot mint it.
+#[derive(Clone, Debug)]
+pub struct UnsandboxedExecutionApproved;
+
 /// Opaque behaviour version. Tools that branch on this MUST treat
 /// unknown values as a hard error.
 #[derive(Clone, Debug)]

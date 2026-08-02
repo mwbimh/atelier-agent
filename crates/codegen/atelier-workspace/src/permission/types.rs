@@ -211,12 +211,23 @@ impl<'de> Deserialize<'de> for EditPolicy {
         deserializer.deserialize_str(V)
     }
 }
+/// Trusted context for a mandatory per-command request to leave the
+/// application sandbox. This is carried beside [`AccessKind`] rather than in
+/// model-controlled tool arguments, so normal/Yolo command approval cannot
+/// silently authorize host execution.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SandboxOverrideRequest {
+    pub justification: String,
+    pub retry_after_denial: bool,
+}
+
 #[allow(clippy::large_enum_variant)]
 pub enum PermissionCommand {
     Request {
         access: AccessKind,
         tool_call_update: acp::ToolCallUpdate,
         respond_to: oneshot::Sender<Decision>,
+        sandbox_override: Option<SandboxOverrideRequest>,
         /// Session ID originating this request. Used to attribute
         /// permission events to child subagents.
         session_id: Option<String>,
@@ -511,6 +522,8 @@ mod tests {
             timeout: None,
             description: "run tests".into(),
             is_background: false,
+            sandbox_permissions: Default::default(),
+            justification: None,
         });
         let access = AccessKind::from(&input);
         assert!(

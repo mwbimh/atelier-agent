@@ -220,6 +220,8 @@ impl From<BashInput> for ToolInput {
             timeout: value.timeout,
             description: value.description,
             is_background: false,
+            sandbox_permissions: Default::default(),
+            justification: None,
         })
     }
 }

@@ -107,6 +107,11 @@ pub enum GrepOutputMode {
 // Terminal types
 // ============================================================================
 
+/// Internal, in-process handoff from the trusted tool-call context to the local
+/// Windows spawn path. Bash removes any untrusted copy before setting it, and
+/// the terminal never forwards it to the child environment.
+pub(crate) const UNSANDBOXED_EXECUTION_ENV: &str = "__ATELIER_UNSANDBOXED_EXECUTION_APPROVED";
+
 pub struct TerminalRunRequest {
     pub command: String,
     pub working_directory: PathBuf,

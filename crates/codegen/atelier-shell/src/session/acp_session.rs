@@ -356,6 +356,14 @@ pub(crate) fn state_is_busy(state: &State) -> bool {
     state.running_task.is_some() || !state.pending_inputs.is_empty()
 }
 use crate::auth::AuthManager;
+#[derive(Debug, Clone)]
+pub(crate) struct PreparedBashSandboxRequest {
+    command: String,
+    permissions: atelier_tools::implementations::SandboxPermissions,
+    justification: Option<String>,
+    is_background: bool,
+}
+
 /// Data carried from prepare_tool_call → dispatch_tool → finalize.
 #[derive(Debug, Clone)]
 pub(crate) struct PreparedToolCall {
@@ -378,6 +386,11 @@ pub(crate) struct PreparedToolCall {
     dispatch_target_name: Option<String>,
     /// Read-only per `ToolKind`; decides whether the call takes the per-file lock.
     is_read_only: bool,
+    /// Trusted proof that this exact call received mandatory approval to run
+    /// outside the application sandbox. Never derived from model JSON alone.
+    unsandboxed_execution_approved: bool,
+    /// Parsed Bash sandbox request retained for denial classification/retry.
+    bash_sandbox_request: Option<PreparedBashSandboxRequest>,
 }
 impl PreparedToolCall {
     /// The tool name hooks see: the resolved dispatch target, else the wire name.

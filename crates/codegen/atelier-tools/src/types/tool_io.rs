@@ -157,6 +157,8 @@ mod tests {
             timeout: None,
             description: "list files".into(),
             is_background: false,
+            sandbox_permissions: Default::default(),
+            justification: None,
         })
         .try_into();
         assert_eq!(bash.unwrap().command, "ls");

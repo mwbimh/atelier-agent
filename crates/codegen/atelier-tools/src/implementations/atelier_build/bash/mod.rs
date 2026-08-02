@@ -246,6 +246,17 @@ impl crate::types::resources::ResourceType for BashParams {
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+/// Per-command sandbox request. `RequireEscalated` is only a request from the
+/// model; execution still requires a trusted approval marker minted by the
+/// session orchestrator after an explicit user decision.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SandboxPermissions {
+    #[default]
+    UseDefault,
+    RequireEscalated,
+}
+
 /// Input for the bash/terminal command tool.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct BashToolInput {
@@ -286,6 +297,18 @@ pub struct BashToolInput {
         deserialize_with = "crate::types::schema::deserialize_lenient_bool"
     )]
     pub is_background: bool,
+
+    /// Sandbox permissions requested for this command. The default always uses
+    /// the session sandbox. `require_escalated` asks the user to run only this
+    /// command as the host user; it does not request Administrator or UAC.
+    #[serde(default)]
+    #[schemars(default)]
+    pub sandbox_permissions: SandboxPermissions,
+
+    /// Why this command needs permissions beyond the session sandbox. Required
+    /// and non-empty when `sandbox_permissions` is `require_escalated`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub justification: Option<String>,
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -1427,6 +1450,7 @@ impl BashTool {
         r#"Run a ${%- if is_windows %} shell command${%- else %} bash command${%- endif %} and return its output.
 
 Usage notes:
+  - Commands use the session sandbox by default. On Windows, if a command genuinely needs host-user access outside that sandbox, set `sandbox_permissions` to `require_escalated` and provide a concise `justification`. The user must explicitly approve that command; this does not request Administrator or UAC elevation.
   - You can specify an optional timeout in milliseconds (up to ${{ max_timeout_ms | default(300000) }}ms). ${%- if auto_background_on_timeout %} If not specified, commands exceeding the default timeout will be automatically backgrounded instead of killed. You will receive a task_id to check output later.${%- else %} If not specified, commands will timeout after ${{ default_timeout_ms | default(120000) }}ms.${%- endif %}
   - Timeout enforcement: when the timeout fires, the wrapper${%- if is_windows %} terminates the child's Job Object, killing every descendant process immediately (no graceful-termination grace period).${%- else %} kills the child process group (SIGTERM, escalated to SIGKILL after a ~1s grace period). Descendants that did not detach via `setsid` / `nohup` will also be killed.${%- endif %} `timeout: 0` in `${%- if params is defined and params.execute is defined and params.execute.is_background %}${{ params.execute.is_background }}${%- else %}background${%- endif %}: true` mode disables the wrapper timeout entirely; the child's lifetime is owned by the model via ${{ tools.by_kind.kill_task_action }}.
   - If the output exceeds {max_output_bytes} characters, output will be truncated before being returned to you.
@@ -1443,6 +1467,7 @@ ${%- endif %}"#
         r#"Run a ${%- if is_windows %} shell command${%- else %} bash command${%- endif %} and return its output.
 
 Usage notes:
+  - Commands use the session sandbox by default. On Windows, if a command genuinely needs host-user access outside that sandbox, set `sandbox_permissions` to `require_escalated` and provide a concise `justification`. The user must explicitly approve that command; this does not request Administrator or UAC elevation.
   - You can specify an optional timeout in milliseconds (up to ${{ max_timeout_ms | default(300000) }}ms). If not specified, commands will timeout after ${{ default_timeout_ms | default(120000) }}ms.
   - Timeout enforcement: when the timeout fires, the wrapper${%- if is_windows %} terminates the child's Job Object, killing every descendant process immediately (no graceful-termination grace period).${%- else %} kills the child process group (SIGTERM, escalated to SIGKILL after a ~1s grace period).${%- endif %}
   - If the output exceeds {max_output_bytes} characters, output will be truncated before being returned to you.
@@ -1791,7 +1816,7 @@ impl atelier_tool_runtime::Tool for BashTool {
         let tool_call_id = ctx.call_id.clone();
 
         // --- Read resources ---
-        let (backend, session_folder, env, notification_handle, owner_session_id) = {
+        let (backend, session_folder, mut env, notification_handle, owner_session_id) = {
             let res = resources.lock().await;
             (
                 res.require::<Terminal>()?.0.clone(),
@@ -1802,6 +1827,55 @@ impl atelier_tool_runtime::Tool for BashTool {
                     .map(|o| o.0.clone()),
             )
         };
+
+        // Never trust a session/project environment value as an execution
+        // authorization. The marker is removed first and reinserted only after
+        // validating the trusted per-call context extension.
+        env.remove(crate::computer::types::UNSANDBOXED_EXECUTION_ENV);
+        let unsandboxed_execution_approved = ctx
+            .get::<atelier_tool_runtime::UnsandboxedExecutionApproved>()
+            .is_some();
+        match input.sandbox_permissions {
+            SandboxPermissions::UseDefault if unsandboxed_execution_approved => {
+                // Sandbox-denial retry: the original model request used the
+                // session sandbox, then the user approved a single host retry.
+                env.insert(
+                    crate::computer::types::UNSANDBOXED_EXECUTION_ENV.to_string(),
+                    "1".to_string(),
+                );
+            }
+            SandboxPermissions::UseDefault => {}
+            SandboxPermissions::RequireEscalated => {
+                let justification = input
+                    .justification
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .ok_or_else(|| {
+                        atelier_tool_runtime::ToolError::invalid_arguments(
+                            "`justification` is required when `sandbox_permissions` is `require_escalated`"
+                                .to_string(),
+                        )
+                    })?;
+                let _ = justification;
+                if !cfg!(windows) {
+                    return Err(atelier_tool_runtime::ToolError::invalid_arguments(
+                        "per-command host execution is currently supported only by the native Windows sandbox"
+                            .to_string(),
+                    ));
+                }
+                if !unsandboxed_execution_approved {
+                    return Err(atelier_tool_runtime::ToolError::invalid_arguments(
+                        "sandbox escalation was requested but no explicit user approval was attached to this tool call"
+                            .to_string(),
+                    ));
+                }
+                env.insert(
+                    crate::computer::types::UNSANDBOXED_EXECUTION_ENV.to_string(),
+                    "1".to_string(),
+                );
+            }
+        }
 
         // Per-call streaming sink: when `execute` injected a
         // `PerCallNotificationSink`, fan the session handle out so this call's
@@ -2334,7 +2408,8 @@ mod tests {
         bg_task_id: String,
         bg_output_file: PathBuf,
         bg_error: Option<String>,
-        /// Captured background request for assertions.
+        /// Captured foreground/background requests for assertions.
+        captured_fg_request: CapturedRequest,
         captured_bg_request: CapturedRequest,
     }
 
@@ -2354,6 +2429,7 @@ mod tests {
                 bg_task_id: "task-1".to_string(),
                 bg_output_file: PathBuf::from("/tmp/bg.log"),
                 bg_error: None,
+                captured_fg_request: CapturedRequest::default(),
                 captured_bg_request: CapturedRequest::default(),
             }
         }
@@ -2373,6 +2449,7 @@ mod tests {
                 bg_task_id: "task-1".to_string(),
                 bg_output_file: PathBuf::from("/tmp/bg.log"),
                 bg_error: None,
+                captured_fg_request: CapturedRequest::default(),
                 captured_bg_request: CapturedRequest::default(),
             }
         }
@@ -2383,6 +2460,7 @@ mod tests {
                 bg_task_id: String::new(),
                 bg_output_file: PathBuf::new(),
                 bg_error: Some("command failed".to_string()),
+                captured_fg_request: CapturedRequest::default(),
                 captured_bg_request: CapturedRequest::default(),
             }
         }
@@ -2402,6 +2480,7 @@ mod tests {
                 bg_task_id: task_id.to_string(),
                 bg_output_file: PathBuf::from(format!("/tmp/{}.log", task_id)),
                 bg_error: None,
+                captured_fg_request: CapturedRequest::default(),
                 captured_bg_request: CapturedRequest::default(),
             }
         }
@@ -2418,8 +2497,9 @@ mod tests {
     impl TerminalBackend for MockTerminal {
         async fn run(
             &self,
-            _request: TerminalRunRequest,
+            request: TerminalRunRequest,
         ) -> Result<TerminalRunResult, ComputerError> {
+            *self.captured_fg_request.lock().unwrap() = Some(request);
             self.foreground_result.clone()
         }
 
@@ -2511,6 +2591,8 @@ mod tests {
             timeout: None,
             description: "test".to_string(),
             is_background: false,
+            sandbox_permissions: SandboxPermissions::UseDefault,
+            justification: None,
         }
     }
 
@@ -2520,6 +2602,8 @@ mod tests {
             timeout: None,
             description: "test".to_string(),
             is_background: true,
+            sandbox_permissions: SandboxPermissions::UseDefault,
+            justification: None,
         }
     }
 
@@ -3004,6 +3088,80 @@ mod tests {
             }
             BashToolOutput::Background(_) => panic!("Expected foreground output"),
         }
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn require_escalated_without_trusted_approval_never_reaches_terminal() {
+        let mock = MockTerminal::success("should not run", 0);
+        let captured = mock.captured_fg_request.clone();
+        let resources = make_resources(mock);
+        let mut input = make_input("whoami");
+        input.sandbox_permissions = SandboxPermissions::RequireEscalated;
+        input.justification = Some("Inspect the host identity".to_owned());
+
+        let error =
+            atelier_tool_runtime::Tool::run(&BashTool, test_ctx(resources.into_shared()), input)
+                .await
+                .expect_err("model arguments alone must not authorize host execution");
+
+        assert!(error.to_string().contains("no explicit user approval"));
+        assert!(captured.lock().unwrap().is_none());
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn trusted_per_call_approval_reaches_only_the_current_terminal_request() {
+        let mock = MockTerminal::success("approved", 0);
+        let captured = mock.captured_fg_request.clone();
+        let resources = make_resources(mock);
+        let mut input = make_input("whoami");
+        input.sandbox_permissions = SandboxPermissions::RequireEscalated;
+        input.justification = Some("Inspect the host identity".to_owned());
+        let mut ctx = test_ctx(resources.into_shared());
+        ctx.insert(atelier_tool_runtime::UnsandboxedExecutionApproved);
+
+        atelier_tool_runtime::Tool::run(&BashTool, ctx, input)
+            .await
+            .expect("trusted approval should authorize exactly this call");
+
+        let captured = captured.lock().unwrap();
+        let request = captured.as_ref().expect("terminal request");
+        assert_eq!(
+            request
+                .env
+                .get(crate::computer::types::UNSANDBOXED_EXECUTION_ENV)
+                .map(String::as_str),
+            Some("1")
+        );
+    }
+
+    #[tokio::test]
+    async fn session_environment_cannot_spoof_unsandboxed_execution() {
+        let mock = MockTerminal::success("sandboxed", 0);
+        let captured = mock.captured_fg_request.clone();
+        let mut resources = make_resources(mock);
+        resources.insert(SessionEnv(Arc::new(HashMap::from([(
+            crate::computer::types::UNSANDBOXED_EXECUTION_ENV.to_owned(),
+            "1".to_owned(),
+        )]))));
+
+        atelier_tool_runtime::Tool::run(
+            &BashTool,
+            test_ctx(resources.into_shared()),
+            make_input("whoami"),
+        )
+        .await
+        .expect("ordinary command should still run in its default sandbox");
+
+        let captured = captured.lock().unwrap();
+        let request = captured.as_ref().expect("terminal request");
+        assert!(
+            !request
+                .env
+                .contains_key(crate::computer::types::UNSANDBOXED_EXECUTION_ENV),
+            "untrusted session env must be removed before terminal dispatch"
+        );
     }
 
     #[tokio::test]

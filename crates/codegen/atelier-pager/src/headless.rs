@@ -448,6 +448,10 @@ fn attach_result_usage(result: &mut serde_json::Value, usage: &serde_json::Value
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
+fn headless_permission_requires_interactive_user(args: &acp::RequestPermissionRequest) -> bool {
+    atelier_workspace::permission::is_sandbox_override_permission(args)
+}
+
 fn auto_respond_to_permissions(
     args: &acp::RequestPermissionRequest,
     option_kinds: &[acp::PermissionOptionKind],
@@ -1457,7 +1461,14 @@ fn handle_headless_acp_message(
             let _ = boxed.response_tx.send(Ok(()));
         }
         AcpClientMessageBox::RequestPermission(req) => {
-            if yolo {
+            // Headless/YOLO has no interactive user capable of approving a
+            // host-execution boundary change. Fail closed even though the
+            // request contains an ordinary ACP AllowOnce option.
+            if headless_permission_requires_interactive_user(&req.request) {
+                let _ = req.response_tx.send(Ok(acp::RequestPermissionResponse::new(
+                    acp::RequestPermissionOutcome::Cancelled,
+                )));
+            } else if yolo {
                 if let Some(resp) = auto_respond_to_permissions(
                     &req.request,
                     &[
@@ -1702,6 +1713,34 @@ fn handle_ext_notification(
 
 #[cfg(test)]
 mod tests {
+    use agent_client_protocol as acp;
+
+    #[test]
+    fn headless_never_auto_approves_a_sandbox_override() {
+        let request = acp::RequestPermissionRequest::new(
+            acp::SessionId::new(std::sync::Arc::from("session")),
+            acp::ToolCallUpdate::new(
+                acp::ToolCallId::new(std::sync::Arc::from("call")),
+                acp::ToolCallUpdateFields::new(),
+            ),
+            vec![acp::PermissionOption::new(
+                "sandbox-override-allow-once",
+                "Allow once".to_owned(),
+                acp::PermissionOptionKind::AllowOnce,
+            )],
+        )
+        .meta(
+            serde_json::json!({
+                atelier_workspace::permission::SANDBOX_OVERRIDE_META_KEY: true
+            })
+            .as_object()
+            .cloned(),
+        );
+        assert!(super::headless_permission_requires_interactive_user(
+            &request
+        ));
+    }
+
     #[test]
     fn lifecycle_tracking_is_independent_of_wait_flag() {
         let mut pending = std::collections::HashSet::new();

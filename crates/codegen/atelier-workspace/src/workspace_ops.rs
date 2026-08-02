@@ -1509,6 +1509,7 @@ impl WorkspaceOps {
         args: Value,
         call_id: &str,
         session_id: Option<&str>,
+        unsandboxed_execution_approved: bool,
     ) -> Result<ToolRunResult, atelier_tool_runtime::ToolError> {
         match self {
             Self::Local { handle } => {
@@ -1527,9 +1528,24 @@ impl WorkspaceOps {
                         ),
                     )
                 })?;
-                session.toolset().call(name, args, call_id, None).await
+                session
+                    .toolset()
+                    .call_with_unsandboxed_execution(
+                        name,
+                        args,
+                        call_id,
+                        None,
+                        unsandboxed_execution_approved,
+                    )
+                    .await
             }
             Self::Proxy { client } => {
+                if unsandboxed_execution_approved {
+                    return Err(atelier_tool_runtime::ToolError::custom(
+                        "sandbox_override_unavailable",
+                        "trusted per-command host execution is unavailable through a proxy workspace",
+                    ));
+                }
                 if !client.is_connected() {
                     return Err(atelier_tool_runtime::ToolError::network_error(
                         "The workspace server connection was lost. \

@@ -133,18 +133,17 @@ When the global and per-project files define the same custom profile name, the u
 
 ## How It Works
 
-The sandbox is applied to the **entire ate process** at startup using kernel primitives -- not per-command wrapping. This means all tool operations are covered:
+Unix applies the sandbox to the **entire ate process** at startup using kernel primitives. Windows runs each terminal command through the native restricted-token command runner. This means all ordinary tool operations remain covered by the session policy:
 
-- `read_file`, `search_replace`, `list_dir` -- restricted by Landlock/Seatbelt in-process
-- `bash` commands, `grep` (rg) -- child processes inherit FS restrictions automatically
-- Network -- on Linux, child processes can be blocked via seccomp; on macOS this is a no-op
+- `read_file`, `search_replace`, `list_dir` -- restricted by the active process/worker policy
+- `bash` commands, `grep` (rg) -- run under the session sandbox by default
+- Network -- controlled by the platform child-process policy
 
-The sandbox is **irreversible** once applied. The agent cannot relax restrictions at runtime.
+The session's **base sandbox profile** is fixed for the life of the session. Atelier never silently retries a failed sandbox command on the host. On Windows, however, the terminal tool can explicitly request `sandbox_permissions: "require_escalated"` with a non-empty `justification`. Atelier then asks the user for a separate, mandatory approval. If approved, only that command runs as the current host user; the next command returns to the base sandbox. This does not request Administrator privileges or automatically trigger UAC.
 
-A runtime control may change the configuration for the **next process and new
-session**, but it cannot re-tokenize the current process, downgrade its Workspace
-Worker, or widen an existing session. On Windows, explicitly disabling the
-sandbox therefore requires both values before starting a new `ate` process:
+If an ordinary Windows sandbox command fails with a recognized sandbox-denial error, Atelier may offer the same one-command host retry. Rejection, cancellation, headless execution, or an unavailable approval channel leaves the command denied. Always-approve/YOLO never approves this boundary change.
+
+To disable sandboxing for every command, both values must still be selected before starting a new `ate` process:
 
 ```powershell
 $env:ATELIER_SANDBOX = "off"
@@ -161,7 +160,9 @@ backend = "unsafe"
 ```
 
 Exit the old process and create a new session. An existing or resumed session
-keeps its original profile and cannot be switched to `off` in place.
+keeps its original base profile and cannot be switched to `off` in place. A
+user-approved Windows `require_escalated` command is a one-command override, not
+a profile change.
 
 ---
 
@@ -195,10 +196,11 @@ Profile resolution order for a **new** session:
 
 | Platform | Mechanism | Minimum Version        |
 | -------- | --------- | ---------------------- |
+| Windows  | Restricted token, ACL, Job Object, WFP, command runner | Windows 10/11 |
 | Linux    | Landlock  | Kernel 5.13 or later   |
 | macOS    | Seatbelt  | macOS (all versions)   |
 
-If the sandbox cannot be applied (e.g., unsupported kernel, missing entitlements), Atelier logs a warning and continues without enforcement. The exception is an explicitly-requested **custom profile**: on **both macOS and Linux**, if it cannot be applied (unknown profile, malformed `sandbox.toml`, or — on Linux — `bubblewrap` unavailable for a non-empty `deny`), Atelier refuses to start rather than run with its denied paths exposed.
+If the selected sandbox cannot be applied, Atelier refuses sandboxed execution rather than silently running the command on the host. Only an explicit global unsafe backend or an explicitly approved Windows one-command override permits host execution. Custom profiles also fail closed when their policy cannot be enforced.
 
 ---
 

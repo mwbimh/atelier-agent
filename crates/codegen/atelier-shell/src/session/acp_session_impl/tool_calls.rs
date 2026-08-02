@@ -36,6 +36,97 @@ async fn wait_for_pending_interjection(buf: &InterjectionBuffer<acp::ImageConten
     }
 }
 use crate::tools::tool_context::BlockingWaitGuard;
+
+fn requested_sandbox_override(
+    input: &ToolInput,
+) -> Result<Option<atelier_workspace::permission::SandboxOverrideRequest>, String> {
+    let ToolInput::Bash(bash) = input else {
+        return Ok(None);
+    };
+    if bash.sandbox_permissions
+        != atelier_tools::implementations::SandboxPermissions::RequireEscalated
+    {
+        return Ok(None);
+    }
+    let justification = bash
+        .justification
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            "`justification` is required when `sandbox_permissions` is `require_escalated`"
+                .to_owned()
+        })?;
+    Ok(Some(
+        atelier_workspace::permission::SandboxOverrideRequest {
+            justification: justification.to_owned(),
+            retry_after_denial: false,
+        },
+    ))
+}
+
+fn bash_result_reports_sandbox_denial(
+    result: &Result<ToolRunResult, atelier_tool_runtime::ToolError>,
+) -> bool {
+    let Ok(tool_result) = result else {
+        return false;
+    };
+    let ToolsToolOutput::Bash(output) = &tool_result.output else {
+        return false;
+    };
+    if output.exit_code == 0 {
+        return false;
+    }
+    let text = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&output.output),
+        output.output_for_prompt
+    )
+    .to_ascii_lowercase();
+    const DENIAL_MARKERS: &[&str] = &[
+        "access is denied",
+        "permission denied",
+        "permissiondenied",
+        "unauthorizedaccessexception",
+        "operation not permitted",
+        "read-only file system",
+        "failed to write file",
+        "sandbox denied",
+    ];
+    DENIAL_MARKERS.iter().any(|marker| text.contains(marker))
+}
+
+fn is_likely_windows_sandbox_denial(
+    result: &Result<ToolRunResult, atelier_tool_runtime::ToolError>,
+) -> bool {
+    #[cfg(not(windows))]
+    {
+        let _ = result;
+        false
+    }
+    #[cfg(windows)]
+    {
+        if atelier_sandbox::windows_child_sandbox_mode().is_none() {
+            return false;
+        }
+        bash_result_reports_sandbox_denial(result)
+    }
+}
+
+fn sandbox_retry_update(prepared: &PreparedToolCall) -> acp::ToolCallUpdate {
+    let title = prepared
+        .bash_sandbox_request
+        .as_ref()
+        .map(|request| format!("Run `{}` outside the sandbox", request.command))
+        .unwrap_or_else(|| "Run command outside the sandbox".to_owned());
+    acp::ToolCallUpdate::new(
+        prepared.tool_call_id.clone(),
+        acp::ToolCallUpdateFields::new()
+            .title(Some(title))
+            .kind(Some(acp::ToolKind::Execute))
+            .raw_input(Some(prepared.parsed_args.clone())),
+    )
+}
 /// Model-facing result when a wait is aborted for a pending interjection.
 fn interrupted_wait_tool_result(args: &serde_json::Value) -> ToolRunResult {
     interrupted_wait_tool_result_with_msg(args, "Wait interrupted: the user sent a message.")
@@ -406,6 +497,7 @@ impl SessionActor {
         };
         let shared_recovery = Arc::new(tokio::sync::OnceCell::<bool>::const_new());
         let workspace_ops = self.workspace_ops.clone();
+        let permissions = self.permissions.clone();
         let pending_interjections = self.pending_interjections.clone();
         let session_id: Arc<str> = Arc::from(&*self.session_info.id.0);
         let dispatch_futures: Vec<_> = approved
@@ -416,6 +508,7 @@ impl SessionActor {
                 let am = self.auth_manager.clone();
                 let shared_recovery = Arc::clone(&shared_recovery);
                 let workspace_ops = workspace_ops.clone();
+                let permissions = permissions.clone();
                 let session_id = session_id.clone();
                 let pending_interjections = pending_interjections.clone();
                 let blocking_wait_depth = self.tool_context.blocking_wait_depth.clone();
@@ -439,7 +532,7 @@ impl SessionActor {
                             dispatch_tool(&workspace_ops, &prepared, &session_id).await
                         }
                     };
-                    let result = if interruptible {
+                    let mut result = if interruptible {
                         let _wait_guard = BlockingWaitGuard::enter(blocking_wait_depth.clone());
                         tokio::select! {
                             biased; result = call_with_auth_retry(am.as_ref(), Some(&
@@ -458,6 +551,56 @@ impl SessionActor {
                         )
                         .await
                     };
+
+                    let retry_request = prepared
+                        .bash_sandbox_request
+                        .as_ref()
+                        .filter(|request| {
+                            request.permissions
+                                == atelier_tools::implementations::SandboxPermissions::UseDefault
+                                && !request.is_background
+                                && !prepared.unsandboxed_execution_approved
+                        })
+                        .filter(|_| is_likely_windows_sandbox_denial(&result))
+                        .cloned();
+                    if let Some(request) = retry_request {
+                        let decision = permissions
+                            .request_sandbox_override(
+                                AccessKind::Bash(request.command.clone()),
+                                sandbox_retry_update(&prepared),
+                                Some(session_id.to_string()),
+                                None,
+                                None,
+                                atelier_workspace::permission::SandboxOverrideRequest {
+                                    justification: request.justification.unwrap_or_else(|| {
+                                        "The command was denied by the Windows sandbox and can be retried once as the host user."
+                                            .to_owned()
+                                    }),
+                                    retry_after_denial: true,
+                                },
+                            )
+                            .await;
+                        if matches!(decision, Decision::Allow | Decision::Ask) {
+                            let mut retry_prepared = prepared.as_ref().clone();
+                            retry_prepared.unsandboxed_execution_approved = true;
+                            let _guard = if let Some(ref lock) = lock {
+                                Some(lock.lock().await)
+                            } else {
+                                None
+                            };
+                            result = dispatch_tool(
+                                &workspace_ops,
+                                &retry_prepared,
+                                &session_id,
+                            )
+                            .await;
+                        } else if let Ok(tool_result) = &mut result {
+                            tool_result.prompt_text.push_str(
+                                "\n\nThe command was denied by the sandbox and host execution was not approved.",
+                            );
+                        }
+                    }
+
                     let success = match &result {
                         Ok(tool_result) => !tool_result.output.is_error(),
                         Err(_) => false,
@@ -1178,6 +1321,14 @@ impl SessionActor {
             )
             .in_scope(|| {});
         }
+        let sandbox_override_request = match requested_sandbox_override(&tool_input) {
+            Ok(request) => request,
+            Err(message) => {
+                self.handle_tool_not_executed(&call.id, &tool_call_id, message)
+                    .await?;
+                return Ok(Err(ToolLoop::Continue));
+            }
+        };
         if !plan_file_auto_approve {
             let (perm_title, perm_kind, perm_raw_input) = tool_call_display
                 .as_ref()
@@ -1275,15 +1426,28 @@ impl SessionActor {
                         tool_call_id.to_string(),
                         crate::session::pending_interaction::PendingKind::Permission,
                     );
-                self.permissions
-                    .request(
-                        access_kind.clone(),
-                        tool_call_update,
-                        Some(self.session_info.id.0.to_string()),
-                        None,
-                        None,
-                    )
-                    .await
+                if let Some(request) = sandbox_override_request.clone() {
+                    self.permissions
+                        .request_sandbox_override(
+                            access_kind.clone(),
+                            tool_call_update,
+                            Some(self.session_info.id.0.to_string()),
+                            None,
+                            None,
+                            request,
+                        )
+                        .await
+                } else {
+                    self.permissions
+                        .request(
+                            access_kind.clone(),
+                            tool_call_update,
+                            Some(self.session_info.id.0.to_string()),
+                            None,
+                            None,
+                        )
+                        .await
+                }
             };
             if let Some(control) = &self.tool_context.runtime_control {
                 control.lock().update_status(
@@ -1373,7 +1537,11 @@ impl SessionActor {
                         Some(&resolved_tool_name),
                     )
                     .await;
-                    let loop_action = if is_policy_deny {
+                    let loop_action = if is_policy_deny || sandbox_override_request.is_some() {
+                        // A rejected sandbox override is an execution result the
+                        // model can adapt to; it must not terminate the whole
+                        // turn or imply that ordinary sandboxed commands were
+                        // also rejected.
                         ToolLoop::Continue
                     } else {
                         ToolLoop::PermissionReject {
@@ -1557,6 +1725,16 @@ impl SessionActor {
             concatenated_json_count,
             dispatch_target_name,
             is_read_only,
+            unsandboxed_execution_approved: sandbox_override_request.is_some(),
+            bash_sandbox_request: match &tool_input {
+                ToolInput::Bash(bash) => Some(PreparedBashSandboxRequest {
+                    command: bash.command.clone(),
+                    permissions: bash.sandbox_permissions,
+                    justification: bash.justification.clone(),
+                    is_background: bash.is_background,
+                }),
+                _ => None,
+            },
         };
         Ok(Ok(prepared))
     }
@@ -3028,6 +3206,8 @@ mod plan_mode_edit_gate_tests {
                     timeout: None,
                     description: "write via bash".into(),
                     is_background: false,
+                    sandbox_permissions: Default::default(),
+                    justification: None,
                 })
             ),
             PlanEditGate::Allow,
@@ -3120,11 +3300,13 @@ mod plan_approval_helper_tests {
 #[cfg(test)]
 mod wait_interrupt_tests {
     use super::{
-        BlockingWaitGuard, interrupted_wait_tool_result, is_interruptible_wait_tool,
-        wait_for_pending_interjection,
+        BlockingWaitGuard, bash_result_reports_sandbox_denial, interrupted_wait_tool_result,
+        is_interruptible_wait_tool, requested_sandbox_override, wait_for_pending_interjection,
     };
     use atelier_tool_types::TaskOutputOutput;
-    use atelier_tools::types::output::ToolOutput;
+    use atelier_tools::implementations::BashToolInput;
+    use atelier_tools::types::ToolInput;
+    use atelier_tools::types::output::{ToolOutput, ToolRunResult};
     /// The interruptible-wait select arms: a pending interjection aborts an
     /// in-flight wait, and `biased` prefers an already-completed wait result
     /// over the abort. (Unit-level: the full dispatch loop has no test seam.)
@@ -3199,6 +3381,65 @@ mod wait_interrupt_tests {
         }
         assert!(!r.output.is_error());
     }
+    fn bash_result(
+        exit_code: i32,
+        output: &str,
+    ) -> Result<ToolRunResult, atelier_tool_runtime::ToolError> {
+        Ok(ToolRunResult {
+            output: ToolOutput::Bash(atelier_tools::types::output::BashOutput {
+                output: output.as_bytes().to_vec(),
+                output_for_prompt: output.to_owned(),
+                exit_code,
+                command: "test".to_owned(),
+                truncated: false,
+                signal: None,
+                timed_out: false,
+                description: None,
+                current_dir: String::new(),
+                output_file: String::new(),
+                total_bytes: output.len(),
+                output_delta: None,
+                was_bare_echo: false,
+            }),
+            prompt_text: output.to_owned(),
+            effective_tool_name: None,
+        })
+    }
+
+    #[test]
+    fn sandbox_denial_classifier_recognizes_windows_and_powershell_errors() {
+        assert!(bash_result_reports_sandbox_denial(&bash_result(
+            1,
+            "Access is denied."
+        )));
+        assert!(bash_result_reports_sandbox_denial(&bash_result(
+            1,
+            "CategoryInfo : PermissionDenied: UnauthorizedAccessException"
+        )));
+        assert!(!bash_result_reports_sandbox_denial(&bash_result(
+            1,
+            "compiler error: mismatched types"
+        )));
+        assert!(!bash_result_reports_sandbox_denial(&bash_result(
+            0,
+            "permission denied appears in ordinary successful output"
+        )));
+    }
+
+    #[test]
+    fn require_escalated_requires_a_nonempty_justification() {
+        let input = ToolInput::Bash(BashToolInput {
+            command: "whoami".to_owned(),
+            timeout: None,
+            description: "Inspect identity".to_owned(),
+            is_background: false,
+            sandbox_permissions:
+                atelier_tools::implementations::SandboxPermissions::RequireEscalated,
+            justification: Some("   ".to_owned()),
+        });
+        assert!(requested_sandbox_override(&input).is_err());
+    }
+
     /// `BlockingWaitGuard` counts nested waits; drop always decrements.
     #[test]
     fn blocking_wait_guard_counts_and_restores_on_drop() {
