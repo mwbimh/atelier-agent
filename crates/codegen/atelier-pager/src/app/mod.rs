@@ -522,12 +522,12 @@ pub async fn run(args: PagerArgs) -> anyhow::Result<bool> {
         .as_ref()
         .and_then(|s| s.permission_mode.as_deref());
     let launch_yolo = atelier_shell::util::config::effective_yolo_for_launch(
-        args.yolo,
+        args.always_approve_for_launch(),
         args.permission_mode_flag.as_deref(),
         remote_permission_mode,
     );
     let launch_auto = atelier_shell::util::config::effective_auto_for_launch(
-        args.yolo,
+        args.always_approve_for_launch(),
         args.permission_mode_flag.as_deref(),
         remote_permission_mode,
     );

@@ -760,6 +760,7 @@ const PLUGIN_DIR_LEADER_WARNING: &str = "atelier: --plugin-dir is ignored in lea
 /// Run the `agent` subcommand, dispatching to the appropriate mode.
 async fn run_agent_command(
     agent_args: Box<atelier_pager::app::AgentArgs>,
+    top_level_always_approve: bool,
     permission_mode_flag: Option<String>,
     trust: bool,
     disable_web_search: bool,
@@ -815,8 +816,10 @@ async fn run_agent_command(
         .reasoning_effort
         .as_deref()
         .and_then(atelier_shell::sampling::types::parse_canonical_effort_token);
+    let requested_always_approve =
+        top_level_always_approve || agent_args.always_approve_for_launch();
     let launch_yolo = atelier_shell::util::config::effective_yolo_for_launch(
-        agent_args.yolo,
+        requested_always_approve,
         permission_mode_flag.as_deref(),
         None,
     );
@@ -825,7 +828,7 @@ async fn run_agent_command(
     }
     agent_config.default_yolo_mode = launch_yolo.yolo;
     agent_config.default_auto_mode = atelier_shell::util::config::effective_auto_for_launch(
-        agent_args.yolo,
+        requested_always_approve,
         permission_mode_flag.as_deref(),
         None,
     );
@@ -1632,6 +1635,7 @@ fn run_async_command_loop(mut args: PagerArgs) -> Pin<Box<dyn Future<Output = Re
     } else {
         None
     };
+    let top_level_always_approve = args.always_approve_for_launch();
     let permission_mode_flag = args.permission_mode_flag.clone();
     let trust = args.trust;
     let disable_web_search = args.disable_web_search;
@@ -1643,7 +1647,14 @@ fn run_async_command_loop(mut args: PagerArgs) -> Pin<Box<dyn Future<Output = Re
                  Use `ate agent {flag}` instead."
             );
         }
-        run_agent_command(agent_args, permission_mode_flag, trust, disable_web_search).await
+        run_agent_command(
+            agent_args,
+            top_level_always_approve,
+            permission_mode_flag,
+            trust,
+            disable_web_search,
+        )
+        .await
     })
 }
 
@@ -1676,6 +1687,7 @@ async fn legacy_async_command_loop(mut args: PagerArgs) -> Result<()> {
                 }
                 return run_agent_command(
                     agent_args,
+                    args.always_approve_for_launch(),
                     args.permission_mode_flag.clone(),
                     args.trust,
                     args.disable_web_search,
@@ -1751,7 +1763,7 @@ async fn legacy_async_command_loop(mut args: PagerArgs) -> Result<()> {
     if let Some(prompt) = headless_prompt {
         init_tracing_simple(HEADLESS_ENTRYPOINT);
         let launch_yolo = atelier_shell::util::config::effective_yolo_for_launch(
-            args.yolo,
+            args.always_approve_for_launch(),
             args.permission_mode_flag.as_deref(),
             None,
         );

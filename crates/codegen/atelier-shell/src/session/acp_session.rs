@@ -1551,6 +1551,9 @@ mod tool_meta_stamp_tests {
                     cmd_tx: perm_tx,
                     yolo_state: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                     auto_state: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                    sandbox_override_auto_approve_state: Arc::new(
+                        std::sync::atomic::AtomicBool::new(false),
+                    ),
                     side_query_wired: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                     yolo_pin: None,
                     deny_read_globs: Arc::new(vec![]),

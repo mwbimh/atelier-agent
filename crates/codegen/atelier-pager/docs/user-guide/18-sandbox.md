@@ -143,6 +143,13 @@ The session's **base sandbox profile** is fixed for the life of the session. Ate
 
 If an ordinary Windows sandbox command fails with a recognized sandbox-denial error, Atelier may offer the same one-command host retry. Rejection, cancellation, headless execution, or an unavailable approval channel leaves the command denied. Always-approve/YOLO never approves this boundary change.
 
+Interactive Atelier clients can enable a separate session control with
+`/sandbox-approvals on`. While enabled, every sandbox override request receives
+a new automatic **Allow once** decision. `/sandbox-approvals off` restores the
+per-request prompt. This does not persist, does not alter the base sandbox, and
+does not turn Always-approve/YOLO into host execution. Managed policy may block
+the control; generic, proxy, and headless clients cannot enable it.
+
 To disable sandboxing for every command, both values must still be selected before starting a new `ate` process:
 
 ```powershell

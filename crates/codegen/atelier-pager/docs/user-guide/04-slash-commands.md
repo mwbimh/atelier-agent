@@ -225,7 +225,7 @@ running the active mode again turns it off:
 
 | Command | When off | When already on |
 |---|---|---|
-| `/always-approve` | Skip all permission prompts | Back to ask |
+| `/always-approve` (`/yolo`) | Skip ordinary tool permission prompts while preserving the session sandbox | Back to ask |
 | `/auto` | Classifier approves safe tools (dangerous ones may still prompt) | Back to ask |
 
 Running the other command while one mode is on **switches** modes (for example,
@@ -236,7 +236,29 @@ can also change mode with `Shift+Tab` (cycle), `Ctrl+O`, or `/settings`.
 
 ```
 /always-approve
+/yolo
 /auto
+```
+
+`/yolo` is an exact alias for `/always-approve`; the CLI flags `--yolo` and
+`--always-approve` have the same meaning. They do not disable the base sandbox
+and do not authorize host execution.
+
+### `/sandbox-approvals <on|off>`
+
+Control a separate, session-scoped host-execution approval mode:
+
+- `on` automatically selects **Allow once** for every Windows
+  `require_escalated` request in this session.
+- `off` restores an interactive prompt for every request.
+
+Each approval remains one-command-only. This command does not change the base
+sandbox profile, create a persistent grant, request Administrator privileges,
+or trigger UAC. Managed policy can disable this mode.
+
+```
+/sandbox-approvals on
+/sandbox-approvals off
 ```
 
 ### `/multiline`

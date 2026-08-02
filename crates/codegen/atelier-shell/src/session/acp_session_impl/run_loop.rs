@@ -469,7 +469,12 @@ pub(super) async fn run_session(
             tracing::info!("Session received SetAutoMode: {}", enabled); session
             .permissions.set_auto_mode(enabled); if enabled { session
             .wire_permission_auto_llm_classifier(). await; } else { session.permissions
-            .set_llm_side_query_wired(false); } } SessionCommand::ResetPermissionState =>
+            .set_llm_side_query_wired(false); } }
+            SessionCommand::SetSandboxOverrideAutoApprove { enabled, respond_to } => {
+            tracing::info!(enabled, "Session received SetSandboxOverrideAutoApprove");
+            let applied = session.permissions.set_sandbox_override_auto_approve(enabled);
+            let _ = respond_to.send(applied); }
+            SessionCommand::ResetPermissionState =>
             { session.permissions.reset_state(); tracing::info!(session_id = % session
             .session_info.id, "Permission state reset via notification"); }
             SessionCommand::Rewind { request, respond_to } => { let s = session.clone();

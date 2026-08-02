@@ -52,7 +52,7 @@ pub struct PermissionEvent {
     /// a request reached a prompt even when `user_prompted=true`. Values:
     /// yolo, policy_allow, policy_deny, policy_ask, auto_fast_path,
     /// auto_classifier_allow, auto_classifier_block, sandbox_auto,
-    /// persisted_grant, session_grant, static_allowlist, safe_command,
+    /// sandbox_override_session, persisted_grant, session_grant, static_allowlist, safe_command,
     /// session_deny, prompt_deny, needs_user, requester_gone.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub decision_reason: Option<String>,

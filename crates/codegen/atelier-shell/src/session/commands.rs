@@ -277,6 +277,12 @@ pub enum SessionCommand {
     SetAutoMode {
         enabled: bool,
     },
+    /// Automatically grant every sandbox override request as a separate
+    /// session-scoped AllowOnce decision.
+    SetSandboxOverrideAutoApprove {
+        enabled: bool,
+        respond_to: oneshot::Sender<bool>,
+    },
     ResetPermissionState,
     Rewind {
         request: RewindRequest,

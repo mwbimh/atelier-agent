@@ -28,7 +28,7 @@ Atelier processes the prompt, runs any necessary tools, and prints the result to
 | `-c, --continue`        | Continue the most recent session in current directory  |
 | `--cwd <PATH>`          | Set working directory                                 |
 | `--output-format <FMT>` | Output format: `plain`, `json`, `streaming-json`      |
-| `--yolo`                | Auto-approve all tool executions                      |
+| `--yolo` / `--always-approve` | Auto-approve ordinary tool executions; preserve the configured sandbox |
 | `--rules <TEXT>`        | Custom rules for the system prompt                    |
 | `--tools <TOOLS>`       | Allowlist of built-in tools (comma-separated). MCP meta-tools remain available unless denied. Headless only. |
 | `--disallowed-tools <TOOLS>` | Denylist of built-in tools to remove (comma-separated). Supports `Agent` entries. Headless only. |
@@ -431,7 +431,7 @@ echo "No issues found"
 
 ## Fully Automated Runs with --yolo
 
-The `--yolo` flag enables always-approve mode (the same mode as `--permission-mode bypassPermissions` and `--always-approve`), auto-approving tool executions (file writes, command execution, etc.) without prompting for confirmation. Explicit `deny` rules and `PreToolUse` hooks still apply, and administrators can disable the mode via `requirements.toml` (see [22-permissions-and-safety.md](22-permissions-and-safety.md)). This is required for unattended automation:
+The `--yolo` flag is an exact alias for `--always-approve` (and the same mode as `--permission-mode bypassPermissions`). It auto-approves ordinary tool executions such as file writes and sandboxed commands without prompting. It does **not** disable the configured sandbox or approve a command's request to execute on the host. Explicit `deny` rules and `PreToolUse` hooks still apply, and administrators can disable the mode via `requirements.toml` (see [22-permissions-and-safety.md](22-permissions-and-safety.md)). This is required for unattended automation:
 
 ```bash
 # Format all files without asking
@@ -441,7 +441,7 @@ ate -p "Format all files" --yolo
 ate -p "Run the tests and fix any failures" --cwd ~/projects/my-app --yolo
 ```
 
-**Use `--yolo` with care.** It grants the agent full autonomy to modify files and run commands. Only use it in trusted environments or with well-scoped prompts.
+**Use `--yolo` with care.** It grants the agent autonomy to modify files and run commands within the configured sandbox policy. Only use it in trusted environments or with well-scoped prompts.
 
 ---
 

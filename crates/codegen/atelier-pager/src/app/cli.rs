@@ -201,9 +201,9 @@ pub struct AgentArgs {
         overrides_with = "reasoning_effort"
     )]
     pub reasoning_effort: Option<String>,
-    /// Auto-approve all tool executions
-    #[arg(long = "always-approve", alias = "yolo")]
-    pub yolo: bool,
+    /// Auto-approve ordinary tool executions while preserving the session sandbox.
+    #[arg(long = "always-approve", visible_alias = "yolo")]
+    pub always_approve: bool,
     /// Load a plugin from this directory for this process only (repeatable).
     /// Highest-priority plugin scope; always trusted — hooks and MCP servers
     /// activate without a prompt. Used by the Agent SDKs to inject
@@ -228,6 +228,12 @@ pub struct AgentArgs {
     pub mode: Option<AgentCmd>,
 }
 impl AgentArgs {
+    /// Canonical ordinary permission fast path. `--yolo` is an exact alias
+    /// for `--always-approve`; neither changes the session sandbox profile.
+    pub fn always_approve_for_launch(&self) -> bool {
+        self.always_approve
+    }
+
     /// Canonicalized `--plugin-dir` paths, warning to stderr and skipping
     /// anything that isn't an existing directory (stderr is safe: JSON-RPC
     /// rides stdout).
@@ -372,13 +378,13 @@ pub struct PagerArgs {
         value_hint = ValueHint::FilePath
     )]
     pub debug_file: Option<PathBuf>,
-    /// Auto-approve all tool executions.
+    /// Auto-approve ordinary tool executions while preserving the session sandbox.
     #[clap(
         long = "always-approve",
-        alias = "yolo",
+        visible_alias = "yolo",
         alias = "dangerously-skip-permissions"
     )]
-    pub yolo: bool,
+    pub always_approve: bool,
     /// Trust this folder and persist the decision to the trust store.
     #[arg(long = "trust", alias = "trust-folder", hide = true)]
     pub trust: bool,
@@ -683,6 +689,12 @@ pub enum ResumeTarget {
     None,
 }
 impl PagerArgs {
+    /// Canonical ordinary permission fast path. `--yolo` is an exact alias
+    /// for `--always-approve`; neither changes the session sandbox profile.
+    pub fn always_approve_for_launch(&self) -> bool {
+        self.always_approve
+    }
+
     /// Parse CLI arguments and apply `--cwd` if provided.
     pub fn parse_and_apply_cwd() -> anyhow::Result<Self> {
         let mut args =
@@ -840,6 +852,40 @@ mod tests {
                 "vendor command `{command}` must not be registered as a CLI subcommand"
             );
         }
+    }
+
+    #[test]
+    fn yolo_is_an_exact_alias_for_always_approve() {
+        use clap::CommandFactory;
+
+        let help = PagerArgs::command().render_long_help().to_string();
+        assert!(help.contains("--always-approve"));
+        assert!(help.contains("--yolo"));
+
+        for flag in [
+            "--always-approve",
+            "--yolo",
+            "--dangerously-skip-permissions",
+        ] {
+            let args = PagerArgs::try_parse_from(["ate", flag]).expect("alias parses");
+            assert!(
+                args.always_approve_for_launch(),
+                "{flag} must enable the same mode"
+            );
+        }
+
+        for flag in ["--always-approve", "--yolo"] {
+            let args = PagerArgs::try_parse_from(["ate", "agent", flag, "stdio"])
+                .expect("agent alias parses");
+            let Some(Command::Agent(agent)) = args.command else {
+                panic!("expected agent command");
+            };
+            assert!(agent.always_approve_for_launch());
+        }
+
+        let err = PagerArgs::try_parse_from(["ate", "--dangerously-bypass-approvals-and-sandbox"])
+            .expect_err("danger-full-access is not silently exposed by the yolo alias");
+        assert_eq!(err.kind(), clap::error::ErrorKind::UnknownArgument);
     }
 
     #[test]

@@ -34,6 +34,7 @@ mod reasons {
     pub const AUTO_CLASSIFIER_ALLOW: &str = "auto_classifier_allow";
     pub const AUTO_CLASSIFIER_BLOCK: &str = "auto_classifier_block";
     pub const SANDBOX_AUTO: &str = "sandbox_auto";
+    pub const SANDBOX_OVERRIDE_SESSION: &str = "sandbox_override_session";
     pub const PERSISTED_GRANT: &str = "persisted_grant";
     pub const SESSION_GRANT: &str = "session_grant";
     pub const STATIC_ALLOWLIST: &str = "static_allowlist";
@@ -80,6 +81,9 @@ pub enum PermissionHandle {
         yolo_state: Arc<AtomicBool>,
         /// Auto mode (LLM classifier) — mutually exclusive with yolo at runtime.
         auto_state: Arc<AtomicBool>,
+        /// Session-scoped user toggle: automatically grant each requested
+        /// sandbox override as a fresh AllowOnce decision.
+        sandbox_override_auto_approve_state: Arc<AtomicBool>,
         /// True when the installed auto classifier has a live `ClassifyTextFn`
         /// (session sampling side-query). False for heuristic-only fallbacks.
         side_query_wired: Arc<AtomicBool>,
@@ -579,6 +583,33 @@ impl PermissionHandle {
         }
     }
 
+    /// Enable or disable session-scoped automatic AllowOnce decisions for
+    /// sandbox override requests. This does not persist and does not disable
+    /// the base sandbox; every approved command still receives a one-call marker.
+    pub fn set_sandbox_override_auto_approve(&self, enabled: bool) -> bool {
+        if let PermissionHandle::Actor {
+            sandbox_override_auto_approve_state,
+            yolo_pin,
+            ..
+        } = self
+        {
+            let enabled = enabled && yolo_pin.is_none();
+            sandbox_override_auto_approve_state.store(enabled, Ordering::Relaxed);
+            return enabled;
+        }
+        false
+    }
+
+    pub fn is_sandbox_override_auto_approve(&self) -> bool {
+        match self {
+            PermissionHandle::AllowAll => false,
+            PermissionHandle::Actor {
+                sandbox_override_auto_approve_state,
+                ..
+            } => sandbox_override_auto_approve_state.load(Ordering::Relaxed),
+        }
+    }
+
     pub fn is_yolo_mode(&self) -> bool {
         match self {
             PermissionHandle::AllowAll => true,
@@ -634,8 +665,9 @@ impl PermissionHandle {
         .await
     }
 
-    /// Mandatory interactive approval for one command to run as the host user.
-    /// `AllowAll`/YOLO deliberately do not satisfy this request.
+    /// Separate one-command approval to run as the host user. Ordinary
+    /// `AllowAll`/YOLO deliberately do not satisfy this request. It prompts by
+    /// default; an explicit interactive session toggle may auto-select AllowOnce.
     pub async fn request_sandbox_override(
         &self,
         access: AccessKind,
@@ -984,6 +1016,8 @@ fn spawn_permission_manager_with_pin(
     }
     let auto_state = Arc::new(AtomicBool::new(seed_auto));
     let auto_state_actor = auto_state.clone();
+    let sandbox_override_auto_approve_state = Arc::new(AtomicBool::new(false));
+    let sandbox_override_auto_approve_actor = sandbox_override_auto_approve_state.clone();
     let side_query_wired = Arc::new(AtomicBool::new(false));
     let in_flight = Arc::new(AtomicUsize::new(0));
     let in_flight_actor = in_flight.clone();
@@ -1248,16 +1282,29 @@ fn spawn_permission_manager_with_pin(
 
                     if let Some(ref override_request) = sandbox_override {
                         // Host execution is a separate capability from ordinary
-                        // tool approval. It always requires an interactive,
-                        // per-command decision: YOLO, auto mode, safe-command
-                        // lists, persisted grants, and managed Allow rules do
-                        // not satisfy it. A managed Deny was enforced above.
+                        // tool approval. Ordinary YOLO/auto/safe-command/grant
+                        // state does not satisfy it. A managed Deny was enforced
+                        // above. The dedicated session toggle is itself an
+                        // explicit user decision and mints a fresh AllowOnce for
+                        // each request without changing the base sandbox.
                         if prompt_policy == PromptPolicy::Deny {
                             let decision = Decision::PolicyDeny(
                                 "sandbox override denied because no interactive approval channel is allowed"
                                     .to_owned(),
                             );
                             emit_event(&decision, false, false, None, Some(reasons::PROMPT_DENY));
+                            let _ = respond_to.send(decision);
+                            continue;
+                        }
+                        if sandbox_override_auto_approve_actor.load(Ordering::Relaxed) {
+                            let decision = Decision::Allow;
+                            emit_event(
+                                &decision,
+                                true,
+                                false,
+                                None,
+                                Some(reasons::SANDBOX_OVERRIDE_SESSION),
+                            );
                             let _ = respond_to.send(decision);
                             continue;
                         }
@@ -1888,6 +1935,7 @@ fn spawn_permission_manager_with_pin(
             cmd_tx: tx,
             yolo_state,
             auto_state,
+            sandbox_override_auto_approve_state,
             side_query_wired,
             yolo_pin,
             deny_read_globs: Arc::new(deny_read_globs),
@@ -1913,6 +1961,23 @@ mod tests {
         assert!(!clamp_yolo(false, Some(PIN)));
         assert!(clamp_yolo(true, None));
         assert!(!clamp_yolo(false, None));
+    }
+
+    #[test]
+    fn managed_bypass_pin_blocks_sandbox_override_auto_approve() {
+        let (cmd_tx, _cmd_rx) = mpsc::unbounded_channel();
+        let handle = PermissionHandle::Actor {
+            cmd_tx,
+            yolo_state: Arc::new(AtomicBool::new(false)),
+            auto_state: Arc::new(AtomicBool::new(false)),
+            sandbox_override_auto_approve_state: Arc::new(AtomicBool::new(false)),
+            side_query_wired: Arc::new(AtomicBool::new(false)),
+            yolo_pin: Some(PIN),
+            deny_read_globs: Arc::new(vec![]),
+            in_flight: Arc::new(AtomicUsize::new(0)),
+        };
+        assert!(!handle.set_sandbox_override_auto_approve(true));
+        assert!(!handle.is_sandbox_override_auto_approve());
     }
 
     #[tokio::test]
@@ -2793,6 +2858,83 @@ mod tests {
             acp::ToolCallId::new(Arc::from("tc")),
             acp::ToolCallUpdateFields::default(),
         )
+    }
+
+    #[tokio::test]
+    async fn session_toggle_auto_approves_each_sandbox_override_without_prompting() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let tmp = tempfile::tempdir().unwrap();
+                let cwd = AbsPathBuf::new(tmp.path().to_path_buf()).unwrap();
+                let client = RecordingClient::default();
+                let prompts = client.prompts.clone();
+                let (manager, _events) =
+                    manager_with_recording_client(&cwd, None, client, ClientType::AtelierPager);
+                assert!(!manager.is_sandbox_override_auto_approve());
+                assert!(manager.set_sandbox_override_auto_approve(true));
+                assert!(manager.is_sandbox_override_auto_approve());
+
+                for command in ["whoami", "git config --global --get user.name"] {
+                    let decision = manager
+                        .request_sandbox_override(
+                            AccessKind::Bash(command.to_owned()),
+                            tool_call(),
+                            Some("test-session".to_owned()),
+                            None,
+                            None,
+                            SandboxOverrideRequest {
+                                justification: "Needs host-user access".to_owned(),
+                                retry_after_denial: false,
+                            },
+                        )
+                        .await;
+                    assert!(matches!(decision, Decision::Allow));
+                }
+
+                assert!(prompts.borrow().is_empty());
+                assert!(!manager.set_sandbox_override_auto_approve(false));
+                assert!(!manager.is_sandbox_override_auto_approve());
+            })
+            .await;
+    }
+
+    #[tokio::test]
+    async fn managed_dont_ask_still_denies_when_session_auto_approve_is_enabled() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let tmp = tempfile::tempdir().unwrap();
+                let cwd = AbsPathBuf::new(tmp.path().to_path_buf()).unwrap();
+                let mut config = crate::permission::types::PermissionConfig::new(vec![]);
+                config.prompt_policy = PromptPolicy::Deny;
+                let client = RecordingClient::default();
+                let prompts = client.prompts.clone();
+                let (manager, _events) = manager_with_recording_client(
+                    &cwd,
+                    Some(config),
+                    client,
+                    ClientType::AtelierPager,
+                );
+                assert!(manager.set_sandbox_override_auto_approve(true));
+
+                let decision = manager
+                    .request_sandbox_override(
+                        AccessKind::Bash("whoami".to_owned()),
+                        tool_call(),
+                        Some("test-session".to_owned()),
+                        None,
+                        None,
+                        SandboxOverrideRequest {
+                            justification: "Needs host-user access".to_owned(),
+                            retry_after_denial: false,
+                        },
+                    )
+                    .await;
+                assert!(matches!(decision, Decision::PolicyDeny(_)));
+                assert!(prompts.borrow().is_empty());
+            })
+            .await;
     }
 
     #[tokio::test]

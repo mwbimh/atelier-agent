@@ -478,7 +478,7 @@ pub(crate) async fn run(
         .as_ref()
         .and_then(|s| s.permission_mode.as_deref());
     let launch_yolo = atelier_shell::util::config::effective_yolo_for_launch(
-        args.yolo,
+        args.always_approve_for_launch(),
         args.permission_mode_flag.as_deref(),
         remote_permission_mode,
     );
@@ -486,7 +486,7 @@ pub(crate) async fn run(
     // Gated launch-auto (CLI `--permission-mode auto` or config). Hoisted so it can
     // be re-applied after `load_initial_ui_config()` replaces `current_ui` below.
     let launch_auto = atelier_shell::util::config::effective_auto_for_launch(
-        args.yolo,
+        args.always_approve_for_launch(),
         args.permission_mode_flag.as_deref(),
         remote_permission_mode,
     );
@@ -500,7 +500,7 @@ pub(crate) async fn run(
         .and_then(|root| root.get("ui").cloned());
     // Soft-default owns the mode only when neither CLI nor effective TOML
     // claimed it; while owned, `settings/update` pushes may re-arm it.
-    let cli_owns_mode = args.yolo || args.permission_mode_flag.is_some();
+    let cli_owns_mode = args.always_approve_for_launch() || args.permission_mode_flag.is_some();
     let toml_owns_mode = launch_effective_ui
         .as_ref()
         .and_then(atelier_shell::util::config::permission_mode_from_ui_if_set)

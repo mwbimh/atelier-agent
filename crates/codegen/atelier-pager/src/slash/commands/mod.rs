@@ -52,6 +52,7 @@ pub mod resume;
 pub mod rewind;
 pub mod roles;
 pub mod runtime;
+pub mod sandbox_approvals;
 pub mod screen_mode_switch;
 pub mod scroll_debug;
 pub mod session_info;
@@ -96,6 +97,7 @@ pub fn builtin_commands() -> Vec<Arc<dyn SlashCommand>> {
         Arc::new(effort::EffortCommand),
         Arc::new(fast_mode::FastModeCommand),
         Arc::new(always_approve::AlwaysApproveCommand),
+        Arc::new(sandbox_approvals::SandboxApprovalsCommand),
         Arc::new(auto::AutoCommand),
         Arc::new(multiline::MultilineCommand),
         Arc::new(compact_mode::CompactModeCommand),
