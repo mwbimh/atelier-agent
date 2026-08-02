@@ -54,6 +54,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 pub use types::{SandboxEvent, SandboxEventType, SandboxMetrics};
 static SANDBOX: OnceLock<GlobalSandboxState> = OnceLock::new();
 static CONFIGURED_PROFILE: OnceLock<String> = OnceLock::new();
+static CONFIGURED_BACKEND: OnceLock<SandboxBackendKind> = OnceLock::new();
 static RESTRICT_CHILD_NETWORK: AtomicBool = AtomicBool::new(false);
 static AUTO_ALLOW_BASH: AtomicBool = AtomicBool::new(false);
 const BWRAP_ENV_VAR: &str = "__ATELIER_INSIDE_BWRAP";
@@ -83,6 +84,10 @@ pub fn set_auto_allow_bash(enabled: bool) {
 /// Record the resolved sandbox profile at process startup (including `"off"`).
 pub fn set_configured_profile(name: impl Into<String>) {
     let _ = CONFIGURED_PROFILE.set(name.into());
+}
+/// Record the validated sandbox backend selected at process startup.
+pub fn set_configured_backend(backend: SandboxBackendKind) {
+    let _ = CONFIGURED_BACKEND.set(backend);
 }
 /// Resolved sandbox profile from startup, or `None` if `set_configured_profile` was never called.
 pub fn configured_profile_name() -> Option<&'static str> {
@@ -129,7 +134,14 @@ pub fn diagnostics() -> SandboxDiagnostics {
         .get()
         .map(|state| state.diagnostics.clone())
         .unwrap_or_else(|| {
-            SandboxDiagnostics::unconfigured(configured_profile_name().unwrap_or("unknown"))
+            let profile = configured_profile_name().unwrap_or("unknown");
+            match CONFIGURED_BACKEND.get().copied() {
+                Some(SandboxBackendKind::Unsafe) => SandboxDiagnostics::unsafe_backend(
+                    profile,
+                    "application sandbox disabled by explicit unsafe backend",
+                ),
+                _ => SandboxDiagnostics::unconfigured(profile),
+            }
         })
 }
 /// Return the stable status label used by shell/RPC consumers.

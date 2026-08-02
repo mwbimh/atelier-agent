@@ -38,7 +38,7 @@ impl Drop for RunnerEnvGuard {
 }
 
 #[test]
-fn worker_mode_resolution_preserves_read_only_and_workspace_write() {
+fn worker_mode_resolution_preserves_read_only_workspace_write_and_danger_full_access() {
     assert_eq!(
         WorkspaceWorkerSandboxMode::from_profile_name("read-only").unwrap(),
         WorkspaceWorkerSandboxMode::ReadOnly
@@ -47,7 +47,10 @@ fn worker_mode_resolution_preserves_read_only_and_workspace_write() {
         WorkspaceWorkerSandboxMode::from_profile_name("workspace").unwrap(),
         WorkspaceWorkerSandboxMode::WorkspaceWrite
     );
-    assert!(WorkspaceWorkerSandboxMode::from_profile_name("off").is_err());
+    assert_eq!(
+        WorkspaceWorkerSandboxMode::from_profile_name("off").unwrap(),
+        WorkspaceWorkerSandboxMode::DangerFullAccess
+    );
 }
 
 #[tokio::test]

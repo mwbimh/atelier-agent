@@ -56,6 +56,7 @@ fn record_worker_spawn_timing(name: &'static str, started: std::time::Instant) {
 pub enum WorkspaceWorkerSandboxMode {
     ReadOnly,
     WorkspaceWrite,
+    DangerFullAccess,
 }
 
 impl WorkspaceWorkerSandboxMode {
@@ -65,14 +66,15 @@ impl WorkspaceWorkerSandboxMode {
         match profile {
             "read-only" | "readonly" => Ok(Self::ReadOnly),
             "workspace" | "devbox" => Ok(Self::WorkspaceWrite),
+            "off" | "none" => Ok(Self::DangerFullAccess),
             other => Err(WorkspaceError::HubError(format!(
                 "sandbox profile `{other}` cannot launch a workspace worker"
             ))),
         }
     }
 
-    /// Resolve the already-applied process sandbox profile into the narrower
-    /// pair of modes supported by the Windows workspace worker.
+    /// Resolve the already-applied process sandbox profile into the explicit
+    /// launch modes supported by the workspace worker.
     pub fn configured() -> WorkspaceResult<Self> {
         let profile = atelier_sandbox::configured_profile_name().ok_or_else(|| {
             WorkspaceError::HubError(
@@ -83,10 +85,11 @@ impl WorkspaceWorkerSandboxMode {
     }
 
     #[cfg(windows)]
-    fn windows_mode(self) -> atelier_windows_sandbox::SandboxMode {
+    fn windows_mode(self) -> Option<atelier_windows_sandbox::SandboxMode> {
         match self {
-            Self::ReadOnly => atelier_windows_sandbox::SandboxMode::ReadOnly,
-            Self::WorkspaceWrite => atelier_windows_sandbox::SandboxMode::WorkspaceWrite,
+            Self::ReadOnly => Some(atelier_windows_sandbox::SandboxMode::ReadOnly),
+            Self::WorkspaceWrite => Some(atelier_windows_sandbox::SandboxMode::WorkspaceWrite),
+            Self::DangerFullAccess => None,
         }
     }
 }
@@ -264,6 +267,13 @@ impl WorkspaceWorkerClient {
         worker_path: PathBuf,
         sandbox_mode: WorkspaceWorkerSandboxMode,
     ) -> WorkspaceResult<Self> {
+        if sandbox_mode == WorkspaceWorkerSandboxMode::DangerFullAccess
+            && atelier_sandbox::diagnostics().backend != atelier_sandbox::SandboxBackendKind::Unsafe
+        {
+            return Err(WorkspaceError::HubError(
+                "danger-full-access workspace worker requires the explicit unsafe backend".into(),
+            ));
+        }
         let total_started = std::time::Instant::now();
         let started = std::time::Instant::now();
         let root = canonical_root(&root).await?;
@@ -276,38 +286,79 @@ impl WorkspaceWorkerClient {
         #[cfg(windows)]
         let (child, stdin, stdout, stderr_task) = {
             let started = std::time::Instant::now();
-            let request = atelier_windows_sandbox::CommandRequest::new(
-                sandbox_mode.windows_mode(),
-                vec![root.clone()],
-                root.clone(),
-                program,
-                args,
-            );
-            let mut child =
-                atelier_windows_sandbox::spawn_piped_command(request).map_err(|error| {
-                    WorkspaceError::HubError(format!("spawn restricted workspace worker: {error}"))
+            let result = if let Some(windows_mode) = sandbox_mode.windows_mode() {
+                let request = atelier_windows_sandbox::CommandRequest::new(
+                    windows_mode,
+                    vec![root.clone()],
+                    root.clone(),
+                    program,
+                    args,
+                );
+                let mut child =
+                    atelier_windows_sandbox::spawn_piped_command(request).map_err(|error| {
+                        WorkspaceError::HubError(format!(
+                            "spawn restricted workspace worker: {error}"
+                        ))
+                    })?;
+                let stdin = child.take_stdin().ok_or_else(|| {
+                    WorkspaceError::HubError(
+                        "restricted workspace worker stdin was not piped".into(),
+                    )
                 })?;
-            let stdin = child.take_stdin().ok_or_else(|| {
-                WorkspaceError::HubError("restricted workspace worker stdin was not piped".into())
-            })?;
-            let stdout = child.take_stdout().ok_or_else(|| {
-                WorkspaceError::HubError("restricted workspace worker stdout was not piped".into())
-            })?;
-            let stderr = child.take_stderr().ok_or_else(|| {
-                WorkspaceError::HubError("restricted workspace worker stderr was not piped".into())
-            })?;
-            let stderr_task = tokio::spawn(async move {
-                let mut stderr = tokio::fs::File::from_std(stderr);
-                let mut sink = tokio::io::stderr();
-                let _ = tokio::io::copy(&mut stderr, &mut sink).await;
-            });
-            let result = (
-                WorkerProcess::Restricted(child),
-                Box::new(tokio::fs::File::from_std(stdin)) as Box<dyn AsyncWrite + Unpin + Send>,
-                Box::new(tokio::fs::File::from_std(stdout)) as Box<dyn AsyncRead + Unpin + Send>,
-                Some(stderr_task),
-            );
-            record_worker_spawn_timing("workspace_worker.restricted_process", started);
+                let stdout = child.take_stdout().ok_or_else(|| {
+                    WorkspaceError::HubError(
+                        "restricted workspace worker stdout was not piped".into(),
+                    )
+                })?;
+                let stderr = child.take_stderr().ok_or_else(|| {
+                    WorkspaceError::HubError(
+                        "restricted workspace worker stderr was not piped".into(),
+                    )
+                })?;
+                let stderr_task = tokio::spawn(async move {
+                    let mut stderr = tokio::fs::File::from_std(stderr);
+                    let mut sink = tokio::io::stderr();
+                    let _ = tokio::io::copy(&mut stderr, &mut sink).await;
+                });
+                (
+                    WorkerProcess::Restricted(child),
+                    Box::new(tokio::fs::File::from_std(stdin))
+                        as Box<dyn AsyncWrite + Unpin + Send>,
+                    Box::new(tokio::fs::File::from_std(stdout))
+                        as Box<dyn AsyncRead + Unpin + Send>,
+                    Some(stderr_task),
+                )
+            } else {
+                let mut command = Command::new(program);
+                command
+                    .args(args)
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::inherit())
+                    .kill_on_drop(true);
+                let mut child = command.spawn().map_err(|error| {
+                    WorkspaceError::HubError(format!(
+                        "spawn danger-full-access workspace worker: {error}"
+                    ))
+                })?;
+                let stdin = child.stdin.take().ok_or_else(|| {
+                    WorkspaceError::HubError(
+                        "danger-full-access workspace worker stdin was not piped".into(),
+                    )
+                })?;
+                let stdout = child.stdout.take().ok_or_else(|| {
+                    WorkspaceError::HubError(
+                        "danger-full-access workspace worker stdout was not piped".into(),
+                    )
+                })?;
+                (
+                    WorkerProcess::Tokio(child),
+                    Box::new(stdin) as Box<dyn AsyncWrite + Unpin + Send>,
+                    Box::new(stdout) as Box<dyn AsyncRead + Unpin + Send>,
+                    None,
+                )
+            };
+            record_worker_spawn_timing("workspace_worker.process", started);
             result
         };
 
@@ -1146,11 +1197,15 @@ mod tests {
     fn worker_sandbox_mode_maps_without_workspace_write_default() {
         assert_eq!(
             WorkspaceWorkerSandboxMode::ReadOnly.windows_mode(),
-            atelier_windows_sandbox::SandboxMode::ReadOnly
+            Some(atelier_windows_sandbox::SandboxMode::ReadOnly)
         );
         assert_eq!(
             WorkspaceWorkerSandboxMode::WorkspaceWrite.windows_mode(),
-            atelier_windows_sandbox::SandboxMode::WorkspaceWrite
+            Some(atelier_windows_sandbox::SandboxMode::WorkspaceWrite)
+        );
+        assert_eq!(
+            WorkspaceWorkerSandboxMode::DangerFullAccess.windows_mode(),
+            None
         );
     }
 
@@ -1164,7 +1219,25 @@ mod tests {
             WorkspaceWorkerSandboxMode::from_profile_name("workspace").unwrap(),
             WorkspaceWorkerSandboxMode::WorkspaceWrite
         );
-        assert!(WorkspaceWorkerSandboxMode::from_profile_name("off").is_err());
+        assert_eq!(
+            WorkspaceWorkerSandboxMode::from_profile_name("off").unwrap(),
+            WorkspaceWorkerSandboxMode::DangerFullAccess
+        );
+    }
+
+    #[tokio::test]
+    async fn danger_full_access_worker_fails_closed_without_explicit_unsafe_backend() {
+        let result = WorkspaceWorkerClient::spawn(
+            PathBuf::from("."),
+            PathBuf::from("missing-worker"),
+            WorkspaceWorkerSandboxMode::DangerFullAccess,
+        )
+        .await;
+        let error = match result {
+            Ok(_) => panic!("danger-full-access worker must fail closed"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("explicit unsafe backend"));
     }
 
     #[test]

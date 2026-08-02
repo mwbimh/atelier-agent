@@ -998,12 +998,13 @@ pub fn apply_sandbox(
         .value
         .parse()
         .map_err(|error| format!("invalid sandbox profile: {error}"))?;
-    atelier_sandbox::set_configured_profile(&resolved.value);
     if sandbox_profile == atelier_sandbox::ProfileName::Off && !backend.is_unsafe() {
         return Err(
             "sandbox profile 'off' is not allowed with the native backend; set [sandbox].backend = \"unsafe\" to explicitly run without sandboxing".to_owned(),
         );
     }
+    atelier_sandbox::set_configured_profile(&resolved.value);
+    atelier_sandbox::set_configured_backend(backend);
     let workspace = cwd
         .and_then(|p| dunce::canonicalize(p).ok())
         .or_else(|| std::env::current_dir().ok())
