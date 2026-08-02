@@ -1,4 +1,4 @@
-//! `/always-approve` (`/yolo`) -- toggle ordinary tool auto-approval.
+//! `/always-approve` -- toggle ordinary tool auto-approval.
 //!
 //! Dispatches `Action::SetYoloMode(!current)`. The dispatcher handles
 //! state mutation, permission_queue drain, persistence (with rollback
@@ -10,16 +10,12 @@
 use crate::app::actions::Action;
 use crate::slash::command::{CommandExecCtx, CommandResult, SlashCommand};
 
-/// Toggle always-approve (`/yolo` is an exact alias).
+/// Toggle ordinary tool auto-approval while preserving the session sandbox.
 pub struct AlwaysApproveCommand;
 
 impl SlashCommand for AlwaysApproveCommand {
     fn name(&self) -> &str {
         "always-approve"
-    }
-
-    fn aliases(&self) -> &[&str] {
-        &["yolo"]
     }
 
     fn description(&self) -> &str {
@@ -62,8 +58,8 @@ mod tests {
     }
 
     #[test]
-    fn yolo_alias_is_exactly_the_always_approve_command() {
-        assert_eq!(AlwaysApproveCommand.aliases(), &["yolo"]);
+    fn yolo_is_not_a_runtime_alias() {
+        assert!(AlwaysApproveCommand.aliases().is_empty());
     }
 
     #[test]

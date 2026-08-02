@@ -202,8 +202,15 @@ pub struct AgentArgs {
     )]
     pub reasoning_effort: Option<String>,
     /// Auto-approve ordinary tool executions while preserving the session sandbox.
-    #[arg(long = "always-approve", visible_alias = "yolo")]
+    #[arg(long = "always-approve")]
     pub always_approve: bool,
+    /// Skip approval prompts and run the entire process without the application sandbox.
+    #[arg(
+        long = "dangerously-bypass-approvals-and-sandbox",
+        visible_alias = "yolo",
+        conflicts_with = "always_approve"
+    )]
+    pub yolo: bool,
     /// Load a plugin from this directory for this process only (repeatable).
     /// Highest-priority plugin scope; always trusted — hooks and MCP servers
     /// activate without a prompt. Used by the Agent SDKs to inject
@@ -228,10 +235,14 @@ pub struct AgentArgs {
     pub mode: Option<AgentCmd>,
 }
 impl AgentArgs {
-    /// Canonical ordinary permission fast path. `--yolo` is an exact alias
-    /// for `--always-approve`; neither changes the session sandbox profile.
+    /// Whether launch should use approval policy Never. Both modes suppress
+    /// ordinary prompts, but only `--yolo` also selects danger-full-access.
     pub fn always_approve_for_launch(&self) -> bool {
-        self.always_approve
+        self.always_approve || self.yolo
+    }
+
+    pub fn danger_full_access_for_launch(&self) -> bool {
+        self.yolo
     }
 
     /// Canonicalized `--plugin-dir` paths, warning to stderr and skipping
@@ -379,12 +390,15 @@ pub struct PagerArgs {
     )]
     pub debug_file: Option<PathBuf>,
     /// Auto-approve ordinary tool executions while preserving the session sandbox.
-    #[clap(
-        long = "always-approve",
-        visible_alias = "yolo",
-        alias = "dangerously-skip-permissions"
-    )]
+    #[clap(long = "always-approve", alias = "dangerously-skip-permissions")]
     pub always_approve: bool,
+    /// Skip approval prompts and run the entire process without the application sandbox.
+    #[clap(
+        long = "dangerously-bypass-approvals-and-sandbox",
+        visible_alias = "yolo",
+        conflicts_with_all = ["always_approve", "sandbox"]
+    )]
+    pub yolo: bool,
     /// Trust this folder and persist the decision to the trust store.
     #[arg(long = "trust", alias = "trust-folder", hide = true)]
     pub trust: bool,
@@ -689,10 +703,28 @@ pub enum ResumeTarget {
     None,
 }
 impl PagerArgs {
-    /// Canonical ordinary permission fast path. `--yolo` is an exact alias
-    /// for `--always-approve`; neither changes the session sandbox profile.
+    /// Whether launch should use approval policy Never. Both modes suppress
+    /// ordinary prompts, but only `--yolo` also selects danger-full-access.
     pub fn always_approve_for_launch(&self) -> bool {
-        self.always_approve
+        self.always_approve || self.yolo
+    }
+
+    /// Codex-compatible danger-full-access selection, including the nested
+    /// `agent` subcommand form.
+    pub fn danger_full_access_for_launch(&self) -> bool {
+        self.yolo
+            || matches!(
+                &self.command,
+                Some(Command::Agent(agent)) if agent.danger_full_access_for_launch()
+            )
+    }
+
+    /// Explicit permission-mode flags do not weaken Codex-compatible YOLO:
+    /// danger-full-access always launches with approval policy Never.
+    pub fn permission_mode_flag_for_launch(&self) -> Option<&str> {
+        (!self.danger_full_access_for_launch())
+            .then_some(self.permission_mode_flag.as_deref())
+            .flatten()
     }
 
     /// Parse CLI arguments and apply `--cwd` if provided.
@@ -855,37 +887,48 @@ mod tests {
     }
 
     #[test]
-    fn yolo_is_an_exact_alias_for_always_approve() {
+    fn yolo_is_codex_compatible_and_distinct_from_always_approve() {
         use clap::CommandFactory;
 
         let help = PagerArgs::command().render_long_help().to_string();
         assert!(help.contains("--always-approve"));
+        assert!(help.contains("--dangerously-bypass-approvals-and-sandbox"));
         assert!(help.contains("--yolo"));
 
-        for flag in [
-            "--always-approve",
-            "--yolo",
-            "--dangerously-skip-permissions",
-        ] {
-            let args = PagerArgs::try_parse_from(["ate", flag]).expect("alias parses");
-            assert!(
-                args.always_approve_for_launch(),
-                "{flag} must enable the same mode"
-            );
+        let always =
+            PagerArgs::try_parse_from(["ate", "--always-approve"]).expect("always-approve parses");
+        assert!(always.always_approve_for_launch());
+        assert!(!always.danger_full_access_for_launch());
+
+        for flag in ["--yolo", "--dangerously-bypass-approvals-and-sandbox"] {
+            let danger = PagerArgs::try_parse_from(["ate", flag]).expect("danger flag parses");
+            assert!(danger.always_approve_for_launch());
+            assert!(danger.danger_full_access_for_launch());
         }
 
-        for flag in ["--always-approve", "--yolo"] {
+        let danger_with_mode =
+            PagerArgs::try_parse_from(["ate", "--yolo", "--permission-mode", "auto"])
+                .expect("danger flag with permission mode parses");
+        assert_eq!(danger_with_mode.permission_mode_flag_for_launch(), None);
+
+        for flag in ["--yolo", "--dangerously-bypass-approvals-and-sandbox"] {
             let args = PagerArgs::try_parse_from(["ate", "agent", flag, "stdio"])
-                .expect("agent alias parses");
+                .expect("agent danger flag parses");
+            assert!(args.danger_full_access_for_launch());
             let Some(Command::Agent(agent)) = args.command else {
                 panic!("expected agent command");
             };
             assert!(agent.always_approve_for_launch());
+            assert!(agent.danger_full_access_for_launch());
         }
 
-        let err = PagerArgs::try_parse_from(["ate", "--dangerously-bypass-approvals-and-sandbox"])
-            .expect_err("danger-full-access is not silently exposed by the yolo alias");
-        assert_eq!(err.kind(), clap::error::ErrorKind::UnknownArgument);
+        for argv in [
+            vec!["ate", "--always-approve", "--yolo"],
+            vec!["ate", "--sandbox", "workspace", "--yolo"],
+        ] {
+            let err = PagerArgs::try_parse_from(argv).expect_err("conflicting modes must fail");
+            assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+        }
     }
 
     #[test]

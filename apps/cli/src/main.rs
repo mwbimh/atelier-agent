@@ -761,6 +761,7 @@ const PLUGIN_DIR_LEADER_WARNING: &str = "atelier: --plugin-dir is ignored in lea
 async fn run_agent_command(
     agent_args: Box<atelier_pager::app::AgentArgs>,
     top_level_always_approve: bool,
+    top_level_danger_full_access: bool,
     permission_mode_flag: Option<String>,
     trust: bool,
     disable_web_search: bool,
@@ -818,9 +819,14 @@ async fn run_agent_command(
         .and_then(atelier_shell::sampling::types::parse_canonical_effort_token);
     let requested_always_approve =
         top_level_always_approve || agent_args.always_approve_for_launch();
+    let danger_full_access =
+        top_level_danger_full_access || agent_args.danger_full_access_for_launch();
+    let permission_mode_flag = (!danger_full_access)
+        .then_some(permission_mode_flag.as_deref())
+        .flatten();
     let launch_yolo = atelier_shell::util::config::effective_yolo_for_launch(
         requested_always_approve,
-        permission_mode_flag.as_deref(),
+        permission_mode_flag,
         None,
     );
     if let Some(warning) = launch_yolo.blocked_warning {
@@ -829,7 +835,7 @@ async fn run_agent_command(
     agent_config.default_yolo_mode = launch_yolo.yolo;
     agent_config.default_auto_mode = atelier_shell::util::config::effective_auto_for_launch(
         requested_always_approve,
-        permission_mode_flag.as_deref(),
+        permission_mode_flag,
         None,
     );
     agent_config.client_version = Some(PAGER_CLIENT_VERSION.to_string());
@@ -1546,6 +1552,34 @@ fn run_internal_submode() -> Option<i32> {
     }
 }
 #[inline(never)]
+fn startup_sandbox_selection(
+    args: &PagerArgs,
+    saved_profile: Option<&str>,
+) -> atelier_pager::app::cli::SandboxStartup {
+    if args.danger_full_access_for_launch() {
+        atelier_pager::app::cli::SandboxStartup::Apply(Some("off".to_owned()))
+    } else {
+        args.startup_sandbox_profile(saved_profile)
+    }
+}
+
+fn validate_danger_full_access_launch(args: &PagerArgs) -> Result<()> {
+    if !args.danger_full_access_for_launch() {
+        return Ok(());
+    }
+    let agent_always_approve = matches!(
+        &args.command,
+        Some(Command::Agent(agent)) if agent.always_approve
+    );
+    if args.always_approve || agent_always_approve {
+        anyhow::bail!("--yolo conflicts with --always-approve");
+    }
+    if args.sandbox.is_some() {
+        anyhow::bail!("--yolo conflicts with --sandbox");
+    }
+    Ok(())
+}
+
 async fn async_main(mut args: PagerArgs) -> Result<()> {
     let _ = rustls::crypto::ring::default_provider().install_default();
     if let Some(ref mode) = args.compaction_mode {
@@ -1579,8 +1613,21 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
     if let Some(Command::Wrap(ref wrap_args)) = args.command {
         return atelier_pager::wrap_cmd::run(wrap_args);
     }
+    validate_danger_full_access_launch(&args)?;
+    let danger_full_access = args.danger_full_access_for_launch();
+    if danger_full_access {
+        if let Some(reason) = atelier_workspace::permission::resolution::yolo_disabled_by_policy() {
+            anyhow::bail!(
+                "--yolo/--dangerously-bypass-approvals-and-sandbox is blocked by managed policy: {reason}"
+            );
+        }
+        // Codex-compatible YOLO is a process-start policy: approval Never plus
+        // DangerFullAccess. It never means a per-command sandbox override and
+        // does not request Administrator privileges.
+        unsafe { std::env::set_var("ATELIER_SANDBOX_BACKEND", "unsafe") };
+    }
     let saved_profile = args.saved_resume_profile();
-    let sandbox_profile_arg = match args.startup_sandbox_profile(saved_profile.as_deref()) {
+    let sandbox_profile_arg = match startup_sandbox_selection(&args, saved_profile.as_deref()) {
         atelier_pager::app::cli::SandboxStartup::Apply(profile) => profile,
         atelier_pager::app::cli::SandboxStartup::Conflict { requested, saved } => {
             eprintln!(
@@ -1636,6 +1683,7 @@ fn run_async_command_loop(mut args: PagerArgs) -> Pin<Box<dyn Future<Output = Re
         None
     };
     let top_level_always_approve = args.always_approve_for_launch();
+    let top_level_danger_full_access = args.danger_full_access_for_launch();
     let permission_mode_flag = args.permission_mode_flag.clone();
     let trust = args.trust;
     let disable_web_search = args.disable_web_search;
@@ -1650,6 +1698,7 @@ fn run_async_command_loop(mut args: PagerArgs) -> Pin<Box<dyn Future<Output = Re
         run_agent_command(
             agent_args,
             top_level_always_approve,
+            top_level_danger_full_access,
             permission_mode_flag,
             trust,
             disable_web_search,
@@ -1688,6 +1737,7 @@ async fn legacy_async_command_loop(mut args: PagerArgs) -> Result<()> {
                 return run_agent_command(
                     agent_args,
                     args.always_approve_for_launch(),
+                    args.danger_full_access_for_launch(),
                     args.permission_mode_flag.clone(),
                     args.trust,
                     args.disable_web_search,
@@ -1762,14 +1812,17 @@ async fn legacy_async_command_loop(mut args: PagerArgs) -> Result<()> {
     )?;
     if let Some(prompt) = headless_prompt {
         init_tracing_simple(HEADLESS_ENTRYPOINT);
+        let permission_mode_flag = args.permission_mode_flag_for_launch();
         let launch_yolo = atelier_shell::util::config::effective_yolo_for_launch(
             args.always_approve_for_launch(),
-            args.permission_mode_flag.as_deref(),
+            permission_mode_flag,
             None,
         );
         if let Some(warning) = launch_yolo.blocked_warning {
             eprintln!("atelier: {warning}");
         }
+        let headless_permission_mode_flag =
+            args.permission_mode_flag_for_launch().map(str::to_owned);
         let json_schema = args
             .json_schema
             .as_deref()
@@ -1811,7 +1864,7 @@ async fn legacy_async_command_loop(mut args: PagerArgs) -> Result<()> {
                 allow_rules: args.allow_rules.clone(),
                 deny_rules: args.deny_rules.clone(),
                 max_turns: args.max_turns,
-                permission_mode_flag: args.permission_mode_flag.clone(),
+                permission_mode_flag: headless_permission_mode_flag,
                 reasoning_effort: args.reasoning_effort.clone(),
                 self_verify: args.self_verify,
                 best_of_n: args.best_of_n,
@@ -1913,6 +1966,43 @@ async fn signal_leaders_to_relaunch(installed_version: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn codex_yolo_forces_danger_full_access_while_always_approve_preserves_sandbox() {
+        let yolo = PagerArgs::try_parse_from(["ate", "--yolo"]).expect("yolo parses");
+        assert_eq!(
+            startup_sandbox_selection(&yolo, Some("workspace")),
+            atelier_pager::app::cli::SandboxStartup::Apply(Some("off".to_owned()))
+        );
+
+        let always = PagerArgs::try_parse_from(["ate", "--always-approve"]).expect("always parses");
+        assert_eq!(
+            startup_sandbox_selection(&always, Some("workspace")),
+            atelier_pager::app::cli::SandboxStartup::Apply(Some("workspace".to_owned()))
+        );
+
+        let agent_yolo = PagerArgs::try_parse_from(["ate", "agent", "--yolo", "stdio"])
+            .expect("agent yolo parses");
+        assert_eq!(
+            startup_sandbox_selection(&agent_yolo, Some("strict")),
+            atelier_pager::app::cli::SandboxStartup::Apply(Some("off".to_owned()))
+        );
+    }
+
+    #[test]
+    fn nested_agent_yolo_rejects_cross_scope_always_approve_and_sandbox_flags() {
+        for argv in [
+            vec!["ate", "--always-approve", "agent", "--yolo", "stdio"],
+            vec!["ate", "--sandbox", "workspace", "agent", "--yolo", "stdio"],
+            vec!["ate", "--yolo", "agent", "--always-approve", "stdio"],
+        ] {
+            let args = PagerArgs::try_parse_from(argv).expect("cross-scope flags parse");
+            assert!(
+                validate_danger_full_access_launch(&args).is_err(),
+                "danger-full-access conflicts must fail across command scopes",
+            );
+        }
+    }
+
     #[cfg(windows)]
     #[test]
     fn public_sandbox_entrypoint_is_detected_before_pager_parsing() {

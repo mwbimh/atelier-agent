@@ -521,14 +521,19 @@ pub async fn run(args: PagerArgs) -> anyhow::Result<bool> {
     let remote_permission_mode = local_runtime_settings
         .as_ref()
         .and_then(|s| s.permission_mode.as_deref());
+    let danger_full_access = args.danger_full_access_for_launch();
+    let cli_permission_mode = args.permission_mode_flag_for_launch();
+    let remote_permission_mode = (!danger_full_access)
+        .then_some(remote_permission_mode)
+        .flatten();
     let launch_yolo = atelier_shell::util::config::effective_yolo_for_launch(
         args.always_approve_for_launch(),
-        args.permission_mode_flag.as_deref(),
+        cli_permission_mode,
         remote_permission_mode,
     );
     let launch_auto = atelier_shell::util::config::effective_auto_for_launch(
         args.always_approve_for_launch(),
-        args.permission_mode_flag.as_deref(),
+        cli_permission_mode,
         remote_permission_mode,
     );
     let connect_flags = crate::acp::ConnectFlags {

@@ -141,16 +141,27 @@ Unix applies the sandbox to the **entire ate process** at startup using kernel p
 
 The session's **base sandbox profile** is fixed for the life of the session. Atelier never silently retries a failed sandbox command on the host. On Windows, however, the terminal tool can explicitly request `sandbox_permissions: "require_escalated"` with a non-empty `justification`. Atelier then asks the user for a separate, mandatory approval. If approved, only that command runs as the current host user; the next command returns to the base sandbox. This does not request Administrator privileges or automatically trigger UAC.
 
-If an ordinary Windows sandbox command fails with a recognized sandbox-denial error, Atelier may offer the same one-command host retry. Rejection, cancellation, headless execution, or an unavailable approval channel leaves the command denied. Always-approve/YOLO never approves this boundary change.
+If an ordinary Windows sandbox command fails with a recognized sandbox-denial error, Atelier may offer the same one-command host retry. Rejection, cancellation, headless execution, or an unavailable approval channel leaves the command denied. `--always-approve` never approves this boundary change. `--yolo` is different: it selects DangerFullAccess at process startup, so there is no application-sandbox boundary to override.
 
 Interactive Atelier clients can enable a separate session control with
 `/sandbox-approvals on`. While enabled, every sandbox override request receives
 a new automatic **Allow once** decision. `/sandbox-approvals off` restores the
 per-request prompt. This does not persist, does not alter the base sandbox, and
-does not turn Always-approve/YOLO into host execution. Managed policy may block
+does not turn Always-Approve into host execution. Managed policy may block
 the control; generic, proxy, and headless clients cannot enable it.
 
-To disable sandboxing for every command, both values must still be selected before starting a new `ate` process:
+For a one-invocation Codex-compatible bypass, use:
+
+```powershell
+ate --yolo
+# Exact long form:
+ate --dangerously-bypass-approvals-and-sandbox
+```
+
+This means approval Never plus DangerFullAccess for the entire process. It runs
+as the user who launched Atelier, not automatically as Administrator. To select
+the same DangerFullAccess sandbox state explicitly while configuring approval
+behavior separately, use:
 
 ```powershell
 $env:ATELIER_SANDBOX = "off"
@@ -166,10 +177,11 @@ profile = "off"
 backend = "unsafe"
 ```
 
-Exit the old process and create a new session. An existing or resumed session
-keeps its original base profile and cannot be switched to `off` in place. A
-user-approved Windows `require_escalated` command is a one-command override, not
-a profile change.
+Exit the old process and create a new session to change ordinary sandbox
+profiles. An explicit `--yolo` invocation is the sole CLI danger-full-access
+exception and also applies when resuming: it does not rewrite the saved profile,
+but that process runs without the application sandbox. A user-approved Windows
+`require_escalated` command is a one-command override, not a profile change.
 
 ---
 
@@ -190,6 +202,8 @@ Resuming will **not** change a session's sandbox:
   footgun (it could widen access the session was meant to be confined to, or
   break a session that relied on broader access). Start a new session to use a
   different profile.
+- `--yolo` is an explicit dangerous exception: the resumed process uses
+  DangerFullAccess without rewriting the session's saved profile.
 
 Profile resolution order for a **new** session:
 

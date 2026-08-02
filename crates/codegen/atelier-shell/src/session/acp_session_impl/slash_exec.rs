@@ -1,7 +1,7 @@
 use super::*;
 
 impl SessionActor {
-    /// Execute a built-in slash command (e.g. `/compact`, `/yolo`).
+    /// Execute a built-in slash command (e.g. `/compact`, `/always-approve`).
     pub(super) async fn execute_builtin_slash_command(
         self: &Arc<Self>,
         action: BuiltinAction,
@@ -46,7 +46,7 @@ impl SessionActor {
                     session_id = %self.session_info.id.0,
                     requested = enabled,
                     enabled = actual,
-                    "YOLO mode {status} via /yolo slash command",
+                    "Always-approve mode {status} via /always-approve slash command",
                 );
                 ok_end_turn(0, None)
             }

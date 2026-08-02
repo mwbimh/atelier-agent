@@ -225,7 +225,7 @@ running the active mode again turns it off:
 
 | Command | When off | When already on |
 |---|---|---|
-| `/always-approve` (`/yolo`) | Skip ordinary tool permission prompts while preserving the session sandbox | Back to ask |
+| `/always-approve` | Skip ordinary tool permission prompts while preserving the session sandbox | Back to ask |
 | `/auto` | Classifier approves safe tools (dangerous ones may still prompt) | Back to ask |
 
 Running the other command while one mode is on **switches** modes (for example,
@@ -236,13 +236,14 @@ can also change mode with `Shift+Tab` (cycle), `Ctrl+O`, or `/settings`.
 
 ```
 /always-approve
-/yolo
 /auto
 ```
 
-`/yolo` is an exact alias for `/always-approve`; the CLI flags `--yolo` and
-`--always-approve` have the same meaning. They do not disable the base sandbox
-and do not authorize host execution.
+There is deliberately no runtime `/yolo` command. CLI `--yolo` is the
+Codex-compatible startup shortcut for
+`--dangerously-bypass-approvals-and-sandbox`: approval policy Never plus
+DangerFullAccess for the whole process. `/always-approve` only changes ordinary
+Tool approval and preserves the base sandbox.
 
 ### `/sandbox-approvals <on|off>`
 

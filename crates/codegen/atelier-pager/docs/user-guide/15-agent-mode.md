@@ -37,7 +37,8 @@ These options belong to the `ate agent` command and apply to every mode. Pass th
 | Flag                       | Description                                                       |
 | -------------------------- | ---------------------------------------------------------------- |
 | `-m, --model <MODEL>`      | Set a configured model key (for example, `example/deepseek-v4-flash`). |
-| `--always-approve`         | Auto-approve ordinary tool execution while preserving the sandbox. (Exact alias: `--yolo`.) |
+| `--always-approve`         | Auto-approve ordinary Tool execution while preserving the sandbox. |
+| `--yolo`                   | Codex-compatible alias for `--dangerously-bypass-approvals-and-sandbox`: approval Never + DangerFullAccess. |
 
 ---
 

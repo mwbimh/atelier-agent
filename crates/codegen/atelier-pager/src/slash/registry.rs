@@ -790,12 +790,12 @@ mod tests {
         assert!(reg.get("multi").is_some());
     }
 
-    /// Builds a registry with `always-approve` (+ a `yolo` alias to cover
+    /// Builds a registry with `always-approve` (+ a synthetic alias to cover
     /// alias key handling), `auto`, and a bystander `exit`.
     fn permission_mode_registry() -> CommandRegistry {
         let always_approve: Arc<dyn SlashCommand> = Arc::new(DummyCommand {
             name: "always-approve",
-            aliases: &["yolo"],
+            aliases: &["approve-all"],
         });
         let auto: Arc<dyn SlashCommand> = Arc::new(DummyCommand {
             name: "auto",
@@ -832,7 +832,7 @@ mod tests {
             "typed invocation must still resolve for dispatch"
         );
         assert!(
-            reg.get_for_dispatch("yolo").is_some(),
+            reg.get_for_dispatch("approve-all").is_some(),
             "aliases of a menu-hidden command must still resolve for dispatch"
         );
         // Bystanders unaffected.

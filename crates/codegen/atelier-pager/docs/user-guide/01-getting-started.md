@@ -133,10 +133,11 @@ The `@` operator opens a fuzzy file picker. By default it respects `.gitignore` 
 By default, Atelier asks for permission before executing shell commands or editing files. You can approve individually or toggle always-approve mode:
 
 - Press `Ctrl+O` to toggle always-approve mode
-- Use `--always-approve` or its exact alias `--yolo` at launch
-- Type `/always-approve` or `/yolo` in the prompt to toggle the same mode
+- Use `--always-approve` to skip ordinary Tool prompts while preserving the sandbox
+- Type `/always-approve` in the prompt to toggle that mode
+- Use `--yolo` only when you explicitly want Codex-compatible approval bypass plus DangerFullAccess for the entire process
 
-Always-approve skips ordinary tool prompts but preserves the configured sandbox. Use `/sandbox-approvals on` in an interactive Windows session if you separately want every one-command host-execution request to receive an automatic **Allow once** decision.
+There is no runtime `/yolo` toggle because the application sandbox is selected at process startup. Use `/sandbox-approvals on` in an interactive Windows sandbox session if you instead want every one-command host-execution request to receive an automatic **Allow once** decision.
 
 ---
 

@@ -62,9 +62,9 @@ pub(super) const BUILTIN_COMMANDS: &[BuiltinCommand] = &[
     },
     BuiltinCommand {
         name: "always-approve",
-        description: "Toggle always-approve mode (skip all permission prompts)",
+        description: "Toggle always-approve mode (skip ordinary Tool prompts; keep sandbox)",
         argument_hint: Some("on|off"),
-        aliases: &["yolo"],
+        aliases: &[],
         gate: BuiltinGate::AlwaysOn,
         resolve: |args| BuiltinAction::SetYolo {
             enabled: !matches!(
@@ -1261,8 +1261,8 @@ mod tests {
             Some(("compact", "keep auth")),
         );
         assert_eq!(
-            parse_slash_prefix(&[text_block("/yolo")]),
-            Some(("yolo", "")),
+            parse_slash_prefix(&[text_block("/unknown")]),
+            Some(("unknown", "")),
         );
     }
 
@@ -1432,14 +1432,16 @@ mod tests {
     }
 
     #[test]
-    fn yolo_alias_resolves_to_always_approve() {
-        // /yolo should resolve via alias to the always-approve command
+    fn yolo_is_not_a_runtime_alias_for_always_approve() {
         let blocks = vec![text_block("/yolo on")];
-        let outcome = resolve(blocks, &[], all_gated(), SkillSlashRewrite::default()).unwrap_err();
-        assert!(matches!(
-            outcome,
-            SlashCommandOutcome::Builtin(BuiltinAction::SetYolo { enabled: true })
-        ));
+        let outcome = resolve(blocks, &[], all_gated(), SkillSlashRewrite::default());
+        assert!(
+            !matches!(
+                outcome,
+                Err(SlashCommandOutcome::Builtin(BuiltinAction::SetYolo { .. }))
+            ),
+            "runtime /yolo must not toggle ordinary Tool auto-approval",
+        );
     }
 
     // ── resolve ─────────────────────────────────────────────────────
