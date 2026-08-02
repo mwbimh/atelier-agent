@@ -195,15 +195,19 @@ metadata, Atelier keeps the model selectable with `chat_completions` and a
 /wire-api
 /wire-api list
 /wire-api get <provider/model>
-/wire-api wire <provider/model> <chat_completions|responses|messages|default>
-/wire-api override <provider/model> <wire-api|default> [json-payload]
+/wire-api set <provider/model> <inherited|chat_completions|responses|messages>
+/wire-api payload <provider/model> <json-object>
 /wire-api reset <provider/model>
 /wire-api test <provider/model> [execute]
 ```
 
-List and inspection commands render concise summaries instead of internal JSON.
-Use `execute` to run the test through the Runtime sampler rather than only
-validating configuration:
+`set` changes only the exact protocol and preserves the exact payload.
+`payload` changes only the exact non-credential payload and preserves the exact
+protocol. Use `{}` to clear payload fields without changing the protocol.
+`reset` removes the complete exact Provider/model override and is offered only
+when one exists. List and inspection commands render concise summaries instead
+of internal JSON. Use `execute` to run the test through the Runtime sampler
+rather than only validating configuration:
 
 ```text
 /wire-api test example/deepseek-v4-flash execute

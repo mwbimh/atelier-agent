@@ -1646,35 +1646,17 @@ impl ProviderRegistry {
         key: &ModelKey,
         wire_api: Option<WireApi>,
     ) -> Result<(), ProviderError> {
-        let stored = self
-            .state
-            .models
-            .get_mut(&key.to_string())
-            .ok_or_else(|| ProviderError::ModelNotFound(key.to_string()))?;
-        stored.descriptor.wire_api = wire_api;
-        let profile = self
-            .state
-            .model_profiles
-            .entry(key.to_string())
-            .or_default();
-        profile.wire_api = wire_api;
-        if let Some(wire_api) = wire_api {
-            self.state
-                .model_provider_overrides
-                .entry(key.to_string())
-                .or_insert_with(ProviderModelOverride::empty)
-                .wire_api = Some(wire_api);
-        } else if let Some(override_config) = self
+        if !self.state.models.contains_key(&key.to_string()) {
+            return Err(ProviderError::ModelNotFound(key.to_string()));
+        }
+        let mut exact = self
             .state
             .model_provider_overrides
-            .get_mut(&key.to_string())
-        {
-            override_config.wire_api = None;
-            if override_config.payload.is_empty() {
-                self.state.model_provider_overrides.remove(&key.to_string());
-            }
-        }
-        Ok(())
+            .get(&key.to_string())
+            .cloned()
+            .unwrap_or_else(ProviderModelOverride::empty);
+        exact.wire_api = wire_api;
+        self.set_model_provider_override(key, exact)
     }
 
     pub fn set_model_provider_override(

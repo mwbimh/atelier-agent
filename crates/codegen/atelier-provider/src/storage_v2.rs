@@ -536,14 +536,14 @@ fn apply_missing_profile(
 }
 
 fn apply_exact_profile(descriptor: &mut ModelDescriptor, profile: &ModelProfileDisk) {
+    // `wire_api` and `payload` are exact Provider/model request overrides. Keep
+    // them out of the inherited descriptor so reset can reveal remote/common
+    // metadata immediately and after reload.
     if let Some(display_name) = profile.display_name.as_ref() {
         descriptor.display_name = display_name.clone();
     }
     if profile.description.is_some() {
         descriptor.description = profile.description.clone();
-    }
-    if profile.wire_api.is_some() {
-        descriptor.wire_api = profile.wire_api;
     }
     if profile.context_window.is_some() {
         descriptor.context_window = profile.context_window;

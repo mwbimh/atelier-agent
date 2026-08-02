@@ -193,16 +193,19 @@ Inspect and change model-level Wire API settings:
 ```text
 /wire-api list
 /wire-api get <provider/model>
-/wire-api wire <provider/model> <chat_completions|responses|messages|default>
-/wire-api override <provider/model> <wire-api|default> [json-payload]
+/wire-api set <provider/model> <inherited|chat_completions|responses|messages>
+/wire-api payload <provider/model> <json-object>
 /wire-api reset <provider/model>
 /wire-api test <provider/model> [execute]
 ```
 
 Bare `/wire-api` opens the interactive picker. List and inspection results are
 rendered as user-readable summaries; internal RPC names and JSON are not shown.
-Provider deletion and Wire API reset open a dedicated confirmation modal whose
-safe default is Cancel; no trailing confirmation word is required.
+`set` changes only the exact protocol field, while `payload` changes only the
+exact non-credential request payload. `reset` is offered only for models with
+an exact Provider/model override and restores inherited values. Provider
+deletion and Wire API reset open a dedicated confirmation modal whose safe
+default is Cancel; no trailing confirmation word is required.
 
 ### `/effort <level>`
 

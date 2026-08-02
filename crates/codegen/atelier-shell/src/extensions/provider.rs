@@ -145,6 +145,31 @@ struct ModelOverrideParams {
     wire_api: Option<WireApi>,
     #[serde(default)]
     payload: serde_json::Map<String, serde_json::Value>,
+    #[serde(default)]
+    preserve_wire_api: bool,
+    #[serde(default)]
+    preserve_payload: bool,
+}
+
+fn merge_model_override_patch(
+    existing: ProviderModelOverride,
+    params: ModelOverrideParams,
+) -> Result<ProviderModelOverride, &'static str> {
+    if params.preserve_wire_api && params.preserve_payload {
+        return Err("preserveWireApi and preservePayload cannot both be true");
+    }
+    Ok(ProviderModelOverride {
+        wire_api: if params.preserve_wire_api {
+            existing.wire_api
+        } else {
+            params.wire_api
+        },
+        payload: if params.preserve_payload {
+            existing.payload
+        } else {
+            params.payload
+        },
+    })
 }
 
 #[derive(Debug, Deserialize)]
@@ -752,12 +777,33 @@ fn provider_list_payload(registry: &ProviderRegistry) -> serde_json::Value {
     serde_json::json!({ "providers": providers })
 }
 
+fn model_list_payload(registry: &ProviderRegistry) -> Result<serde_json::Value, ProviderError> {
+    let snapshot = registry.snapshot();
+    let models = snapshot
+        .models
+        .iter()
+        .map(|model| {
+            let resolved = snapshot.resolve_wire_api(&model.key)?;
+            let exact = snapshot
+                .model_provider_overrides
+                .get(&model.key.to_string());
+            Ok(serde_json::json!({
+                "model": model,
+                "modelKey": model.key.to_string(),
+                "wireApi": resolved.wire_api,
+                "wireApiSource": format!("{:?}", resolved.source),
+                "hasExactOverride": exact.is_some(),
+                "payloadKeyCount": exact.map(|value| value.payload.len()).unwrap_or(0),
+            }))
+        })
+        .collect::<Result<Vec<_>, ProviderError>>()?;
+    Ok(serde_json::json!({ "models": models }))
+}
+
 fn list(args: &acp::ExtRequest) -> ExtResult {
     let registry = registry().map_err(to_acp_error)?;
     if args.method.as_ref() == MODEL_LIST || args.method.as_ref() == "atelier/model/list" {
-        return to_raw_response(&serde_json::json!({
-            "models": registry.snapshot().models,
-        }));
+        return to_raw_response(&model_list_payload(&registry).map_err(to_acp_error)?);
     }
     to_raw_response(&provider_list_payload(&registry))
 }
@@ -825,14 +871,13 @@ async fn set_model_provider_override(agent: &MvpAgent, args: &acp::ExtRequest) -
     let params: ModelOverrideParams = parse_params(args)?;
     let key = ModelKey::parse(&params.model_key).map_err(to_acp_error)?;
     let mut registry = registry().map_err(to_acp_error)?;
+    let existing = registry
+        .model_provider_override(&key)
+        .unwrap_or_else(ProviderModelOverride::empty);
+    let merged = merge_model_override_patch(existing, params)
+        .map_err(|error| acp::Error::invalid_params().data(error))?;
     registry
-        .set_model_provider_override(
-            &key,
-            ProviderModelOverride {
-                wire_api: params.wire_api,
-                payload: params.payload,
-            },
-        )
+        .set_model_provider_override(&key, merged)
         .map_err(to_acp_error)?;
     persist(&registry).map_err(to_acp_error)?;
     reload_live_catalog(agent).await?;
@@ -1459,7 +1504,8 @@ fn to_acp_error(error: ProviderError) -> acp::Error {
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_credential_update, chatgpt_account_id, delete_replaced_provider_credential,
+        ModelOverrideParams, apply_credential_update, chatgpt_account_id,
+        delete_replaced_provider_credential, merge_model_override_patch, model_list_payload,
         oauth_chatgpt_account_id, pair_test_runtime_request, parse_model_key,
         preserve_existing_provider_fields, provider_list_payload, provider_probe_outcome,
         redacted_model_override, reject_unconfirmed_provider_replacement, select_oauth_method,
@@ -1866,6 +1912,58 @@ mod tests {
     }
 
     #[test]
+    fn model_list_payload_reports_resolved_protocol_source_and_exact_override_state() {
+        let key = ModelKey::new("proxy", "model").unwrap();
+        let mut registry = ProviderRegistry::in_memory();
+        registry
+            .upsert_provider(ProviderConfig {
+                id: "proxy".into(),
+                display_name: "Proxy".into(),
+                auth: ProviderAuth::Bearer,
+                base_url: Url::parse("https://provider.example/v1").unwrap(),
+                credential: CredentialRef::None,
+                discovery: atelier_provider::ProviderDiscovery::Disabled,
+                extra_headers: BTreeMap::new(),
+                enabled: true,
+            })
+            .unwrap();
+        registry
+            .upsert_model(ModelDescriptor {
+                key: key.clone(),
+                display_name: "Model".into(),
+                description: None,
+                wire_api: Some(WireApi::Messages),
+                context_window: Some(32_000),
+                capabilities: ModelCapabilities::default(),
+                reasoning_efforts: Vec::new(),
+                default_effort: None,
+                fast_mode: false,
+                source: ModelSource::Static,
+                enabled: true,
+            })
+            .unwrap();
+        registry
+            .set_model_provider_override(
+                &key,
+                ProviderModelOverride {
+                    wire_api: Some(WireApi::Responses),
+                    payload: serde_json::from_value(serde_json::json!({ "temperature": 0.2 }))
+                        .unwrap(),
+                },
+            )
+            .unwrap();
+
+        let payload = model_list_payload(&registry).unwrap();
+        let model = &payload["models"][0];
+        assert_eq!(model["modelKey"], "proxy/model");
+        assert_eq!(model["wireApi"], "responses");
+        assert_eq!(model["wireApiSource"], "ProviderModelOverride");
+        assert_eq!(model["hasExactOverride"], true);
+        assert_eq!(model["payloadKeyCount"], 1);
+        assert_eq!(model["model"]["wire_api"], "messages");
+    }
+
+    #[test]
     fn pair_test_runtime_request_uses_model_override_config() {
         let key = ModelKey::new("proxy", "model").unwrap();
         let mut registry = ProviderRegistry::in_memory();
@@ -1922,6 +2020,65 @@ mod tests {
         assert_eq!(config.extra_headers["x-provider"], "enabled");
         assert_eq!(request.max_output_tokens, None);
         assert_eq!(request.items.len(), 1);
+    }
+
+    #[test]
+    fn model_override_patch_can_change_wire_api_without_clearing_payload() {
+        let existing = ProviderModelOverride {
+            wire_api: Some(WireApi::ChatCompletions),
+            payload: serde_json::from_value(serde_json::json!({ "temperature": 0.2 })).unwrap(),
+        };
+        let merged = merge_model_override_patch(
+            existing,
+            ModelOverrideParams {
+                model_key: "proxy/model".to_owned(),
+                wire_api: Some(WireApi::Responses),
+                payload: serde_json::Map::new(),
+                preserve_wire_api: false,
+                preserve_payload: true,
+            },
+        )
+        .unwrap();
+        assert_eq!(merged.wire_api, Some(WireApi::Responses));
+        assert_eq!(merged.payload["temperature"], 0.2);
+    }
+
+    #[test]
+    fn model_override_patch_can_change_payload_without_clearing_wire_api() {
+        let existing = ProviderModelOverride {
+            wire_api: Some(WireApi::Messages),
+            payload: serde_json::Map::new(),
+        };
+        let merged = merge_model_override_patch(
+            existing,
+            ModelOverrideParams {
+                model_key: "proxy/model".to_owned(),
+                wire_api: None,
+                payload: serde_json::from_value(serde_json::json!({ "temperature": 0.4 })).unwrap(),
+                preserve_wire_api: true,
+                preserve_payload: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(merged.wire_api, Some(WireApi::Messages));
+        assert_eq!(merged.payload["temperature"], 0.4);
+    }
+
+    #[test]
+    fn model_override_patch_rejects_preserving_both_fields() {
+        assert!(
+            merge_model_override_patch(
+                ProviderModelOverride::empty(),
+                ModelOverrideParams {
+                    model_key: "proxy/model".to_owned(),
+                    wire_api: None,
+                    payload: serde_json::Map::new(),
+                    preserve_wire_api: true,
+                    preserve_payload: true,
+                },
+            )
+            .is_err()
+        );
     }
 
     #[test]

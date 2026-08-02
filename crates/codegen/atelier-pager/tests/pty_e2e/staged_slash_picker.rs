@@ -7,7 +7,7 @@ use super::common::*;
 /// dropdown renderer, and mock Provider catalog.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore]
-async fn wire_api_model_stage_shows_the_full_catalog() {
+async fn wire_api_set_model_stage_shows_the_full_catalog() {
     let content = ContentController::start_with_models(vec![
         MockModel::new("alpha-model"),
         MockModel::new("grok-imagine-video-preview"),
@@ -23,7 +23,7 @@ async fn wire_api_model_stage_shows_the_full_catalog() {
     harness
         .wait_for_text(WELCOME_SCREEN_SENTINEL, WELCOME_TIMEOUT)
         .expect("welcome text");
-    inject_keys_paced(&mut harness, b"/wire-api wire ");
+    inject_keys_paced(&mut harness, b"/wire-api set ");
 
     harness
         .wait_for_text("mock/alpha-model", Duration::from_secs(10))
@@ -93,6 +93,21 @@ async fn provider_delete_uses_a_default_safe_confirmation_modal() {
 #[ignore]
 async fn wire_api_reset_uses_reset_language_and_confirmation_modal() {
     let content = ContentController::start().await.expect("start content");
+    let provider_path = content.home().join(".atelier").join("providers.toml");
+    let mut registry = atelier_provider::ProviderRegistry::load_or_create(provider_path)
+        .expect("load mock Provider registry");
+    let model_key = atelier_provider::ModelKey::new("mock", "test-model").unwrap();
+    registry
+        .set_model_provider_override(
+            &model_key,
+            atelier_provider::ProviderModelOverride {
+                wire_api: Some(atelier_provider::WireApi::Messages),
+                payload: serde_json::Map::new(),
+            },
+        )
+        .expect("seed exact Wire API override");
+    registry.save().expect("persist exact Wire API override");
+
     let binary = pager_binary().expect("resolve pager binary");
     let mut harness =
         PtyHarness::spawn_with_content(&binary, DEFAULT_ROWS, DEFAULT_COLS, &content, &[])
@@ -102,6 +117,20 @@ async fn wire_api_reset_uses_reset_language_and_confirmation_modal() {
     harness
         .wait_for_text(WELCOME_SCREEN_SENTINEL, WELCOME_TIMEOUT)
         .expect("welcome text");
+    inject_keys_paced(&mut harness, b"/wire-api reset ");
+    harness
+        .wait_for_text("mock/test-model", Duration::from_secs(10))
+        .expect("exact override appears in reset picker");
+    let picker = harness.screen_contents();
+    assert!(!picker.contains("mock/alpha-model"), "{picker}");
+    assert!(
+        !picker.contains("mock/grok-imagine-video-preview"),
+        "{picker}"
+    );
+    harness
+        .inject_keys(b"\x15")
+        .expect("clear reset picker input");
+
     inject_keys_paced(&mut harness, b"/wire-api reset mock/test-model");
     harness.inject_keys(b"\r").expect("open reset confirmation");
 
@@ -114,6 +143,9 @@ async fn wire_api_reset_uses_reset_language_and_confirmation_modal() {
             Duration::from_secs(10),
         )
         .expect("reset consequence");
+    harness
+        .wait_for_text("After: chat_completions", Duration::from_secs(10))
+        .expect("reset confirmation shows the inherited protocol");
     let screen = harness.screen_contents();
     assert!(screen.contains("Reset override"), "{screen}");
     assert!(

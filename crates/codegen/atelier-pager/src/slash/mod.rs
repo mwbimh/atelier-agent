@@ -2617,11 +2617,11 @@ mod tests {
     }
 
     #[test]
-    fn staged_argument_completion_does_not_filter_models_by_consumed_wire_subcommand() {
+    fn staged_argument_completion_does_not_filter_models_by_consumed_set_subcommand() {
         let mut ctrl = SlashController::with_builtins(std::path::PathBuf::from("."));
         let state = SlashState::default();
         let models = staged_model_catalog();
-        let text = "/wire-api wire ";
+        let text = "/wire-api set ";
 
         ctrl.refresh(&state, text, text.len(), &models);
 
@@ -2642,7 +2642,7 @@ mod tests {
         let mut ctrl = SlashController::with_builtins(std::path::PathBuf::from("."));
         let state = SlashState::default();
         let models = staged_model_catalog();
-        let text = "/wire-api wire proxy";
+        let text = "/wire-api set proxy";
 
         ctrl.refresh(&state, text, text.len(), &models);
 

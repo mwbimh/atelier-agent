@@ -53,10 +53,10 @@ fn format_runtime_extension_response(method: &str, response: &str) -> String {
         "atelier/role/set_fast_mode" => format_status_response("Role fast mode updated", result),
         "atelier/model/update_wire_api" => format_status_response("Wire API updated", result),
         "atelier/model_provider_override/set" => {
-            format_status_response("Model override updated", result)
+            format_status_response("Exact model override updated", result)
         }
         "atelier/model_provider_override/delete" => {
-            format_status_response("Model override removed", result)
+            format_status_response("Exact model override reset", result)
         }
         "atelier/model_provider_override/test" => format_status_response("Wire API check", result),
         "atelier/provider/create" => format_status_response("Provider added", result),
@@ -102,6 +102,15 @@ fn effective_wire_api(model: &serde_json::Value) -> (&str, bool) {
     (wire.unwrap_or("chat_completions"), wire.is_none())
 }
 
+fn wire_api_source_label(source: &str) -> &str {
+    match source {
+        "ProviderModelOverride" | "provider_model_override" => "exact Provider/model override",
+        "ModelDefinition" | "model_definition" => "model definition",
+        "Default" | "default" => "default metadata",
+        other => other,
+    }
+}
+
 fn effective_context_window(model: &serde_json::Value) -> (u64, bool) {
     let context = model
         .get("contextWindow")
@@ -121,15 +130,33 @@ fn format_wire_api_list_response(result: &serde_json::Value) -> String {
     let mut lines = vec!["Wire APIs".to_owned()];
     for model in models {
         let key = model_key_from_value(model).unwrap_or_else(|| "unknown/unknown".to_owned());
-        let (wire_api, wire_default) = effective_wire_api(model);
-        let (context, context_default) = effective_context_window(model);
-        let mut details = format!("{wire_api} · {context} tokens");
-        if wire_default || context_default {
-            details.push_str(" · default metadata");
+        let descriptor = model.get("model").unwrap_or(model);
+        let resolved_wire = runtime_string(model, &["wireApi", "wire_api"]);
+        let (model_wire, wire_default) = effective_wire_api(descriptor);
+        let wire_api = resolved_wire.unwrap_or(model_wire);
+        let (context, context_default) = effective_context_window(descriptor);
+        let source = runtime_string(model, &["wireApiSource", "wire_api_source"])
+            .map(wire_api_source_label)
+            .unwrap_or(if wire_default {
+                "default metadata"
+            } else {
+                "model definition"
+            });
+        let payload_key_count = model
+            .get("payloadKeyCount")
+            .or_else(|| model.get("payload_key_count"))
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
+        let mut details = format!("{wire_api} · {source} · {context} tokens");
+        if payload_key_count > 0 {
+            details.push_str(&format!(" · {payload_key_count} exact payload key(s)"));
+        }
+        if context_default {
+            details.push_str(" · default context");
         }
         lines.push(format!("- {key} | {details}"));
     }
-    lines.push("Change a model with /wire-api wire <provider/model> <wire-api>.".to_owned());
+    lines.push("Set a protocol with /wire-api set <provider/model> <wire-api>.".to_owned());
     lines.join("\n")
 }
 
@@ -146,11 +173,34 @@ fn format_wire_api_model_response(result: &serde_json::Value) -> String {
         format!("Type: {wire}"),
         format!("Context: {context} tokens"),
     ];
-    if defaulted || context_default {
+    if let Some(source) = runtime_string(result, &["wireApiSource", "wire_api_source"]) {
+        lines.push(format!("Source: {}", wire_api_source_label(source)));
+    } else if defaulted || context_default {
         lines.push("Source: default metadata".to_owned());
-    } else if let Some(source) = runtime_string(result, &["wireApiSource", "wire_api_source"]) {
-        lines.push(format!("Source: {}", source.replace('_', " ")));
     }
+    match result
+        .get("providerModelOverride")
+        .or_else(|| result.get("provider_model_override"))
+        .filter(|value| !value.is_null())
+    {
+        Some(exact) => {
+            let protocol =
+                runtime_string(exact, &["wireApi", "wire_api"]).unwrap_or("inherited protocol");
+            let payload_keys = exact
+                .get("payload")
+                .and_then(serde_json::Value::as_object)
+                .map(|payload| payload.keys().cloned().collect::<Vec<_>>())
+                .unwrap_or_default();
+            lines.push(format!("Exact protocol: {protocol}"));
+            lines.push(if payload_keys.is_empty() {
+                "Exact payload: none".to_owned()
+            } else {
+                format!("Exact payload keys: {}", payload_keys.join(", "))
+            });
+        }
+        None => lines.push("Exact override: none".to_owned()),
+    }
+    lines.push("Use /wire-api reset to restore inherited values.".to_owned());
     lines.join("\n")
 }
 
@@ -508,14 +558,39 @@ mod runtime_task_format_tests {
     fn wire_api_list_is_rendered_without_internal_rpc_names_or_json() {
         let rendered = format_runtime_extension_response(
             "_atelier/model/list",
-            r#"{"models":[{"key":{"provider_id":"example","model_id":"alpha"},"display_name":"Alpha","wire_api":"chat_completions","context_window":100000},{"key":{"provider_id":"example","model_id":"beta"},"display_name":"Beta","wire_api":null,"context_window":null}]}"#,
+            r#"{"models":[{"model":{"key":{"provider_id":"example","model_id":"alpha"},"display_name":"Alpha","wire_api":"messages","context_window":100000},"modelKey":"example/alpha","wireApi":"responses","wireApiSource":"ProviderModelOverride","payloadKeyCount":1},{"key":{"provider_id":"example","model_id":"beta"},"display_name":"Beta","wire_api":null,"context_window":null}]}"#,
         );
 
         assert!(rendered.contains("Wire APIs"));
         assert!(rendered.contains("example/alpha"));
-        assert!(rendered.contains("chat_completions"));
+        assert!(rendered.contains("responses"));
+        assert!(rendered.contains("exact Provider/model override"));
+        assert!(rendered.contains("1 exact payload key(s)"));
         assert!(rendered.contains("example/beta"));
         for forbidden in ["_atelier/", "provider_id", "display_name", "{", "\""] {
+            assert!(
+                !rendered.contains(forbidden),
+                "leaked {forbidden}: {rendered}"
+            );
+        }
+    }
+
+    #[test]
+    fn wire_api_get_shows_resolved_source_and_exact_override_without_payload_values() {
+        let rendered = format_runtime_extension_response(
+            "_atelier/model/get",
+            r#"{"model":{"key":{"provider_id":"example","model_id":"alpha"},"wire_api":null,"context_window":100000},"wireApi":"responses","wireApiSource":"ProviderModelOverride","providerModelOverride":{"wire_api":"responses","payload":{"temperature":0.2,"provider_option":{"budget":123}}}}"#,
+        );
+
+        assert!(rendered.contains("Model: example/alpha"));
+        assert!(rendered.contains("Type: responses"));
+        assert!(rendered.contains("Source: exact Provider/model override"));
+        assert!(rendered.contains("Exact protocol: responses"));
+        assert!(rendered.contains("Exact payload keys:"));
+        assert!(rendered.contains("provider_option"));
+        assert!(rendered.contains("temperature"));
+        assert!(rendered.contains("/wire-api reset"));
+        for forbidden in ["0.2", "123", "budget", "{"] {
             assert!(
                 !rendered.contains(forbidden),
                 "leaked {forbidden}: {rendered}"

@@ -470,6 +470,7 @@ fn destructive_confirm_dispatch_routes_wire_api_reset() {
     app.active_view = ActiveView::Agent(id);
     let action = crate::views::modal::DestructiveAction::ResetWireApi {
         model_key: "proxy/gpt-5".to_owned(),
+        summary: "Before: responses → After: chat_completions".to_owned(),
     };
 
     let effects = dispatch(Action::ConfirmDestructiveAction { action }, &mut app);

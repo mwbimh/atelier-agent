@@ -74,8 +74,8 @@ Inspect or change model protocol selection at runtime:
 ```text
 /wire-api list
 /wire-api get provider/model
-/wire-api wire provider/model responses
-/wire-api override provider/model chat_completions {"temperature":0.2}
+/wire-api set provider/model responses
+/wire-api payload provider/model {"temperature":0.2}
 /wire-api test provider/model
 /wire-api test provider/model execute
 /wire-api reset provider/model
@@ -89,9 +89,11 @@ Provider-model override
 → chat_completions
 ```
 
-Changes apply to the next request. In-flight requests keep their existing
-snapshot. Atelier does not silently probe another protocol or fall back to a
-different model.
+`set` and `payload` update separate fields of the exact Provider/model
+override. `reset` removes that complete exact override and restores inherited
+values. Changes apply to the next request. In-flight requests keep their
+existing snapshot. Atelier does not silently probe another protocol or fall
+back to a different model.
 
 Supported values:
 

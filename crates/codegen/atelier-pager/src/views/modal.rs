@@ -45,7 +45,7 @@ pub enum DestructiveAction {
     /// Permanently remove a configured Provider.
     DeleteProvider { provider_id: String },
     /// Remove the exact Provider/model Wire API override and restore inheritance.
-    ResetWireApi { model_key: String },
+    ResetWireApi { model_key: String, summary: String },
 }
 
 impl DestructiveAction {
@@ -61,7 +61,7 @@ impl DestructiveAction {
             Self::DeleteProvider { provider_id } => {
                 format!("Delete Provider '{provider_id}'?")
             }
-            Self::ResetWireApi { model_key } => {
+            Self::ResetWireApi { model_key, .. } => {
                 format!("Reset the exact Wire API override for '{model_key}'?")
             }
         }
@@ -75,6 +75,13 @@ impl DestructiveAction {
             Self::ResetWireApi { .. } => {
                 "The model will return to its inherited definition or the default Wire API."
             }
+        }
+    }
+
+    pub fn detail(&self) -> Option<&str> {
+        match self {
+            Self::DeleteProvider { .. } => None,
+            Self::ResetWireApi { summary, .. } => Some(summary),
         }
     }
 
@@ -726,6 +733,18 @@ pub fn render_destructive_confirm(
         content.content.width,
     );
 
+    let choices_y = if let Some(detail) = state.action.detail() {
+        buf.set_line(
+            content.content.x,
+            content.content.y.saturating_add(2),
+            &Line::from(Span::styled(detail, Style::default().fg(theme.gray))),
+            content.content.width,
+        );
+        4
+    } else {
+        3
+    };
+
     let choices = [
         (
             DestructiveConfirmChoice::Cancel,
@@ -742,7 +761,7 @@ pub fn render_destructive_confirm(
     ];
     for (index, (choice, label, description, accent)) in choices.into_iter().enumerate() {
         let selected = state.selected == choice;
-        let y = content.content.y.saturating_add(3 + index as u16);
+        let y = content.content.y.saturating_add(choices_y + index as u16);
         if y >= content.content.y.saturating_add(content.content.height) {
             break;
         }

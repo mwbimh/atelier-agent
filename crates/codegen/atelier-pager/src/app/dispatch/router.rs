@@ -1404,7 +1404,7 @@ fn dispatch_confirm_destructive_action(
             "_atelier/provider/delete",
             serde_json::json!({ "providerId": provider_id }),
         ),
-        crate::views::modal::DestructiveAction::ResetWireApi { model_key } => (
+        crate::views::modal::DestructiveAction::ResetWireApi { model_key, .. } => (
             "_atelier/model_provider_override/delete",
             serde_json::json!({ "modelKey": model_key }),
         ),

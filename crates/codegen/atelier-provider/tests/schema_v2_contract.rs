@@ -363,10 +363,27 @@ tool_calls = true
 wire_api = "chat_completions"
 "#,
     );
-    let registry = ProviderRegistry::load_or_create(home.path().join("providers.toml")).unwrap();
+    let mut registry =
+        ProviderRegistry::load_or_create(home.path().join("providers.toml")).unwrap();
     let resolved = registry.resolve_wire_api(&key).unwrap();
     assert_eq!(resolved.wire_api, WireApi::ChatCompletions);
     assert_eq!(resolved.source, WireApiSource::ProviderModelOverride);
+    assert_eq!(
+        registry.model(&key).unwrap().wire_api,
+        Some(WireApi::Messages),
+        "the exact override must not replace the inherited model definition"
+    );
+
+    assert!(registry.remove_model_provider_override(&key).unwrap());
+    let inherited = registry.resolve_wire_api(&key).unwrap();
+    assert_eq!(inherited.wire_api, WireApi::Messages);
+    assert_eq!(inherited.source, WireApiSource::ModelDefinition);
+    registry.save().unwrap();
+
+    let reloaded = ProviderRegistry::load_or_create(home.path().join("providers.toml")).unwrap();
+    let inherited = reloaded.resolve_wire_api(&key).unwrap();
+    assert_eq!(inherited.wire_api, WireApi::Messages);
+    assert_eq!(inherited.source, WireApiSource::ModelDefinition);
 }
 
 #[test]

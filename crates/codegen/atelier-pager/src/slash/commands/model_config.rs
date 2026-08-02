@@ -1,6 +1,8 @@
 //! `/wire-api` -- inspect and edit model Wire API settings.
 
+use atelier_provider::{ProviderModelOverride, ProviderRegistry, WireApi};
 use serde_json::{Map, Value, json};
+use std::collections::BTreeMap;
 
 use crate::app::actions::Action;
 use crate::slash::command::{
@@ -9,7 +11,6 @@ use crate::slash::command::{
 
 const MODEL_LIST: &str = "_atelier/model/list";
 const MODEL_GET: &str = "_atelier/model/get";
-const MODEL_UPDATE_WIRE_API: &str = "_atelier/model/update_wire_api";
 const OVERRIDE_SET: &str = "_atelier/model_provider_override/set";
 const OVERRIDE_TEST: &str = "_atelier/model_provider_override/test";
 
@@ -25,11 +26,15 @@ impl SlashCommand for ModelConfigCommand {
     }
 
     fn usage(&self) -> &str {
-        "/wire-api [list|get|wire|override|reset|test] ..."
+        "/wire-api [list|get|set|payload|reset|test] ..."
     }
 
     fn takes_args(&self) -> bool {
         true
+    }
+
+    fn arg_placeholder(&self) -> Option<&str> {
+        Some("<list|get|set|payload|reset|test> ...")
     }
 
     fn session_scoped(&self) -> bool {
@@ -40,7 +45,7 @@ impl SlashCommand for ModelConfigCommand {
         let trailing_space = args_query.chars().last().is_some_and(char::is_whitespace);
         let tokens = args_query.split_whitespace().collect::<Vec<_>>();
         let subcommands = || {
-            ["list", "get", "wire", "override", "reset", "test"]
+            ["list", "get", "set", "payload", "reset", "test"]
                 .into_iter()
                 .map(|command| ArgItem {
                     display: command.to_owned(),
@@ -50,7 +55,16 @@ impl SlashCommand for ModelConfigCommand {
                     } else {
                         format!("{command} ")
                     },
-                    description: "model Wire API management".to_owned(),
+                    description: match command {
+                        "list" => "List resolved model protocols",
+                        "get" => "Inspect protocol, source, and exact override",
+                        "set" => "Set the exact Provider/model protocol",
+                        "payload" => "Set exact non-credential request payload fields",
+                        "reset" => "Remove an exact override and restore inheritance",
+                        "test" => "Preview or execute the resolved request",
+                        _ => unreachable!(),
+                    }
+                    .to_owned(),
                 })
                 .collect::<Vec<_>>()
         };
@@ -63,34 +77,31 @@ impl SlashCommand for ModelConfigCommand {
         if command == "list" {
             return None;
         }
-        if !["get", "wire", "override", "reset", "test"].contains(&command) {
+        if !["get", "set", "payload", "reset", "test"].contains(&command) {
             return Some(subcommands());
         }
-        if tokens.len() == 1 {
-            let append_space = matches!(command, "wire" | "override" | "test");
-            return Some(model_items(ctx, command, append_space));
-        }
-        if tokens.len() == 2 && !trailing_space {
-            let append_space = matches!(command, "wire" | "override" | "test");
+        if tokens.len() == 1 || (tokens.len() == 2 && !trailing_space) {
+            let append_space = matches!(command, "set" | "payload" | "test");
             return Some(model_items(ctx, command, append_space));
         }
         let model_key = tokens[1];
         if tokens.len() == 2 && trailing_space {
-            if command == "reset" {
+            if matches!(command, "payload" | "reset") {
                 return None;
             }
-            if matches!(command, "wire" | "override") {
+            if command == "set" {
                 return Some(
-                    ["chat_completions", "responses", "messages", "default"]
+                    ["inherited", "chat_completions", "responses", "messages"]
                         .into_iter()
                         .map(|wire_api| ArgItem {
                             display: wire_api.to_owned(),
                             match_text: wire_api.to_owned(),
-                            insert_text: format!(
-                                "{command} {model_key} {wire_api}{}",
-                                if command == "override" { " " } else { "" }
-                            ),
-                            description: "Wire API".to_owned(),
+                            insert_text: format!("set {model_key} {wire_api}"),
+                            description: if wire_api == "inherited" {
+                                "Use the model definition or default Wire API".to_owned()
+                            } else {
+                                "Exact Provider/model Wire API".to_owned()
+                            },
                         })
                         .collect(),
                 );
@@ -145,56 +156,12 @@ impl SlashCommand for ModelConfigCommand {
                 };
                 extension(MODEL_GET, json!({ "modelKey": model_key }))
             }
-            "wire" => {
+            "set" => {
                 let [_, model_key, wire_api] = tokens.as_slice() else {
                     return CommandResult::Error(
-                        "Usage: /wire-api wire <provider/model> <wire-api|default>".to_owned(),
+                        "Usage: /wire-api set <provider/model> <inherited|chat_completions|responses|messages>"
+                            .to_owned(),
                     );
-                };
-                extension(
-                    MODEL_UPDATE_WIRE_API,
-                    json!({
-                        "modelKey": model_key,
-                        "wireApi": match parse_wire_api(wire_api) {
-                            Ok(value) => value,
-                            Err(error) => return CommandResult::Error(error),
-                        },
-                    }),
-                )
-            }
-            "override" => {
-                let mut raw_parts = args.trim().splitn(4, char::is_whitespace);
-                let _ = raw_parts.next();
-                let Some(model_key) = raw_parts.next() else {
-                    return CommandResult::Error("Usage: /wire-api override <provider/model> <wire-api|default> [json-payload]".to_owned());
-                };
-                let Some(wire_api) = raw_parts.next() else {
-                    return CommandResult::Error("Usage: /wire-api override <provider/model> <wire-api|default> [json-payload]".to_owned());
-                };
-                let payload = match raw_parts
-                    .next()
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty())
-                {
-                    Some(raw) => {
-                        let value = match serde_json::from_str::<Value>(raw) {
-                            Ok(value) => value,
-                            Err(error) => {
-                                return CommandResult::Error(format!(
-                                    "invalid JSON payload: {error}"
-                                ));
-                            }
-                        };
-                        match value.as_object() {
-                            Some(object) => object.clone(),
-                            None => {
-                                return CommandResult::Error(
-                                    "override payload must be a JSON object".to_owned(),
-                                );
-                            }
-                        }
-                    }
-                    _ => Map::new(),
                 };
                 extension(
                     OVERRIDE_SET,
@@ -204,7 +171,37 @@ impl SlashCommand for ModelConfigCommand {
                             Ok(value) => value,
                             Err(error) => return CommandResult::Error(error),
                         },
+                        "preservePayload": true,
+                    }),
+                )
+            }
+            "payload" => {
+                let mut raw_parts = args.trim().splitn(3, char::is_whitespace);
+                let _ = raw_parts.next();
+                let Some(model_key) = raw_parts.next() else {
+                    return CommandResult::Error(
+                        "Usage: /wire-api payload <provider/model> <json-object>".to_owned(),
+                    );
+                };
+                let Some(raw_payload) = raw_parts
+                    .next()
+                    .map(str::trim)
+                    .filter(|raw| !raw.is_empty())
+                else {
+                    return CommandResult::Error(
+                        "Usage: /wire-api payload <provider/model> <json-object>".to_owned(),
+                    );
+                };
+                let payload = match parse_payload(raw_payload) {
+                    Ok(payload) => payload,
+                    Err(error) => return CommandResult::Error(error),
+                };
+                extension(
+                    OVERRIDE_SET,
+                    json!({
+                        "modelKey": model_key,
                         "payload": payload,
+                        "preserveWireApi": true,
                     }),
                 )
             }
@@ -214,11 +211,37 @@ impl SlashCommand for ModelConfigCommand {
                         "Usage: /wire-api reset <provider/model>".to_owned(),
                     );
                 };
-                CommandResult::Action(Action::OpenDestructiveConfirm {
-                    action: crate::views::modal::DestructiveAction::ResetWireApi {
-                        model_key: model_key.to_owned(),
-                    },
-                })
+                let registry = match ProviderRegistry::load_or_create(
+                    atelier_config::atelier_home().join("providers.toml"),
+                ) {
+                    Ok(registry) => registry,
+                    Err(error) => {
+                        return CommandResult::Error(format!(
+                            "Could not read Wire API overrides: {error}"
+                        ));
+                    }
+                };
+                let key = match atelier_provider::ModelKey::parse(model_key) {
+                    Ok(key) => key,
+                    Err(error) => return CommandResult::Error(error.to_string()),
+                };
+                let exact = registry.model_provider_override(&key);
+                let Some(model) = registry.model(&key) else {
+                    return CommandResult::Error(format!("Unknown model {model_key}"));
+                };
+                let (inherited_wire_api, inherited_source) = match model.wire_api {
+                    Some(wire_api) => (wire_api, "model definition"),
+                    None => (WireApi::ChatCompletions, "default metadata"),
+                };
+                match reset_action(
+                    model_key,
+                    exact.as_ref(),
+                    inherited_wire_api,
+                    inherited_source,
+                ) {
+                    Ok(action) => CommandResult::Action(Action::OpenDestructiveConfirm { action }),
+                    Err(error) => CommandResult::Error(error),
+                }
             }
             "test" => {
                 let Some(model_key) = tokens.get(1) else {
@@ -257,14 +280,31 @@ fn parse_wire_api(value: &str) -> Result<Option<&'static str>, String> {
         "chat" | "chat_completions" => Ok(Some("chat_completions")),
         "responses" => Ok(Some("responses")),
         "messages" => Ok(Some("messages")),
-        "default" | "none" => Ok(None),
+        "inherited" | "default" | "none" => Ok(None),
         _ => Err(format!(
-            "unknown Wire API '{value}'; use chat_completions, responses, messages, or default"
+            "unknown Wire API '{value}'; use inherited, chat_completions, responses, or messages"
         )),
     }
 }
 
+fn parse_payload(raw: &str) -> Result<Map<String, Value>, String> {
+    let value = serde_json::from_str::<Value>(raw)
+        .map_err(|error| format!("invalid JSON payload: {error}"))?;
+    value
+        .as_object()
+        .cloned()
+        .ok_or_else(|| "payload must be a JSON object".to_owned())
+}
+
 fn model_items(ctx: &AppCtx, command: &str, append_space: bool) -> Vec<ArgItem> {
+    if command == "reset" {
+        let overrides =
+            ProviderRegistry::load_or_create(atelier_config::atelier_home().join("providers.toml"))
+                .ok()
+                .map(|registry| registry.snapshot().model_provider_overrides)
+                .unwrap_or_default();
+        return reset_model_items(ctx, &overrides);
+    }
     ctx.models
         .available
         .iter()
@@ -277,9 +317,82 @@ fn model_items(ctx: &AppCtx, command: &str, append_space: bool) -> Vec<ArgItem> 
         .collect()
 }
 
+fn reset_action(
+    model_key: &str,
+    exact: Option<&ProviderModelOverride>,
+    inherited_wire_api: WireApi,
+    inherited_source: &str,
+) -> Result<crate::views::modal::DestructiveAction, String> {
+    let Some(exact) = exact else {
+        return Err(format!(
+            "No exact Wire API override exists for {model_key}; nothing to reset"
+        ));
+    };
+    let exact_protocol = exact
+        .wire_api
+        .map(wire_api_name)
+        .unwrap_or("inherited protocol");
+    let exact_payload = if exact.payload.is_empty() {
+        "no payload".to_owned()
+    } else {
+        format!(
+            "payload keys {}",
+            exact.payload.keys().cloned().collect::<Vec<_>>().join(", ")
+        )
+    };
+    Ok(crate::views::modal::DestructiveAction::ResetWireApi {
+        model_key: model_key.to_owned(),
+        summary: format!(
+            "Before: {exact_protocol} · {exact_payload}  →  After: {} ({inherited_source})",
+            wire_api_name(inherited_wire_api)
+        ),
+    })
+}
+
+fn reset_model_items(
+    ctx: &AppCtx,
+    overrides: &BTreeMap<String, ProviderModelOverride>,
+) -> Vec<ArgItem> {
+    overrides
+        .iter()
+        .map(|(model_key, exact)| {
+            let model_name = ctx
+                .models
+                .available
+                .iter()
+                .find(|(id, _)| id.0.as_ref() == model_key)
+                .map(|(_, info)| info.name.as_str())
+                .unwrap_or(model_key);
+            let protocol = exact
+                .wire_api
+                .map(wire_api_name)
+                .unwrap_or("inherited protocol");
+            let payload = if exact.payload.is_empty() {
+                "no payload keys".to_owned()
+            } else {
+                format!("{} payload key(s)", exact.payload.len())
+            };
+            ArgItem {
+                display: model_key.clone(),
+                match_text: format!("{model_key} {model_name}"),
+                insert_text: format!("reset {model_key}"),
+                description: format!("Exact override: {protocol} · {payload}"),
+            }
+        })
+        .collect()
+}
+
+fn wire_api_name(wire_api: WireApi) -> &'static str {
+    match wire_api {
+        WireApi::ChatCompletions => "chat_completions",
+        WireApi::Responses => "responses",
+        WireApi::Messages => "messages",
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::ModelConfigCommand;
+    use super::{ModelConfigCommand, reset_action, reset_model_items};
     use crate::acp::model_state::ModelState;
     use crate::app::actions::Action;
     use crate::slash::command::{AppCtx, CommandExecCtx, CommandResult, SlashCommand};
@@ -342,34 +455,31 @@ mod tests {
                 .iter()
                 .map(|item| item.display.as_str())
                 .collect::<Vec<_>>(),
-            vec!["list", "get", "wire", "override", "reset", "test"]
+            vec!["list", "get", "set", "payload", "reset", "test"]
         );
-        assert_eq!(insert_text(&items, "wire"), "wire ");
+        assert_eq!(insert_text(&items, "set"), "set ");
     }
 
     #[test]
-    fn wire_suggestions_chain_subcommand_model_and_wire_api() {
-        let models = suggested("wire ");
-        assert_eq!(insert_text(&models, "proxy/gpt-5"), "wire proxy/gpt-5 ");
+    fn set_suggestions_chain_model_and_wire_api() {
+        let models = suggested("set ");
+        assert_eq!(insert_text(&models, "proxy/gpt-5"), "set proxy/gpt-5 ");
 
-        let wire_apis = suggested("wire proxy/gpt-5 ");
+        let wire_apis = suggested("set proxy/gpt-5 ");
         assert_eq!(
             insert_text(&wire_apis, "responses"),
-            "wire proxy/gpt-5 responses"
+            "set proxy/gpt-5 responses"
+        );
+        assert_eq!(
+            insert_text(&wire_apis, "inherited"),
+            "set proxy/gpt-5 inherited"
         );
     }
 
     #[test]
-    fn override_suggestions_leave_json_payload_as_free_form_tail() {
-        let models = suggested("override ");
-        assert_eq!(insert_text(&models, "proxy/gpt-5"), "override proxy/gpt-5 ");
-
-        let wire_apis = suggested("override proxy/gpt-5 ");
-        assert_eq!(
-            insert_text(&wire_apis, "chat_completions"),
-            "override proxy/gpt-5 chat_completions "
-        );
-
+    fn payload_suggestions_leave_json_as_a_free_form_tail() {
+        let models = suggested("payload ");
+        assert_eq!(insert_text(&models, "proxy/gpt-5"), "payload proxy/gpt-5 ");
         let command_ctx = ctx();
         let app_ctx = AppCtx {
             models: command_ctx.models,
@@ -379,15 +489,13 @@ mod tests {
         };
         assert!(
             ModelConfigCommand
-                .suggest_args(&app_ctx, "override proxy/gpt-5 chat_completions ")
+                .suggest_args(&app_ctx, "payload proxy/gpt-5 ")
                 .is_none()
         );
     }
 
     #[test]
-    fn reset_suggestions_stop_at_the_model_before_opening_confirmation() {
-        let models = suggested("reset ");
-        assert_eq!(insert_text(&models, "proxy/gpt-5"), "reset proxy/gpt-5");
+    fn reset_suggestions_include_only_models_with_exact_overrides() {
         let command_ctx = ctx();
         let app_ctx = AppCtx {
             models: command_ctx.models,
@@ -395,6 +503,31 @@ mod tests {
             has_session_announcements: false,
             screen_mode: crate::app::ScreenMode::Inline,
         };
+        let overrides = std::collections::BTreeMap::from([
+            (
+                "proxy/gpt-5".to_owned(),
+                atelier_provider::ProviderModelOverride {
+                    wire_api: Some(atelier_provider::WireApi::Responses),
+                    payload: serde_json::from_value(serde_json::json!({ "temperature": 0.2 }))
+                        .unwrap(),
+                },
+            ),
+            (
+                "other/not-in-catalog".to_owned(),
+                atelier_provider::ProviderModelOverride::empty(),
+            ),
+        ]);
+        let models = reset_model_items(&app_ctx, &overrides);
+        assert_eq!(insert_text(&models, "proxy/gpt-5"), "reset proxy/gpt-5");
+        assert_eq!(
+            models
+                .iter()
+                .find(|item| item.display == "proxy/gpt-5")
+                .unwrap()
+                .description,
+            "Exact override: responses · 1 payload key(s)"
+        );
+        assert_eq!(models.len(), 2, "every exact override is resettable");
         assert!(
             ModelConfigCommand
                 .suggest_args(&app_ctx, "reset proxy/gpt-5 ")
@@ -413,28 +546,37 @@ mod tests {
     }
 
     #[test]
-    fn wire_command_updates_model_default_wire_api() {
+    fn set_command_updates_only_the_wire_api_field() {
         let mut command_ctx = ctx();
         assert!(matches!(
-            ModelConfigCommand.run(&mut command_ctx, "wire proxy/gpt-5 responses"),
+            ModelConfigCommand.run(&mut command_ctx, "set proxy/gpt-5 responses"),
             CommandResult::Action(Action::RuntimeExtension { method, params })
-                if method == "_atelier/model/update_wire_api"
+                if method == "_atelier/model_provider_override/set"
                     && params["modelKey"] == "proxy/gpt-5"
                     && params["wireApi"] == "responses"
+                    && params["preservePayload"] == true
+        ));
+        assert!(matches!(
+            ModelConfigCommand.run(&mut command_ctx, "set proxy/gpt-5 inherited"),
+            CommandResult::Action(Action::RuntimeExtension { method, params })
+                if method == "_atelier/model_provider_override/set"
+                    && params["wireApi"].is_null()
+                    && params["preservePayload"] == true
         ));
     }
 
     #[test]
-    fn override_command_keeps_payload_json_structured() {
+    fn payload_command_updates_only_the_payload_field() {
         let mut command_ctx = ctx();
         assert!(matches!(
             ModelConfigCommand.run(
                 &mut command_ctx,
-                r#"override proxy/gpt-5 chat_completions {"temperature":0.2}"#
+                r#"payload proxy/gpt-5 {"temperature":0.2}"#
             ),
             CommandResult::Action(Action::RuntimeExtension { method, params })
                 if method == "_atelier/model_provider_override/set"
                     && params["payload"]["temperature"] == 0.2
+                    && params["preserveWireApi"] == true
         ));
     }
 
@@ -444,7 +586,9 @@ mod tests {
         for args in [
             "list extra",
             "get proxy/gpt-5 extra",
-            "wire proxy/gpt-5 responses extra",
+            "set proxy/gpt-5 responses extra",
+            "wire proxy/gpt-5 responses",
+            "override proxy/gpt-5 responses {}",
             "test proxy/gpt-5 preview extra",
             "test proxy/gpt-5 send",
             "test proxy/gpt-5 execute extra",
@@ -454,18 +598,48 @@ mod tests {
                 "{args} must fail with Usage"
             );
         }
+        assert!(matches!(
+            ModelConfigCommand.run(&mut command_ctx, "payload proxy/gpt-5 []"),
+            CommandResult::Error(error) if error == "payload must be a JSON object"
+        ));
     }
 
     #[test]
-    fn reset_command_opens_a_safe_confirmation_modal() {
+    fn reset_command_requires_an_exact_override_before_confirmation() {
+        let overrides = std::collections::BTreeMap::from([(
+            "proxy/gpt-5".to_owned(),
+            atelier_provider::ProviderModelOverride {
+                wire_api: Some(atelier_provider::WireApi::Responses),
+                payload: serde_json::Map::new(),
+            },
+        )]);
+        let exact = overrides.get("proxy/gpt-5").unwrap();
+        assert_eq!(
+            reset_action(
+                "proxy/gpt-5",
+                Some(exact),
+                atelier_provider::WireApi::ChatCompletions,
+                "default metadata",
+            )
+            .unwrap(),
+            crate::views::modal::DestructiveAction::ResetWireApi {
+                model_key: "proxy/gpt-5".to_owned(),
+                summary:
+                    "Before: responses · no payload  →  After: chat_completions (default metadata)"
+                        .to_owned(),
+            }
+        );
+        assert!(
+            reset_action(
+                "proxy/missing",
+                None,
+                atelier_provider::WireApi::ChatCompletions,
+                "default metadata",
+            )
+            .is_err()
+        );
+
         let mut command_ctx = ctx();
-        assert!(matches!(
-            ModelConfigCommand.run(&mut command_ctx, "reset proxy/gpt-5"),
-            CommandResult::Action(Action::OpenDestructiveConfirm { action })
-                if action == crate::views::modal::DestructiveAction::ResetWireApi {
-                    model_key: "proxy/gpt-5".to_owned(),
-                }
-        ));
         assert!(matches!(
             ModelConfigCommand.run(&mut command_ctx, "delete proxy/gpt-5 confirm"),
             CommandResult::Error(error) if error.starts_with("Usage:")
