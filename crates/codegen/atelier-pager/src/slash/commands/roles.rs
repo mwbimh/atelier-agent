@@ -5,7 +5,9 @@ use serde_json::Value;
 use std::str::FromStr;
 
 use crate::app::actions::Action;
-use crate::slash::command::{AppCtx, ArgItem, CommandExecCtx, CommandResult, SlashCommand};
+use crate::slash::command::{
+    AppCtx, ArgItem, CommandExecCtx, CommandResult, SlashCommand, current_arg_fragment,
+};
 
 pub struct RolesCommand;
 
@@ -135,6 +137,10 @@ impl SlashCommand for RolesCommand {
             );
         }
         None
+    }
+
+    fn arg_suggestion_filter_query<'a>(&self, args_query: &'a str) -> &'a str {
+        current_arg_fragment(args_query)
     }
 
     fn run(&self, _ctx: &mut CommandExecCtx, args: &str) -> CommandResult {

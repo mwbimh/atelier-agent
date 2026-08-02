@@ -3,7 +3,9 @@
 use serde_json::{Map, Value, json};
 
 use crate::app::actions::Action;
-use crate::slash::command::{AppCtx, ArgItem, CommandExecCtx, CommandResult, SlashCommand};
+use crate::slash::command::{
+    AppCtx, ArgItem, CommandExecCtx, CommandResult, SlashCommand, current_arg_fragment,
+};
 
 const MODEL_LIST: &str = "_atelier/model/list";
 const MODEL_GET: &str = "_atelier/model/get";
@@ -117,6 +119,10 @@ impl SlashCommand for ModelConfigCommand {
             }
         }
         None
+    }
+
+    fn arg_suggestion_filter_query<'a>(&self, args_query: &'a str) -> &'a str {
+        current_arg_fragment(args_query)
     }
 
     fn run(&self, _ctx: &mut CommandExecCtx, args: &str) -> CommandResult {

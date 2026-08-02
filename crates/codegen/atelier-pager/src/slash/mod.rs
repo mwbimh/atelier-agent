@@ -673,7 +673,8 @@ impl SlashController {
             String::new()
         };
 
-        let arg_matches = self.arg_suggestions(command.as_ref(), models, &args_query);
+        let filter_query = command.arg_suggestion_filter_query(&args_query);
+        let arg_matches = self.arg_suggestions(command.as_ref(), models, &args_query, filter_query);
         let args_range = Some(start..args_end);
         let input = SlashInput {
             command_range: token.range.clone(),
@@ -944,7 +945,8 @@ impl SlashController {
         if !offered {
             return Vec::new();
         }
-        self.arg_suggestions(command.as_ref(), models, &input.args_query)
+        let filter_query = command.arg_suggestion_filter_query(&input.args_query);
+        self.arg_suggestions(command.as_ref(), models, &input.args_query, filter_query)
     }
 
     /// Generate argument suggestions for a specific command.
@@ -952,19 +954,20 @@ impl SlashController {
         &mut self,
         command: &dyn SlashCommand,
         models: &ModelState,
-        query: &str,
+        args_query: &str,
+        filter_query: &str,
     ) -> Vec<SuggestionRow> {
         if !command.takes_args() {
             return Vec::new();
         }
         let ctx = self.app_ctx(models);
-        let Some(items) = command.suggest_args(&ctx, query) else {
+        let Some(items) = command.suggest_args(&ctx, args_query) else {
             return Vec::new();
         };
         if items.is_empty() {
             return Vec::new();
         }
-        let trimmed = query.trim();
+        let trimmed = filter_query.trim();
         if trimmed.is_empty() {
             return items.iter().map(SuggestionRow::from_arg).collect();
         }
@@ -2597,6 +2600,77 @@ mod tests {
         fn run(&self, _ctx: &mut CommandExecCtx, _args: &str) -> CommandResult {
             CommandResult::Handled
         }
+    }
+
+    fn staged_model_catalog() -> ModelState {
+        let mut models = ModelState::default();
+        for (key, name) in [
+            ("proxy/gpt-5", "GPT-5"),
+            ("allm/grok-imagine-video-1.5-preview", "Grok Imagine Video"),
+        ] {
+            let id = acp::ModelId::new(Arc::from(key));
+            models
+                .available
+                .insert(id.clone(), acp::ModelInfo::new(id, name.to_owned()));
+        }
+        models
+    }
+
+    #[test]
+    fn staged_argument_completion_does_not_filter_models_by_consumed_wire_subcommand() {
+        let mut ctrl = SlashController::with_builtins(std::path::PathBuf::from("."));
+        let state = SlashState::default();
+        let models = staged_model_catalog();
+        let text = "/wire-api wire ";
+
+        ctrl.refresh(&state, text, text.len(), &models);
+
+        let snapshot = state.snapshot();
+        let displays = snapshot
+            .matches
+            .iter()
+            .map(|row| row.display.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            displays,
+            vec!["proxy/gpt-5", "allm/grok-imagine-video-1.5-preview"]
+        );
+    }
+
+    #[test]
+    fn staged_argument_completion_filters_only_the_current_model_fragment() {
+        let mut ctrl = SlashController::with_builtins(std::path::PathBuf::from("."));
+        let state = SlashState::default();
+        let models = staged_model_catalog();
+        let text = "/wire-api wire proxy";
+
+        ctrl.refresh(&state, text, text.len(), &models);
+
+        let snapshot = state.snapshot();
+        let displays = snapshot
+            .matches
+            .iter()
+            .map(|row| row.display.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(displays, vec!["proxy/gpt-5"]);
+    }
+
+    #[test]
+    fn staged_argument_completion_does_not_filter_role_models_by_consumed_tokens() {
+        let mut ctrl = SlashController::with_builtins(std::path::PathBuf::from("."));
+        let state = SlashState::default();
+        let models = staged_model_catalog();
+        let text = "/roles set main ";
+
+        ctrl.refresh(&state, text, text.len(), &models);
+
+        let snapshot = state.snapshot();
+        let displays = snapshot
+            .matches
+            .iter()
+            .map(|row| row.display.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(displays, vec!["GPT-5", "Grok Imagine Video"]);
     }
 
     #[test]

@@ -6,7 +6,9 @@ use atelier_shell::sampling::types::supports_reasoning_effort_meta;
 
 use crate::acp::model_state::ModelState;
 use crate::app::actions::Action;
-use crate::slash::command::{AppCtx, ArgItem, CommandExecCtx, CommandResult, SlashCommand};
+use crate::slash::command::{
+    AppCtx, ArgItem, CommandExecCtx, CommandResult, SlashCommand, current_arg_fragment,
+};
 use crate::slash::commands::effort_levels::build_effort_arg_items;
 
 /// Switch the active model (and optionally its reasoning effort).
@@ -59,6 +61,10 @@ impl SlashCommand for ModelCommand {
             return Some(build_model_items(ctx.models, &provider_id));
         }
         Some(build_provider_items(ctx.models))
+    }
+
+    fn arg_suggestion_filter_query<'a>(&self, args_query: &'a str) -> &'a str {
+        current_arg_fragment(args_query)
     }
 
     fn run(&self, ctx: &mut CommandExecCtx, args: &str) -> CommandResult {

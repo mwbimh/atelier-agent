@@ -89,6 +89,17 @@ pub struct ArgItem {
     pub description: String,
 }
 
+/// Return only the unfinished token from the current argument stage.
+/// A trailing whitespace starts a new stage and therefore has an empty query.
+pub(crate) fn current_arg_fragment(args_query: &str) -> &str {
+    if args_query.chars().last().is_some_and(char::is_whitespace) {
+        return "";
+    }
+    args_query
+        .rsplit_once(char::is_whitespace)
+        .map_or(args_query, |(_, fragment)| fragment)
+}
+
 /// Read-only context for generating suggestions.
 ///
 /// Passed to `SlashCommand::suggest_args()` and `SlashCommand::visible()`.
@@ -167,6 +178,15 @@ pub trait SlashCommand: Send + Sync {
     #[allow(unused_variables)]
     fn suggest_args(&self, ctx: &AppCtx, args_query: &str) -> Option<Vec<ArgItem>> {
         None
+    }
+
+    /// Query used by the controller to fuzzy-filter the items returned by
+    /// [`Self::suggest_args`]. Multi-stage commands must override this so
+    /// tokens consumed by earlier stages do not filter the current stage.
+    ///
+    /// The default preserves the legacy single-stage behavior.
+    fn arg_suggestion_filter_query<'a>(&self, args_query: &'a str) -> &'a str {
+        args_query
     }
 
     /// Whether this command is currently visible / executable.
