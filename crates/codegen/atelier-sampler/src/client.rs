@@ -965,6 +965,10 @@ impl SamplingClient {
 
     /// POST with default headers. Overrides auth from resolver if wired.
     fn post(&self, url: impl reqwest::IntoUrl) -> reqwest::RequestBuilder {
+        self.http.post(url).headers(self.provider_post_headers())
+    }
+
+    fn provider_post_headers(&self) -> HeaderMap {
         let mut headers = self.default_headers.clone();
         if let Some(resolver) = &self.bearer_resolver {
             let fresh = resolver.current_bearer();
@@ -1014,7 +1018,7 @@ impl SamplingClient {
         if let Some(injector) = &self.header_injector {
             injector.inject(&mut headers);
         }
-        self.http.post(url).headers(headers)
+        headers
     }
 
     /// Build a POST using the same auth, Provider headers, User-Agent and live
@@ -1022,6 +1026,14 @@ impl SamplingClient {
     /// responsible for validating that `url` is same-origin with `base_url`.
     pub(crate) fn post_provider_url(&self, url: reqwest::Url) -> reqwest::RequestBuilder {
         self.post(url)
+    }
+
+    /// Multipart variant of [`Self::post_provider_url`]. The JSON content type
+    /// is removed so reqwest can install the generated multipart boundary.
+    pub(crate) fn post_provider_multipart_url(&self, url: reqwest::Url) -> reqwest::RequestBuilder {
+        let mut headers = self.provider_post_headers();
+        headers.remove(CONTENT_TYPE);
+        self.http.post(url).headers(headers)
     }
 
     /// Bearer prefix for 401 attribution. Prefers live resolver, falls back to default_headers.

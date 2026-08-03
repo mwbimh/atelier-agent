@@ -54,7 +54,10 @@ pub use config::{
 pub use doom_loop::DoomLoopSignalCollector;
 pub use events::{SamplingChannel, SamplingErrorInfo, SamplingErrorKind, SamplingEvent};
 pub use handle::SamplerHandle;
-pub use image_generation::{GeneratedImage, ImageGenerationClient, ImageGenerationRequest};
+pub use image_generation::{
+    GeneratedImage, ImageEditClient, ImageEditReference, ImageEditRequest, ImageGenerationClient,
+    ImageGenerationRequest,
+};
 pub use metrics::{InferenceLatencyStats, compute_percentiles};
 pub use retry::{
     DEFAULT_MAX_RETRIES, MAX_CONFIGURED_RETRIES, RATE_LIMIT_RETRY_THRESHOLD, RetryDecision,

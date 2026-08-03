@@ -314,12 +314,12 @@ struct ImageResponseItem {
     url: Option<String>,
 }
 
-struct DecodedImage {
-    bytes: Vec<u8>,
-    extension: &'static str,
+pub(super) struct DecodedImage {
+    pub(super) bytes: Vec<u8>,
+    pub(super) extension: &'static str,
 }
 
-fn decode_response(
+pub(super) fn decode_response(
     body: &[u8],
     limits: ImageGenLimits,
 ) -> Result<DecodedImage, atelier_tool_runtime::ToolError> {
@@ -399,7 +399,7 @@ fn decode_response(
     Ok(DecodedImage { bytes, extension })
 }
 
-async fn save_image_atomically(
+pub(super) async fn save_image_atomically(
     session_folder: &Path,
     bytes: &[u8],
     extension: &'static str,

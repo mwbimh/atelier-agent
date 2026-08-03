@@ -953,6 +953,7 @@ async fn file_toolset_override_e2e_to_finalized_toolset() {
         web_fetch_config: Default::default(),
         lsp: None,
         image_gen_config: atelier_tools::implementations::atelier_build::image_gen::ImageGenConfig::default(),
+        image_edit_config: atelier_tools::implementations::atelier_build::image_edit::ImageEditConfig::default(),
         video_gen_config: atelier_tools::implementations::atelier_build::video_gen::VideoGenConfig::default(),
         app_builder_deployer_config: atelier_tools::implementations::atelier_build::deploy_app::AppBuilderDeployerConfig::default(),
         api_key_provider: None,

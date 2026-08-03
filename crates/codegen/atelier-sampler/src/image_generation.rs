@@ -14,6 +14,9 @@ use crate::client::{
 use crate::config::SamplerConfig;
 
 const MAX_IMAGE_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
+const MAX_IMAGE_EDIT_REFERENCES: usize = 16;
+const MAX_IMAGE_EDIT_REFERENCE_BYTES: usize = 16 * 1024 * 1024;
+const MAX_IMAGE_EDIT_TOTAL_BYTES: usize = 32 * 1024 * 1024;
 
 #[derive(Clone, Serialize, PartialEq, Eq)]
 pub struct ImageGenerationRequest {
@@ -36,6 +39,18 @@ impl std::fmt::Debug for ImageGenerationRequest {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GeneratedImage {
     pub b64_json: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ImageEditReference {
+    pub bytes: Vec<u8>,
+    pub mime_type: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ImageEditRequest {
+    pub prompt: String,
+    pub images: Vec<ImageEditReference>,
 }
 
 #[derive(Deserialize)]
@@ -201,19 +216,149 @@ impl ImageGenerationClient {
             });
         }
 
-        let response: ImageGenerationResponse = serde_json::from_slice(&bytes)?;
-        let b64_json = response
-            .data
-            .into_iter()
-            .find_map(|item| item.b64_json)
-            .filter(|value| !value.is_empty())
-            .ok_or_else(|| {
-                SamplingError::serialization_message(
-                    "image generation response must contain data[].b64_json",
-                )
-            })?;
-        Ok(GeneratedImage { b64_json })
+        decode_generated_image_response(&bytes, "image generation")
     }
+}
+
+/// Dedicated non-streaming client for an exact Provider/model image-edit
+/// endpoint. Requests use the OpenAI Images multipart shape and are never
+/// automatically retried.
+#[derive(Clone, Debug)]
+pub struct ImageEditClient {
+    sampling: SamplingClient,
+    endpoint: ProviderRelativeImageEndpoint,
+    model: String,
+}
+
+impl ImageEditClient {
+    pub fn from_config(
+        config: SamplerConfig,
+        raw_endpoint: Option<String>,
+    ) -> Result<Option<Self>> {
+        let Some(raw_endpoint) = raw_endpoint else {
+            return Ok(None);
+        };
+        if config.api_backend == ApiBackend::Messages {
+            return Err(SamplingError::InvalidConfiguration(
+                "image edit requires an OpenAI-compatible wire API",
+            ));
+        }
+        let endpoint = ProviderRelativeImageEndpoint::parse(raw_endpoint)?;
+        let model = config.model.clone();
+        let sampling = SamplingClient::new(config)?;
+        endpoint.resolve(sampling.base_url())?;
+        Ok(Some(Self {
+            sampling,
+            endpoint,
+            model,
+        }))
+    }
+
+    pub async fn edit_image(
+        &self,
+        request: ImageEditRequest,
+        request_timeout: Duration,
+    ) -> Result<GeneratedImage> {
+        let prompt = request.prompt.trim();
+        if prompt.is_empty() {
+            return Err(SamplingError::InvalidConfiguration(
+                "image edit prompt must not be empty",
+            ));
+        }
+        if request.images.is_empty() || request.images.len() > MAX_IMAGE_EDIT_REFERENCES {
+            return Err(SamplingError::InvalidConfiguration(
+                "image edit requires between 1 and 16 reference images",
+            ));
+        }
+        let mut total_bytes = 0usize;
+        let multiple = request.images.len() > 1;
+        let mut form = reqwest::multipart::Form::new()
+            .text("model", self.model.clone())
+            .text("prompt", request.prompt)
+            .text("response_format", "b64_json");
+        for (index, image) in request.images.into_iter().enumerate() {
+            if image.bytes.is_empty() || image.bytes.len() > MAX_IMAGE_EDIT_REFERENCE_BYTES {
+                return Err(SamplingError::InvalidConfiguration(
+                    "each image edit reference must contain at most 16 MiB",
+                ));
+            }
+            total_bytes = total_bytes.saturating_add(image.bytes.len());
+            if total_bytes > MAX_IMAGE_EDIT_TOTAL_BYTES {
+                return Err(SamplingError::InvalidConfiguration(
+                    "image edit references exceed the 32 MiB total limit",
+                ));
+            }
+            let extension = match image.mime_type.as_str() {
+                "image/png" => "png",
+                "image/jpeg" => "jpg",
+                "image/webp" => "webp",
+                _ => {
+                    return Err(SamplingError::InvalidConfiguration(
+                        "image edit references must be PNG, JPEG, or WebP",
+                    ));
+                }
+            };
+            let part = reqwest::multipart::Part::bytes(image.bytes)
+                .file_name(format!("image-{}.{}", index + 1, extension))
+                .mime_str(&image.mime_type)
+                .map_err(|_| SamplingError::InvalidConfiguration("invalid image edit MIME type"))?;
+            form = form.part(if multiple { "image[]" } else { "image" }, part);
+        }
+
+        let url = self.endpoint.resolve(self.sampling.base_url())?;
+        tracing::info!(
+            target: crate::sampling_log::TARGET,
+            event = "image_edit_request",
+            base_url = %self.sampling.base_url(),
+            model = %self.model,
+        );
+        let response = self
+            .sampling
+            .post_provider_multipart_url(url)
+            .timeout(request_timeout)
+            .multipart(form)
+            .send()
+            .await?;
+        let status = response.status();
+        let model_metadata = extract_model_metadata(response.headers());
+        let retry_after_secs = extract_retry_after(response.headers());
+        let should_retry = extract_should_retry(response.headers());
+        let bytes = read_response_limited(response, MAX_IMAGE_RESPONSE_BYTES).await?;
+
+        if status == reqwest::StatusCode::UNAUTHORIZED {
+            self.sampling
+                .record_401_attribution(SamplingConsumer::ImageEdit);
+            return Err(SamplingError::Auth(format!(
+                "Unauthorized (401): {}",
+                parse_error_bytes(bytes.as_ref())
+            )));
+        }
+        if !status.is_success() {
+            return Err(SamplingError::Api {
+                status,
+                message: parse_error_bytes(bytes.as_ref()),
+                model_metadata,
+                retry_after_secs,
+                should_retry,
+            });
+        }
+        decode_generated_image_response(&bytes, "image edit")
+    }
+}
+
+fn decode_generated_image_response(bytes: &[u8], operation: &str) -> Result<GeneratedImage> {
+    let response: ImageGenerationResponse = serde_json::from_slice(bytes)?;
+    let b64_json = response
+        .data
+        .into_iter()
+        .find_map(|item| item.b64_json)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            SamplingError::serialization_message(format!(
+                "{operation} response must contain data[].b64_json"
+            ))
+        })?;
+    Ok(GeneratedImage { b64_json })
 }
 
 async fn read_response_limited(response: reqwest::Response, max_bytes: usize) -> Result<Vec<u8>> {

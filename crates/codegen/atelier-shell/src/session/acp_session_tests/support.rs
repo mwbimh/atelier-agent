@@ -97,6 +97,7 @@ async fn test_agent_from_config(
         web_fetch_config: Default::default(),
         lsp: None,
         image_gen_config: Default::default(),
+        image_edit_config: Default::default(),
         video_gen_config: Default::default(),
         app_builder_deployer_config: Default::default(),
         api_key_provider: None,

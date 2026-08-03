@@ -51,6 +51,7 @@ pub enum SamplingConsumer {
     Messages,
     /// Provider-specific OpenAI Images-compatible generation endpoint.
     ImageGeneration,
+    ImageEdit,
 }
 
 impl SamplingConsumer {
@@ -67,6 +68,7 @@ impl SamplingConsumer {
             Self::MessagesStream => "messages_stream",
             Self::Messages => "messages",
             Self::ImageGeneration => "image_generation",
+            Self::ImageEdit => "image_edit",
         }
     }
 }

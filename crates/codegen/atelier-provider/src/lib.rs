@@ -248,6 +248,10 @@ impl ModelPurpose {
     pub const fn is_inference(self) -> bool {
         matches!(self, Self::Inference)
     }
+
+    pub const fn is_image_media(self) -> bool {
+        matches!(self, Self::ImageGeneration | Self::ImageEdit)
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -270,10 +274,19 @@ pub struct MediaRoute {
 pub struct ProviderMediaRoutes {
     #[serde(default)]
     pub image_generation: Option<MediaRoute>,
+    #[serde(default)]
+    pub image_edit: Option<MediaRoute>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedImageGenerationRoute {
+    pub model: ModelKey,
+    pub adapter: MediaAdapter,
+    pub endpoint: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedImageEditRoute {
     pub model: ModelKey,
     pub adapter: MediaAdapter,
     pub endpoint: String,
@@ -1075,6 +1088,9 @@ impl ProviderMediaRoutes {
         if let Some(route) = &self.image_generation {
             route.validate()?;
         }
+        if let Some(route) = &self.image_edit {
+            route.validate()?;
+        }
         Ok(())
     }
 }
@@ -1566,12 +1582,48 @@ impl ProviderSnapshot {
         if !self.models.iter().any(|model| model.key == key) {
             return Err(ProviderError::ModelNotFound(key.to_string()));
         }
-        if self.model_purpose(&key) != ModelPurpose::ImageGeneration {
+        if !self.model_purpose(&key).is_image_media() {
             return Err(ProviderError::InvalidProvider(format!(
-                "image generation route model {key} must declare purpose image_generation"
+                "image generation route model {key} must declare an image media purpose"
             )));
         }
         Ok(Some(ResolvedImageGenerationRoute {
+            model: key,
+            adapter: route.adapter,
+            endpoint: route.endpoint.clone(),
+        }))
+    }
+
+    pub fn resolve_image_edit_route(
+        &self,
+        provider_id: &str,
+    ) -> Result<Option<ResolvedImageEditRoute>, ProviderError> {
+        let provider = self
+            .providers
+            .iter()
+            .find(|provider| provider.id == provider_id)
+            .ok_or_else(|| ProviderError::ProviderNotFound(provider_id.to_owned()))?;
+        if !provider.enabled {
+            return Ok(None);
+        }
+        let Some(route) = self
+            .media_routes
+            .get(provider_id)
+            .and_then(|routes| routes.image_edit.as_ref())
+        else {
+            return Ok(None);
+        };
+        route.validate()?;
+        let key = ModelKey::new(provider_id, &route.model)?;
+        if !self.models.iter().any(|model| model.key == key) {
+            return Err(ProviderError::ModelNotFound(key.to_string()));
+        }
+        if !self.model_purpose(&key).is_image_media() {
+            return Err(ProviderError::InvalidProvider(format!(
+                "image edit route model {key} must declare an image media purpose"
+            )));
+        }
+        Ok(Some(ResolvedImageEditRoute {
             model: key,
             adapter: route.adapter,
             endpoint: route.endpoint.clone(),
@@ -1654,15 +1706,23 @@ impl ProviderRegistry {
                 "remove the ordinary request override before changing the purpose of {key}"
             )));
         }
-        let is_image_route_model = self
-            .state
-            .media_routes
-            .get(&key.provider_id)
-            .and_then(|routes| routes.image_generation.as_ref())
-            .is_some_and(|route| route.model == key.model_id);
-        if is_image_route_model && purpose != ModelPurpose::ImageGeneration {
+        let is_image_route_model =
+            self.state
+                .media_routes
+                .get(&key.provider_id)
+                .is_some_and(|routes| {
+                    routes
+                        .image_generation
+                        .as_ref()
+                        .is_some_and(|route| route.model == key.model_id)
+                        || routes
+                            .image_edit
+                            .as_ref()
+                            .is_some_and(|route| route.model == key.model_id)
+                });
+        if is_image_route_model && !purpose.is_image_media() {
             return Err(ProviderError::InvalidProvider(format!(
-                "image generation route model {key} must keep purpose image_generation"
+                "image media route model {key} must keep an image media purpose"
             )));
         }
         self.state.model_purposes.insert(key.to_string(), purpose);
@@ -1688,9 +1748,20 @@ impl ProviderRegistry {
             if !self.state.models.contains_key(&key.to_string()) {
                 return Err(ProviderError::ModelNotFound(key.to_string()));
             }
-            if self.model_purpose(&key) != ModelPurpose::ImageGeneration {
+            if !self.model_purpose(&key).is_image_media() {
                 return Err(ProviderError::InvalidProvider(format!(
-                    "image generation route model {key} must declare purpose image_generation"
+                    "image generation route model {key} must declare an image media purpose"
+                )));
+            }
+        }
+        if let Some(route) = &routes.image_edit {
+            let key = ModelKey::new(provider_id, &route.model)?;
+            if !self.state.models.contains_key(&key.to_string()) {
+                return Err(ProviderError::ModelNotFound(key.to_string()));
+            }
+            if !self.model_purpose(&key).is_image_media() {
+                return Err(ProviderError::InvalidProvider(format!(
+                    "image edit route model {key} must declare an image media purpose"
                 )));
             }
         }
@@ -1888,6 +1959,13 @@ impl ProviderRegistry {
         provider_id: &str,
     ) -> Result<Option<ResolvedImageGenerationRoute>, ProviderError> {
         self.snapshot().resolve_image_generation_route(provider_id)
+    }
+
+    pub fn resolve_image_edit_route(
+        &self,
+        provider_id: &str,
+    ) -> Result<Option<ResolvedImageEditRoute>, ProviderError> {
+        self.snapshot().resolve_image_edit_route(provider_id)
     }
 
     pub fn experimental_model_features(

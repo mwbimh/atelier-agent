@@ -544,6 +544,11 @@ purpose = "image_generation"
 model = "image-model"
 adapter = "openai_images"
 endpoint = "images/generations"
+
+[media_routes.image_edit]
+model = "image-model"
+adapter = "openai_images"
+endpoint = "images/edits"
 "#,
     );
     write(
@@ -575,6 +580,12 @@ context_window = 128000
         .expect("exact Provider media route");
     assert_eq!(route.model, ModelKey::new("alpha", "image-model").unwrap());
     assert_eq!(route.endpoint, "images/generations");
+    let edit_route = snapshot
+        .resolve_image_edit_route("alpha")
+        .unwrap()
+        .expect("exact Provider image edit route");
+    assert_eq!(edit_route.model, route.model);
+    assert_eq!(edit_route.endpoint, "images/edits");
     assert_eq!(
         snapshot.resolve_image_generation_route("beta").unwrap(),
         None,
@@ -584,6 +595,7 @@ context_window = 128000
         snapshot.resolve_image_generation_route("messages").unwrap(),
         None
     );
+    assert_eq!(snapshot.resolve_image_edit_route("beta").unwrap(), None);
 
     registry.save().unwrap();
     let reloaded = ProviderRegistry::load_or_create(home.path().join("providers.toml")).unwrap();
@@ -593,6 +605,10 @@ context_window = 128000
             .unwrap()
             .unwrap(),
         route
+    );
+    assert_eq!(
+        reloaded.resolve_image_edit_route("alpha").unwrap().unwrap(),
+        edit_route
     );
 }
 
@@ -626,7 +642,7 @@ endpoint = "images/generations"
 
     let error = ProviderRegistry::load_or_create(home.path().join("providers.toml"))
         .expect_err("media routes must reference a purpose-compatible model");
-    assert!(error.to_string().contains("purpose image_generation"));
+    assert!(error.to_string().contains("image media purpose"));
 }
 
 #[test]

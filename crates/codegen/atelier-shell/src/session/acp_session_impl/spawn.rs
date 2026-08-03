@@ -1359,7 +1359,7 @@ pub(crate) async fn spawn_session_actor(
         workspace_ops: workspace_ops.clone(),
     });
     session
-        .configure_image_gen_for_current_model()
+        .configure_image_tools_for_current_model()
         .await
         .map_err(atelier_agent::AgentBuildError::InvalidConfig)?;
     {

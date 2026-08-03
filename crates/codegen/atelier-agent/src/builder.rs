@@ -992,6 +992,7 @@ impl AgentBuilder {
                 web_fetch_config: self.web_fetch_config,
                 lsp: self.lsp,
                 image_gen_config: self.image_gen_config,
+                image_edit_config: Default::default(),
                 video_gen_config: self.video_gen_config,
                 app_builder_deployer_config: self.app_builder_deployer_config,
                 api_key_provider: self.api_key_provider,

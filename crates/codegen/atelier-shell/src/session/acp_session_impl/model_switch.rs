@@ -98,10 +98,11 @@ impl SessionActor {
                 alpha_test_key: existing.alpha_test_key,
                 client_version: sampling_config.client_version.clone(),
             });
-        self.configure_image_gen_for_current_model()
+        self.configure_image_tools_for_current_model()
             .await
             .map_err(|error| {
-                acp::Error::internal_error().data(format!("failed to configure image_gen: {error}"))
+                acp::Error::internal_error()
+                    .data(format!("failed to configure image tools: {error}"))
             })?;
         self.model_auth_facts.replace(None);
         if persist_model_change {
@@ -166,24 +167,43 @@ impl SessionActor {
         .await
     }
 
-    pub(super) async fn configure_image_gen_for_current_model(&self) -> Result<(), String> {
+    pub(super) async fn configure_image_tools_for_current_model(&self) -> Result<(), String> {
         let sampler_config = self.reconstruct_full_config().await;
-        let route = if let Some(provider_id) = sampler_config.provider_id.as_deref() {
-            atelier_provider::ProviderRegistry::load_or_create(
-                atelier_config::atelier_home().join("providers.toml"),
-            )
-            .map_err(|error| error.to_string())?
-            .resolve_image_generation_route(provider_id)
-            .map_err(|error| error.to_string())?
-        } else {
-            None
-        };
-        let sampler_config =
-            crate::tools::image_gen::sampler_config_for_route(sampler_config, route);
-        let image_gen_config = crate::tools::image_gen::config_from_sampler(sampler_config)
+        let (generation_route, edit_route) =
+            if let Some(provider_id) = sampler_config.provider_id.as_deref() {
+                let registry = atelier_provider::ProviderRegistry::load_or_create(
+                    atelier_config::atelier_home().join("providers.toml"),
+                )
+                .map_err(|error| error.to_string())?;
+                (
+                    registry
+                        .resolve_image_generation_route(provider_id)
+                        .map_err(|error| error.to_string())?,
+                    registry
+                        .resolve_image_edit_route(provider_id)
+                        .map_err(|error| error.to_string())?,
+                )
+            } else {
+                (None, None)
+            };
+        let generation_sampler = crate::tools::image_gen::sampler_config_for_route(
+            sampler_config.clone(),
+            generation_route,
+        );
+        let image_gen_config = crate::tools::image_gen::config_from_sampler(generation_sampler)
             .map_err(|error| error.to_string())?;
-        self.tool_bridge_handle()
+        let (edit_sampler, edit_endpoint) =
+            crate::tools::image_edit::sampler_config_for_route(sampler_config, edit_route);
+        let image_edit_config =
+            crate::tools::image_edit::config_from_sampler(edit_sampler, edit_endpoint)
+                .map_err(|error| error.to_string())?;
+        let bridge = self.tool_bridge_handle();
+        bridge
             .configure_image_gen(image_gen_config)
+            .await
+            .map_err(|error| error.to_string())?;
+        bridge
+            .configure_image_edit(image_edit_config)
             .await
             .map_err(|error| error.to_string())
     }
@@ -243,11 +263,11 @@ impl SessionActor {
         }
         self.compaction.prefire.clear();
         *self.agent.borrow_mut() = new_agent;
-        self.configure_image_gen_for_current_model()
+        self.configure_image_tools_for_current_model()
             .await
             .map_err(|error| {
                 acp::Error::internal_error().data(format!(
-                    "failed to restore image_gen after agent rebuild: {error}"
+                    "failed to restore image tools after agent rebuild: {error}"
                 ))
             })?;
         *self.active_agent_type.lock() = Some(new_agent_name.clone());

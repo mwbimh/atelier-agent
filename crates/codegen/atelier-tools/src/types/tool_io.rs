@@ -15,6 +15,7 @@ use crate::implementations::atelier_build::ask_user_question::AskUserQuestionInp
 use crate::implementations::atelier_build::enter_plan_mode::EnterPlanModeInput;
 use crate::implementations::atelier_build::exit_plan_mode::ExitPlanModeInput;
 use crate::implementations::atelier_build::grep::GrepSearchInput;
+use crate::implementations::atelier_build::image_edit::ImageEditInput;
 use crate::implementations::atelier_build::image_gen::ImageGenInput;
 use crate::implementations::atelier_build::list_dir::ListDirInput;
 use crate::implementations::atelier_build::read_file::ReadFileInput;
@@ -71,6 +72,7 @@ pub enum ToolInput {
     WebSearch(WebSearchInput),
     WebFetch(WebFetchInput),
     ImageGen(ImageGenInput),
+    ImageEdit(ImageEditInput),
     Write(WriteInput),
     ApplyPatch(ApplyPatchInput),
     HashlineEdit(crate::implementations::atelier_build_hashline::edit::types::HashlineEditInput),

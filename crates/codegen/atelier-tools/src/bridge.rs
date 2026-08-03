@@ -191,6 +191,13 @@ impl ToolBridge {
         self.registry.configure_image_gen(config).await
     }
 
+    pub async fn configure_image_edit(
+        &self,
+        config: crate::implementations::atelier_build::image_edit::ImageEditConfig,
+    ) -> Result<(), atelier_tool_runtime::ToolError> {
+        self.registry.configure_image_edit(config).await
+    }
+
     /// Access the underlying `FinalizedToolset`.
     ///
     /// Used by `WorkspaceOps::bind_local_session` to install the agent's

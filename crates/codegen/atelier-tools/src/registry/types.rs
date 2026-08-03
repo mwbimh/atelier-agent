@@ -268,6 +268,9 @@ pub struct SessionContext {
     /// call the xAI Imagine API. When `Disabled` (default), the tool is not
     /// registered and image generation is unavailable.
     pub image_gen_config: crate::implementations::atelier_build::image_gen::ImageGenConfig,
+    /// Optional image editing configuration. Exact Provider media routes can
+    /// replace this disabled bootstrap value after session creation.
+    pub image_edit_config: crate::implementations::atelier_build::image_edit::ImageEditConfig,
     /// Optional video generation configuration. When `Enabled`, a `VideoGenClient`
     /// is created and injected into `Resources` so the `video_gen` tool can
     /// call the xAI Video Generation API. When `Disabled` (default), the tool is not
@@ -683,6 +686,7 @@ impl ToolRegistryBuilder {
         b.register::<atelier_build::WebSearchTool>();
         b.register_with_params::<atelier_build::WebFetchTool, atelier_build::web_fetch::WebFetchParams>();
         b.register::<atelier_build::ImageGenTool>();
+        b.register::<atelier_build::ImageEditTool>();
         b.register::<atelier_build::LspTool>();
         b.register::<atelier_build::EnterPlanModeTool>();
         b.register::<atelier_build::ExitPlanModeTool>();
@@ -941,6 +945,12 @@ impl ToolRegistryBuilder {
                 !crate::implementations::atelier_build::image_gen::is_image_gen_tool_id(&tool.id)
             });
         }
+        let image_edit_runtime = ctx.image_edit_config.runtime();
+        if image_edit_runtime.is_none() {
+            config.tools.retain(|tool| {
+                !crate::implementations::atelier_build::image_edit::is_image_edit_tool_id(&tool.id)
+            });
+        }
         let errors = self.validate_config(&config);
         if !errors.is_empty() {
             return Err(errors);
@@ -1024,6 +1034,9 @@ impl ToolRegistryBuilder {
             }
         }
         if let Some(runtime) = image_gen_runtime {
+            resources.insert(runtime);
+        }
+        if let Some(runtime) = image_edit_runtime {
             resources.insert(runtime);
         }
         let concise_ns = crate::types::tool::ToolNamespace::AtelierBuildConcise.to_string();
@@ -1338,6 +1351,66 @@ impl FinalizedToolset {
             parse_input: Arc::new(|json| {
                 let typed = serde_json::from_value::<ImageGenInput>(json)?;
                 Ok(ToolInput::ImageGen(typed))
+            }),
+            contract_version: None,
+        });
+        Ok(())
+    }
+
+    /// Enable or disable the built-in image editing tool at runtime.
+    pub async fn configure_image_edit(
+        &self,
+        config: crate::implementations::atelier_build::image_edit::ImageEditConfig,
+    ) -> Result<(), atelier_tool_runtime::ToolError> {
+        use crate::implementations::atelier_build::image_edit::{
+            IMAGE_EDIT_TOOL_NAME, ImageEditInput, ImageEditRuntime, ImageEditTool,
+            ImageEditToolOutput,
+        };
+
+        let Some(runtime) = config.runtime() else {
+            self.unregister_tool_by_name(IMAGE_EDIT_TOOL_NAME);
+            let tool_id = atelier_tool_protocol::ToolId::new(IMAGE_EDIT_TOOL_NAME)
+                .expect("image_edit is a valid tool id");
+            self.local_registry.unregister(&tool_id);
+            self.resources.lock().await.remove::<ImageEditRuntime>();
+            return Ok(());
+        };
+        self.resources.lock().await.insert(runtime);
+        if self
+            .tools
+            .read()
+            .iter()
+            .any(|tool| tool.client_name == IMAGE_EDIT_TOOL_NAME)
+        {
+            return Ok(());
+        }
+
+        let tool = ImageEditTool;
+        let input_schema = generate_schema::<ImageEditInput>();
+        let description = tool.description_template().to_owned();
+        let definition = ToolDefinition::function(
+            IMAGE_EDIT_TOOL_NAME,
+            Some(&description),
+            input_schema.clone(),
+        );
+        self.local_registry.register(ImageEditTool);
+        self.tools.write().push(FinalizedTool {
+            namespace: ToolNamespace::AtelierBuild.to_string(),
+            id: IMAGE_EDIT_TOOL_NAME.to_owned(),
+            registry_id: IMAGE_EDIT_TOOL_NAME.to_owned(),
+            client_name: IMAGE_EDIT_TOOL_NAME.to_owned(),
+            metadata: Arc::new(tool),
+            output_converter: Arc::new(|value| {
+                let typed: ImageEditToolOutput = serde_json::from_value(value)?;
+                Ok(typed.into())
+            }),
+            definition,
+            effective_params: serde_json::Value::Object(Default::default()),
+            input_schema,
+            reverse_params: HashMap::new(),
+            parse_input: Arc::new(|json| {
+                let typed = serde_json::from_value::<ImageEditInput>(json)?;
+                Ok(ToolInput::ImageEdit(typed))
             }),
             contract_version: None,
         });
@@ -2092,6 +2165,24 @@ mod tests {
             unreachable!("registration tests do not execute the tool")
         }
     }
+
+    #[derive(Debug)]
+    struct RegistryImageEditExecutor;
+
+    #[async_trait::async_trait]
+    impl crate::implementations::atelier_build::image_edit::ImageEditExecutor
+        for RegistryImageEditExecutor
+    {
+        async fn execute(
+            &self,
+            _request: crate::implementations::atelier_build::image_edit::ImageEditRequest,
+        ) -> Result<
+            crate::implementations::atelier_build::image_edit::ImageEditExecutorResponse,
+            crate::implementations::atelier_build::image_edit::ImageEditExecutorError,
+        > {
+            unreachable!("registration tests do not execute the tool")
+        }
+    }
     /// Build a `SessionContext` for tests using a temp dir and real local
     /// filesystem/terminal backends.
     fn test_session_context(tmp: &TempDir) -> SessionContext {
@@ -2113,6 +2204,8 @@ mod tests {
             lsp: None,
             image_gen_config:
                 crate::implementations::atelier_build::image_gen::ImageGenConfig::default(),
+            image_edit_config:
+                crate::implementations::atelier_build::image_edit::ImageEditConfig::default(),
             video_gen_config:
                 crate::implementations::atelier_build::video_gen::VideoGenConfig::default(),
             app_builder_deployer_config:
@@ -2228,6 +2321,51 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    #[tokio::test]
+    async fn image_edit_is_fail_closed_and_can_be_enabled_at_runtime() {
+        let tmp = TempDir::new().unwrap();
+        let toolset = ToolRegistryBuilder::new()
+            .finalize(
+                ToolServerConfig {
+                    tools: vec![ToolConfig::from(
+                        &crate::implementations::atelier_build::image_edit::ImageEditTool,
+                    )],
+                    behavior_preset: None,
+                },
+                test_session_context(&tmp),
+            )
+            .expect("disabled image_edit must finalize");
+        assert!(toolset.tool_definitions().is_empty());
+
+        toolset
+            .configure_image_edit(
+                crate::implementations::atelier_build::image_edit::ImageEditConfig::enabled(
+                    Arc::new(RegistryImageEditExecutor),
+                ),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            toolset
+                .tool_definitions()
+                .iter()
+                .filter(|definition| {
+                    definition.function.name
+                        == crate::implementations::atelier_build::image_edit::IMAGE_EDIT_TOOL_NAME
+                })
+                .count(),
+            1
+        );
+
+        toolset
+            .configure_image_edit(
+                crate::implementations::atelier_build::image_edit::ImageEditConfig::Disabled,
+            )
+            .await
+            .unwrap();
+        assert!(toolset.tool_definitions().is_empty());
     }
     /// Regression test: `kind_params` must merge input params from ALL tools
     /// that share a `ToolKind`, not just the first one.

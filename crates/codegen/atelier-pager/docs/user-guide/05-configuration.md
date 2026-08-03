@@ -96,8 +96,8 @@ guesses from a model name. Supported values are `inference`,
 omitted purpose remains unknown and fails closed. Only `inference` models enter
 Main, Role, Subagent, and `/wire-api` pickers.
 
-Image generation uses a Provider-scoped media route instead of the active
-inference model:
+Image generation and editing use Provider-scoped media routes instead of the
+active inference model:
 
 ```toml
 schema_version = 1
@@ -109,11 +109,19 @@ purpose = "image_generation"
 model = "gpt-image-2"
 adapter = "openai_images"
 endpoint = "images/generations"
+
+[media_routes.image_edit]
+model = "gpt-image-2"
+adapter = "openai_images"
+endpoint = "images/edits"
 ```
 
-The route model must exist under the same Provider and declare
-`purpose = "image_generation"`. Endpoints are Provider-relative and cannot
-change the configured credential origin.
+Each route model must exist under the same Provider and declare an image media
+purpose (`image_generation` or `image_edit`). A single image model may serve
+both exact routes. Endpoints are Provider-relative and cannot change the
+configured credential origin. `image_edit` accepts one to sixteen image
+attachments from the current user message and sends them as OpenAI-compatible
+multipart image parts; stale attachment tokens and invented paths fail closed.
 
 ### Responses remote compaction v2
 

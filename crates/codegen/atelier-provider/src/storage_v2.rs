@@ -296,9 +296,30 @@ pub(crate) fn load(paths: &RegistryPaths) -> Result<RegistryFile, ProviderError>
             if !models.contains_key(&key.to_string()) {
                 return Err(ProviderError::ModelNotFound(key.to_string()));
             }
-            if model_purposes.get(&key.to_string()) != Some(&ModelPurpose::ImageGeneration) {
+            if !model_purposes
+                .get(&key.to_string())
+                .copied()
+                .unwrap_or_default()
+                .is_image_media()
+            {
                 return Err(ProviderError::InvalidProvider(format!(
-                    "image generation route model {key} must declare purpose image_generation"
+                    "image generation route model {key} must declare an image media purpose"
+                )));
+            }
+        }
+        if let Some(route) = &routes.image_edit {
+            let key = ModelKey::new(provider_id, &route.model)?;
+            if !models.contains_key(&key.to_string()) {
+                return Err(ProviderError::ModelNotFound(key.to_string()));
+            }
+            if !model_purposes
+                .get(&key.to_string())
+                .copied()
+                .unwrap_or_default()
+                .is_image_media()
+            {
+                return Err(ProviderError::InvalidProvider(format!(
+                    "image edit route model {key} must declare an image media purpose"
                 )));
             }
         }
