@@ -1,7 +1,8 @@
 use atelier_provider::{
-    CapabilityOverrides, CredentialRef, ModelCapabilities, ModelDescriptor, ModelKey, ModelSource,
-    ProviderAuth, ProviderConfig, ProviderDiscovery, ProviderModelOverride, ProviderRegistry,
-    SecretString, WireApi, WireApiSource, parse_custom_model_id, parse_openai_models_response,
+    CapabilityOverrides, CredentialRef, ModelCapabilities, ModelDescriptor, ModelKey, ModelPurpose,
+    ModelSource, ProviderAuth, ProviderConfig, ProviderDiscovery, ProviderModelOverride,
+    ProviderRegistry, SecretString, WireApi, WireApiSource, parse_custom_model_id,
+    parse_openai_models_response,
 };
 #[cfg(not(windows))]
 use atelier_provider::{CredentialError, CredentialErrorCode};
@@ -47,6 +48,31 @@ fn model_keys_are_provider_scoped() {
     assert_ne!(left, right);
     assert_eq!(left.to_string(), "left/same-model");
     assert_eq!(right.to_string(), "right/same-model");
+}
+
+#[test]
+fn non_inference_models_fail_closed_for_wire_api_and_runtime_selection() {
+    let key = ModelKey::new("proxy", "image-model").unwrap();
+    let mut registry = ProviderRegistry::in_memory();
+    registry.upsert_provider(provider("proxy")).unwrap();
+    registry.upsert_model(model(key.clone())).unwrap();
+    registry
+        .set_model_purpose(&key, ModelPurpose::ImageGeneration)
+        .unwrap();
+
+    assert!(registry.resolve_wire_api(&key).is_err());
+    assert!(
+        registry
+            .set_model_provider_override(
+                &key,
+                ProviderModelOverride {
+                    wire_api: Some(WireApi::Responses),
+                    payload: Default::default(),
+                },
+            )
+            .is_err()
+    );
+    assert!(registry.enabled_provider_models().is_empty());
 }
 
 #[test]

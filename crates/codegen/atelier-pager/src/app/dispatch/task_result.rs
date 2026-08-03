@@ -124,7 +124,7 @@ fn format_wire_api_list_response(result: &serde_json::Value) -> String {
         return "Wire APIs\nCould not read the model catalog.".to_owned();
     };
     if models.is_empty() {
-        return "Wire APIs\nNo Provider models discovered.\nRefresh a Provider or add one with /provider add."
+        return "Wire APIs\nNo inference models available.\nRefresh a Provider or declare purpose = \"inference\" in an exact model profile."
             .to_owned();
     }
     let mut lines = vec!["Wire APIs".to_owned()];

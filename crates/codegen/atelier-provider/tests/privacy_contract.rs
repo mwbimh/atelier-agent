@@ -49,6 +49,8 @@ fn provider_snapshot_serialization_redacts_all_extra_header_values() {
         providers: vec![provider_with_headers()],
         models: Vec::new(),
         model_provider_overrides: Default::default(),
+        model_purposes: Default::default(),
+        media_routes: Default::default(),
         experimental_model_features: Default::default(),
     };
     let encoded = serde_json::to_string(&snapshot).unwrap();

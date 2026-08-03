@@ -3,6 +3,7 @@
 schema_version = 2
 
 [models."deepseek-v4-flash"]
+purpose = "inference"
 display_name = "DeepSeek V4 Flash"
 wire_api = "chat_completions"
 context_window = 1000000
@@ -20,6 +21,7 @@ image_generation = false
 server_compaction = false
 
 [models."deepseek-v4-pro"]
+purpose = "inference"
 display_name = "DeepSeek V4 Pro"
 wire_api = "chat_completions"
 context_window = 1000000

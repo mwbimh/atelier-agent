@@ -3,6 +3,7 @@
 schema_version = 2
 
 [models."grok-4.3"]
+purpose = "inference"
 display_name = "Grok 4.3"
 wire_api = "chat_completions"
 context_window = 1000000
@@ -18,6 +19,7 @@ image_generation = false
 server_compaction = false
 
 [models."grok-4.5"]
+purpose = "inference"
 display_name = "Grok 4.5"
 wire_api = "responses"
 context_window = 500000

@@ -97,6 +97,8 @@ struct RolesFile {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct ModelProfileDisk {
     #[serde(default)]
+    pub purpose: Option<ModelPurpose>,
+    #[serde(default)]
     pub display_name: Option<String>,
     #[serde(default)]
     pub description: Option<String>,
@@ -128,6 +130,11 @@ impl ModelProfileDisk {
     }
 
     fn validate(&self, label: &str) -> Result<(), ProviderError> {
+        if self.purpose == Some(ModelPurpose::Unknown) {
+            return Err(ProviderError::InvalidProvider(format!(
+                "model profile {label} must omit purpose or declare a concrete purpose"
+            )));
+        }
         if self.context_window == Some(0) {
             return Err(ProviderError::InvalidProvider(format!(
                 "model profile {label} has a zero context_window"
@@ -164,10 +171,13 @@ impl ModelProfileDisk {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ProviderModelsFile {
     schema_version: u32,
     #[serde(default)]
     models: BTreeMap<String, ModelProfileDisk>,
+    #[serde(default)]
+    media_routes: ProviderMediaRoutes,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -218,11 +228,13 @@ pub(crate) fn load(paths: &RegistryPaths) -> Result<RegistryFile, ProviderError>
     };
 
     let presets = load_common_profiles(&paths.default_models)?;
-    let profiles = load_provider_profiles(&paths.provider_models, providers.keys())?;
+    let (profiles, media_routes) =
+        load_provider_profiles(&paths.provider_models, providers.keys())?;
     let caches = load_provider_caches(&paths.provider_cache, providers.keys())?;
 
     let mut models = BTreeMap::new();
     let mut model_provider_overrides = BTreeMap::new();
+    let mut model_purposes = BTreeMap::new();
     let mut model_profiles = BTreeMap::new();
     for provider_id in providers.keys() {
         let exact = profiles.get(provider_id).cloned().unwrap_or_default();
@@ -240,6 +252,11 @@ pub(crate) fn load(paths: &RegistryPaths) -> Result<RegistryFile, ProviderError>
                 common.as_ref(),
                 &exact_profile,
             );
+            let purpose = exact_profile
+                .purpose
+                .or_else(|| common.as_ref().and_then(|profile| profile.purpose))
+                .unwrap_or_default();
+            model_purposes.insert(key.to_string(), purpose);
             let base_capabilities = descriptor.capabilities.clone();
             let base_source = descriptor.source.clone();
             models.insert(
@@ -264,12 +281,37 @@ pub(crate) fn load(paths: &RegistryPaths) -> Result<RegistryFile, ProviderError>
         }
     }
 
+    for model_key in model_provider_overrides.keys() {
+        if model_purposes.get(model_key) != Some(&ModelPurpose::Inference) {
+            return Err(ProviderError::InvalidProvider(format!(
+                "ordinary request override requires purpose inference: {model_key}"
+            )));
+        }
+    }
+
+    for (provider_id, routes) in &media_routes {
+        routes.validate()?;
+        if let Some(route) = &routes.image_generation {
+            let key = ModelKey::new(provider_id, &route.model)?;
+            if !models.contains_key(&key.to_string()) {
+                return Err(ProviderError::ModelNotFound(key.to_string()));
+            }
+            if model_purposes.get(&key.to_string()) != Some(&ModelPurpose::ImageGeneration) {
+                return Err(ProviderError::InvalidProvider(format!(
+                    "image generation route model {key} must declare purpose image_generation"
+                )));
+            }
+        }
+    }
+
     Ok(RegistryFile {
         schema_version: CURRENT_SCHEMA_VERSION,
         providers,
         models,
         roles,
         model_provider_overrides,
+        model_purposes,
+        media_routes,
         model_profiles,
     })
 }
@@ -308,6 +350,11 @@ pub(crate) fn save(paths: &RegistryPaths, state: &RegistryFile) -> Result<(), Pr
         let file = ProviderModelsFile {
             schema_version: PROVIDER_MODELS_SCHEMA_VERSION,
             models: profiles_by_provider.remove(provider_id).unwrap_or_default(),
+            media_routes: state
+                .media_routes
+                .get(provider_id)
+                .cloned()
+                .unwrap_or_default(),
         };
         write_toml(&path, &file)?;
     }
@@ -388,8 +435,15 @@ fn load_common_profiles(
 fn load_provider_profiles<'a>(
     directory: &Path,
     providers: impl Iterator<Item = &'a String>,
-) -> Result<BTreeMap<String, BTreeMap<String, ModelProfileDisk>>, ProviderError> {
+) -> Result<
+    (
+        BTreeMap<String, BTreeMap<String, ModelProfileDisk>>,
+        BTreeMap<String, ProviderMediaRoutes>,
+    ),
+    ProviderError,
+> {
     let mut result = BTreeMap::new();
+    let mut media_routes = BTreeMap::new();
     for provider_id in providers {
         let path = directory.join(provider_id).join("models.toml");
         if !path.exists() {
@@ -402,6 +456,7 @@ fn load_provider_profiles<'a>(
             file.schema_version,
             PROVIDER_MODELS_SCHEMA_VERSION,
         )?;
+        file.media_routes.validate()?;
         for (model_id, profile) in &file.models {
             validate_identifier(model_id, "provider model id")?;
             if model_id.contains('*') {
@@ -418,9 +473,12 @@ fn load_provider_profiles<'a>(
             }
             profile.experimental.validate()?;
         }
+        if file.media_routes != ProviderMediaRoutes::default() {
+            media_routes.insert(provider_id.clone(), file.media_routes);
+        }
         result.insert(provider_id.clone(), file.models);
     }
-    Ok(result)
+    Ok((result, media_routes))
 }
 
 fn load_provider_caches<'a>(

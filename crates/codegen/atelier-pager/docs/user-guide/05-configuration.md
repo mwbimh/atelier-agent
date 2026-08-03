@@ -90,6 +90,31 @@ model capabilities and endpoint settings live under
 `cache/providers/<provider>/`. Use `/provider`, `/model`, `/wire-api`, and
 `/roles` for normal runtime changes.
 
+Every model used at runtime must have an explicit purpose. Discovery never
+guesses from a model name. Supported values are `inference`,
+`image_generation`, `image_edit`, `video_generation`, `asr`, and `tts`;
+omitted purpose remains unknown and fails closed. Only `inference` models enter
+Main, Role, Subagent, and `/wire-api` pickers.
+
+Image generation uses a Provider-scoped media route instead of the active
+inference model:
+
+```toml
+schema_version = 1
+
+[models."gpt-image-2"]
+purpose = "image_generation"
+
+[media_routes.image_generation]
+model = "gpt-image-2"
+adapter = "openai_images"
+endpoint = "images/generations"
+```
+
+The route model must exist under the same Provider and declare
+`purpose = "image_generation"`. Endpoints are Provider-relative and cannot
+change the configured credential origin.
+
 ### Responses remote compaction v2
 
 Remote compaction is disabled unless an exact Provider/model profile opts in.
@@ -98,7 +123,11 @@ For example, place this in
 that exact Provider/model supports the Codex-style Responses protocol:
 
 ```toml
-schema_version = 2
+schema_version = 1
+
+[models."gpt-5.4"]
+purpose = "inference"
+wire_api = "responses"
 
 [models."gpt-5.4".experimental]
 remote_compaction_v2 = true

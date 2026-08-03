@@ -2,6 +2,7 @@
 schema_version = 2
 
 [models."gemini-2.0-flash"]
+purpose = "inference"
 display_name = "Gemini 2.0 Flash"
 wire_api = "chat_completions"
 context_window = 1048576
@@ -17,6 +18,7 @@ image_generation = false
 server_compaction = false
 
 [models."gemini-2.0-flash-lite"]
+purpose = "inference"
 display_name = "Gemini 2.0 Flash-Lite"
 wire_api = "chat_completions"
 context_window = 1048576
@@ -32,6 +34,7 @@ image_generation = false
 server_compaction = false
 
 [models."gemini-2.5-flash"]
+purpose = "inference"
 display_name = "Gemini 2.5 Flash"
 wire_api = "chat_completions"
 context_window = 1048576
@@ -47,6 +50,7 @@ image_generation = false
 server_compaction = false
 
 [models."gemini-2.5-flash-lite"]
+purpose = "inference"
 display_name = "Gemini 2.5 Flash-Lite"
 wire_api = "chat_completions"
 context_window = 1048576
@@ -62,6 +66,7 @@ image_generation = false
 server_compaction = false
 
 [models."gemini-2.5-pro"]
+purpose = "inference"
 display_name = "Gemini 2.5 Pro"
 wire_api = "chat_completions"
 context_window = 1048576
@@ -77,6 +82,7 @@ image_generation = false
 server_compaction = false
 
 [models."gemini-3-flash-preview"]
+purpose = "inference"
 display_name = "Gemini 3 Flash Preview"
 wire_api = "chat_completions"
 context_window = 1048576
@@ -92,6 +98,7 @@ image_generation = false
 server_compaction = false
 
 [models."gemini-3-pro-preview"]
+purpose = "inference"
 display_name = "Gemini 3 Pro Preview"
 wire_api = "chat_completions"
 context_window = 1048576
@@ -107,6 +114,7 @@ image_generation = false
 server_compaction = false
 
 [models."gemini-3.1-flash-lite"]
+purpose = "inference"
 display_name = "Gemini 3.1 Flash Lite"
 wire_api = "chat_completions"
 context_window = 1048576
@@ -122,6 +130,7 @@ image_generation = false
 server_compaction = false
 
 [models."gemini-3.1-pro-preview"]
+purpose = "inference"
 display_name = "Gemini 3.1 Pro Preview"
 wire_api = "chat_completions"
 context_window = 1048576
@@ -137,6 +146,7 @@ image_generation = false
 server_compaction = false
 
 [models."gemini-3.5-flash"]
+purpose = "inference"
 display_name = "Gemini 3.5 Flash"
 wire_api = "chat_completions"
 context_window = 1048576
@@ -152,6 +162,7 @@ image_generation = false
 server_compaction = false
 
 [models."gemini-3.5-flash-lite"]
+purpose = "inference"
 display_name = "Gemini 3.5 Flash Lite"
 wire_api = "chat_completions"
 context_window = 1048576
@@ -167,6 +178,7 @@ image_generation = false
 server_compaction = false
 
 [models."gemini-3.6-flash"]
+purpose = "inference"
 display_name = "Gemini 3.6 Flash"
 wire_api = "chat_completions"
 context_window = 1048576

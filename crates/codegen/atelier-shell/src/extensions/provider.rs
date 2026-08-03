@@ -782,6 +782,9 @@ fn model_list_payload(registry: &ProviderRegistry) -> Result<serde_json::Value, 
     let models = snapshot
         .models
         .iter()
+        .filter(|model| {
+            snapshot.model_purpose(&model.key) == atelier_provider::ModelPurpose::Inference
+        })
         .map(|model| {
             let resolved = snapshot.resolve_wire_api(&model.key)?;
             let exact = snapshot
@@ -1943,6 +1946,28 @@ mod tests {
             })
             .unwrap();
         registry
+            .set_model_purpose(&key, atelier_provider::ModelPurpose::Inference)
+            .unwrap();
+        let image_key = ModelKey::new("proxy", "image-model").unwrap();
+        registry
+            .upsert_model(ModelDescriptor {
+                key: image_key.clone(),
+                display_name: "Image Model".into(),
+                description: None,
+                wire_api: None,
+                context_window: None,
+                capabilities: ModelCapabilities::default(),
+                reasoning_efforts: Vec::new(),
+                default_effort: None,
+                fast_mode: false,
+                source: ModelSource::Static,
+                enabled: true,
+            })
+            .unwrap();
+        registry
+            .set_model_purpose(&image_key, atelier_provider::ModelPurpose::ImageGeneration)
+            .unwrap();
+        registry
             .set_model_provider_override(
                 &key,
                 ProviderModelOverride {
@@ -1954,6 +1979,7 @@ mod tests {
             .unwrap();
 
         let payload = model_list_payload(&registry).unwrap();
+        assert_eq!(payload["models"].as_array().unwrap().len(), 1);
         let model = &payload["models"][0];
         assert_eq!(model["modelKey"], "proxy/model");
         assert_eq!(model["wireApi"], "responses");

@@ -355,14 +355,13 @@ fn reset_model_items(
 ) -> Vec<ArgItem> {
     overrides
         .iter()
-        .map(|(model_key, exact)| {
+        .filter_map(|(model_key, exact)| {
             let model_name = ctx
                 .models
                 .available
                 .iter()
                 .find(|(id, _)| id.0.as_ref() == model_key)
-                .map(|(_, info)| info.name.as_str())
-                .unwrap_or(model_key);
+                .map(|(_, info)| info.name.as_str())?;
             let protocol = exact
                 .wire_api
                 .map(wire_api_name)
@@ -372,12 +371,12 @@ fn reset_model_items(
             } else {
                 format!("{} payload key(s)", exact.payload.len())
             };
-            ArgItem {
+            Some(ArgItem {
                 display: model_key.clone(),
                 match_text: format!("{model_key} {model_name}"),
                 insert_text: format!("reset {model_key}"),
                 description: format!("Exact override: {protocol} · {payload}"),
-            }
+            })
         })
         .collect()
 }
@@ -527,7 +526,11 @@ mod tests {
                 .description,
             "Exact override: responses · 1 payload key(s)"
         );
-        assert_eq!(models.len(), 2, "every exact override is resettable");
+        assert_eq!(
+            models.len(),
+            1,
+            "non-inference or stale overrides stay out of the inference Wire API picker"
+        );
         assert!(
             ModelConfigCommand
                 .suggest_args(&app_ctx, "reset proxy/gpt-5 ")

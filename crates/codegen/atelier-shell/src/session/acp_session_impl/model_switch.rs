@@ -168,6 +168,18 @@ impl SessionActor {
 
     pub(super) async fn configure_image_gen_for_current_model(&self) -> Result<(), String> {
         let sampler_config = self.reconstruct_full_config().await;
+        let route = if let Some(provider_id) = sampler_config.provider_id.as_deref() {
+            atelier_provider::ProviderRegistry::load_or_create(
+                atelier_config::atelier_home().join("providers.toml"),
+            )
+            .map_err(|error| error.to_string())?
+            .resolve_image_generation_route(provider_id)
+            .map_err(|error| error.to_string())?
+        } else {
+            None
+        };
+        let sampler_config =
+            crate::tools::image_gen::sampler_config_for_route(sampler_config, route);
         let image_gen_config = crate::tools::image_gen::config_from_sampler(sampler_config)
             .map_err(|error| error.to_string())?;
         self.tool_bridge_handle()

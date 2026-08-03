@@ -123,6 +123,7 @@ enabled = true
         r#"schema_version = 1
 
 [models."shared-model"]
+purpose = "inference"
 wire_api = "messages"
 context_window = 100000
 "#,
@@ -132,6 +133,7 @@ context_window = 100000
         r#"schema_version = 1
 
 [models."shared-model"]
+purpose = "inference"
 context_window = 100000
 "#,
     );
@@ -168,6 +170,7 @@ enabled = true
         r#"schema_version = 2
 
 [models."deepseek-v4-flash"]
+purpose = "inference"
 wire_api = "chat_completions"
 context_window = 1000000
 reasoning_efforts = ["high", "max"]
@@ -180,6 +183,7 @@ fast_mode = false
         r#"schema_version = 1
 
 [models."deepseek-v4-flash"]
+purpose = "inference"
 "#,
     );
 
@@ -197,6 +201,7 @@ fast_mode = false
         r#"schema_version = 1
 
 [models."deepseek-v4-pro"]
+purpose = "inference"
 "#,
     );
     let registry = ProviderRegistry::load_or_create(home.path().join("providers.toml")).unwrap();
@@ -226,6 +231,7 @@ enabled = true
         r#"schema_version = 1
 
 [models."gpt-custom"]
+purpose = "inference"
 wire_api = "responses"
 fast_mode = false
 service_tiers = ["default", "priority"]
@@ -259,6 +265,7 @@ enabled = true
         r#"schema_version = 2
 
 [models."gpt-5.6-sol"]
+purpose = "inference"
 wire_api = "responses"
 fast_mode = true
 "#,
@@ -306,6 +313,7 @@ enabled = true
         r#"schema_version = 2
 
 [models."gpt-5.4"]
+purpose = "inference"
 wire_api = "responses"
 context_window = 272000
 
@@ -360,6 +368,7 @@ tool_calls = true
         r#"schema_version = 1
 
 [models."gpt-5.4"]
+purpose = "inference"
 wire_api = "chat_completions"
 "#,
     );
@@ -463,15 +472,12 @@ enabled = true
         r#"schema_version = 1
 
 [models."gpt-5.4"]
+purpose = "inference"
 wire_api = "responses"
 context_window = 400000
 
 [models."gpt-5.4".experimental]
 remote_compaction_v2 = true
-
-[models."gpt-5.4".experimental.image_generation]
-enabled = true
-endpoint = "images/generations"
 "#,
     );
 
@@ -479,10 +485,6 @@ endpoint = "images/generations"
     let key = ModelKey::new("openai", "gpt-5.4").unwrap();
     let features = registry.experimental_model_features(&key).unwrap();
     assert!(features.remote_compaction_v2);
-    assert_eq!(
-        features.image_generation.unwrap().endpoint,
-        "images/generations"
-    );
 
     let snapshot = registry.snapshot();
     assert_eq!(
@@ -498,17 +500,10 @@ endpoint = "images/generations"
             .supports_remote_compaction_v2(&key)
             .expect("valid exact capability")
     );
-    assert_eq!(
-        snapshot
-            .resolve_image_generation_endpoint(&key)
-            .expect("valid exact image endpoint")
-            .as_deref(),
-        Some("images/generations")
-    );
 }
 
 #[test]
-fn image_generation_activation_is_exact_enabled_and_openai_compatible() {
+fn image_generation_route_is_provider_scoped_and_requires_an_explicit_media_model() {
     let home = tempdir().unwrap();
     write(
         &home.path().join("providers.toml"),
@@ -538,19 +533,16 @@ enabled = true
         r#"schema_version = 1
 
 [models."shared"]
+purpose = "inference"
 wire_api = "chat_completions"
 context_window = 128000
 
-[models."shared".experimental.image_generation]
-enabled = true
-endpoint = "images/generations"
+[models."image-model"]
+purpose = "image_generation"
 
-[models."disabled"]
-wire_api = "chat_completions"
-context_window = 128000
-
-[models."disabled".experimental.image_generation]
-enabled = false
+[media_routes.image_generation]
+model = "image-model"
+adapter = "openai_images"
 endpoint = "images/generations"
 "#,
     );
@@ -559,6 +551,7 @@ endpoint = "images/generations"
         r#"schema_version = 1
 
 [models."shared"]
+purpose = "inference"
 wire_api = "chat_completions"
 context_window = 128000
 "#,
@@ -568,48 +561,72 @@ context_window = 128000
         r#"schema_version = 1
 
 [models."shared"]
+purpose = "inference"
 wire_api = "messages"
 context_window = 128000
+"#,
+    );
 
-[models."shared".experimental.image_generation]
+    let registry = ProviderRegistry::load_or_create(home.path().join("providers.toml")).unwrap();
+    let snapshot = registry.snapshot();
+    let route = snapshot
+        .resolve_image_generation_route("alpha")
+        .unwrap()
+        .expect("exact Provider media route");
+    assert_eq!(route.model, ModelKey::new("alpha", "image-model").unwrap());
+    assert_eq!(route.endpoint, "images/generations");
+    assert_eq!(
+        snapshot.resolve_image_generation_route("beta").unwrap(),
+        None,
+        "same model ids under another Provider must not inherit the route"
+    );
+    assert_eq!(
+        snapshot.resolve_image_generation_route("messages").unwrap(),
+        None
+    );
+
+    registry.save().unwrap();
+    let reloaded = ProviderRegistry::load_or_create(home.path().join("providers.toml")).unwrap();
+    assert_eq!(
+        reloaded
+            .resolve_image_generation_route("alpha")
+            .unwrap()
+            .unwrap(),
+        route
+    );
+}
+
+#[test]
+fn media_route_rejects_an_inference_model() {
+    let home = tempdir().unwrap();
+    write(
+        &home.path().join("providers.toml"),
+        r#"schema_version = 3
+
+[providers.example]
+display_name = "Example"
+auth = { type = "bearer" }
+base_url = "https://example.test/v1"
 enabled = true
+"#,
+    );
+    write(
+        &home.path().join("models/providers/example/models.toml"),
+        r#"schema_version = 1
+
+[models."not-an-image-model"]
+purpose = "inference"
+
+[media_routes.image_generation]
+model = "not-an-image-model"
+adapter = "openai_images"
 endpoint = "images/generations"
 "#,
     );
 
-    let snapshot = ProviderRegistry::load_or_create(home.path().join("providers.toml"))
-        .unwrap()
-        .snapshot();
-    let alpha = ModelKey::new("alpha", "shared").unwrap();
-    let disabled = ModelKey::new("alpha", "disabled").unwrap();
-    let beta = ModelKey::new("beta", "shared").unwrap();
-    let messages = ModelKey::new("messages", "shared").unwrap();
-
-    assert_eq!(
-        snapshot
-            .resolve_image_generation_endpoint(&alpha)
-            .unwrap()
-            .as_deref(),
-        Some("images/generations")
-    );
-    assert_eq!(
-        snapshot
-            .resolve_image_generation_endpoint(&disabled)
-            .unwrap(),
-        None
-    );
-    assert_eq!(
-        snapshot.resolve_image_generation_endpoint(&beta).unwrap(),
-        None,
-        "same model id under another Provider must not inherit the endpoint"
-    );
-    assert_eq!(
-        snapshot
-            .resolve_image_generation_endpoint(&messages)
-            .unwrap(),
-        None,
-        "Anthropic Messages is not OpenAI Images-compatible"
-    );
+    let error = ProviderRegistry::load_or_create(home.path().join("providers.toml"))
+        .expect_err("media routes must reference a purpose-compatible model");
+    assert!(error.to_string().contains("purpose image_generation"));
 }
 
 #[test]
@@ -637,6 +654,7 @@ enabled = true
         r#"schema_version = 1
 
 [models."shared"]
+purpose = "inference"
 wire_api = "responses"
 context_window = 128000
 
@@ -644,6 +662,7 @@ context_window = 128000
 remote_compaction_v2 = true
 
 [models."disabled"]
+purpose = "inference"
 wire_api = "responses"
 context_window = 128000
 
@@ -656,6 +675,7 @@ remote_compaction_v2 = false
         r#"schema_version = 1
 
 [models."shared"]
+purpose = "inference"
 wire_api = "chat_completions"
 context_window = 128000
 
@@ -701,6 +721,7 @@ enabled = true
         r#"schema_version = 1
 
 [models."gpt-5.4"]
+purpose = "inference"
 context_window = 400000
 
 [models."gpt-5.4".experimental.remote_compaction]
@@ -777,6 +798,7 @@ enabled = true
         r#"schema_version = 2
 
 [models."gpt-5.4"]
+purpose = "inference"
 
 [models."gpt-5.4".experimental]
 remote_compaction_v2 = true

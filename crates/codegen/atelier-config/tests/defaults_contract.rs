@@ -80,6 +80,14 @@ fn first_run_writes_the_split_atelier_config_tree() {
         );
         assert!(source.contains("schema_version = 2"));
         assert!(!source.contains('*'), "wildcard model preset in {vendor}");
+        let parsed: toml::Value = toml::from_str(&source).unwrap();
+        for (model_id, profile) in parsed["models"].as_table().unwrap() {
+            assert_eq!(
+                profile["purpose"].as_str(),
+                Some("inference"),
+                "default model {vendor}/{model_id} must declare its inference purpose"
+            );
+        }
     }
 
     let openai = std::fs::read_to_string(home.path().join("models/default/openai.toml")).unwrap();

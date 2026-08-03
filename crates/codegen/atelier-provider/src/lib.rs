@@ -228,6 +228,57 @@ impl WireApi {
     }
 }
 
+/// Declared runtime purpose for one exact model. Discovery does not infer this
+/// from a model name; absent metadata stays `Unknown` and is not selectable for
+/// inference or media routing.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelPurpose {
+    #[default]
+    Unknown,
+    Inference,
+    ImageGeneration,
+    ImageEdit,
+    VideoGeneration,
+    Asr,
+    Tts,
+}
+
+impl ModelPurpose {
+    pub const fn is_inference(self) -> bool {
+        matches!(self, Self::Inference)
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MediaAdapter {
+    #[serde(rename = "openai_images")]
+    OpenAiImages,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct MediaRoute {
+    pub model: String,
+    pub adapter: MediaAdapter,
+    pub endpoint: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderMediaRoutes {
+    #[serde(default)]
+    pub image_generation: Option<MediaRoute>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedImageGenerationRoute {
+    pub model: ModelKey,
+    pub adapter: MediaAdapter,
+    pub endpoint: String,
+}
+
 /// Provider/model-specific request configuration.
 ///
 /// The payload is deliberately limited to non-credential JSON fields. API
@@ -992,34 +1043,37 @@ pub struct ModelDescriptor {
     pub enabled: bool,
 }
 
-/// Experimental Provider-specific endpoint. Endpoints are relative to the
-/// Provider base URL; absolute URLs are rejected so a model profile cannot
-/// silently redirect credentials to another origin.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ExperimentalEndpoint {
-    #[serde(default)]
-    pub enabled: bool,
-    pub endpoint: String,
+fn validate_provider_relative_endpoint(endpoint: &str) -> Result<(), ProviderError> {
+    let trimmed = endpoint.trim();
+    let unsafe_segment = trimmed
+        .split('/')
+        .any(|segment| segment.is_empty() || matches!(segment, "." | ".."));
+    if trimmed.is_empty()
+        || trimmed != endpoint
+        || trimmed.starts_with(['/', '\\'])
+        || trimmed.contains(['\\', '?', '#', '%'])
+        || trimmed.chars().any(char::is_control)
+        || Url::parse(trimmed).is_ok()
+        || unsafe_segment
+    {
+        return Err(ProviderError::InvalidProvider(format!(
+            "endpoint must be a safe Provider-relative path: {endpoint}"
+        )));
+    }
+    Ok(())
 }
 
-impl ExperimentalEndpoint {
+impl MediaRoute {
     fn validate(&self) -> Result<(), ProviderError> {
-        let endpoint = self.endpoint.trim();
-        let unsafe_segment = endpoint
-            .split('/')
-            .any(|segment| segment.is_empty() || matches!(segment, "." | ".."));
-        if endpoint.is_empty()
-            || endpoint != self.endpoint
-            || endpoint.starts_with(['/', '\\'])
-            || endpoint.contains(['\\', '?', '#', '%'])
-            || endpoint.chars().any(char::is_control)
-            || Url::parse(endpoint).is_ok()
-            || unsafe_segment
-        {
-            return Err(ProviderError::InvalidProvider(format!(
-                "experimental endpoint must be a safe Provider-relative path: {}",
-                self.endpoint
-            )));
+        validate_identifier(&self.model, "media route model id")?;
+        validate_provider_relative_endpoint(&self.endpoint)
+    }
+}
+
+impl ProviderMediaRoutes {
+    fn validate(&self) -> Result<(), ProviderError> {
+        if let Some(route) = &self.image_generation {
+            route.validate()?;
         }
         Ok(())
     }
@@ -1033,15 +1087,10 @@ pub struct ExperimentalModelFeatures {
     /// separately configurable endpoint.
     #[serde(default)]
     pub remote_compaction_v2: bool,
-    #[serde(default)]
-    pub image_generation: Option<ExperimentalEndpoint>,
 }
 
 impl ExperimentalModelFeatures {
     fn validate(&self) -> Result<(), ProviderError> {
-        if let Some(endpoint) = &self.image_generation {
-            endpoint.validate()?;
-        }
         Ok(())
     }
 
@@ -1321,6 +1370,10 @@ struct RegistryFile {
     roles: RoleRegistry,
     #[serde(default)]
     model_provider_overrides: BTreeMap<String, ProviderModelOverride>,
+    #[serde(default)]
+    model_purposes: BTreeMap<String, ModelPurpose>,
+    #[serde(default)]
+    media_routes: BTreeMap<String, ProviderMediaRoutes>,
     #[serde(skip)]
     model_profiles: BTreeMap<String, storage_v2::ModelProfileDisk>,
 }
@@ -1333,6 +1386,8 @@ impl Default for RegistryFile {
             models: BTreeMap::new(),
             roles: RoleRegistry::default(),
             model_provider_overrides: BTreeMap::new(),
+            model_purposes: BTreeMap::new(),
+            media_routes: BTreeMap::new(),
             model_profiles: BTreeMap::new(),
         }
     }
@@ -1343,6 +1398,10 @@ pub struct ProviderSnapshot {
     pub providers: Vec<ProviderConfig>,
     pub models: Vec<ModelDescriptor>,
     pub model_provider_overrides: BTreeMap<String, ProviderModelOverride>,
+    #[serde(default)]
+    pub model_purposes: BTreeMap<String, ModelPurpose>,
+    #[serde(default)]
+    pub media_routes: BTreeMap<String, ProviderMediaRoutes>,
     /// Provider/model-exact experimental controls. This map is populated only
     /// from `models/providers/<provider>/models.toml`; common presets and
     /// discovery metadata can never contribute entries.
@@ -1385,6 +1444,8 @@ struct ProviderSnapshotWire<'a> {
     providers: Vec<ProviderSnapshotProvider<'a>>,
     models: &'a [ModelDescriptor],
     model_provider_overrides: &'a BTreeMap<String, ProviderModelOverride>,
+    model_purposes: &'a BTreeMap<String, ModelPurpose>,
+    media_routes: &'a BTreeMap<String, ProviderMediaRoutes>,
     experimental_model_features: &'a BTreeMap<String, ExperimentalModelFeatures>,
 }
 
@@ -1411,6 +1472,8 @@ impl Serialize for ProviderSnapshot {
             providers,
             models: &self.models,
             model_provider_overrides: &self.model_provider_overrides,
+            model_purposes: &self.model_purposes,
+            media_routes: &self.media_routes,
             experimental_model_features: &self.experimental_model_features,
         }
         .serialize(serializer)
@@ -1428,6 +1491,12 @@ impl ProviderSnapshot {
             .iter()
             .find(|provider| provider.id == key.provider_id)
             .ok_or_else(|| ProviderError::ProviderNotFound(key.provider_id.clone()))?;
+        let purpose = self.model_purpose(key);
+        if !purpose.is_inference() {
+            return Err(ProviderError::InvalidProvider(format!(
+                "model {key} has purpose {purpose:?}, not inference"
+            )));
+        }
         if let Some(override_config) = self.model_provider_overrides.get(&key.to_string())
             && let Some(wire_api) = override_config.wire_api
         {
@@ -1466,27 +1535,47 @@ impl ProviderSnapshot {
             .is_some_and(|features| features.remote_compaction_v2))
     }
 
-    /// Resolve an active OpenAI Images-compatible endpoint for one exact
-    /// Provider/model pair. Common presets and discovery metadata never enter
-    /// `experimental_model_features`, so a same-named model under another
-    /// Provider cannot inherit this route.
-    pub fn resolve_image_generation_endpoint(
+    pub fn model_purpose(&self, key: &ModelKey) -> ModelPurpose {
+        self.model_purposes
+            .get(&key.to_string())
+            .copied()
+            .unwrap_or_default()
+    }
+
+    pub fn resolve_image_generation_route(
         &self,
-        key: &ModelKey,
-    ) -> Result<Option<String>, ProviderError> {
-        if self.resolve_wire_api(key)?.wire_api == WireApi::Messages {
+        provider_id: &str,
+    ) -> Result<Option<ResolvedImageGenerationRoute>, ProviderError> {
+        let provider = self
+            .providers
+            .iter()
+            .find(|provider| provider.id == provider_id)
+            .ok_or_else(|| ProviderError::ProviderNotFound(provider_id.to_owned()))?;
+        if !provider.enabled {
             return Ok(None);
         }
-        let Some(endpoint) = self
-            .experimental_model_features
-            .get(&key.to_string())
-            .and_then(|features| features.image_generation.as_ref())
-            .filter(|endpoint| endpoint.enabled)
+        let Some(route) = self
+            .media_routes
+            .get(provider_id)
+            .and_then(|routes| routes.image_generation.as_ref())
         else {
             return Ok(None);
         };
-        endpoint.validate()?;
-        Ok(Some(endpoint.endpoint.clone()))
+        route.validate()?;
+        let key = ModelKey::new(provider_id, &route.model)?;
+        if !self.models.iter().any(|model| model.key == key) {
+            return Err(ProviderError::ModelNotFound(key.to_string()));
+        }
+        if self.model_purpose(&key) != ModelPurpose::ImageGeneration {
+            return Err(ProviderError::InvalidProvider(format!(
+                "image generation route model {key} must declare purpose image_generation"
+            )));
+        }
+        Ok(Some(ResolvedImageGenerationRoute {
+            model: key,
+            adapter: route.adapter,
+            endpoint: route.endpoint.clone(),
+        }))
     }
 }
 
@@ -1533,8 +1622,82 @@ impl ProviderRegistry {
                 .map(|stored| stored.descriptor.clone())
                 .collect(),
             model_provider_overrides,
+            model_purposes: self.state.model_purposes.clone(),
+            media_routes: self.state.media_routes.clone(),
             experimental_model_features,
         }
+    }
+
+    pub fn model_purpose(&self, key: &ModelKey) -> ModelPurpose {
+        self.state
+            .model_purposes
+            .get(&key.to_string())
+            .copied()
+            .unwrap_or_default()
+    }
+
+    pub fn set_model_purpose(
+        &mut self,
+        key: &ModelKey,
+        purpose: ModelPurpose,
+    ) -> Result<(), ProviderError> {
+        if !self.state.models.contains_key(&key.to_string()) {
+            return Err(ProviderError::ModelNotFound(key.to_string()));
+        }
+        if purpose != ModelPurpose::Inference
+            && self
+                .state
+                .model_provider_overrides
+                .contains_key(&key.to_string())
+        {
+            return Err(ProviderError::InvalidProvider(format!(
+                "remove the ordinary request override before changing the purpose of {key}"
+            )));
+        }
+        let is_image_route_model = self
+            .state
+            .media_routes
+            .get(&key.provider_id)
+            .and_then(|routes| routes.image_generation.as_ref())
+            .is_some_and(|route| route.model == key.model_id);
+        if is_image_route_model && purpose != ModelPurpose::ImageGeneration {
+            return Err(ProviderError::InvalidProvider(format!(
+                "image generation route model {key} must keep purpose image_generation"
+            )));
+        }
+        self.state.model_purposes.insert(key.to_string(), purpose);
+        self.state
+            .model_profiles
+            .entry(key.to_string())
+            .or_default()
+            .purpose = Some(purpose);
+        Ok(())
+    }
+
+    pub fn set_provider_media_routes(
+        &mut self,
+        provider_id: &str,
+        routes: ProviderMediaRoutes,
+    ) -> Result<(), ProviderError> {
+        if !self.state.providers.contains_key(provider_id) {
+            return Err(ProviderError::ProviderNotFound(provider_id.to_owned()));
+        }
+        routes.validate()?;
+        if let Some(route) = &routes.image_generation {
+            let key = ModelKey::new(provider_id, &route.model)?;
+            if !self.state.models.contains_key(&key.to_string()) {
+                return Err(ProviderError::ModelNotFound(key.to_string()));
+            }
+            if self.model_purpose(&key) != ModelPurpose::ImageGeneration {
+                return Err(ProviderError::InvalidProvider(format!(
+                    "image generation route model {key} must declare purpose image_generation"
+                )));
+            }
+        }
+        self.state
+            .media_routes
+            .insert(provider_id.to_owned(), routes);
+        Ok(())
     }
 
     pub fn model_config(&self, model_id: &str) -> Option<ModelConfig> {
@@ -1613,8 +1776,8 @@ impl ProviderRegistry {
                     .state
                     .providers
                     .get(&stored.descriptor.key.provider_id)?;
-                provider
-                    .enabled
+                (provider.enabled
+                    && self.model_purpose(&stored.descriptor.key) == ModelPurpose::Inference)
                     .then(|| (provider.clone(), stored.descriptor.clone()))
             })
             .collect()
@@ -1668,6 +1831,11 @@ impl ProviderRegistry {
         if !self.state.models.contains_key(&key.to_string()) {
             return Err(ProviderError::ModelNotFound(key.to_string()));
         }
+        if self.model_purpose(key) != ModelPurpose::Inference {
+            return Err(ProviderError::InvalidProvider(format!(
+                "ordinary request overrides require an inference model: {key}"
+            )));
+        }
         if override_config.wire_api.is_none() && override_config.payload.is_empty() {
             self.state.model_provider_overrides.remove(&key.to_string());
             let profile = self
@@ -1715,6 +1883,13 @@ impl ProviderRegistry {
         self.snapshot().resolve_wire_api(key)
     }
 
+    pub fn resolve_image_generation_route(
+        &self,
+        provider_id: &str,
+    ) -> Result<Option<ResolvedImageGenerationRoute>, ProviderError> {
+        self.snapshot().resolve_image_generation_route(provider_id)
+    }
+
     pub fn experimental_model_features(
         &self,
         key: &ModelKey,
@@ -1747,8 +1922,12 @@ impl ProviderRegistry {
             .model_provider_overrides
             .retain(|key, _| !key.starts_with(&format!("{provider_id}/")));
         self.state
+            .model_purposes
+            .retain(|key, _| !key.starts_with(&format!("{provider_id}/")));
+        self.state
             .model_profiles
             .retain(|key, _| !key.starts_with(&format!("{provider_id}/")));
+        self.state.media_routes.remove(provider_id);
         Ok(())
     }
 
@@ -1805,6 +1984,13 @@ impl ProviderRegistry {
         if !overrides.is_empty() {
             descriptor.source = ModelSource::UserOverride;
         }
+        self.state.model_purposes.entry(id.clone()).or_insert(
+            if base_source == ModelSource::Remote {
+                ModelPurpose::Unknown
+            } else {
+                ModelPurpose::Inference
+            },
+        );
         self.state.models.insert(
             id.clone(),
             StoredModel {
@@ -1816,9 +2002,11 @@ impl ProviderRegistry {
         );
         if persist_profile {
             let stored = &self.state.models[&id].descriptor;
+            let purpose = self.state.model_purposes.get(&id).copied();
             self.state.model_profiles.insert(
                 id,
                 storage_v2::ModelProfileDisk {
+                    purpose,
                     display_name: Some(stored.display_name.clone()),
                     description: stored.description.clone(),
                     wire_api: stored.wire_api,
@@ -1920,8 +2108,23 @@ impl ProviderRegistry {
         for provider in self.state.providers.values() {
             provider.validate()?;
         }
-        for override_config in self.state.model_provider_overrides.values() {
+        for (model_key, override_config) in &self.state.model_provider_overrides {
             override_config.validate()?;
+            if self
+                .state
+                .model_purposes
+                .get(model_key)
+                .copied()
+                .unwrap_or_default()
+                != ModelPurpose::Inference
+            {
+                return Err(ProviderError::InvalidProvider(format!(
+                    "ordinary request override requires purpose inference: {model_key}"
+                )));
+            }
+        }
+        for routes in self.state.media_routes.values() {
+            routes.validate()?;
         }
         self.state.roles.validate()?;
         let paths = self.paths.as_ref().ok_or_else(|| {

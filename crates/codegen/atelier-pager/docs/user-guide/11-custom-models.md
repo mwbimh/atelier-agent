@@ -184,7 +184,13 @@ Plan Mode uses the `main` Role. It does not have a separate Provider/model
 setting. The existing Plan Mode read-only and approval restrictions still
 apply independently of Role configuration.
 
-## Wire API Configuration
+## Model Purpose and Wire API Configuration
+
+A model must declare `purpose = "inference"` in an exact Provider profile or an
+exact built-in default before it can be selected by Main, Roles, Subagents, or
+`/wire-api`. Media, ASR, TTS, video, and unknown-purpose models stay outside the
+ordinary inference catalog. Atelier does not infer purpose or endpoint from a
+model name.
 
 Wire API overrides are configured only for an exact Provider/model pair; there
 is no Provider-level protocol. When discovery supplies no Wire API or context

@@ -237,6 +237,7 @@ path = "models"
         model_config.push_str(&format!(
             r#"
 [models.{quoted_id}]
+purpose = "inference"
 wire_api = "{wire_api}"
 context_window = 128000
 

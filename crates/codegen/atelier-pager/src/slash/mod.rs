@@ -2606,7 +2606,7 @@ mod tests {
         let mut models = ModelState::default();
         for (key, name) in [
             ("proxy/gpt-5", "GPT-5"),
-            ("allm/grok-imagine-video-1.5-preview", "Grok Imagine Video"),
+            ("allm/second-inference-model", "Second Inference Model"),
         ] {
             let id = acp::ModelId::new(Arc::from(key));
             models
@@ -2631,10 +2631,7 @@ mod tests {
             .iter()
             .map(|row| row.display.as_str())
             .collect::<Vec<_>>();
-        assert_eq!(
-            displays,
-            vec!["proxy/gpt-5", "allm/grok-imagine-video-1.5-preview"]
-        );
+        assert_eq!(displays, vec!["proxy/gpt-5", "allm/second-inference-model"]);
     }
 
     #[test]
@@ -2670,7 +2667,7 @@ mod tests {
             .iter()
             .map(|row| row.display.as_str())
             .collect::<Vec<_>>();
-        assert_eq!(displays, vec!["GPT-5", "Grok Imagine Video"]);
+        assert_eq!(displays, vec!["GPT-5", "Second Inference Model"]);
     }
 
     #[test]

@@ -2790,7 +2790,9 @@ pub fn model_entries_from_provider_snapshot(
         .iter()
         .filter_map(|model| {
             let provider = providers.get(model.key.provider_id.as_str())?;
-            if !model.enabled {
+            if !model.enabled
+                || snapshot.model_purpose(&model.key) != atelier_provider::ModelPurpose::Inference
+            {
                 return None;
             }
 
@@ -2887,10 +2889,7 @@ pub fn model_entries_from_provider_snapshot(
                 remote_compaction_v2: snapshot
                     .supports_remote_compaction_v2(&model.key)
                     .unwrap_or(false),
-                image_generation_endpoint: snapshot
-                    .resolve_image_generation_endpoint(&model.key)
-                    .ok()
-                    .flatten(),
+                image_generation_endpoint: None,
             };
             Some((model.key.to_string(), entry))
         })
@@ -7002,6 +7001,11 @@ reasoning_effort = "low"
                 enabled: true,
             }],
             model_provider_overrides: Default::default(),
+            model_purposes: std::collections::BTreeMap::from([(
+                "anthropic-local/claude-test".into(),
+                atelier_provider::ModelPurpose::Inference,
+            )]),
+            media_routes: Default::default(),
             experimental_model_features: Default::default(),
         };
         let mut remote = IndexMap::new();
@@ -7064,6 +7068,17 @@ reasoning_effort = "low"
             providers: vec![provider],
             models: vec![descriptor("other"), descriptor("deepseek-v4-flash")],
             model_provider_overrides: Default::default(),
+            model_purposes: std::collections::BTreeMap::from([
+                (
+                    "example/other".into(),
+                    atelier_provider::ModelPurpose::Inference,
+                ),
+                (
+                    "example/deepseek-v4-flash".into(),
+                    atelier_provider::ModelPurpose::Inference,
+                ),
+            ]),
+            media_routes: Default::default(),
             experimental_model_features: Default::default(),
         };
 
@@ -7110,6 +7125,25 @@ reasoning_effort = "low"
                 descriptor("gpt-unknown", WireApi::Responses),
             ],
             model_provider_overrides: Default::default(),
+            model_purposes: std::collections::BTreeMap::from([
+                (
+                    "example/gpt-5.6-sol".into(),
+                    atelier_provider::ModelPurpose::Inference,
+                ),
+                (
+                    "example/gpt-5.4".into(),
+                    atelier_provider::ModelPurpose::Inference,
+                ),
+                (
+                    "example/gpt-5.5".into(),
+                    atelier_provider::ModelPurpose::Inference,
+                ),
+                (
+                    "example/gpt-unknown".into(),
+                    atelier_provider::ModelPurpose::Inference,
+                ),
+            ]),
+            media_routes: Default::default(),
             experimental_model_features: Default::default(),
         };
 
@@ -7148,7 +7182,6 @@ reasoning_effort = "low"
         };
         let feature = atelier_provider::ExperimentalModelFeatures {
             remote_compaction_v2: true,
-            image_generation: None,
         };
         let snapshot = ProviderSnapshot {
             providers: vec![provider("responses"), provider("chat")],
@@ -7157,6 +7190,17 @@ reasoning_effort = "low"
                 descriptor("chat", WireApi::ChatCompletions),
             ],
             model_provider_overrides: Default::default(),
+            model_purposes: std::collections::BTreeMap::from([
+                (
+                    "responses/shared".into(),
+                    atelier_provider::ModelPurpose::Inference,
+                ),
+                (
+                    "chat/shared".into(),
+                    atelier_provider::ModelPurpose::Inference,
+                ),
+            ]),
+            media_routes: Default::default(),
             experimental_model_features: std::collections::BTreeMap::from([
                 ("responses/shared".into(), feature.clone()),
                 ("chat/shared".into(), feature),
@@ -7179,7 +7223,7 @@ reasoning_effort = "low"
     }
 
     #[test]
-    fn provider_models_without_transport_metadata_use_safe_runtime_defaults() {
+    fn remote_models_without_an_explicit_inference_purpose_fail_closed() {
         let model_key = atelier_provider::ModelKey::new("example", "discovered-model").unwrap();
         let snapshot = ProviderSnapshot {
             providers: vec![atelier_provider::ProviderConfig {
@@ -7206,16 +7250,16 @@ reasoning_effort = "low"
                 enabled: true,
             }],
             model_provider_overrides: Default::default(),
+            model_purposes: Default::default(),
+            media_routes: Default::default(),
             experimental_model_features: Default::default(),
         };
 
         let entries = model_entries_from_provider_snapshot(&snapshot, None);
-        let entry = entries
-            .get("example/discovered-model")
-            .expect("models without optional metadata remain selectable");
-
-        assert_eq!(entry.info.context_window.get(), 100_000);
-        assert_eq!(entry.info.api_backend, ApiBackend::ChatCompletions);
+        assert!(
+            entries.is_empty(),
+            "unclassified discovery results must not enter the inference catalog"
+        );
     }
 
     #[test]
@@ -7247,6 +7291,11 @@ reasoning_effort = "low"
                 enabled: true,
             }],
             model_provider_overrides: Default::default(),
+            model_purposes: std::collections::BTreeMap::from([(
+                model_key.to_string(),
+                atelier_provider::ModelPurpose::Inference,
+            )]),
+            media_routes: Default::default(),
             experimental_model_features: Default::default(),
         };
 
@@ -7296,6 +7345,8 @@ reasoning_effort = "low"
             providers: Vec::new(),
             models: Vec::new(),
             model_provider_overrides: Default::default(),
+            model_purposes: Default::default(),
+            media_routes: Default::default(),
             experimental_model_features: Default::default(),
         };
         let cfg = Config::default();

@@ -199,8 +199,10 @@ Inspect and change model-level Wire API settings:
 /wire-api test <provider/model> [execute]
 ```
 
-Bare `/wire-api` opens the interactive picker. List and inspection results are
-rendered as user-readable summaries; internal RPC names and JSON are not shown.
+Bare `/wire-api` opens the interactive picker. Only models explicitly declared
+for `inference` appear; image, video, ASR, TTS, and unknown-purpose models are
+excluded. List and inspection results are rendered as user-readable summaries;
+internal RPC names and JSON are not shown.
 `set` changes only the exact protocol field, while `payload` changes only the
 exact non-credential request payload. `reset` is offered only for models with
 an exact Provider/model override and restores inherited values. Provider
