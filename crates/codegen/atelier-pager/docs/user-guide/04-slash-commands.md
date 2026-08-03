@@ -188,26 +188,17 @@ Aliases: `/role`
 
 ### `/wire-api`
 
-Inspect and change model-level Wire API settings:
+Set the Wire API for the current Provider/model pair:
 
 ```text
-/wire-api list
-/wire-api get <provider/model>
-/wire-api set <provider/model> <inherited|chat_completions|responses|messages>
-/wire-api payload <provider/model> <json-object>
-/wire-api reset <provider/model>
-/wire-api test <provider/model> [execute]
+/wire-api <responses|message|chat>
 ```
 
-Bare `/wire-api` opens the interactive picker. Only models explicitly declared
-for `inference` appear; image, video, ASR, TTS, and unknown-purpose models are
-excluded. List and inspection results are rendered as user-readable summaries;
-internal RPC names and JSON are not shown.
-`set` changes only the exact protocol field, while `payload` changes only the
-exact non-credential request payload. `reset` is offered only for models with
-an exact Provider/model override and restores inherited values. Provider
-deletion and Wire API reset open a dedicated confirmation modal whose safe
-default is Cancel; no trailing confirmation word is required.
+Bare `/wire-api` opens a picker with all three values. `responses` selects the
+Responses API, `message` selects the Messages API, and `chat` selects Chat
+Completions. The selected value is saved as the exact Wire API override for the
+currently selected `/model` pair and applies to subsequent requests. It does
+not select another model or modify other pairs.
 
 ### `/effort <level>`
 

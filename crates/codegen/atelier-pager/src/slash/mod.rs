@@ -2617,11 +2617,11 @@ mod tests {
     }
 
     #[test]
-    fn staged_argument_completion_does_not_filter_models_by_consumed_set_subcommand() {
+    fn wire_api_argument_completion_shows_the_protocol_picker() {
         let mut ctrl = SlashController::with_builtins(std::path::PathBuf::from("."));
         let state = SlashState::default();
         let models = staged_model_catalog();
-        let text = "/wire-api set ";
+        let text = "/wire-api ";
 
         ctrl.refresh(&state, text, text.len(), &models);
 
@@ -2631,15 +2631,15 @@ mod tests {
             .iter()
             .map(|row| row.display.as_str())
             .collect::<Vec<_>>();
-        assert_eq!(displays, vec!["proxy/gpt-5", "allm/second-inference-model"]);
+        assert_eq!(displays, vec!["responses", "message", "chat"]);
     }
 
     #[test]
-    fn staged_argument_completion_filters_only_the_current_model_fragment() {
+    fn wire_api_argument_completion_filters_the_protocol_picker() {
         let mut ctrl = SlashController::with_builtins(std::path::PathBuf::from("."));
         let state = SlashState::default();
         let models = staged_model_catalog();
-        let text = "/wire-api set proxy";
+        let text = "/wire-api me";
 
         ctrl.refresh(&state, text, text.len(), &models);
 
@@ -2649,7 +2649,7 @@ mod tests {
             .iter()
             .map(|row| row.display.as_str())
             .collect::<Vec<_>>();
-        assert_eq!(displays, vec!["proxy/gpt-5"]);
+        assert_eq!(displays, vec!["message"]);
     }
 
     #[test]

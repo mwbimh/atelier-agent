@@ -71,7 +71,7 @@ fn dashboard_complete_runtime_commands_dispatch_the_expected_control_effects() {
         ),
         ("/provider test example", "_atelier/provider/test"),
         ("/roles list", "_atelier/role/list"),
-        ("/wire-api list", "_atelier/model/list"),
+        ("/wire-api responses", "_atelier/model/update_wire_api"),
         ("/tasks", "_atelier/task/list"),
         ("/attach task-1", "_atelier/task/attach"),
         ("/stop task-1", "_atelier/task/cancel"),
@@ -81,6 +81,14 @@ fn dashboard_complete_runtime_commands_dispatch_the_expected_control_effects() {
         let mut app = test_app();
         app.active_view = ActiveView::AgentDashboard;
         ensure_dashboard_state(&mut app);
+        if command.starts_with("/wire-api") {
+            let id = agent_client_protocol::ModelId::new(std::sync::Arc::from("mock/test-model"));
+            app.models.available.insert(
+                id.clone(),
+                agent_client_protocol::ModelInfo::new(id.clone(), "Test model".to_owned()),
+            );
+            app.models.current = Some(id);
+        }
 
         let effects = dispatch(
             Action::DashboardDispatchSlash {

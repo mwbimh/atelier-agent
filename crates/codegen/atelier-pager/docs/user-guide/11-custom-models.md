@@ -195,29 +195,18 @@ model name.
 Wire API overrides are configured only for an exact Provider/model pair; there
 is no Provider-level protocol. When discovery supplies no Wire API or context
 metadata, Atelier keeps the model selectable with `chat_completions` and a
-100,000-token context window. Inspect or override model-specific behavior with:
+100,000-token context window. Select the model first, then set its protocol:
 
 ```text
-/wire-api
-/wire-api list
-/wire-api get <provider/model>
-/wire-api set <provider/model> <inherited|chat_completions|responses|messages>
-/wire-api payload <provider/model> <json-object>
-/wire-api reset <provider/model>
-/wire-api test <provider/model> [execute]
+/model
+/wire-api <responses|message|chat>
 ```
 
-`set` changes only the exact protocol and preserves the exact payload.
-`payload` changes only the exact non-credential payload and preserves the exact
-protocol. Use `{}` to clear payload fields without changing the protocol.
-`reset` removes the complete exact Provider/model override and is offered only
-when one exists. List and inspection commands render concise summaries instead
-of internal JSON. Use `execute` to run the test through the Runtime sampler
-rather than only validating configuration:
-
-```text
-/wire-api test example/deepseek-v4-flash execute
-```
+Bare `/wire-api` opens a three-item picker. The command changes and persists
+only the exact Wire API override for the current Provider/model pair. It does
+not alter other model pairs. `message` maps to the Messages API and `chat` maps
+to Chat Completions. In-flight requests keep their existing snapshot; later
+requests use the saved value.
 
 ## Headless Use
 
