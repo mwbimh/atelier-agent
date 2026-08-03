@@ -35,6 +35,8 @@ fn windows_installer_manages_powershell_runtime_and_uses_the_adjacent_binary() {
     });
 
     assert!(source.contains("Join-Path $PSScriptRoot 'ate.exe'"));
+    assert!(source.contains("ate.exe.old.{0}.{1}"));
+    assert!(!source.contains("Join-Path $installPath \"ate.exe.old\""));
     assert!(source.contains("[switch]$NoPathUpdate"));
     assert!(source.contains("[switch]$SetupSandbox"));
     assert!(source.contains("[string]$PowerShellArchive"));

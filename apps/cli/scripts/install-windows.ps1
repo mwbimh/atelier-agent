@@ -234,7 +234,9 @@ $sameFile = [string]::Equals(
 
 if (-not $sameFile) {
     $temporary = Join-Path $installPath ("ate.new.{0}.exe" -f $PID)
-    $backup = Join-Path $installPath "ate.exe.old"
+    $backup = Join-Path $installPath (
+        "ate.exe.old.{0}.{1}" -f $PID, [Guid]::NewGuid().ToString("N")
+    )
     Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue
 
