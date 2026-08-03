@@ -843,6 +843,23 @@ mod tests {
     }
 
     #[test]
+    fn media_endpoint_mismatch_is_fatal_even_when_a_proxy_requests_retry() {
+        let err = SamplingError::Api {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            message:
+                "model gpt-image-2 is only supported on /v1/images/generations and /v1/images/edits"
+                    .into(),
+            model_metadata: None,
+            retry_after_secs: None,
+            should_retry: Some(true),
+        };
+        assert!(matches!(
+            classify_error(&err, 0, 15, RATE_LIMIT_RETRY_THRESHOLD),
+            RetryDecision::Fatal(_)
+        ));
+    }
+
+    #[test]
     fn should_retry_true_falls_through_to_existing_logic() {
         let err = SamplingError::Api {
             status: StatusCode::INTERNAL_SERVER_ERROR,

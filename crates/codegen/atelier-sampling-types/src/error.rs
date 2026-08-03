@@ -237,7 +237,25 @@ impl SamplingError {
         )
     }
 
+    /// The Provider recognized the model but reported that it belongs to a
+    /// different media endpoint. Proxies sometimes wrap this deterministic
+    /// routing error in a retryable 5xx status; repeating the same inference
+    /// request cannot succeed.
+    pub fn is_endpoint_mismatch_error(&self) -> bool {
+        let SamplingError::Api { message, .. } = self else {
+            return false;
+        };
+        let message = message.to_ascii_lowercase();
+        message.contains("only supported on")
+            && ["/images/", "/audio/", "/videos", "/video/"]
+                .iter()
+                .any(|endpoint| message.contains(endpoint))
+    }
+
     pub fn is_retryable(&self) -> bool {
+        if self.is_endpoint_mismatch_error() {
+            return false;
+        }
         match self {
             SamplingError::Auth(_) => false,
             SamplingError::InvalidConfiguration(_) => false,
@@ -603,6 +621,34 @@ mod tests {
 
         let timeout = SamplingError::IdleTimeout { elapsed_secs: 30 };
         assert!(!timeout.is_rate_limited());
+    }
+
+    #[test]
+    fn media_endpoint_mismatch_wrapped_in_503_is_not_retryable() {
+        let err = SamplingError::Api {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            message:
+                "model gpt-image-2 is only supported on /v1/images/generations and /v1/images/edits"
+                    .into(),
+            model_metadata: None,
+            retry_after_secs: None,
+            should_retry: Some(true),
+        };
+        assert!(err.is_endpoint_mismatch_error());
+        assert!(!err.is_retryable());
+    }
+
+    #[test]
+    fn ordinary_503_remains_retryable() {
+        let err = SamplingError::Api {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            message: "temporarily unavailable".into(),
+            model_metadata: None,
+            retry_after_secs: None,
+            should_retry: None,
+        };
+        assert!(!err.is_endpoint_mismatch_error());
+        assert!(err.is_retryable());
     }
 
     #[test]
