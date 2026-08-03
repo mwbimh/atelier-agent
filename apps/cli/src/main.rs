@@ -339,7 +339,7 @@ async fn workspace_start(
     ensure_authenticated(
         &agent_config.atelier_com_config,
         false,
-        Some("No Provider credentials found. Configure a Provider or run `/provider login <provider>`."),
+        Some("No Provider credentials found. Configure one with `/provider add` in the TUI."),
     )
     .await?;
     let env_urls = LeaderEnvUrls::from(&agent_config.atelier_com_config);

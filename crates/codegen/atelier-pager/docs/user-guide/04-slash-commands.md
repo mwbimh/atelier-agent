@@ -148,25 +148,20 @@ catalog. Models without transport metadata remain available with the baseline
 
 ### `/provider`
 
-Manage the local Provider registry. Bare `/provider add` opens the guided
-Provider and login-method picker. Known Providers can expose Provider-owned
-OAuth and API-key methods without asking for endpoints or client metadata.
-Advanced custom endpoint commands remain scriptable:
+Manage the local Provider registry through four actions:
 
 ```text
 /provider list
 /provider add
-/provider add <id> <base-url> <bearer|header:NAME|none> [env:NAME|cmd:PROGRAM|none]
-/provider edit <id>
-/provider edit <id> <base-url> <bearer|header:NAME|none> [env:NAME|cmd:PROGRAM|none]
-/provider login <id> [flow]
-/provider logout <id>
-/provider enable <id>
-/provider disable <id>
-/provider test <id>
-/provider refresh <id>
 /provider delete <id>
+/provider refresh <id>
 ```
+
+Bare `/provider` opens a four-item action picker. `/provider add` opens the
+guided Provider and login-method wizard. Known Providers can expose
+Provider-owned OAuth and API-key methods without asking for endpoints or client
+metadata. Delete and refresh provide a second-stage Provider picker; deletion
+uses a safe confirmation modal.
 
 Aliases: `/providers`
 

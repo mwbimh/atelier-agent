@@ -82,11 +82,11 @@ policy, or choose **Custom endpoint** for a proxy, gateway, or self-hosted API.
 The wizard tests the connection, refreshes models, and opens `/model`; it never
 selects a model automatically.
 
-Advanced custom endpoint example:
+For a custom endpoint, choose **Custom endpoint** in the same wizard and enter
+the Provider ID, base URL, authentication policy, and credential reference.
+After setup, the normal flow is:
 
 ```text
-/provider add example https://api.example.com/v1 bearer env:EXAMPLE_API_KEY
-/provider test example
 /provider refresh example
 /model
 /roles

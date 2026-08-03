@@ -336,13 +336,8 @@ Configure them through the guided TUI:
 
 Known Providers supply their reviewed API endpoint, login methods, OAuth
 refresh, and authentication policy. **Custom endpoint** appears first for a
-proxy, gateway, local server, or self-hosted API. The complete advanced command
-remains available; administrator-managed one-line commands may also use a
-credential helper executable.
-
-```text
-/provider add example https://api.example.com/v1 bearer env:EXAMPLE_API_KEY
-```
+proxy, gateway, local server, or self-hosted API and collects its connection
+fields in the guided wizard.
 
 See [Provider Credentials](02-authentication.md) and
 [Providers, Models, and Roles](11-custom-models.md). Do not place credentials
@@ -775,13 +770,9 @@ Key environment variables. See the README for the complete list.
 ### Provider Credentials
 
 Provider credentials use the environment variable named in the Provider's
-`env:NAME` reference. Atelier does not define a global model API-key variable.
-
-```text
-/provider add example https://api.example.com/v1 bearer env:EXAMPLE_API_KEY
-```
-
-In that example, only `EXAMPLE_API_KEY` is read for Provider `example`.
+`env:NAME` reference selected in `/provider add`. Atelier does not define a
+global model API-key variable. If Provider `example` references
+`EXAMPLE_API_KEY`, only that environment variable is read for that Provider.
 
 ### Features
 

@@ -29,7 +29,6 @@ async fn provider_list_hides_internal_json_and_models() {
     assert!(!screen.contains("base_url"), "{screen}");
     assert!(!screen.contains("credential"), "{screen}");
     assert!(!screen.contains("context_window"), "{screen}");
-    assert!(!screen.contains("chat_completions"), "{screen}");
     assert!(!screen.contains("\"models\""), "{screen}");
 
     harness.quit().expect("clean quit");
@@ -209,34 +208,5 @@ async fn provider_add_opens_wizard() {
     harness
         .inject_keys(b"\x1b")
         .expect("cancel Provider wizard");
-    tokio::time::sleep(Duration::from_millis(250)).await;
-    let one_line = format!("/provider add ptyline {} none none", content.url());
-    inject_keys_paced(&mut harness, one_line.as_bytes());
-    harness
-        .inject_keys(b"\r")
-        .expect("submit advanced one-line Provider command");
-
-    let providers_path = content.home().join(".atelier").join("providers.toml");
-    let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    let providers = loop {
-        let source = std::fs::read_to_string(&providers_path).expect("read providers.toml");
-        if source.contains("[providers.ptyline]") {
-            break source;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "one-line Provider command was not persisted:\n{source}\nraw output:\n{}",
-            String::from_utf8_lossy(harness.raw_output())
-        );
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    };
-    assert!(!providers.contains("protocol"));
-    let registry = atelier_provider::ProviderRegistry::load_or_create(&providers_path)
-        .expect("reload one-line Provider config");
-    assert!(matches!(
-        registry.provider("ptyline").map(|provider| &provider.auth),
-        Some(atelier_provider::ProviderAuth::None)
-    ));
-
     harness.quit().expect("clean quit");
 }

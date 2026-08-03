@@ -473,12 +473,12 @@ fn auto_respond_to_permissions(
 /// "Not signed in" error message, tailored to the session type.
 fn auth_required_message(interactive: bool) -> String {
     if interactive {
-        "Provider authentication is missing. Configure an API credential or run \
-         `/provider login <provider>` in the TUI."
+        "Provider authentication is missing. Reconfigure the Provider with \
+         `/provider add` in the TUI."
             .to_string()
     } else {
-        "Not signed in. Configure Provider credentials with `/provider`, \
-         or complete `/provider login <provider>` on a machine with a browser."
+        "Not signed in. Configure Provider credentials with `/provider add` \
+         on an interactive machine."
             .to_string()
     }
 }

@@ -64,6 +64,37 @@ async fn wire_api_updates_and_persists_only_the_current_pair() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore]
+async fn provider_shows_only_the_four_simple_actions() {
+    let content = ContentController::start().await.expect("start content");
+    let binary = pager_binary().expect("resolve pager binary");
+    let mut harness =
+        PtyHarness::spawn_with_content(&binary, DEFAULT_ROWS, DEFAULT_COLS, &content, &[])
+            .expect("spawn pager with content");
+    harness.set_respond_to_queries(true);
+
+    harness
+        .wait_for_text(WELCOME_SCREEN_SENTINEL, WELCOME_TIMEOUT)
+        .expect("welcome text");
+    inject_keys_paced(&mut harness, b"/provider ");
+    harness
+        .wait_for_text("List configured Providers", Duration::from_secs(10))
+        .expect("Provider action picker");
+    let screen = harness.screen_contents();
+    for action in ["list", "add", "delete", "refresh"] {
+        assert!(screen.contains(action), "missing {action}: {screen}");
+    }
+    for removed in ["edit", "enable", "disable", "test", "login", "logout"] {
+        assert!(
+            !screen.contains(&format!("\n       {removed}")),
+            "unexpected {removed}: {screen}"
+        );
+    }
+
+    harness.quit().expect("clean quit");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore]
 async fn provider_delete_uses_a_default_safe_confirmation_modal() {
     let content = ContentController::start().await.expect("start content");
     let binary = pager_binary().expect("resolve pager binary");

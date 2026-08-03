@@ -482,11 +482,10 @@ ate -p "Run the test suite" --yolo
 ## Provider Setup for Headless Environments
 
 Headless mode uses the same `$ATELIER_HOME/providers.toml` registry as the TUI.
-Configure and test Providers and Roles once, then make the referenced
-credential environment variables available to the headless process:
+Configure Providers and Roles once, then make the referenced credential
+environment variables available to the headless process:
 
 ```text
-/provider test example
 /provider refresh example
 /roles test main
 ```

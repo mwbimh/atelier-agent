@@ -48,60 +48,27 @@ Then configure the fixed Roles. The same model can be assigned to every Role:
 Use `/provider`, `/model`, and `/roles` without arguments for interactive
 selection instead of typing the complete commands.
 
-## Provider CRUD
+## Provider Management
 
 ```text
 /provider list
-/provider add <id> <base-url> <auth> [credential]
-/provider edit <id>
-/provider edit <id> <base-url> <auth> [credential]
-/provider enable <id>
-/provider disable <id>
-/provider test <id>
-/provider refresh <id>
+/provider add
 /provider delete <id>
+/provider refresh <id>
 ```
 
-Submitting `/provider add` first offers known Provider presets. Presets own
-their API endpoint, API-key Header policy, discovery settings, and required
-non-secret protocol Headers. Users select only the Provider and credential
-source; low-level authentication Header names are not shown in this flow.
+Bare `/provider` opens a picker containing exactly these four actions.
+Submitting `/provider add` offers known Provider presets and a **Custom
+endpoint** flow. Presets own their API endpoint, API-key Header policy,
+discovery settings, and required non-secret protocol Headers. Users select only
+the Provider and credential source; low-level authentication Header names are
+not shown in this flow.
 
-**Custom endpoint** is the advanced flow. Its authentication policies are
-`bearer`, `header:NAME`, and `none`; the interactive wizard offers `env:NAME`
-or advanced custom OAuth metadata. The one-line command additionally supports
-`cmd:PROGRAM` for administrator-managed secret helper executables. Wire API is
-configured on the exact Provider/model pair, not on the Provider connection.
-
-Advanced command examples:
-
-```text
-/provider add company-gateway https://ai.example.com/v1 bearer env:COMPANY_AI_API_KEY
-/provider add local http://127.0.0.1:11434/v1 none none
-```
-
-Use the guided preset rather than the advanced one-line form for known
-Providers so required non-secret Headers and discovery settings are applied.
-
-Known Provider OAuth must be implemented and reviewed by that Provider's
-integration; Atelier never asks users to invent its client ID or OAuth
-endpoints. A known Provider only displays OAuth when such a provider-owned flow
-is available.
-
-For a custom Provider whose OAuth metadata you administer or trust, advanced
-commands can configure the API endpoint and OAuth endpoints separately, then
-use `/provider login` to start the configured flow:
-
-```text
-/provider add company https://api.example.com/v1 bearer oauth authorization-code desktop-client https://login.example.com/authorize https://login.example.com/token openid,profile
-/provider login company authorization-code
-
-/provider add company-device https://api.example.com/v1 bearer oauth device-code desktop-client https://login.example.com/device https://login.example.com/token openid,profile
-/provider login company-device device-code
-```
-
-Scopes are optional and comma-separated. `/provider logout <id>` removes the
-stored OAuth token without deleting the Provider configuration.
+**Custom endpoint** exposes Provider ID, base URL, authentication policy, and
+credential-reference fields in the wizard. Wire API is configured on the exact
+Provider/model pair, not on the Provider connection. To replace a connection,
+delete it and add it again. Known Provider OAuth is completed inside the add
+wizard and must be implemented and reviewed by that Provider's integration.
 
 Provider state is stored in `$ATELIER_HOME/providers.toml`. Prefer `/provider`
 or the `_atelier/provider/*` RPC methods over hand-editing the registry while
@@ -233,7 +200,6 @@ endpoints.
 
 ```text
 /provider list
-/provider test <id>
 /provider refresh <id>
 ```
 

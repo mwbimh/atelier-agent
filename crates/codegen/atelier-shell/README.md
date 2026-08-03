@@ -67,14 +67,8 @@ user settings. In the TUI, use:
 
 Providers may declare authorization-code with PKCE and/or device-code flows.
 Credentials are stored in the operating-system secret store; configuration
-files contain only the Provider OAuth method metadata.
-
-Example:
-
-```text
-/provider add company https://api.example.com/v1 bearer oauth authorization-code desktop-client https://login.example.com/authorize https://login.example.com/token openid,profile
-/provider login company authorization-code
-```
+files contain only the Provider OAuth method metadata. Reviewed Provider-owned
+OAuth is selected and completed inside the `/provider add` wizard.
 
 ## Goal roles
 

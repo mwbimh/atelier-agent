@@ -19,9 +19,9 @@ Start Atelier and enter:
 /provider
 ```
 
-The command picker exposes Provider list, add, edit, enable, disable, test,
-refresh, login, logout, and delete operations. Submitting `/provider add`
-shows **Custom endpoint** first, followed by reviewed Provider presets.
+The command picker exposes only Provider list, add, delete, and refresh.
+Submitting `/provider add` shows **Custom endpoint** first, followed by reviewed
+Provider presets.
 
 For a known Provider, Atelier owns the reviewed API endpoint, login methods,
 OAuth client, scopes, refresh behavior, API-key policy, discovery settings, and
@@ -34,13 +34,7 @@ self-hosted API. It asks separately for the model API base URL, credential injec
 credential source, and discovery. Wire API selection is not a Provider setting;
 it belongs to each exact Provider/model pair.
 
-The complete advanced command form is:
-
-```text
-/provider add <id> <base-url> <auth> [credential]
-```
-
-Supported Provider authentication policies:
+Supported Custom endpoint authentication policies:
 
 | Value | Behavior |
 |---|---|
@@ -84,15 +78,17 @@ supplies `https://api.openai.com/v1` and the authentication policy. It then
 tests the connection, refreshes discovery, and opens `/model` without selecting
 a model.
 
-Advanced custom endpoint example:
+For a custom endpoint, export the credential and select **Custom endpoint** in
+`/provider add`:
 
 ```bash
 export EXAMPLE_API_KEY="..."
 ```
 
+After the wizard saves and validates the Provider, refresh its catalog when
+needed:
+
 ```text
-/provider add example https://api.example.com/v1 bearer env:EXAMPLE_API_KEY
-/provider test example
 /provider refresh example
 ```
 
@@ -110,24 +106,10 @@ The guided flow currently provides:
 
 Google AI Studio and DeepSeek currently expose API-key login only.
 
-For a custom Provider whose OAuth metadata you administer or trust, API and
-OAuth endpoints are separate. First create or edit the Provider with its
-advanced OAuth metadata, then start the configured flow with `/provider login`:
-
-```text
-/provider add company https://api.example.com/v1 bearer oauth authorization-code desktop-client https://login.example.com/authorize https://login.example.com/token openid,profile,offline_access
-/provider login company authorization-code
-```
-
-Device authorization uses the device endpoint in the corresponding position:
-
-```text
-/provider add company-device https://api.example.com/v1 bearer oauth device-code desktop-client https://login.example.com/device https://login.example.com/token openid,profile
-/provider login company-device device-code
-```
-
-The final scopes argument is optional and uses a comma-separated list. Tokens
-are stored under `$ATELIER_HOME/credentials/oauth/providers/`, not in
+Custom Provider OAuth metadata is an administrator-managed configuration. The
+ordinary `/provider` surface does not expose separate login or endpoint-editing
+commands. Reviewed Provider-owned OAuth is completed inside `/provider add`.
+Tokens are stored under `$ATELIER_HOME/credentials/oauth/providers/`, not in
 `providers.toml`.
 
 Use the equivalent PowerShell environment syntax on Windows:
@@ -155,40 +137,19 @@ refreshes discovery, and opens `/model`; it never selects a model automatically.
 status. It does not print connection configuration, credential references, the
 internal runtime method, or the model catalog.
 
-Advanced users can also use complete one-line commands. `<auth>` is `bearer`,
-`header:<http-header-name>`, or `none`:
+The ordinary Provider command surface is intentionally limited:
 
 ```text
 /provider list
-/provider add <id> <base-url> <auth> [env:NAME|cmd:PROGRAM|none]
-/provider add <id> <base-url> <auth> oauth authorization-code <client-id> <authorization-endpoint> <token-endpoint> [scope1,scope2]
-/provider add <id> <base-url> <auth> oauth device-code <client-id> <device-authorization-endpoint> <token-endpoint> [scope1,scope2]
-/provider edit <id>
-/provider edit <id> <base-url> <auth> [env:NAME|cmd:PROGRAM|none]
-/provider edit <id> <base-url> <auth> oauth authorization-code <client-id> <authorization-endpoint> <token-endpoint> [scope1,scope2]
-/provider edit <id> <base-url> <auth> oauth device-code <client-id> <device-authorization-endpoint> <token-endpoint> [scope1,scope2]
-/provider enable <id>
-/provider disable <id>
-/provider test <id>
-/provider refresh <id>
-/provider login <id> [flow]
-/provider logout <id>
+/provider add
 /provider delete <id>
+/provider refresh <id>
 ```
 
-Omit `[flow]` for a known Provider; its preset selects the configured login
-method. Explicit flow names are intended for advanced custom OAuth.
-
-`edit <id>` opens a pre-populated review/edit wizard. The complete one-line form
-remains available for automation and updates the base URL, authentication
-policy, and credential while preserving the Provider's existing display name,
-discovery settings, extra headers, and enabled state. Provider deletion always
-requires the explicit `confirm` step.
-
-`test` validates the configured credential and performs a network probe when
-the Provider has a safe probe endpoint. Static subscription catalogs validate
-the OAuth credential without inventing an API request. `refresh` performs model
-discovery when enabled and updates that Provider's local model catalog.
+Use delete followed by add when replacing a Provider connection. Deletion opens
+a dedicated confirmation modal with `Cancel` selected by default. `refresh`
+performs model discovery when enabled and updates only that Provider's local
+model catalog.
 
 ## Model Discovery
 
@@ -285,7 +246,6 @@ if ($env:EXAMPLE_API_KEY) { "set" }
 Run:
 
 ```text
-/provider test example
 /provider refresh example
 ```
 

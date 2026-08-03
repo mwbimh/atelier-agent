@@ -816,7 +816,9 @@ fn format_provider_list_response(response: &str) -> String {
             ));
         }
     }
-    lines.push("Manage Providers with /provider add, /provider edit, or /provider delete.".into());
+    lines.push(
+        "Manage Providers with /provider add, /provider delete, or /provider refresh.".into(),
+    );
     lines.join("\n")
 }
 

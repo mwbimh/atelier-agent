@@ -2617,6 +2617,24 @@ mod tests {
     }
 
     #[test]
+    fn provider_argument_completion_shows_only_the_four_simple_actions() {
+        let mut ctrl = SlashController::with_builtins(std::path::PathBuf::from("."));
+        let state = SlashState::default();
+        let models = staged_model_catalog();
+        let text = "/provider ";
+
+        ctrl.refresh(&state, text, text.len(), &models);
+
+        let snapshot = state.snapshot();
+        let displays = snapshot
+            .matches
+            .iter()
+            .map(|row| row.display.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(displays, vec!["list", "add", "delete", "refresh"]);
+    }
+
+    #[test]
     fn wire_api_argument_completion_shows_the_protocol_picker() {
         let mut ctrl = SlashController::with_builtins(std::path::PathBuf::from("."));
         let state = SlashState::default();

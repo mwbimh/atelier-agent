@@ -61,15 +61,7 @@ fn dashboard_bare_runtime_configuration_commands_keep_interactive_drafts() {
 #[test]
 fn dashboard_complete_runtime_commands_dispatch_the_expected_control_effects() {
     let runtime_cases = [
-        (
-            "/provider add example https://example.test/v1 none none",
-            "_atelier/provider/create",
-        ),
-        (
-            "/provider edit example https://example.test/v1 none none",
-            "_atelier/provider/update",
-        ),
-        ("/provider test example", "_atelier/provider/test"),
+        ("/provider list", "_atelier/provider/list"),
         ("/roles list", "_atelier/role/list"),
         ("/wire-api responses", "_atelier/model/update_wire_api"),
         ("/tasks", "_atelier/task/list"),
