@@ -251,12 +251,13 @@ Codex-compatible startup shortcut for
 DangerFullAccess for the whole process. `/always-approve` only changes ordinary
 Tool approval and preserves the base sandbox.
 
-### `/sandbox-approvals <on|off>`
+### `/sandbox-approvals [on|off]`
 
 Control a separate, session-scoped host-execution approval mode:
 
+- no argument atomically toggles the current session value;
 - `on` automatically selects **Allow once** for every Windows
-  `require_escalated` request in this session.
+  `require_escalated` request in this session;
 - `off` restores an interactive prompt for every request.
 
 Each approval remains one-command-only. This command does not change the base
@@ -264,6 +265,7 @@ sandbox profile, create a persistent grant, request Administrator privileges,
 or trigger UAC. Managed policy can disable this mode.
 
 ```
+/sandbox-approvals
 /sandbox-approvals on
 /sandbox-approvals off
 ```

@@ -280,8 +280,11 @@ pub enum SessionCommand {
     /// Automatically grant every sandbox override request as a separate
     /// session-scoped AllowOnce decision.
     SetSandboxOverrideAutoApprove {
-        enabled: bool,
-        respond_to: oneshot::Sender<bool>,
+        /// `None` atomically toggles the current session value inside the actor.
+        enabled: Option<bool>,
+        /// Returns `(requested, applied)` so callers can distinguish a
+        /// successful disable from a policy-blocked enable.
+        respond_to: oneshot::Sender<(bool, bool)>,
     },
     ResetPermissionState,
     Rewind {

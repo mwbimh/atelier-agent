@@ -16,7 +16,7 @@ pub const SANDBOX_OVERRIDE_AUTO_APPROVE: &str = "_atelier/sandbox/set_override_a
 #[serde(rename_all = "camelCase")]
 struct SetOverrideAutoApproveParams {
     session_id: String,
-    enabled: bool,
+    enabled: Option<bool>,
 }
 
 /// Return sandbox diagnostics or update a session-scoped runtime control.
@@ -39,7 +39,7 @@ pub async fn handle(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
                 ));
             }
             let params: SetOverrideAutoApproveParams = parse_params(args)?;
-            if params.enabled
+            if params.enabled == Some(true)
                 && let Some(reason) =
                     atelier_workspace::permission::resolution::yolo_disabled_by_policy()
             {
@@ -63,11 +63,11 @@ pub async fn handle(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
                     acp::Error::internal_error()
                         .data("session permission manager is unavailable".to_owned())
                 })?;
-            let enabled = response_rx.await.map_err(|_| {
+            let (requested, enabled) = response_rx.await.map_err(|_| {
                 acp::Error::internal_error()
                     .data("session permission manager did not apply the control".to_owned())
             })?;
-            if params.enabled && !enabled {
+            if requested && !enabled {
                 return Err(acp::Error::invalid_params().data(
                     "sandbox override auto-approval is blocked by managed policy".to_owned(),
                 ));
@@ -104,7 +104,12 @@ mod tests {
         }))
         .expect("valid params");
         assert_eq!(parsed.session_id, "session-1");
-        assert!(parsed.enabled);
+        assert_eq!(parsed.enabled, Some(true));
+        let toggle: SetOverrideAutoApproveParams = serde_json::from_value(serde_json::json!({
+            "sessionId": "session-1"
+        }))
+        .expect("toggle params");
+        assert_eq!(toggle.enabled, None);
         assert!(
             serde_json::from_value::<SetOverrideAutoApproveParams>(serde_json::json!({
                 "enabled": true

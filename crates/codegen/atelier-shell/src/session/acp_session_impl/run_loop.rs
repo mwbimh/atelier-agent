@@ -13,9 +13,14 @@ use super::*;
 pub(super) fn yolo_toggle_report(was: bool, actual: bool) -> Option<bool> {
     (was != actual).then_some(actual)
 }
+
+fn requested_sandbox_override_auto_approve(explicit: Option<bool>, current: bool) -> bool {
+    explicit.unwrap_or(!current)
+}
+
 #[cfg(test)]
 mod yolo_toggle_report_tests {
-    use super::yolo_toggle_report;
+    use super::{requested_sandbox_override_auto_approve, yolo_toggle_report};
     /// A pin-clamped enable (requested ON but actual stays OFF) reports no
     /// change, so no spurious "turned on" event/telemetry is emitted. Real
     /// flips report the actual new state.
@@ -25,6 +30,14 @@ mod yolo_toggle_report_tests {
         assert_eq!(yolo_toggle_report(false, true), Some(true));
         assert_eq!(yolo_toggle_report(true, false), Some(false));
         assert_eq!(yolo_toggle_report(true, true), None);
+    }
+
+    #[test]
+    fn sandbox_override_auto_approve_toggle_is_derived_inside_the_session_actor() {
+        assert!(requested_sandbox_override_auto_approve(None, false));
+        assert!(!requested_sandbox_override_auto_approve(None, true));
+        assert!(requested_sandbox_override_auto_approve(Some(true), false));
+        assert!(!requested_sandbox_override_auto_approve(Some(false), true));
     }
 }
 /// Best-effort removal of this session's per-session scratch staging on
@@ -471,9 +484,11 @@ pub(super) async fn run_session(
             .wire_permission_auto_llm_classifier(). await; } else { session.permissions
             .set_llm_side_query_wired(false); } }
             SessionCommand::SetSandboxOverrideAutoApprove { enabled, respond_to } => {
-            tracing::info!(enabled, "Session received SetSandboxOverrideAutoApprove");
-            let applied = session.permissions.set_sandbox_override_auto_approve(enabled);
-            let _ = respond_to.send(applied); }
+            let requested = requested_sandbox_override_auto_approve(enabled, session.permissions
+            .is_sandbox_override_auto_approve()); tracing::info!(requested, toggle = enabled
+            .is_none(), "Session received SetSandboxOverrideAutoApprove"); let applied =
+            session.permissions.set_sandbox_override_auto_approve(requested); let _ =
+            respond_to.send((requested, applied)); }
             SessionCommand::ResetPermissionState =>
             { session.permissions.reset_state(); tracing::info!(session_id = % session
             .session_info.id, "Permission state reset via notification"); }
